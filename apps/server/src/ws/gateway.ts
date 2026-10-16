@@ -11,6 +11,7 @@ import {
   PRESENCE_TTL_S,
   PresenceSubEventSchema,
   PresenceUnsubEventSchema,
+  RECEIPT_COALESCE_MS,
   ReadEventSchema,
   type ServerEvent,
   TYPING_TTL_S,
@@ -23,6 +24,7 @@ import {
 import { db, schema } from '../db/index.js';
 import { createRedis, presenceKey, redis } from '../redis.js';
 import { authenticateToken, SESSION_COOKIE } from '../modules/auth/service.js';
+import { filterBlockedFrom } from '../lib/blocks.js';
 import { activeParticipantUserIds } from '../lib/dto.js';
 import { EVENTS_CHANNEL, type EventEnvelope, publishPresence, publishToUsers, queueReceipt } from './events.js';
 import { registry, type SocketMeta } from './registry.js';
@@ -83,7 +85,11 @@ function scheduleOffline(userId: string): void {
 }
 
 // Monotonic watermark update, clamped to the conversation's last_seq so a
-// hostile client cannot run cursors ahead of real messages.
+// hostile client cannot run cursors ahead of real messages. Hotspot H4: the
+// UPDATE fires ONLY when a watermark actually advances — a replayed/no-op
+// frame costs one PK lookup and returns null, so it triggers no settings
+// reads and no receipt fan-out (monotonic state: everyone already holds
+// frames with values ≥ these).
 async function updateWatermarks(
   userId: string,
   conversationId: string,
@@ -102,6 +108,8 @@ async function updateWatermarks(
       AND cp.conversation_id = ${conversationId}
       AND cp.user_id = ${userId}
       AND cp.left_at IS NULL
+      AND (cp.last_delivered_seq < LEAST(${seq}::bigint, c.last_seq)
+           OR (${raiseRead} AND cp.last_read_seq < LEAST(${seq}::bigint, c.last_seq)))
     RETURNING cp.last_delivered_seq AS d, cp.last_read_seq AS r
   `)) as unknown as { d: string | number; r: string | number }[];
   const row = rows[0];
@@ -121,33 +129,158 @@ async function isActiveParticipant(userId: string, conversationId: string): Prom
 
 async function allowedPresenceTargets(me: string, ids: string[]): Promise<string[]> {
   if (ids.length === 0) return [];
+  // §1.14/§2.11: subscriptions between blocked pairs are silently dropped —
+  // indistinguishable from the existing not-shared-a-conversation drop.
   const rows = (await db.execute(sql`
     SELECT DISTINCT other.user_id AS user_id
     FROM conversation_participants mine
     JOIN conversation_participants other ON other.conversation_id = mine.conversation_id
     WHERE mine.user_id = ${me} AND mine.left_at IS NULL AND other.left_at IS NULL
       AND other.user_id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
+      AND NOT EXISTS (
+        SELECT 1 FROM blocks bl
+        WHERE (bl.blocker_id = ${me} AND bl.blocked_id = other.user_id)
+           OR (bl.blocker_id = other.user_id AND bl.blocked_id = ${me}))
   `)) as unknown as { user_id: string }[];
   return rows.map((r) => r.user_id);
 }
 
-async function handleReceiptFrame(
+/**
+ * show_last_seen qualification (§1.13): which of `watcherIds` may see
+ * `ownerId`'s last_seen_at. The `online` boolean is unaffected (live state,
+ * not a timestamp); blocked watchers were already dropped at sub time.
+ */
+async function lastSeenAudience(ownerId: string, watcherIds: string[]): Promise<Set<string>> {
+  if (watcherIds.length === 0) return new Set();
+  const [owner] = await db
+    .select({ showLastSeen: schema.users.showLastSeen })
+    .from(schema.users)
+    .where(eq(schema.users.id, ownerId))
+    .limit(1);
+  const mode = owner?.showLastSeen ?? 'everyone';
+  if (mode === 'nobody') return new Set(watcherIds.filter((id) => id === ownerId));
+  if (mode === 'everyone') return new Set(watcherIds);
+  // dm_partners: shares an active DM with the owner.
+  const rows = (await db.execute(sql`
+    SELECT DISTINCT other.user_id AS user_id
+    FROM conversation_participants mine
+    JOIN conversation_participants other ON other.conversation_id = mine.conversation_id
+    JOIN conversations c ON c.id = mine.conversation_id AND c.type = 'dm'
+    WHERE mine.user_id = ${ownerId} AND mine.left_at IS NULL AND other.left_at IS NULL
+      AND other.user_id IN (${sql.join(watcherIds.map((id) => sql`${id}::uuid`), sql`, `)})
+  `)) as unknown as { user_id: string }[];
+  const set = new Set(rows.map((r) => r.user_id));
+  if (watcherIds.includes(ownerId)) set.add(ownerId);
+  return set;
+}
+
+/**
+ * Reciprocal read receipts at the edge (v0.3 — API.md §1.13b/§2.11):
+ * watermarks ALWAYS advance (unread counts + §2.9 push guards untouched);
+ * only the FRAME is filtered. Own sessions get true values (cross-device
+ * unread sync). Other recipients get the true last_read_seq only when BOTH
+ * the reader and that recipient have read_receipts on — otherwise it is
+ * clamped to 0. last_delivered_seq is never clamped.
+ */
+async function applyReceipt(
+  meta: SocketMeta,
+  conversationId: string,
+  seq: number,
+  raiseRead: boolean,
+): Promise<void> {
+  const updated = await updateWatermarks(meta.userId, conversationId, seq, raiseRead);
+  if (!updated) return; // no advance (or not a participant) → nothing to fan out
+
+  // Hotspot H4: ONE query for the recipient set AND everyone's read_receipts
+  // (it was three — participant ids, reader's setting, others' settings).
+  const rows = await db
+    .select({ id: schema.users.id, readReceipts: schema.users.readReceipts })
+    .from(schema.conversationParticipants)
+    .innerJoin(schema.users, eq(schema.conversationParticipants.userId, schema.users.id))
+    .where(
+      and(
+        eq(schema.conversationParticipants.conversationId, conversationId),
+        isNull(schema.conversationParticipants.leftAt),
+      ),
+    );
+  const others = rows.filter((r) => r.id !== meta.userId);
+  const readerOn = rows.find((r) => r.id === meta.userId)?.readReceipts ?? true;
+
+  let trueGroup: string[] = [meta.userId];
+  let clampedGroup: string[] = others.map((r) => r.id);
+  if (readerOn && others.length > 0) {
+    trueGroup = [meta.userId, ...others.filter((r) => r.readReceipts).map((r) => r.id)];
+    clampedGroup = others.filter((r) => !r.readReceipts).map((r) => r.id);
+  }
+
+  const base = {
+    conversation_id: conversationId,
+    user_id: meta.userId,
+    last_delivered_seq: updated.last_delivered_seq,
+  };
+  queueReceipt({ ...base, last_read_seq: updated.last_read_seq }, trueGroup, 'full');
+  queueReceipt({ ...base, last_read_seq: 0 }, clampedGroup, 'clamped');
+}
+
+/**
+ * Hotspot H4: inbound read/delivered frames were unthrottled — 4 DB queries
+ * per frame let one hostile client in one group peg API + PG. This is the
+ * inbound twin of the outbound 1 s coalescer: at most one watermark apply per
+ * (socket, conversation) per RECEIPT_COALESCE_MS, trailing flush, merging by
+ * max(seq) and OR(raiseRead) — lossless, because watermarks are monotonic
+ * maxima and read implies delivered.
+ */
+function handleReceiptFrame(
   meta: SocketMeta,
   d: DeliveredEvent['d'] | ReadEvent['d'],
   raiseRead: boolean,
-): Promise<void> {
-  const updated = await updateWatermarks(meta.userId, d.conversation_id, d.seq, raiseRead);
-  if (!updated) return;
-  const recipients = await activeParticipantUserIds(d.conversation_id);
-  queueReceipt(
-    {
-      conversation_id: d.conversation_id,
-      user_id: meta.userId,
-      last_delivered_seq: updated.last_delivered_seq,
-      last_read_seq: updated.last_read_seq,
-    },
-    recipients,
+): void {
+  const convId = d.conversation_id;
+  const gate = meta.receiptGates.get(convId);
+  if (gate) {
+    gate.pending = {
+      seq: Math.max(gate.pending?.seq ?? 0, d.seq),
+      raiseRead: (gate.pending?.raiseRead ?? false) || raiseRead,
+    };
+    return;
+  }
+  void applyReceipt(meta, convId, d.seq, raiseRead).catch((err) =>
+    console.error('ws: receipt apply failed', err),
   );
+  const timer = setTimeout(() => flushReceiptGate(meta, convId), RECEIPT_COALESCE_MS);
+  timer.unref();
+  meta.receiptGates.set(convId, { timer, pending: null });
+}
+
+function flushReceiptGate(meta: SocketMeta, convId: string): void {
+  const gate = meta.receiptGates.get(convId);
+  if (!gate) return;
+  const pending = gate.pending;
+  if (!pending) {
+    meta.receiptGates.delete(convId);
+    return;
+  }
+  gate.pending = null;
+  void applyReceipt(meta, convId, pending.seq, pending.raiseRead).catch((err) =>
+    console.error('ws: receipt apply failed', err),
+  );
+  gate.timer = setTimeout(() => flushReceiptGate(meta, convId), RECEIPT_COALESCE_MS);
+  gate.timer.unref();
+}
+
+/** Socket closed: cancel timers and apply any merged pending receipt now, so
+ * a read sent just before a disconnect is not lost. */
+function drainReceiptGates(meta: SocketMeta): void {
+  for (const [convId, gate] of meta.receiptGates) {
+    clearTimeout(gate.timer);
+    const pending = gate.pending;
+    if (pending) {
+      void applyReceipt(meta, convId, pending.seq, pending.raiseRead).catch((err) =>
+        console.error('ws: receipt drain failed', err),
+      );
+    }
+  }
+  meta.receiptGates.clear();
 }
 
 async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promise<void> {
@@ -168,14 +301,14 @@ async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promis
     case 'delivered': {
       const result = DeliveredEventSchema.safeParse(parsed);
       if (!result.success) return strike(ws, meta, 'bad_payload', 'invalid delivered frame');
-      await handleReceiptFrame(meta, result.data.d, false);
+      handleReceiptFrame(meta, result.data.d, false);
       return;
     }
     case 'read': {
       const result = ReadEventSchema.safeParse(parsed);
       if (!result.success) return strike(ws, meta, 'bad_payload', 'invalid read frame');
       // Read implies delivered (API.md §2.4).
-      await handleReceiptFrame(meta, result.data.d, true);
+      handleReceiptFrame(meta, result.data.d, true);
       return;
     }
     case 'typing': {
@@ -183,9 +316,19 @@ async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promis
       if (!result.success) return strike(ws, meta, 'bad_payload', 'invalid typing frame');
       const { conversation_id } = result.data.d;
       if (!(await isActiveParticipant(meta.userId, conversation_id))) return;
+      // §1.13 show_typing: suppressed AT INGEST, before rebroadcast. No error
+      // frame — typing is best-effort ephemera.
+      const [sender] = await db
+        .select({ showTyping: schema.users.showTyping })
+        .from(schema.users)
+        .where(eq(schema.users.id, meta.userId))
+        .limit(1);
+      if (!sender?.showTyping) return;
       const expiresAt = new Date(Date.now() + TYPING_TTL_S * 1000).toISOString();
-      const others = (await activeParticipantUserIds(conversation_id)).filter(
-        (id) => id !== meta.userId,
+      // §1.14/§2.11: never rebroadcast typing between blocked pairs.
+      const others = await filterBlockedFrom(
+        meta.userId,
+        (await activeParticipantUserIds(conversation_id)).filter((id) => id !== meta.userId),
       );
       await publishToUsers(others, {
         t: 'typing',
@@ -206,19 +349,38 @@ async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promis
       for (const id of allowed) pipeline.exists(presenceKey(id));
       const results = (await pipeline.exec()) ?? [];
       const userRows = await db
-        .select({ id: schema.users.id, lastSeenAt: schema.users.lastSeenAt })
+        .select({
+          id: schema.users.id,
+          lastSeenAt: schema.users.lastSeenAt,
+          showLastSeen: schema.users.showLastSeen,
+        })
         .from(schema.users)
         .where(inArray(schema.users.id, allowed));
-      const lastSeenById = new Map(userRows.map((u) => [u.id, u.lastSeenAt]));
+      const byId = new Map(userRows.map((u) => [u.id, u]));
+      // §1.13 show_last_seen for the immediate replies: 'dm_partners' needs
+      // one shared-DM lookup for the subscriber.
+      const dmPartnerRows = (await db.execute(sql`
+        SELECT DISTINCT other.user_id AS user_id
+        FROM conversation_participants mine
+        JOIN conversation_participants other ON other.conversation_id = mine.conversation_id
+        JOIN conversations c ON c.id = mine.conversation_id AND c.type = 'dm'
+        WHERE mine.user_id = ${meta.userId} AND mine.left_at IS NULL AND other.left_at IS NULL
+      `)) as unknown as { user_id: string }[];
+      const dmPartners = new Set(dmPartnerRows.map((r) => r.user_id));
       allowed.forEach((id, i) => {
         const online = results[i]?.[1] === 1;
-        const lastSeen = lastSeenById.get(id) ?? null;
+        const row = byId.get(id);
+        const qualifies =
+          id === meta.userId ||
+          row?.showLastSeen === 'everyone' ||
+          (row?.showLastSeen === 'dm_partners' && dmPartners.has(id));
+        const lastSeen = row?.lastSeenAt ?? null;
         send(ws, {
           t: 'presence',
           d: {
             user_id: id,
             online,
-            ...(lastSeen && !online ? { last_seen_at: lastSeen.toISOString() } : {}),
+            ...(lastSeen && !online && qualifies ? { last_seen_at: lastSeen.toISOString() } : {}),
           },
         });
       });
@@ -244,6 +406,35 @@ function strike(ws: WebSocket, meta: SocketMeta, code: string, message: string):
   }
 }
 
+async function deliverPresence(env: Extract<EventEnvelope, { scope: 'presence' }>): Promise<void> {
+  const watchers = registry.watchersOf(env.user_id);
+  if (watchers.length === 0) return;
+  const event = env.event;
+  if (event.t !== 'presence') return;
+  const hasLastSeen = event.d.last_seen_at !== undefined;
+  const watcherUserIds = [
+    ...new Set(watchers.map((ws) => registry.metaOf(ws)?.userId).filter((v): v is string => !!v)),
+  ];
+  // Blocks created AFTER a subscription still suppress frames (§1.14).
+  const blockRows = (await db.execute(sql`
+    SELECT blocked_id AS id FROM blocks WHERE blocker_id = ${env.user_id}
+    UNION
+    SELECT blocker_id AS id FROM blocks WHERE blocked_id = ${env.user_id}
+  `)) as unknown as { id: string }[];
+  const blocked = new Set(blockRows.map((r) => r.id));
+  const qualified = hasLastSeen ? await lastSeenAudience(env.user_id, watcherUserIds) : null;
+  for (const ws of watchers) {
+    const meta = registry.metaOf(ws);
+    if (!meta || blocked.has(meta.userId)) continue;
+    if (!hasLastSeen || qualified?.has(meta.userId)) {
+      send(ws, event);
+    } else {
+      // Non-qualifying subscribers get the online boolean without the stamp.
+      send(ws, { t: 'presence', d: { user_id: event.d.user_id, online: event.d.online } });
+    }
+  }
+}
+
 function routeEnvelope(env: EventEnvelope): void {
   switch (env.scope) {
     case 'users': {
@@ -253,7 +444,10 @@ function routeEnvelope(env: EventEnvelope): void {
       return;
     }
     case 'presence': {
-      for (const ws of registry.watchersOf(env.user_id)) send(ws, env.event);
+      // v0.3 (§2.11): the events channel stays an unfiltered firehose — the
+      // per-watcher show_last_seen / block filtering happens HERE, where the
+      // recipients are known.
+      void deliverPresence(env).catch((err) => console.error('ws: presence deliver failed', err));
       return;
     }
     case 'session_close': {
@@ -310,6 +504,7 @@ export function setupGateway(server: Server): void {
       isAlive: true,
       strikes: 0,
       presenceSubs: new Set(),
+      receiptGates: new Map(),
     };
     const { firstSocketForUser } = registry.add(ws, meta);
     lastAlive.set(ws, Date.now());
@@ -335,6 +530,7 @@ export function setupGateway(server: Server): void {
       });
     });
     ws.on('close', () => {
+      drainReceiptGates(meta);
       const removed = registry.remove(ws);
       if (removed?.lastSocketForUser) scheduleOffline(removed.meta.userId);
     });

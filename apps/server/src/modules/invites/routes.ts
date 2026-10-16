@@ -63,6 +63,8 @@ export async function inviteRoutes(fastify: FastifyInstance): Promise<void> {
     { preHandler: requireAuth, schema: { body: CreateInviteRequestSchema } },
     async (req, reply) => {
       const { user } = authed(req);
+      // §1.13 invites_paused: minting is paused along with accepts.
+      if (user.invitesPaused) throw forbidden('invites_paused');
       const rate = await fixedWindow(`invitecreate:${user.id}`, INVITE_CREATE_RATE_PER_HOUR, 3600);
       if (!rate.allowed) throw rateLimited(rate.retryAfterS);
 

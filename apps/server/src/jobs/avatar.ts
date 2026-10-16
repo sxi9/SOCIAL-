@@ -12,13 +12,12 @@ import { db, schema } from '../db/index.js';
 import {
   activeParticipantUserIds,
   coParticipantUserIds,
-  loadConversationDto,
-  userPublicDto,
+  publishConversationToUsers,
+  publishUserUpdated,
 } from '../lib/dto.js';
 import { contentKey, sha256Hex } from '../lib/media.js';
 import type { AvatarJob } from '../queues.js';
 import { deleteObject, getObjectBuffer, putObject } from '../s3.js';
-import { publishToUsers } from '../ws/events.js';
 
 interface ProbeStream {
   codec_type?: string;
@@ -121,8 +120,9 @@ async function updateTarget(
         : update.set({ avatarStatus: 'failed', updatedAt: new Date() });
     const [row] = await query.where(eq(schema.users.id, target.user_id)).returning();
     if (row) {
+      // §1.14: blocked co-members get the frame with last_seen_at clamped.
       const peers = await coParticipantUserIds(target.user_id);
-      await publishToUsers(peers, { t: 'user.updated', d: { user: userPublicDto(row) } });
+      await publishUserUpdated(row, peers);
     }
   } else {
     const update = db.update(schema.conversations);
@@ -136,11 +136,10 @@ async function updateTarget(
           })
         : update.set({ avatarStatus: 'failed' });
     await query.where(eq(schema.conversations.id, target.conversation_id));
-    const dto = await loadConversationDto(target.conversation_id);
-    if (dto) {
-      const members = await activeParticipantUserIds(target.conversation_id);
-      await publishToUsers(members, { t: 'conv.updated', d: { conversation: dto } });
-    }
+    // Per-recipient clamped conv.updated (§1.13/§1.14) — never a shared
+    // unfiltered DTO.
+    const members = await activeParticipantUserIds(target.conversation_id);
+    await publishConversationToUsers(target.conversation_id, members, 'conv.updated');
   }
 }
 

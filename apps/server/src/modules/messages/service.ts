@@ -7,19 +7,29 @@ import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { activeParticipantUserIds, messageDtos, type MsgRow } from '../../lib/dto.js';
 import { badRequest } from '../../lib/errors.js';
-import { enqueuePush } from '../../queues.js';
+import { enqueuePushBulk } from '../../queues.js';
 import { presenceKey, redis } from '../../redis.js';
 import { publishToUsers } from '../../ws/events.js';
 import { registry } from '../../ws/registry.js';
 
 export interface InsertMessageOpts {
   conversationId: string;
+  /** Optional caller-chosen id — v0.3 afterglow uses a DETERMINISTIC id so a
+   * replayed job conflicts on messages.id and rolls the whole seq transaction
+   * back (no duplicate recap, no seq gap). Default: a fresh UUIDv7. */
+  id?: string;
   senderId: string | null;
   clientMsgId?: string | null;
   type: MessageType;
   body: string | null;
   metadata: MessageMetadata;
   attachmentIds?: string[];
+  /**
+   * Runs inside the seq transaction after the message row lands — v0.3 polls
+   * use it to insert the polls row atomically with its message (a crash can
+   * never leave a 'poll' message without a poll).
+   */
+  withinTx?: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], msg: MsgRow) => Promise<void>;
 }
 
 export async function insertMessage(opts: InsertMessageOpts): Promise<MsgRow> {
@@ -38,7 +48,7 @@ export async function insertMessage(opts: InsertMessageOpts): Promise<MsgRow> {
     const [msg] = await tx
       .insert(schema.messages)
       .values({
-        id: newId(),
+        id: opts.id ?? newId(),
         conversationId: opts.conversationId,
         seq,
         senderId: opts.senderId,
@@ -73,6 +83,8 @@ export async function insertMessage(opts: InsertMessageOpts): Promise<MsgRow> {
       if (bound.length !== ids.length) throw badRequest('invalid_attachments');
     }
 
+    if (opts.withinTx) await opts.withinTx(tx, msg!);
+
     return msg!;
   });
 }
@@ -103,18 +115,18 @@ export async function fanOutNewMessage(msg: MsgRow): Promise<Message> {
       const pipeline = redis.pipeline();
       for (const id of offline) pipeline.exists(presenceKey(id));
       const results = (await pipeline.exec()) ?? [];
-      await Promise.all(
-        offline.map((userId, i) =>
-          enqueuePush(
-            {
-              user_id: userId,
-              conversation_id: msg.conversationId,
-              message_id: msg.id,
-              seq: msg.seq,
-            },
-            { delayMs: results[i]?.[1] === 1 ? (OFFLINE_GRACE_S + 2) * 1000 : 0 },
-          ),
-        ),
+      // Hotspot H2: one addBulk round trip for the whole offline set instead
+      // of one queue.add per participant.
+      await enqueuePushBulk(
+        offline.map((userId, i) => ({
+          job: {
+            user_id: userId,
+            conversation_id: msg.conversationId,
+            message_id: msg.id,
+            seq: msg.seq,
+          },
+          delayMs: results[i]?.[1] === 1 ? (OFFLINE_GRACE_S + 2) * 1000 : 0,
+        })),
       );
     }
   }

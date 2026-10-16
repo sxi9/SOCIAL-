@@ -78,8 +78,15 @@ function flushReceipt(key: string): void {
   }
 }
 
-export function queueReceipt(d: ReceiptD, recipients: string[]): void {
-  const key = `${d.conversation_id}:${d.user_id}`;
+/**
+ * `variant` keys the coalescer separately per serialization of the same
+ * watermark event — v0.3 reciprocal receipts (§2.11) publish a true-valued
+ * frame to qualifying recipients and a clamped (`last_read_seq: 0`) frame to
+ * the rest, and the two must not swallow each other's trailing flush.
+ */
+export function queueReceipt(d: ReceiptD, recipients: string[], variant = 'full'): void {
+  if (recipients.length === 0) return;
+  const key = `${d.conversation_id}:${d.user_id}:${variant}`;
   if (!receiptTimers.has(key)) {
     void publishToUsers(recipients, { t: 'receipt', d });
     const timer = setTimeout(() => flushReceipt(key), RECEIPT_COALESCE_MS);

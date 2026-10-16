@@ -1,13 +1,14 @@
 // Entrypoint: BullMQ consumers (ARCHITECTURE §2/§3) — queues avatar | media |
-// unfurl | push | gc. Same image as the api; node dist/worker.js.
+// unfurl | push | gc | beacons. Same image as the api; node dist/worker.js.
 import { Worker, type Job } from 'bullmq';
 import { processAvatarJob } from './jobs/avatar.js';
+import { processBeaconsJob } from './jobs/beacons.js';
 import { runGc } from './jobs/gc.js';
 import { processMediaJob } from './jobs/media.js';
 import { initWebPush, processPushJob } from './jobs/push.js';
 import { processUnfurlJob } from './jobs/unfurl.js';
-import type { AvatarJob, MediaJob, PushJob, UnfurlJob } from './queues.js';
-import { gcQueue } from './queues.js';
+import type { AvatarJob, BeaconsJob, MediaJob, PushJob, UnfurlJob } from './queues.js';
+import { beaconsQueue, gcQueue } from './queues.js';
 import { createRedis } from './redis.js';
 
 async function main(): Promise<void> {
@@ -34,6 +35,11 @@ async function main(): Promise<void> {
       concurrency: 10,
     }),
     new Worker('gc', async () => runGc(), { connection: createRedis(), concurrency: 1 }),
+    // v0.3 (ARCHITECTURE §10): beacon-expire | beacon-ritual | beacon-afterglow.
+    new Worker<BeaconsJob>('beacons', async (job: Job<BeaconsJob>) => processBeaconsJob(job.name, job.data), {
+      connection: createRedis(),
+      concurrency: 2,
+    }),
   ];
 
   for (const w of workers) {
@@ -52,7 +58,26 @@ async function main(): Promise<void> {
     { repeat: { pattern: '0 4 * * *' }, jobId: 'gc-nightly', removeOnComplete: 10, removeOnFail: 10 },
   );
 
-  console.log('worker: consuming queues avatar | media | unfurl | push | gc');
+  // v0.3 repeatable beacon jobs (API.md §1.15): 1-min expiry sweep, hourly
+  // ritual re-creation, and the afterglow safety sweep backing the per-spark
+  // delayed jobs.
+  await beaconsQueue.add(
+    'beacon-expire',
+    {},
+    { repeat: { every: 60_000 }, jobId: 'beacon-expire', removeOnComplete: 10, removeOnFail: 10 },
+  );
+  await beaconsQueue.add(
+    'beacon-ritual',
+    {},
+    { repeat: { pattern: '0 * * * *' }, jobId: 'beacon-ritual', removeOnComplete: 10, removeOnFail: 10 },
+  );
+  await beaconsQueue.add(
+    'beacon-afterglow-sweep',
+    {},
+    { repeat: { every: 10 * 60_000 }, jobId: 'beacon-afterglow-sweep', removeOnComplete: 10, removeOnFail: 10 },
+  );
+
+  console.log('worker: consuming queues avatar | media | unfurl | push | gc | beacons');
 
   const shutdown = async () => {
     await Promise.allSettled(workers.map((w) => w.close()));

@@ -4,12 +4,17 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
 import { config } from './config.js';
 import { authRoutes } from './modules/auth/routes.js';
+import { beaconRoutes } from './modules/beacons/routes.js';
+import { blockRoutes } from './modules/blocks/routes.js';
 import { conversationRoutes } from './modules/conversations/routes.js';
 import { inviteRoutes } from './modules/invites/routes.js';
 import { messageRoutes } from './modules/messages/routes.js';
+import { pollRoutes } from './modules/polls/routes.js';
 import { previewRoutes } from './modules/previews/routes.js';
 import { pushRoutes } from './modules/push/routes.js';
 import { reactionRoutes } from './modules/reactions/routes.js';
+import { reportRoutes } from './modules/reports/routes.js';
+import { settingsRoutes } from './modules/settings/routes.js';
 import { shareRoutes } from './modules/share/routes.js';
 import { uploadRoutes } from './modules/uploads/routes.js';
 import { userRoutes } from './modules/users/routes.js';
@@ -68,9 +73,14 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
 
   await app.register(authRoutes);
   await app.register(userRoutes);
+  await app.register(settingsRoutes); // v0.3 §1.13 (before userRoutes' :username catch is fine — paths are distinct)
+  await app.register(blockRoutes); // v0.3 §1.14
+  await app.register(reportRoutes); // v0.3 §1.14
   await app.register(conversationRoutes);
   await app.register(messageRoutes);
   await app.register(reactionRoutes);
+  await app.register(pollRoutes); // v0.3 §1.17
+  await app.register(beaconRoutes); // v0.3 §1.15/§1.16
   await app.register(inviteRoutes);
   await app.register(uploadRoutes);
   await app.register(previewRoutes);

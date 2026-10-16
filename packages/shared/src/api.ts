@@ -2,13 +2,25 @@
 // Field names follow docs/API.md exactly. This file IS the contract.
 import { z } from 'zod';
 import {
+  AREA_MAX_CHARS,
+  BEACON_NOTE_MAX_CHARS,
+  BEACON_ROLE_LABEL_MAX_CHARS,
+  BEACON_SPARK_THRESHOLD_MAX,
+  BEACON_SPARK_THRESHOLD_MIN,
+  BEACON_VIBES,
   INVITE_TOKEN_REGEX,
+  KUDOS_KINDS,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_MESSAGE_BODY_CHARS,
   PAGE_SIZE_DEFAULT,
   PAGE_SIZE_MAX,
   PASSWORD_MIN_LENGTH,
+  POLL_OPTION_MAX_CHARS,
+  POLL_OPTIONS_MAX,
+  POLL_OPTIONS_MIN,
+  POLL_QUESTION_MAX_CHARS,
   REACTION_EMOJI_MAX_LEN,
+  REPORT_REASON_MAX_CHARS,
   USERNAME_REGEX,
 } from './constants.js';
 
@@ -46,13 +58,32 @@ export type Avatar = z.infer<typeof AvatarSchema>;
 export const AvatarMotionSchema = z.enum(['auto', 'reduced', 'off']);
 export type AvatarMotion = z.infer<typeof AvatarMotionSchema>;
 
+// v0.3 (API.md §0): the minimal embeddable identity — beacon joiner piles,
+// seen-by lists, blocked lists, role assignees. Deliberately carries NO
+// last_seen_at and NO area (privacy surfaces never ride list DTOs).
+export const UserLiteSchema = z.object({
+  id: UuidSchema,
+  username: z.string(),
+  display_name: z.string(),
+  avatar: AvatarSchema,
+});
+export type UserLite = z.infer<typeof UserLiteSchema>;
+
 export const UserPublicSchema = z.object({
   id: UuidSchema,
   username: z.string(),
   display_name: z.string(),
   bio: z.string(),
   avatar: AvatarSchema,
+  // null when the owner's show_last_seen setting (or a block) hides it from
+  // the viewer — serialization-time filtering, v0.3 §1.13 (ADR-009).
   last_seen_at: IsoDateTimeSchema.nullable(),
+  // v0.3 plan karma (API.md §1.15): lifetime counters rendered as plain profile
+  // facts ("12 plans, 8 sparked") — named people, never ranked, never compared
+  // (PSYCHOLOGY design rule 3: no leaderboards). default(0) keeps pre-v0.3
+  // payloads parsing clean.
+  beacons_created: z.number().int().nonnegative().default(0),
+  beacons_sparked: z.number().int().nonnegative().default(0),
 });
 export type UserPublic = z.infer<typeof UserPublicSchema>;
 
@@ -60,6 +91,11 @@ export const UserPrivateSchema = UserPublicSchema.extend({
   email: z.string(),
   email_verified: z.boolean(),
   avatar_motion: AvatarMotionSchema,
+  // v0.3: self-declared coarse area ("neighborhood/city" free text, citext in
+  // the DB). PRIVATE — owner-only; it is never serialized into UserPublic or
+  // UserLite and never shown to others (FEATURES #30). It only gates 'area'
+  // beacon visibility via case-insensitive equality.
+  area: z.string().nullable().default(null),
   created_at: IsoDateTimeSchema,
 });
 export type UserPrivate = z.infer<typeof UserPrivateSchema>;
@@ -96,8 +132,32 @@ export const LinkPreviewSchema = z.object({
 });
 export type LinkPreview = z.infer<typeof LinkPreviewSchema>;
 
-export const MessageTypeSchema = z.enum(['text', 'image', 'video', 'file', 'system']);
+// v0.3 adds 'poll' (API.md §1.17): a poll is a message that rides the seq log.
+export const MessageTypeSchema = z.enum(['text', 'image', 'video', 'file', 'system', 'poll']);
 export type MessageType = z.infer<typeof MessageTypeSchema>;
+
+// ---------------------------------------------------------------------------
+// Polls (v0.3 — API.md §1.17). A poll IS a message (type 'poll'); the poll row
+// is keyed by the message identity (conversation_id, seq). counts/total_votes
+// are aggregates; my_vote is the viewer's option index (null = not voted).
+// NO per-voter lists and NO vote timestamps in the DTO.
+// ---------------------------------------------------------------------------
+
+export const PollSchema = z.object({
+  id: UuidSchema,
+  conversation_id: UuidSchema,
+  seq: z.number().int().positive(), // the message the poll rides on
+  question: z.string().min(1).max(POLL_QUESTION_MAX_CHARS),
+  options: z
+    .array(z.string().min(1).max(POLL_OPTION_MAX_CHARS))
+    .min(POLL_OPTIONS_MIN)
+    .max(POLL_OPTIONS_MAX),
+  closes_at: IsoDateTimeSchema.nullable(),
+  counts: z.array(z.number().int().nonnegative()), // same length as options
+  total_votes: z.number().int().nonnegative(),
+  my_vote: z.number().int().nonnegative().nullable(), // option index, viewer-specific
+});
+export type Poll = z.infer<typeof PollSchema>;
 
 export const SystemEventMetadataSchema = z.object({
   event: z.string(),
@@ -106,9 +166,30 @@ export const SystemEventMetadataSchema = z.object({
 });
 export type SystemEventMetadata = z.infer<typeof SystemEventMetadataSchema>;
 
+// v0.3 beacons (API.md §1.15): the fixed vibe chip set.
+export const BeaconVibeSchema = z.enum(BEACON_VIBES);
+export type BeaconVibe = z.infer<typeof BeaconVibeSchema>;
+
+// v0.3 afterglow recap (API.md §1.15): rides the recap SYSTEM message the
+// worker posts in the plan conversation 2 h after a sparked beacon expires.
+// run_it_back is the source beacon id — POST /api/beacons/:id/run-it-back
+// re-creates the beacon one-tap (the id is the token; membership of the spark
+// group is the authorization, no extra secret).
+export const AfterglowMetadataSchema = z.object({
+  beacon_id: UuidSchema,
+  vibe: BeaconVibeSchema,
+  participant_ids: z.array(UuidSchema),
+  // Image attachments posted in the plan conversation during the hangout
+  // window (spark → expires_at + 2 h), capped at BEACON_AFTERGLOW_PHOTOS_MAX.
+  photo_attachment_ids: z.array(UuidSchema),
+  run_it_back: UuidSchema,
+});
+export type AfterglowMetadata = z.infer<typeof AfterglowMetadataSchema>;
+
 export const MessageMetadataSchema = z.object({
   link_preview: LinkPreviewSchema.optional(),
   system: SystemEventMetadataSchema.optional(),
+  afterglow: AfterglowMetadataSchema.optional(), // v0.3; on the recap system message
 });
 export type MessageMetadata = z.infer<typeof MessageMetadataSchema>;
 
@@ -140,6 +221,9 @@ export const MessageSchema = z.object({
   // v0.2: aggregated reactions. default([]) keeps pre-v0.2 payloads (IndexedDB
   // rows, old fixtures) parsing clean; the server always emits the array.
   reactions: z.array(ReactionAggregateSchema).default([]),
+  // v0.3 (§1.17): populated iff type === 'poll'; viewer-specific (my_vote).
+  // default(null) keeps pre-v0.3 payloads parsing clean.
+  poll: PollSchema.nullable().default(null),
   created_at: IsoDateTimeSchema,
   edited_at: IsoDateTimeSchema.nullable(),
   deleted_at: IsoDateTimeSchema.nullable(),
@@ -245,6 +329,9 @@ export const UpdateMeRequestSchema = z.object({
   display_name: z.string().min(1).max(100).optional(),
   bio: z.string().max(1000).optional(),
   avatar_motion: AvatarMotionSchema.optional(),
+  // v0.3 (§1.13): self-declared coarse area; null clears it (and with it all
+  // 'area' beacon visibility, both directions). Never shown to other users.
+  area: z.string().min(1).max(AREA_MAX_CHARS).nullable().optional(),
 });
 export type UpdateMeRequest = z.infer<typeof UpdateMeRequestSchema>;
 
@@ -554,3 +641,236 @@ export type AcceptInviteResponse = z.infer<typeof AcceptInviteResponseSchema>;
 
 export const AddReactionRequestSchema = z.object({ emoji: ReactionEmojiSchema });
 export type AddReactionRequest = z.infer<typeof AddReactionRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.13 Privacy settings (v0.3 — ADR-009)
+// ---------------------------------------------------------------------------
+// Stored as columns on users (one row read on the presence/typing/receipt hot
+// paths — the same pattern as avatar_motion). Every setting is enforced
+// SERVER-SIDE at the points documented in API.md §1.13; clients only mirror.
+
+export const ShowLastSeenSchema = z.enum(['everyone', 'dm_partners', 'nobody']);
+export type ShowLastSeen = z.infer<typeof ShowLastSeenSchema>;
+
+export const GroupAddPolicySchema = z.enum(['everyone', 'dm_partners', 'nobody']);
+export type GroupAddPolicy = z.infer<typeof GroupAddPolicySchema>;
+
+export const BeaconAudienceSchema = z.enum(['friends', 'area', 'public']);
+export type BeaconAudience = z.infer<typeof BeaconAudienceSchema>;
+
+export const UserSettingsSchema = z.object({
+  // RECIPROCAL (API.md §1.13): off hides YOUR read state from everyone AND
+  // hides everyone's read state (seen ticks, seen-by lists) from you.
+  // Delivered state is unaffected either way.
+  read_receipts: z.boolean(),
+  show_last_seen: ShowLastSeenSchema,
+  show_typing: z.boolean(),
+  // true: minting new invites AND accepting your existing ones both 403.
+  invites_paused: z.boolean(),
+  beacon_default_audience: BeaconAudienceSchema,
+  group_add_policy: GroupAddPolicySchema,
+});
+export type UserSettings = z.infer<typeof UserSettingsSchema>;
+
+export const UpdateSettingsRequestSchema = UserSettingsSchema.partial();
+export type UpdateSettingsRequest = z.infer<typeof UpdateSettingsRequestSchema>;
+
+export const SettingsResponseSchema = z.object({ settings: UserSettingsSchema });
+export type SettingsResponse = z.infer<typeof SettingsResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.14 Blocks & reports (v0.3 — ADR-009)
+// ---------------------------------------------------------------------------
+
+export const BlockedListResponseSchema = z.object({ users: z.array(UserLiteSchema) });
+export type BlockedListResponse = z.infer<typeof BlockedListResponseSchema>;
+
+export const ReportKindSchema = z.enum(['user', 'message', 'beacon']);
+export type ReportKind = z.infer<typeof ReportKindSchema>;
+
+// Message identity is (conversation_id, seq) — the messages PK, same as
+// reactions. Targets are stored WITHOUT FKs (reports are an audit log that
+// must survive target deletion; see migration 0003).
+export const CreateReportRequestSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('user'),
+    user_id: UuidSchema,
+    reason: z.string().max(REPORT_REASON_MAX_CHARS).default(''),
+  }),
+  z.object({
+    kind: z.literal('message'),
+    conversation_id: UuidSchema,
+    seq: z.number().int().positive(),
+    reason: z.string().max(REPORT_REASON_MAX_CHARS).default(''),
+  }),
+  z.object({
+    kind: z.literal('beacon'),
+    beacon_id: UuidSchema,
+    reason: z.string().max(REPORT_REASON_MAX_CHARS).default(''),
+  }),
+]);
+export type CreateReportRequest = z.infer<typeof CreateReportRequestSchema>;
+
+export const CreateReportResponseSchema = z.object({ id: UuidSchema });
+export type CreateReportResponse = z.infer<typeof CreateReportResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.15 Beacons (v0.3 — ADR-008)
+// ---------------------------------------------------------------------------
+
+export const BeaconStatusSchema = z.enum(['open', 'sparked', 'expired', 'cancelled']);
+export type BeaconStatus = z.infer<typeof BeaconStatusSchema>;
+
+export const BeaconMyStateSchema = z.enum(['creator', 'joined', 'none']);
+export type BeaconMyState = z.infer<typeof BeaconMyStateSchema>;
+
+// Ritual chain state carried on each run (null when not a ritual). count
+// counts UP (sparked runs in the chain — "12 chai nights"); skips counts
+// consecutive unsparked runs; the worker stops re-creating at
+// RITUAL_AUTO_PAUSE_SKIPS with zero guilt copy (PSYCHOLOGY never-build list).
+export const BeaconRitualSchema = z.object({
+  rrule: z.string(), // 'FREQ=WEEKLY' only for now (RITUAL_RRULE_WEEKLY)
+  count: z.number().int().nonnegative(),
+  skips: z.number().int().nonnegative(),
+});
+export type BeaconRitual = z.infer<typeof BeaconRitualSchema>;
+
+// Viewer-specific DTO (my_state, my conversation_id visibility). Faces, not
+// counters: joiners is the avatar pile (first BEACON_JOINERS_PREVIEW_MAX by
+// join order), needs = max(0, spark_threshold - joiner_count) powers the
+// "needs 2 more" chip. conversation_id is non-null ONLY for the creator and
+// joiners of a sparked beacon — spark details never leak to the rest of the
+// audience (FoMO-safe, PSYCHOLOGY design rule 2).
+export const BeaconSchema = z.object({
+  id: UuidSchema,
+  creator: UserLiteSchema,
+  vibe: BeaconVibeSchema,
+  note: z.string().max(BEACON_NOTE_MAX_CHARS),
+  audience: BeaconAudienceSchema,
+  // Creator-area SNAPSHOT for audience 'area' beacons, else null. Only ever
+  // serialized to viewers whose own area matches, so it exposes nothing new.
+  area: z.string().nullable(),
+  starts_at: IsoDateTimeSchema,
+  expires_at: IsoDateTimeSchema,
+  spark_threshold: z.number().int().min(BEACON_SPARK_THRESHOLD_MIN).max(BEACON_SPARK_THRESHOLD_MAX),
+  status: BeaconStatusSchema,
+  joiner_count: z.number().int().nonnegative(),
+  needs: z.number().int().nonnegative(),
+  joiners: z.array(UserLiteSchema),
+  my_state: BeaconMyStateSchema,
+  conversation_id: UuidSchema.nullable(),
+  ritual: BeaconRitualSchema.nullable(),
+  created_at: IsoDateTimeSchema,
+});
+export type Beacon = z.infer<typeof BeaconSchema>;
+
+// starts_at/expires_at are CLIENT-computed from the now/tonight/weekend preset
+// chips (the server is timezone-blind; API.md §1.15 documents the preset
+// mapping) and server-validated against the BEACON_* window bounds.
+// audience omitted ⇒ the creator's beacon_default_audience setting.
+export const CreateBeaconRequestSchema = z.object({
+  vibe: BeaconVibeSchema,
+  note: z.string().max(BEACON_NOTE_MAX_CHARS).default(''),
+  audience: BeaconAudienceSchema.optional(),
+  spark_threshold: z
+    .number()
+    .int()
+    .min(BEACON_SPARK_THRESHOLD_MIN)
+    .max(BEACON_SPARK_THRESHOLD_MAX)
+    .optional(),
+  starts_at: IsoDateTimeSchema,
+  expires_at: IsoDateTimeSchema,
+});
+export type CreateBeaconRequest = z.infer<typeof CreateBeaconRequestSchema>;
+
+export const BeaconResponseSchema = z.object({ beacon: BeaconSchema });
+export type BeaconResponse = z.infer<typeof BeaconResponseSchema>;
+
+export const ListBeaconsResponseSchema = z.object({ beacons: z.array(BeaconSchema) });
+export type ListBeaconsResponse = z.infer<typeof ListBeaconsResponseSchema>;
+
+// Boredom radar: AGGREGATE count only — no names, no faces, no list
+// (FEATURES #26 "aggregate counts only").
+export const RadarResponseSchema = z.object({
+  active_visible_count: z.number().int().nonnegative(),
+});
+export type RadarResponse = z.infer<typeof RadarResponseSchema>;
+
+export const KudosKindSchema = z.enum(KUDOS_KINDS);
+export type KudosKind = z.infer<typeof KudosKindSchema>;
+
+// 'glad_you_posted' must target the creator; 'glad_you_came' a fellow member
+// of the spark group. Delivered PRIVATELY to the recipient only — never any
+// public count anywhere (PSYCHOLOGY §9 + design rule 3).
+export const SendKudosRequestSchema = z.object({
+  to_user_id: UuidSchema,
+  kind: KudosKindSchema,
+});
+export type SendKudosRequest = z.infer<typeof SendKudosRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.16 Plan roles (v0.3 — ADR-008; PSYCHOLOGY §4 named micro-roles)
+// ---------------------------------------------------------------------------
+
+export const BeaconRoleSchema = z.object({
+  id: UuidSchema,
+  beacon_id: UuidSchema,
+  label: z.string().min(1).max(BEACON_ROLE_LABEL_MAX_CHARS),
+  assignee: UserLiteSchema.nullable(),
+  done: z.boolean(),
+  created_at: IsoDateTimeSchema,
+});
+export type BeaconRole = z.infer<typeof BeaconRoleSchema>;
+
+export const CreateRoleRequestSchema = z.object({
+  label: z.string().min(1).max(BEACON_ROLE_LABEL_MAX_CHARS),
+});
+export type CreateRoleRequest = z.infer<typeof CreateRoleRequestSchema>;
+
+export const RoleResponseSchema = z.object({ role: BeaconRoleSchema });
+export type RoleResponse = z.infer<typeof RoleResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.17 Polls (v0.3). PollSchema lives with the core DTOs (MessageSchema
+// embeds it). Fan-out event: ws.ts poll.updated.
+// ---------------------------------------------------------------------------
+
+export const CreatePollRequestSchema = z.object({
+  client_msg_id: UuidSchema, // same idempotency contract as §1.5 sends
+  question: z.string().min(1).max(POLL_QUESTION_MAX_CHARS),
+  options: z
+    .array(z.string().min(1).max(POLL_OPTION_MAX_CHARS))
+    .min(POLL_OPTIONS_MIN)
+    .max(POLL_OPTIONS_MAX),
+  closes_at: IsoDateTimeSchema.optional(),
+});
+export type CreatePollRequest = z.infer<typeof CreatePollRequestSchema>;
+
+// 201 (200 on idempotent replay); message.type === 'poll', message.poll set.
+export const CreatePollResponseSchema = z.object({ message: MessageSchema });
+export type CreatePollResponse = z.infer<typeof CreatePollResponseSchema>;
+
+// option_idx bounds beyond >= 0 (i.e. < options.length) are route-enforced so
+// an out-of-range vote yields the documented 400 bad_option.
+export const VotePollRequestSchema = z.object({
+  option_idx: z.number().int().nonnegative(),
+});
+export type VotePollRequest = z.infer<typeof VotePollRequestSchema>;
+
+export const PollResponseSchema = z.object({ poll: PollSchema });
+export type PollResponse = z.infer<typeof PollResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.18 Seen-by receipts (v0.3 — ADR-009)
+// ---------------------------------------------------------------------------
+// Computed from the §2.5 watermarks — NO timestamps anywhere in the response
+// (PSYCHOLOGY never-build list: "seen X minutes ago" converts a receipt into
+// a deadline). seen = last_read_seq >= seq; delivered = last_delivered_seq >=
+// seq and not already in seen. Users with read_receipts OFF never appear in
+// seen (they cap at delivered). Ordered by username — never by recency.
+
+export const MessageReceiptsResponseSchema = z.object({
+  seen: z.array(UserLiteSchema),
+  delivered: z.array(UserLiteSchema),
+});
+export type MessageReceiptsResponse = z.infer<typeof MessageReceiptsResponseSchema>;

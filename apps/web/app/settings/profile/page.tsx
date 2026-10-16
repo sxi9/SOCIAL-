@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
+  AREA_MAX_CHARS,
   MAX_AVATAR_SOURCE_BYTES,
   type AvatarMotion,
   type AvatarResponse,
@@ -24,6 +25,7 @@ function ProfileSettings() {
 
   const [displayName, setDisplayName] = useState('');
   const [bio, setBio] = useState('');
+  const [area, setArea] = useState('');
   const [motion, setMotion] = useState<AvatarMotion>('auto');
   const seededRef = useRef(false);
   const [saved, setSaved] = useState(false);
@@ -40,6 +42,7 @@ function ProfileSettings() {
       seededRef.current = true;
       setDisplayName(me.display_name);
       setBio(me.bio);
+      setArea(me.area ?? '');
       setMotion(me.avatar_motion);
     }
   }, [me]);
@@ -64,6 +67,9 @@ function ProfileSettings() {
         display_name: displayName.trim(),
         bio,
         avatar_motion: motion,
+        // Coarse self-declared area (§1.13): null clears it (and with it all
+        // 'area' beacon visibility, both directions). Owner-private.
+        area: area.trim() === '' ? null : area.trim(),
       });
       setMe(res.user);
       setSaved(true);
@@ -198,6 +204,21 @@ function ProfileSettings() {
             />
           </div>
           <div className="field">
+            <label htmlFor="pf-area">Area</label>
+            <input
+              id="pf-area"
+              className="input"
+              placeholder="e.g. Indiranagar"
+              value={area}
+              onChange={(e) => setArea(e.target.value)}
+              maxLength={AREA_MAX_CHARS}
+            />
+            <p className="muted small" style={{ margin: '2px 0 0' }}>
+              Only used to match &ldquo;my area&rdquo; beacons — never shown on your profile, never
+              GPS. Leave it empty to opt out.
+            </p>
+          </div>
+          <div className="field">
             <label htmlFor="pf-motion">Animated avatars</label>
             <select
               id="pf-motion"
@@ -240,6 +261,20 @@ function ProfileSettings() {
           >
             {pushOn === null ? '…' : pushOn ? 'Disable' : 'Enable'}
           </button>
+        </div>
+
+        <h2>Privacy &amp; safety</h2>
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <strong>Privacy settings</strong>
+            <p className="muted small" style={{ margin: '4px 0 0' }}>
+              Read receipts, last seen, typing, invites, beacon audience, groups — plus your
+              blocked list.
+            </p>
+          </div>
+          <Link href="/settings/privacy" className="btn">
+            Open
+          </Link>
         </div>
 
         <h2>Account</h2>

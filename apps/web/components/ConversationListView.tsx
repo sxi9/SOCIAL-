@@ -7,6 +7,8 @@ import { retryConnection, subscribePresence, unsubscribePresence } from '@/lib/c
 import { conversationTitle, dmPeer, formatTime, messageSnippet } from '@/lib/format';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
+import { BoredButton } from './BeaconCreateSheet';
+import BeaconStrip, { KudosBanner } from './BeaconStrip';
 import { InviteButton } from './InviteSheet';
 import styles from './list.module.css';
 
@@ -62,6 +64,10 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
       ) : state.conn !== 'online' ? (
         <div className="offline-banner">Offline — reconnecting…</div>
       ) : null}
+
+      {/* Private kudos (recipient-only) + the live beacon strip (v0.3). */}
+      <KudosBanner />
+      <BeaconStrip />
 
       {!state.booted ? (
         <div className={styles.empty}>Loading conversations…</div>
@@ -120,6 +126,9 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
           })}
         </ul>
       )}
+
+      {/* The bored user never waits: one tap from here to vibe chips. */}
+      <BoredButton />
 
       <Link href="/new" className={styles.fab} aria-label="New conversation">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none">

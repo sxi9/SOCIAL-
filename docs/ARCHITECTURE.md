@@ -370,3 +370,50 @@ Shared constants added (v0.2): `INVITE_TTL_S=604800`, `INVITE_MAX_USES=50`,
 `INVITE_PUBLIC_RATE_PER_HOUR_PER_IP=60`, `INVITE_AVATAR_RATE_PER_HOUR_PER_IP=120`,
 `INVITE_AVATAR_CACHE_TTL_S=300`, `REACTION_EMOJI_MAX_LEN=16`,
 `REACTIONS_PER_USER_PER_MESSAGE_MAX=8`.
+
+---
+
+## 10. v0.3 — Beacons, privacy, trust (ADR-008, ADR-009)
+
+v0.3 ships the "I'm bored — let's plan" loop plus the safety bundle that
+FEATURES #29 requires to ship *with* it, not after. `docs/PSYCHOLOGY.md` is
+**binding** here: no waiting states, faces-not-counters, no seen-at timestamps,
+count-up rituals that auto-pause guilt-free, FoMO-safe visibility (a beacon is
+visible only to people who can still join it), countdowns as a feature.
+
+**New tables** (migration `0003_beacons_privacy`): `beacons`, `beacon_joins`,
+`beacon_roles`, `beacon_kudos`, `polls`, `poll_votes`, `blocks`, `reports`;
+`users` gains `area` (citext, owner-private), plan-karma counters, and the
+privacy settings as columns (the `avatar_motion` pattern — one row read on the
+presence/typing/receipt hot paths, no join, no settings table). `messages.type`
+gains `'poll'`; a poll is keyed by `(conversation_id, seq)` like reactions.
+
+**Everything rides the existing machinery.** Durable writes stay REST; all
+v0.3 fan-out (`beacon.new/updated`, `beacon.kudos`, `plan.updated`,
+`poll.updated`) goes through the Redis `events` channel; the spark creates an
+ordinary group conversation (icebreaker system message = seq 1, auto venue
+poll = seq 2) so sync, receipts, push, and history floors apply unchanged. The
+spark itself is the invites trick again: a row lock + guarded
+`UPDATE … WHERE status='open'` makes threshold races unexploitable.
+
+**Worker:** one new BullMQ queue `beacons` with three jobs — `beacon-expire`
+(repeatable, 1 min sweep over `beacons_open_expiry_idx`), `beacon-ritual`
+(repeatable, hourly: re-creates due weekly runs; chain pauses silently at 2
+consecutive unsparked runs), `beacon-afterglow` (delayed per spark to
+`expires_at + 2 h`, plus a safety sweep over `beacons_afterglow_idx`; posts
+the recap system message with `metadata.afterglow` + the run-it-back id).
+
+**Privacy enforcement is edge-side (ADR-009).** The `events` channel stays an
+unfiltered api↔worker firehose; filtering happens where the recipient is known
+— the WS gateway per socket and the REST serializers per viewer (API.md §2.11
++ the §1.13 enforcement table). Reciprocal read receipts filter only
+*serialization* (watermarks keep advancing, so unread counts and §2.9 push
+guards are untouched). Blocks are 404-shaped wherever a 403 would confirm
+them, and the one shared 403 (`group_add_denied`) is byte-identical between
+"policy" and "blocked" so it confirms nothing.
+
+Shared constants added (v0.3): `BEACON_*` (vibes, note/threshold/window
+bounds, open cap + create rate, joiner preview, roles cap, icebreakers, venue
+poll copy, afterglow delay/photo cap, kudos window), `RITUAL_*` (weekly rrule,
+interval, auto-pause skips), `KUDOS_KINDS`, `POLL_*` (option/question bounds),
+`AREA_MAX_CHARS`, `REPORT_*` (reason cap, rate). One place, as always: §1.

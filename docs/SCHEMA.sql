@@ -258,3 +258,160 @@ CREATE TABLE message_reactions (
   FOREIGN KEY (conversation_id, seq)
     REFERENCES messages (conversation_id, seq) ON DELETE CASCADE
 );
+
+-- ======================= v0.3 — beacons + privacy ===========================
+-- Migration 0003 (ADR-008 beacons, ADR-009 privacy enforcement). Kept as
+-- ALTER + CREATE so this file stays executable top-to-bottom.
+
+-- users: self-declared coarse area (citext ⇒ case-insensitive 'area' beacon
+-- matching; PRIVATE — never serialized to other users), plan-karma counters
+-- (profile facts, never ranked), and the privacy settings as columns (one row
+-- read on the presence/typing/receipt hot paths — the avatar_motion pattern).
+-- read_receipts is RECIPROCAL: off hides your reads from everyone AND
+-- everyone's reads from you; watermarks still advance (unread counts, push
+-- suppression) — only serialization is filtered.
+ALTER TABLE users
+  ADD COLUMN area                    citext CHECK (char_length(area) <= 64),
+  ADD COLUMN beacons_created         int NOT NULL DEFAULT 0 CHECK (beacons_created >= 0),
+  ADD COLUMN beacons_sparked         int NOT NULL DEFAULT 0 CHECK (beacons_sparked >= 0),
+  ADD COLUMN read_receipts           boolean NOT NULL DEFAULT true,
+  ADD COLUMN show_last_seen          text NOT NULL DEFAULT 'everyone'
+                                       CHECK (show_last_seen IN ('everyone','dm_partners','nobody')),
+  ADD COLUMN show_typing             boolean NOT NULL DEFAULT true,
+  ADD COLUMN invites_paused          boolean NOT NULL DEFAULT false,
+  ADD COLUMN beacon_default_audience text NOT NULL DEFAULT 'friends'
+                                       CHECK (beacon_default_audience IN ('friends','area','public')),
+  ADD COLUMN group_add_policy        text NOT NULL DEFAULT 'everyone'
+                                       CHECK (group_add_policy IN ('everyone','dm_partners','nobody'));
+
+-- messages: polls ride the seq log as a first-class message type.
+ALTER TABLE messages DROP CONSTRAINT messages_type_check;
+ALTER TABLE messages ADD CONSTRAINT messages_type_check
+  CHECK (type IN ('text','image','video','file','system','poll'));
+
+-- beacons: "I'm bored — let's plan" (API.md §1.15). spark_threshold counts
+-- JOINERS (creator excluded); the spark is atomic in the join transaction
+-- (SELECT ... FOR UPDATE + guarded UPDATE ... WHERE status='open'). area is a
+-- creator snapshot at mint. Ritual chains: one child per run
+-- (ritual_parent_id, partial unique); count counts UP, skips auto-pause the
+-- chain at 2 with zero guilt copy.
+CREATE TABLE beacons (
+  id               uuid PRIMARY KEY,
+  creator_id       uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  vibe             text NOT NULL
+                     CHECK (vibe IN ('food','chai','walk','game','movie','study','sport','chill')),
+  note             text NOT NULL DEFAULT '' CHECK (char_length(note) <= 140),
+  audience         text NOT NULL CHECK (audience IN ('friends','area','public')),
+  area             citext,
+  starts_at        timestamptz NOT NULL,
+  expires_at       timestamptz NOT NULL,
+  spark_threshold  int NOT NULL DEFAULT 2 CHECK (spark_threshold BETWEEN 2 AND 10),
+  status           text NOT NULL DEFAULT 'open'
+                     CHECK (status IN ('open','sparked','expired','cancelled')),
+  conversation_id  uuid REFERENCES conversations(id) ON DELETE SET NULL,
+  repinged_at      timestamptz,
+  ritual_rrule     text CHECK (ritual_rrule = 'FREQ=WEEKLY'),
+  ritual_count     int NOT NULL DEFAULT 0 CHECK (ritual_count >= 0),
+  ritual_skips     int NOT NULL DEFAULT 0 CHECK (ritual_skips >= 0),
+  ritual_parent_id uuid REFERENCES beacons(id) ON DELETE SET NULL,
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT beacons_window_check CHECK (expires_at > starts_at),
+  CONSTRAINT beacons_area_audience_check CHECK (audience <> 'area' OR area IS NOT NULL),
+  CONSTRAINT beacons_conversation_sparked_check
+    CHECK (conversation_id IS NULL OR status = 'sparked')
+);
+CREATE INDEX beacons_creator_idx     ON beacons (creator_id, created_at DESC);
+CREATE INDEX beacons_open_expiry_idx ON beacons (expires_at) WHERE status = 'open';
+CREATE INDEX beacons_afterglow_idx   ON beacons (expires_at) WHERE status = 'sparked';
+CREATE INDEX beacons_area_idx        ON beacons (area)       WHERE status = 'open' AND audience = 'area';
+CREATE INDEX beacons_ritual_due_idx  ON beacons (starts_at)  WHERE ritual_rrule IS NOT NULL;
+CREATE UNIQUE INDEX beacons_ritual_parent_idx ON beacons (ritual_parent_id)
+  WHERE ritual_parent_id IS NOT NULL;
+
+CREATE TABLE beacon_joins (
+  beacon_id  uuid NOT NULL REFERENCES beacons(id) ON DELETE CASCADE,
+  user_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (beacon_id, user_id)
+);
+CREATE INDEX beacon_joins_by_user_idx ON beacon_joins (user_id);
+
+-- Named micro-roles on the plan card; full-list fan-out via plan.updated.
+CREATE TABLE beacon_roles (
+  id          uuid PRIMARY KEY,
+  beacon_id   uuid NOT NULL REFERENCES beacons(id) ON DELETE CASCADE,
+  label       text NOT NULL CHECK (char_length(label) BETWEEN 1 AND 40),
+  assignee_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  done        boolean NOT NULL DEFAULT false,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX beacon_roles_by_beacon_idx ON beacon_roles (beacon_id, created_at);
+
+-- Private kudos: recipient-only delivery, PK-idempotent, never public counts.
+CREATE TABLE beacon_kudos (
+  beacon_id    uuid NOT NULL REFERENCES beacons(id) ON DELETE CASCADE,
+  from_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  to_user_id   uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind         text NOT NULL CHECK (kind IN ('glad_you_came','glad_you_posted')),
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (beacon_id, from_user_id, to_user_id),
+  CHECK (from_user_id <> to_user_id)
+);
+CREATE INDEX beacon_kudos_to_idx ON beacon_kudos (to_user_id);
+
+-- polls: identity = the messages PK (conversation_id, seq), like reactions.
+CREATE TABLE polls (
+  id              uuid PRIMARY KEY,
+  conversation_id uuid   NOT NULL,
+  seq             bigint NOT NULL,
+  question        text NOT NULL CHECK (char_length(question) BETWEEN 1 AND 200),
+  options         jsonb NOT NULL
+                    CHECK (jsonb_typeof(options) = 'array'
+                           AND jsonb_array_length(options) BETWEEN 2 AND 6),
+  closes_at       timestamptz,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (conversation_id, seq),
+  FOREIGN KEY (conversation_id, seq)
+    REFERENCES messages (conversation_id, seq) ON DELETE CASCADE
+);
+
+CREATE TABLE poll_votes (
+  poll_id    uuid NOT NULL REFERENCES polls(id) ON DELETE CASCADE,
+  user_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  option_idx int NOT NULL CHECK (option_idx >= 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (poll_id, user_id)                     -- revoting replaces (UPSERT)
+);
+
+-- blocks: mutual invisibility; enforcement 404-shaped (API.md §1.14).
+CREATE TABLE blocks (
+  blocker_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  blocked_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (blocker_id, blocked_id),
+  CHECK (blocker_id <> blocked_id)
+);
+CREATE INDEX blocks_by_blocked_idx ON blocks (blocked_id);
+
+-- reports: audit log; targets carry NO FKs so rows survive target deletion.
+CREATE TABLE reports (
+  id                     uuid PRIMARY KEY,
+  reporter_id            uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind                   text NOT NULL CHECK (kind IN ('user','message','beacon')),
+  target_user_id         uuid,
+  target_conversation_id uuid,
+  target_seq             bigint,
+  target_beacon_id       uuid,
+  reason                 text NOT NULL DEFAULT '' CHECK (char_length(reason) <= 500),
+  status                 text NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+  created_at             timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT reports_target_check CHECK (
+    (kind = 'user'    AND target_user_id IS NOT NULL
+       AND target_conversation_id IS NULL AND target_seq IS NULL AND target_beacon_id IS NULL) OR
+    (kind = 'message' AND target_conversation_id IS NOT NULL AND target_seq IS NOT NULL
+       AND target_user_id IS NULL AND target_beacon_id IS NULL) OR
+    (kind = 'beacon'  AND target_beacon_id IS NOT NULL
+       AND target_user_id IS NULL AND target_conversation_id IS NULL AND target_seq IS NULL)
+  )
+);
+CREATE INDEX reports_queue_idx ON reports (status, created_at DESC);

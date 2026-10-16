@@ -23,12 +23,17 @@ import { uuidv7 } from '@/lib/ids';
 import { toggleReaction } from '@/lib/reactions';
 import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
+import AfterglowCard from './AfterglowCard';
 import AttachmentView from './AttachmentView';
 import Avatar from './Avatar';
 import Composer, { type ComposerPayload } from './Composer';
 import { InviteButton } from './InviteSheet';
+import PlanHeader from './PlanHeader';
+import PollView from './PollView';
 import PreviewCard from './PreviewCard';
 import ReactionPicker from './ReactionPicker';
+import ReportSheet from './ReportSheet';
+import SeenBySheet from './SeenBySheet';
 import Ticks, { tickStateFor } from './Ticks';
 import TypingIndicator from './TypingIndicator';
 import styles from './chat.module.css';
@@ -182,6 +187,9 @@ export default function ChatView({ conversationId }: { conversationId: string })
         : formatLastSeen(peer?.last_seen_at ?? null)
       : `${activeCount} members`;
   const headerAvatar = conv.type === 'dm' && peer ? peer.avatar : conv.avatar;
+  // Sparked-beacon plan group? The Beacon DTO carries conversation_id only for
+  // the creator/joiners (§1.15), so a hit here means this viewer is in the plan.
+  const planBeacon = [...state.beacons.values()].find((b) => b.conversation_id === conversationId) ?? null;
   const myJoinSeq = conv.participants.find((p) => p.user.id === meId)?.join_seq ?? 0;
   const oldestLoaded = messages.length ? messages[0].seq : 0;
   const hasOlder = !noMoreHistory && oldestLoaded > myJoinSeq + 1;
@@ -211,6 +219,8 @@ export default function ChatView({ conversationId }: { conversationId: string })
           </div>
         </div>
       </header>
+
+      {planBeacon && meId ? <PlanHeader beacon={planBeacon} meId={meId} /> : null}
 
       <div
         ref={scrollRef}
@@ -273,6 +283,8 @@ function MessageRow({
   fresh: boolean;
 }) {
   const [picker, setPicker] = useState(false);
+  const [info, setInfo] = useState(false);
+  const [report, setReport] = useState(false);
   const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cancelPress = useCallback(() => {
@@ -284,12 +296,27 @@ function MessageRow({
   useEffect(() => cancelPress, [cancelPress]);
 
   if (message.type === 'system') {
+    // Afterglow recap (v0.3 §1.15) renders as a card, not a system pill.
+    if (message.metadata.afterglow) {
+      return (
+        <AfterglowCard
+          afterglow={message.metadata.afterglow}
+          body={message.body}
+          conv={conv}
+          meId={meId}
+        />
+      );
+    }
     return <div className={styles.system}>{message.body ?? messageSnippet(message)}</div>;
   }
   const own = message.sender_id === meId;
   const sender =
     !own && conv.type === 'group'
-      ? conv.participants.find((p) => p.user.id === message.sender_id)?.user.display_name ?? 'Unknown'
+      ? message.sender_id === null
+        ? message.type === 'poll'
+          ? null // the auto venue poll speaks for itself
+          : 'Unknown'
+        : conv.participants.find((p) => p.user.id === message.sender_id)?.user.display_name ?? 'Unknown'
       : null;
 
   const toggle = (emoji: string, mine: boolean) =>
@@ -324,7 +351,11 @@ function MessageRow({
               <AttachmentView key={att.id} attachment={att} />
             ))}
             {message.metadata.link_preview ? <PreviewCard preview={message.metadata.link_preview} /> : null}
-            {message.body ? <span>{message.body}</span> : null}
+            {message.type === 'poll' && message.poll ? (
+              <PollView poll={message.poll} />
+            ) : message.body ? (
+              <span>{message.body}</span>
+            ) : null}
             <span className={styles.meta}>
               {formatClock(message.created_at)}
               {own ? <Ticks state={tickStateFor(message, conv, meId)} /> : null}
@@ -338,8 +369,52 @@ function MessageRow({
           >
             <SmileIcon />
           </button>
-          {picker ? <ReactionPicker onPick={pick} onClose={() => setPicker(false)} /> : null}
+          {picker ? (
+            <>
+              <ReactionPicker onPick={pick} onClose={() => setPicker(false)} />
+              {/* Extra actions ride under the quick-react popover: seen-by info
+                  on own messages (§1.18), report on others' (§1.14). */}
+              <div className={styles.msgMenu} role="menu">
+                {own ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setPicker(false);
+                      setInfo(true);
+                    }}
+                  >
+                    Message info
+                  </button>
+                ) : message.sender_id ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setPicker(false);
+                      setReport(true);
+                    }}
+                  >
+                    Report message
+                  </button>
+                ) : null}
+              </div>
+            </>
+          ) : null}
         </div>
+        {info ? (
+          <SeenBySheet
+            conversationId={message.conversation_id}
+            seq={message.seq}
+            onClose={() => setInfo(false)}
+          />
+        ) : null}
+        {report ? (
+          <ReportSheet
+            target={{ kind: 'message', conversation_id: message.conversation_id, seq: message.seq }}
+            onClose={() => setReport(false)}
+          />
+        ) : null}
         {message.reactions.length > 0 ? (
           <div className={styles.reactionChips}>
             {message.reactions.map((r) => (

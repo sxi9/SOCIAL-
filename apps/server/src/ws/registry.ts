@@ -2,12 +2,21 @@
 // userId index, so logout / session revocation closes live sockets instantly.
 import type { WebSocket } from 'ws';
 
+/** Per-(socket, conversation) inbound receipt coalescer state (hotspot H4):
+ * at most one watermark apply per RECEIPT_COALESCE_MS; frames inside the
+ * window merge losslessly (watermarks are monotonic maxima). */
+export interface ReceiptGate {
+  timer: NodeJS.Timeout;
+  pending: { seq: number; raiseRead: boolean } | null;
+}
+
 export interface SocketMeta {
   userId: string;
   sessionId: string;
   isAlive: boolean;
   strikes: number;
   presenceSubs: Set<string>;
+  receiptGates: Map<string, ReceiptGate>;
 }
 
 class Registry {

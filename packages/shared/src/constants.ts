@@ -108,3 +108,86 @@ export const PRESENCE_SUB_MAX = 100;
 export const USER_SEARCH_LIMIT = 20;
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 export const MAX_MESSAGE_BODY_CHARS = 8192;
+
+// ============================ v0.3 additions =================================
+
+// ---- Beacons (v0.3 — API.md §1.15, ARCHITECTURE §10, ADR-008) ----
+// The fixed vibe chip set (beacons.vibe CHECK). Adding a chip is a one-line
+// migration + this tuple; free text goes in the note.
+export const BEACON_VIBES = [
+  'food',
+  'chai',
+  'walk',
+  'game',
+  'movie',
+  'study',
+  'sport',
+  'chill',
+] as const;
+export const BEACON_NOTE_MAX_CHARS = 140;
+// Joiners (creator excluded) needed to spark. Default 2 → groups of 3+,
+// matching the 3-5 sweet spot (PSYCHOLOGY §3).
+export const BEACON_SPARK_THRESHOLD_MIN = 2;
+export const BEACON_SPARK_THRESHOLD_MAX = 10;
+export const BEACON_SPARK_THRESHOLD_DEFAULT = 2;
+// starts_at may be at most this far in the past (clock-skew slack).
+export const BEACON_STARTS_AT_SLACK_S = 300;
+// expires_at bounds: at least 30 min joinable, at most a week out ("weekend").
+export const BEACON_MIN_WINDOW_S = 30 * 60;
+export const BEACON_MAX_HORIZON_S = 7 * 24 * 3600;
+// Simultaneously OPEN beacons per creator; the 4th → 409 beacon_limit.
+export const BEACON_OPEN_MAX = 3;
+export const BEACON_CREATE_RATE_PER_HOUR = 10;
+// Avatar pile size in the Beacon DTO (joiner_count carries the rest).
+export const BEACON_JOINERS_PREVIEW_MAX = 12;
+// Named micro-roles per plan (PSYCHOLOGY §4); the 13th → 409 role_limit.
+export const BEACON_ROLES_MAX = 12;
+export const BEACON_ROLE_LABEL_MAX_CHARS = 40;
+// Afterglow recap: posted this long after a SPARKED beacon's expires_at.
+export const BEACON_AFTERGLOW_DELAY_S = 2 * 3600;
+export const BEACON_AFTERGLOW_PHOTOS_MAX = 6;
+// Kudos accepted from spark until expires_at + this window.
+export const BEACON_KUDOS_WINDOW_S = 7 * 24 * 3600;
+// Rotating playful openers for the spark system message; picked by
+// hash(beacon id) % length so reruns rotate.
+export const BEACON_ICEBREAKERS = [
+  'It is officially a plan. No take-backs.',
+  'The council has assembled. First order of business: where?',
+  'Boredom: defeated. Logistics: pending.',
+  'Everyone said yes. This is legally binding now.',
+  'Great news — you are all equally bored. Make it count.',
+  'Plan sparked. Someone bring the good energy.',
+] as const;
+export const BEACON_VENUE_POLL_QUESTION = 'Where are we doing this?';
+export const BEACON_VENUE_POLL_OPTIONS = [
+  'The usual spot',
+  'Somewhere new',
+  'Creator picks',
+  'Surprise me',
+] as const;
+
+// ---- Rituals (v0.3 — API.md §1.15, ADR-008) ----
+// Weekly only for now (beacons.ritual_rrule CHECK pins this exact value).
+export const RITUAL_RRULE_WEEKLY = 'FREQ=WEEKLY';
+export const RITUAL_INTERVAL_S = 7 * 24 * 3600;
+// Consecutive unsparked runs before the chain silently stops re-creating
+// (auto-pause, ZERO guilt copy — PSYCHOLOGY never-build list).
+export const RITUAL_AUTO_PAUSE_SKIPS = 2;
+
+// ---- Kudos (v0.3 — API.md §1.15) ----
+export const KUDOS_KINDS = ['glad_you_came', 'glad_you_posted'] as const;
+
+// ---- Polls (v0.3 — API.md §1.17) ----
+export const POLL_OPTIONS_MIN = 2;
+export const POLL_OPTIONS_MAX = 6;
+export const POLL_QUESTION_MAX_CHARS = 200;
+export const POLL_OPTION_MAX_CHARS = 80;
+
+// ---- Privacy & area (v0.3 — API.md §1.13, ADR-009) ----
+// Self-declared coarse profile area (users.area, citext). Private: it is in
+// UserPrivate only, NEVER in UserPublic/UserLite (FEATURES #30).
+export const AREA_MAX_CHARS = 64;
+
+// ---- Reports (v0.3 — API.md §1.14) ----
+export const REPORT_REASON_MAX_CHARS = 500;
+export const REPORT_RATE_PER_HOUR = 10;

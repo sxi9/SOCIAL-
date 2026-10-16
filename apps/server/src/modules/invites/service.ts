@@ -18,13 +18,13 @@ import {
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
+import { isBlockedPair } from '../../lib/blocks.js';
 import {
   activeParticipantUserIds,
-  loadConversationDto,
+  publishConversationToUsers,
   type UserRow,
 } from '../../lib/dto.js';
 import { ApiError, badRequest, notFound } from '../../lib/errors.js';
-import { publishToUsers } from '../../ws/events.js';
 import { sendSystemMessage } from '../messages/service.js';
 
 export type InviteRow = typeof schema.invites.$inferSelect;
@@ -175,11 +175,9 @@ async function upsertParticipantJoin(
 
 async function fanOutJoin(convId: string, joinerId: string, existingMemberIds: string[]): Promise<void> {
   // Mirrors §1.4: conv.new to the joiner, conv.updated to members — all via
-  // the Redis `events` channel.
-  const dto = await loadConversationDto(convId);
-  if (!dto) return;
-  await publishToUsers(existingMemberIds, { t: 'conv.updated', d: { conversation: dto } });
-  await publishToUsers([joinerId], { t: 'conv.new', d: { conversation: dto } });
+  // the Redis `events` channel, per-recipient clamped (§1.13/§1.14).
+  await publishConversationToUsers(convId, existingMemberIds, 'conv.updated');
+  await publishConversationToUsers(convId, [joinerId], 'conv.new');
 }
 
 /**
@@ -200,6 +198,19 @@ export async function acceptInvite(
   joinerId: string,
 ): Promise<{ conversation_id: string }> {
   if (invite.inviterId === joinerId) throw badRequest('invite_own');
+
+  // §1.14: an invite whose inviter is blocked w.r.t. the joiner reads as
+  // nonexistent — 404-shaped, both directions, before any use is claimed.
+  if (await isBlockedPair(invite.inviterId, joinerId)) throw notFound('invite_not_found');
+
+  // §1.13 invites_paused: accepts of a paused inviter's invites 403 with no
+  // use_count claim (register-with-token degrades to invite: null in §1.1).
+  const [inviter] = await db
+    .select({ invitesPaused: schema.users.invitesPaused })
+    .from(schema.users)
+    .where(eq(schema.users.id, invite.inviterId))
+    .limit(1);
+  if (inviter?.invitesPaused) throw new ApiError(403, 'invites_paused');
 
   if (invite.conversationId === null) {
     // DM-with-inviter invite: create-or-dedupe via dm_key, exactly like

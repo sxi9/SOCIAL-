@@ -4,6 +4,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  boolean,
   check,
   customType,
   foreignKey,
@@ -46,6 +47,26 @@ export const users = pgTable(
     avatarVersion: integer('avatar_version').notNull().default(0),
     avatarMotion: text('avatar_motion').notNull().default('auto'),
     lastSeenAt: timestamptz('last_seen_at'),
+    // v0.3 (migration 0003): self-declared coarse area — citext so 'area'
+    // beacon visibility is case-insensitive equality. PRIVATE: UserPrivate
+    // only, never serialized to other users (FEATURES #30).
+    area: citext('area'),
+    // v0.3 plan karma (UserPublic): profile facts, never ranked (PSYCHOLOGY
+    // design rule 3). created bumps on POST /api/beacons + run-it-back (not on
+    // worker ritual re-creations); sparked bumps in the spark transaction.
+    beaconsCreated: integer('beacons_created').notNull().default(0),
+    beaconsSparked: integer('beacons_sparked').notNull().default(0),
+    // v0.3 privacy settings (ADR-009) — columns, not a settings table: one row
+    // read on the presence/typing/receipt hot paths, like avatar_motion.
+    // read_receipts is RECIPROCAL: off hides your reads from everyone AND
+    // everyone's reads from you (serialization-time filtering; watermarks
+    // still advance for unread counts + push suppression).
+    readReceipts: boolean('read_receipts').notNull().default(true),
+    showLastSeen: text('show_last_seen').notNull().default('everyone'),
+    showTyping: boolean('show_typing').notNull().default(true),
+    invitesPaused: boolean('invites_paused').notNull().default(false),
+    beaconDefaultAudience: text('beacon_default_audience').notNull().default('friends'),
+    groupAddPolicy: text('group_add_policy').notNull().default('everyone'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },
@@ -57,6 +78,21 @@ export const users = pgTable(
     avatarMotionCheck: check(
       'users_avatar_motion_check',
       sql`${t.avatarMotion} IN ('auto','reduced','off')`,
+    ),
+    areaCheck: check('users_area_check', sql`char_length(${t.area}) <= 64`),
+    beaconsCreatedCheck: check('users_beacons_created_check', sql`${t.beaconsCreated} >= 0`),
+    beaconsSparkedCheck: check('users_beacons_sparked_check', sql`${t.beaconsSparked} >= 0`),
+    showLastSeenCheck: check(
+      'users_show_last_seen_check',
+      sql`${t.showLastSeen} IN ('everyone','dm_partners','nobody')`,
+    ),
+    beaconDefaultAudienceCheck: check(
+      'users_beacon_default_audience_check',
+      sql`${t.beaconDefaultAudience} IN ('friends','area','public')`,
+    ),
+    groupAddPolicyCheck: check(
+      'users_group_add_policy_check',
+      sql`${t.groupAddPolicy} IN ('everyone','dm_partners','nobody')`,
     ),
   }),
 );
@@ -165,9 +201,10 @@ export const messages = pgTable(
   (t) => ({
     pk: primaryKey({ columns: [t.conversationId, t.seq] }),
     seqCheck: check('messages_seq_check', sql`${t.seq} > 0`),
+    // v0.3 adds 'poll' (migration 0003): a poll is a message on the seq log.
     typeCheck: check(
       'messages_type_check',
-      sql`${t.type} IN ('text','image','video','file','system')`,
+      sql`${t.type} IN ('text','image','video','file','system','poll')`,
     ),
     idempotencyIdx: uniqueIndex('messages_idempotency_idx')
       .on(t.conversationId, t.senderId, t.clientMsgId)
@@ -338,5 +375,269 @@ export const pushSubscriptions = pgTable(
   },
   (t) => ({
     byUserIdx: index('push_by_user_idx').on(t.userId),
+  }),
+);
+
+// ================================ beacons ===================================
+// v0.3 (ADR-008, API.md §1.15, migration 0003). Audience resolution happens at
+// fan-out/read time: friends = shares a DM with the creator; area = users.area
+// citext-equals beacons.area (SNAPSHOTTED from the creator at mint); public =
+// everyone; always minus blocks (either direction, viewer <-> creator).
+// spark_threshold counts JOINERS (creator excluded). The spark runs inside the
+// join transaction under SELECT ... FOR UPDATE on the beacon row, flipped by
+// the guarded UPDATE ... WHERE status = 'open' (see migration 0003 comments).
+// Ritual chains link weekly runs via ritualParentId (one child max — partial
+// unique index); ritual_count counts UP, ritual_skips auto-pauses the chain at
+// RITUAL_AUTO_PAUSE_SKIPS with zero guilt copy.
+
+export const beacons = pgTable(
+  'beacons',
+  {
+    id: uuid('id').primaryKey(),
+    creatorId: uuid('creator_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    vibe: text('vibe').notNull(),
+    note: text('note').notNull().default(''),
+    audience: text('audience').notNull(),
+    // Creator-area snapshot; required iff audience = 'area'.
+    area: citext('area'),
+    startsAt: timestamptz('starts_at').notNull(),
+    expiresAt: timestamptz('expires_at').notNull(),
+    sparkThreshold: integer('spark_threshold').notNull().default(2),
+    status: text('status').notNull().default('open'),
+    conversationId: uuid('conversation_id').references(() => conversations.id, {
+      onDelete: 'set null',
+    }),
+    // "Needs 1 more" re-ping: set once via a guarded UPDATE (max once per beacon).
+    repingedAt: timestamptz('repinged_at'),
+    ritualRrule: text('ritual_rrule'),
+    ritualCount: integer('ritual_count').notNull().default(0),
+    ritualSkips: integer('ritual_skips').notNull().default(0),
+    ritualParentId: uuid('ritual_parent_id').references((): AnyPgColumn => beacons.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    vibeCheck: check(
+      'beacons_vibe_check',
+      sql`${t.vibe} IN ('food','chai','walk','game','movie','study','sport','chill')`,
+    ),
+    noteCheck: check('beacons_note_check', sql`char_length(${t.note}) <= 140`),
+    audienceCheck: check(
+      'beacons_audience_check',
+      sql`${t.audience} IN ('friends','area','public')`,
+    ),
+    sparkThresholdCheck: check(
+      'beacons_spark_threshold_check',
+      sql`${t.sparkThreshold} BETWEEN 2 AND 10`,
+    ),
+    statusCheck: check(
+      'beacons_status_check',
+      sql`${t.status} IN ('open','sparked','expired','cancelled')`,
+    ),
+    ritualRruleCheck: check('beacons_ritual_rrule_check', sql`${t.ritualRrule} = 'FREQ=WEEKLY'`),
+    ritualCountCheck: check('beacons_ritual_count_check', sql`${t.ritualCount} >= 0`),
+    ritualSkipsCheck: check('beacons_ritual_skips_check', sql`${t.ritualSkips} >= 0`),
+    windowCheck: check('beacons_window_check', sql`${t.expiresAt} > ${t.startsAt}`),
+    areaAudienceCheck: check(
+      'beacons_area_audience_check',
+      sql`${t.audience} <> 'area' OR ${t.area} IS NOT NULL`,
+    ),
+    // One-directional on purpose: ON DELETE SET NULL must not violate it.
+    conversationSparkedCheck: check(
+      'beacons_conversation_sparked_check',
+      sql`${t.conversationId} IS NULL OR ${t.status} = 'sparked'`,
+    ),
+    creatorIdx: index('beacons_creator_idx').on(t.creatorId, sql`${t.createdAt} DESC`),
+    openExpiryIdx: index('beacons_open_expiry_idx')
+      .on(t.expiresAt)
+      .where(sql`${t.status} = 'open'`),
+    afterglowIdx: index('beacons_afterglow_idx')
+      .on(t.expiresAt)
+      .where(sql`${t.status} = 'sparked'`),
+    areaIdx: index('beacons_area_idx')
+      .on(t.area)
+      .where(sql`${t.status} = 'open' AND ${t.audience} = 'area'`),
+    ritualDueIdx: index('beacons_ritual_due_idx')
+      .on(t.startsAt)
+      .where(sql`${t.ritualRrule} IS NOT NULL`),
+    ritualParentIdx: uniqueIndex('beacons_ritual_parent_idx')
+      .on(t.ritualParentId)
+      .where(sql`${t.ritualParentId} IS NOT NULL`),
+  }),
+);
+
+export const beaconJoins = pgTable(
+  'beacon_joins',
+  {
+    beaconId: uuid('beacon_id')
+      .notNull()
+      .references(() => beacons.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.beaconId, t.userId] }),
+    byUserIdx: index('beacon_joins_by_user_idx').on(t.userId),
+  }),
+);
+
+// Named micro-roles on the plan card (PSYCHOLOGY §4). Mutations fan out the
+// FULL roles list via the plan.updated WS event.
+export const beaconRoles = pgTable(
+  'beacon_roles',
+  {
+    id: uuid('id').primaryKey(),
+    beaconId: uuid('beacon_id')
+      .notNull()
+      .references(() => beacons.id, { onDelete: 'cascade' }),
+    label: text('label').notNull(),
+    assigneeId: uuid('assignee_id').references(() => users.id, { onDelete: 'set null' }),
+    done: boolean('done').notNull().default(false),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    labelCheck: check('beacon_roles_label_check', sql`char_length(${t.label}) BETWEEN 1 AND 40`),
+    byBeaconIdx: index('beacon_roles_by_beacon_idx').on(t.beaconId, t.createdAt),
+  }),
+);
+
+// Private "glad you came / glad you posted" (PSYCHOLOGY §9). The PK makes
+// re-sends idempotent; delivered to the recipient ONLY, never counted publicly.
+export const beaconKudos = pgTable(
+  'beacon_kudos',
+  {
+    beaconId: uuid('beacon_id')
+      .notNull()
+      .references(() => beacons.id, { onDelete: 'cascade' }),
+    fromUserId: uuid('from_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    toUserId: uuid('to_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.beaconId, t.fromUserId, t.toUserId] }),
+    kindCheck: check(
+      'beacon_kudos_kind_check',
+      sql`${t.kind} IN ('glad_you_came','glad_you_posted')`,
+    ),
+    notSelfCheck: check('beacon_kudos_not_self_check', sql`${t.fromUserId} <> ${t.toUserId}`),
+    toIdx: index('beacon_kudos_to_idx').on(t.toUserId),
+  }),
+);
+
+// ================================= polls ====================================
+// v0.3 (API.md §1.17, migration 0003). A poll IS a message (type 'poll');
+// identity is the messages PK (conversation_id, seq) — the message_reactions
+// pattern. Votes UPSERT on (poll_id, user_id): revoting replaces. option_idx
+// upper bound (< options length) and closes_at are route-enforced.
+
+export const polls = pgTable(
+  'polls',
+  {
+    id: uuid('id').primaryKey(),
+    conversationId: uuid('conversation_id').notNull(),
+    seq: bigint('seq', { mode: 'number' }).notNull(),
+    question: text('question').notNull(),
+    options: jsonb('options').notNull(), // array of 2..6 option strings
+    closesAt: timestamptz('closes_at'),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    messageUnique: uniqueIndex('polls_conversation_id_seq_key').on(t.conversationId, t.seq),
+    messageFk: foreignKey({
+      name: 'polls_message_fk',
+      columns: [t.conversationId, t.seq],
+      foreignColumns: [messages.conversationId, messages.seq],
+    }).onDelete('cascade'),
+    questionCheck: check(
+      'polls_question_check',
+      sql`char_length(${t.question}) BETWEEN 1 AND 200`,
+    ),
+    optionsCheck: check(
+      'polls_options_check',
+      sql`jsonb_typeof(${t.options}) = 'array' AND jsonb_array_length(${t.options}) BETWEEN 2 AND 6`,
+    ),
+  }),
+);
+
+export const pollVotes = pgTable(
+  'poll_votes',
+  {
+    pollId: uuid('poll_id')
+      .notNull()
+      .references(() => polls.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    optionIdx: integer('option_idx').notNull(),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.pollId, t.userId] }),
+    optionIdxCheck: check('poll_votes_option_idx_check', sql`${t.optionIdx} >= 0`),
+  }),
+);
+
+// ================================= blocks ===================================
+// v0.3 (ADR-009). Mutual invisibility; enforcement is 404-shaped wherever a
+// 403 would confirm the block exists (per-surface table in API.md §1.14).
+
+export const blocks = pgTable(
+  'blocks',
+  {
+    blockerId: uuid('blocker_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    blockedId: uuid('blocked_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.blockerId, t.blockedId] }),
+    notSelfCheck: check('blocks_not_self_check', sql`${t.blockerId} <> ${t.blockedId}`),
+    byBlockedIdx: index('blocks_by_blocked_idx').on(t.blockedId),
+  }),
+);
+
+// ================================ reports ===================================
+// v0.3 (API.md §1.14). Audit log for the future admin dashboard: targets have
+// NO foreign keys on purpose — a report must survive deletion of what it
+// reports. Exactly one target shape per kind (CHECK).
+
+export const reports = pgTable(
+  'reports',
+  {
+    id: uuid('id').primaryKey(),
+    reporterId: uuid('reporter_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    targetUserId: uuid('target_user_id'),
+    targetConversationId: uuid('target_conversation_id'),
+    targetSeq: bigint('target_seq', { mode: 'number' }),
+    targetBeaconId: uuid('target_beacon_id'),
+    reason: text('reason').notNull().default(''),
+    status: text('status').notNull().default('open'),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    kindCheck: check('reports_kind_check', sql`${t.kind} IN ('user','message','beacon')`),
+    reasonCheck: check('reports_reason_check', sql`char_length(${t.reason}) <= 500`),
+    statusCheck: check('reports_status_check', sql`${t.status} IN ('open','closed')`),
+    targetCheck: check(
+      'reports_target_check',
+      sql`(${t.kind} = 'user' AND ${t.targetUserId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL) OR (${t.kind} = 'message' AND ${t.targetConversationId} IS NOT NULL AND ${t.targetSeq} IS NOT NULL AND ${t.targetUserId} IS NULL AND ${t.targetBeaconId} IS NULL) OR (${t.kind} = 'beacon' AND ${t.targetBeaconId} IS NOT NULL AND ${t.targetUserId} IS NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL)`,
+    ),
+    queueIdx: index('reports_queue_idx').on(t.status, sql`${t.createdAt} DESC`),
   }),
 );

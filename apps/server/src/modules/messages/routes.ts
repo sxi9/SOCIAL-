@@ -6,10 +6,12 @@ import {
   ListMessagesQuerySchema,
   type MessageMetadata,
   SendMessageRequestSchema,
+  type UserLite,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
-import { messageDtos } from '../../lib/dto.js';
-import { badRequest, notFound } from '../../lib/errors.js';
+import { blockedSetOf, isBlockedPair } from '../../lib/blocks.js';
+import { activeParticipantUserIds, messageDtos, userLiteDto } from '../../lib/dto.js';
+import { ApiError, badRequest, notFound } from '../../lib/errors.js';
 import { extractFirstUrl } from '../../lib/urls.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant } from '../conversations/routes.js';
@@ -77,6 +79,19 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       const convId = req.params.id;
       const part = await getParticipant(convId, user.id);
       if (!part || part.leftAt !== null) throw notFound('conversation_not_found');
+
+      // §1.14: an existing DM between a blocked pair stays readable but is
+      // FROZEN — sends answer 404, byte-identical to an unknown conversation,
+      // in both directions.
+      const [conv] = await db
+        .select({ type: schema.conversations.type })
+        .from(schema.conversations)
+        .where(eq(schema.conversations.id, convId))
+        .limit(1);
+      if (conv?.type === 'dm') {
+        const peer = (await activeParticipantUserIds(convId)).find((id) => id !== user.id);
+        if (peer && (await isBlockedPair(user.id, peer))) throw notFound('conversation_not_found');
+      }
 
       const body = req.body;
       const replay = await findByClientMsgId(convId, user.id, body.client_msg_id);
@@ -152,6 +167,61 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
 
       const dto = await fanOutNewMessage(msg);
       return reply.status(201).send({ message: dto });
+    },
+  );
+
+  // §1.18 GET .../messages/:seq/receipts — seen-by lists, computed from the
+  // §2.5 watermarks (zero new state). NO timestamps anywhere in the response;
+  // both lists ordered by USERNAME, never recency (a "seen 43 min ago"
+  // timestamp turns a receipt into a reply deadline — PSYCHOLOGY never-build).
+  app.get(
+    '/api/conversations/:id/messages/:seq/receipts',
+    {
+      preHandler: requireAuth,
+      schema: {
+        params: z.object({ id: z.string().uuid(), seq: z.coerce.number().int().positive() }),
+      },
+    },
+    async (req) => {
+      const { user } = authed(req);
+      const { id: convId, seq } = req.params;
+      // Reciprocity (§1.13c): a receipts-off viewer gets no seen-by lists.
+      if (!user.readReceipts) throw new ApiError(403, 'read_receipts_off');
+
+      const part = await getParticipant(convId, user.id);
+      if (!part || part.leftAt !== null) throw notFound();
+      const [msg] = await db
+        .select({ seq: m.seq, senderId: m.senderId })
+        .from(m)
+        .where(and(eq(m.conversationId, convId), eq(m.seq, seq), gt(m.seq, part.joinSeq)))
+        .limit(1);
+      if (!msg) throw notFound();
+
+      const cp = schema.conversationParticipants;
+      const rows = await db
+        .select({ p: cp, u: schema.users })
+        .from(cp)
+        .innerJoin(schema.users, eq(cp.userId, schema.users.id))
+        .where(and(eq(cp.conversationId, convId), sql`${cp.leftAt} IS NULL`));
+      const blocked = await blockedSetOf(user.id);
+
+      const seen: { username: string; lite: UserLite }[] = [];
+      const delivered: { username: string; lite: UserLite }[] = [];
+      for (const { p, u } of rows) {
+        if (u.id === msg.senderId) continue; // sender excluded
+        if (blocked.has(u.id)) continue; // blocked pairs omitted (§1.14)
+        // Receipts-off users cap at `delivered`, whatever their true state.
+        if (u.readReceipts && p.lastReadSeq >= seq) {
+          seen.push({ username: u.username, lite: userLiteDto(u) });
+        } else if (p.lastDeliveredSeq >= seq) {
+          delivered.push({ username: u.username, lite: userLiteDto(u) });
+        }
+      }
+      const byUsername = (a: { username: string }, b: { username: string }) =>
+        a.username.toLowerCase().localeCompare(b.username.toLowerCase());
+      seen.sort(byUsername);
+      delivered.sort(byUsername);
+      return { seen: seen.map((s) => s.lite), delivered: delivered.map((d) => d.lite) };
     },
   );
 }

@@ -7,7 +7,7 @@ import webpush from 'web-push';
 import { PUSH_DEBOUNCE_S } from '@socialchat/shared';
 import { config } from '../config.js';
 import { db, schema } from '../db/index.js';
-import type { PushJob } from '../queues.js';
+import type { BeaconPushJob, MessagePushJob, PushJob } from '../queues.js';
 import { presenceKey, redis } from '../redis.js';
 
 export function initWebPush(): boolean {
@@ -29,9 +29,65 @@ function snippetFor(type: string, body: string | null): string {
   }
 }
 
+async function sendToSubscriptions(userId: string, payload: string): Promise<void> {
+  const subs = await db
+    .select()
+    .from(schema.pushSubscriptions)
+    .where(eq(schema.pushSubscriptions.userId, userId));
+
+  for (const sub of subs) {
+    try {
+      await webpush.sendNotification(
+        { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+        payload,
+      );
+      await db
+        .update(schema.pushSubscriptions)
+        .set({ lastSuccessAt: new Date(), failCount: 0 })
+        .where(eq(schema.pushSubscriptions.id, sub.id));
+    } catch (err) {
+      const statusCode = (err as { statusCode?: number }).statusCode;
+      if (statusCode === 404 || statusCode === 410 || sub.failCount + 1 >= 5) {
+        await db.delete(schema.pushSubscriptions).where(eq(schema.pushSubscriptions.id, sub.id));
+      } else {
+        await db
+          .update(schema.pushSubscriptions)
+          .set({ failCount: sql`${schema.pushSubscriptions.failCount} + 1` })
+          .where(eq(schema.pushSubscriptions.id, sub.id));
+      }
+    }
+  }
+}
+
+// v0.3 beacon pushes (API.md §1.15): a beacon is a live invite. Guards:
+// presence (online users get the WS frame instead) + per-(user, beacon)
+// debounce. No read-watermark guard — beacons have none.
+async function processBeaconPushJob(job: BeaconPushJob): Promise<void> {
+  if ((await redis.exists(presenceKey(job.user_id))) === 1) return;
+  const debounced = await redis.set(
+    `pushdb:${job.user_id}:beacon:${job.beacon_id}`,
+    '1',
+    'EX',
+    PUSH_DEBOUNCE_S,
+    'NX',
+  );
+  if (debounced !== 'OK') return;
+  const payload = JSON.stringify({
+    title: job.title,
+    body: job.body,
+    tag: `beacon:${job.beacon_id}`,
+    data: { url: job.url },
+  });
+  await sendToSubscriptions(job.user_id, payload);
+}
+
 export async function processPushJob(job: PushJob): Promise<void> {
   if (!config.vapid) return;
+  if (job.kind === 'beacon') return processBeaconPushJob(job);
+  return processMessagePushJob(job);
+}
 
+async function processMessagePushJob(job: MessagePushJob): Promise<void> {
   // Guard (a): Redis presence still shows the user offline.
   if ((await redis.exists(presenceKey(job.user_id))) === 1) return;
 
@@ -92,31 +148,5 @@ export async function processPushJob(job: PushJob): Promise<void> {
     data: { url: `/c/${job.conversation_id}` },
   });
 
-  const subs = await db
-    .select()
-    .from(schema.pushSubscriptions)
-    .where(eq(schema.pushSubscriptions.userId, job.user_id));
-
-  for (const sub of subs) {
-    try {
-      await webpush.sendNotification(
-        { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-        payload,
-      );
-      await db
-        .update(schema.pushSubscriptions)
-        .set({ lastSuccessAt: new Date(), failCount: 0 })
-        .where(eq(schema.pushSubscriptions.id, sub.id));
-    } catch (err) {
-      const statusCode = (err as { statusCode?: number }).statusCode;
-      if (statusCode === 404 || statusCode === 410 || sub.failCount + 1 >= 5) {
-        await db.delete(schema.pushSubscriptions).where(eq(schema.pushSubscriptions.id, sub.id));
-      } else {
-        await db
-          .update(schema.pushSubscriptions)
-          .set({ failCount: sql`${schema.pushSubscriptions.failCount} + 1` })
-          .where(eq(schema.pushSubscriptions.id, sub.id));
-      }
-    }
-  }
+  await sendToSubscriptions(job.user_id, payload);
 }

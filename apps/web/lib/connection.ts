@@ -17,6 +17,7 @@ import {
   type SyncResponse,
 } from '@socialchat/shared';
 import { api, ApiError, NetworkError } from './api';
+import { refreshBeacons } from './beacons';
 import * as db from './db';
 import * as store from './store';
 
@@ -251,6 +252,36 @@ function handleFrame(raw: string): void {
     case 'preview.ready':
       store.setPreview(ev.d.url_hash, { status: ev.d.status, preview: ev.d.preview ?? null });
       break;
+    // v0.3 beacons (§1.15): the gateway already stamped viewer-specific fields
+    // (my_state, conversation_id) — apply as-is. Non-visible states retire the
+    // card silently inside upsertBeacon (never "cancelled on you" copy).
+    case 'beacon.new':
+      store.upsertBeacon(ev.d.beacon);
+      break;
+    case 'beacon.updated':
+      store.upsertBeacon(ev.d.beacon, ev.d.reping);
+      break;
+    // PRIVATE kudos — this socket IS the recipient; never rendered publicly.
+    case 'beacon.kudos':
+      store.addKudos(ev.d);
+      break;
+    // v0.3 plan roles (§1.16): full-list replace, idempotent and reorder-safe.
+    case 'plan.updated':
+      store.setPlanRoles(ev.d.beacon_id, ev.d.roles);
+      break;
+    // v0.3 polls (§1.17): the reaction.updated pattern — small delta patches
+    // the aggregate live; persist the patched DTO so IndexedDB stays warm.
+    case 'poll.updated': {
+      store.applyPollUpdated(ev.d);
+      const conv = store.state.conversations.get(ev.d.conversation_id);
+      const patched =
+        store.state.messages.get(ev.d.conversation_id)?.find((m) => m.seq === ev.d.seq) ??
+        (conv?.last_message?.seq === ev.d.seq ? conv.last_message : undefined);
+      if (patched) {
+        void db.storeMessages(ev.d.conversation_id, [patched]).catch(() => undefined);
+      }
+      break;
+    }
     case 'error':
       break;
   }
@@ -412,6 +443,10 @@ async function runSync(): Promise<void> {
   }
   if (run !== syncRun) return;
   store.applySyncSnapshot(snap);
+
+  // Beacon cards & radar reconcile from REST on every (re)connect — WS frames
+  // missed while offline never replay (§2.8 doctrine, same as reactions).
+  void refreshBeacons();
 
   let metas: Map<string, number>;
   try {

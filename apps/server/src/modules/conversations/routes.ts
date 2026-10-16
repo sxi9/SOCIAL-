@@ -12,19 +12,22 @@ import {
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
+import { isBlockedPair } from '../../lib/blocks.js';
 import {
   activeParticipantUserIds,
   avatarDto,
+  dmPartnerIdsOf,
   loadConversationDto,
   loadListItems,
+  publishConversationToUsers,
   userPrivateDto,
+  viewCtxFor,
   type PartRow,
 } from '../../lib/dto.js';
 import { badRequest, forbidden, notFound, rateLimited } from '../../lib/errors.js';
 import { parseMultipart } from '../../lib/multipart.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
 import { enqueueAvatar } from '../../queues.js';
-import { publishToUsers } from '../../ws/events.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { sendSystemMessage } from '../messages/service.js';
 import { stashAvatarSource } from '../uploads/pipeline.js';
@@ -47,20 +50,52 @@ export async function requireActiveParticipant(convId: string, userId: string): 
   return row;
 }
 
+// Broadcast conv.* frames go through the per-recipient §1.13/§1.14 clamping
+// fan-out (lib/dto.ts) — never an unclamped shared DTO.
 async function publishConvUpdated(convId: string, toUserIds?: string[]): Promise<void> {
-  const dto = await loadConversationDto(convId);
-  if (!dto) return;
   const recipients = toUserIds ?? (await activeParticipantUserIds(convId));
-  await publishToUsers(recipients, { t: 'conv.updated', d: { conversation: dto } });
+  await publishConversationToUsers(convId, recipients, 'conv.updated');
 }
 
 async function publishConvNew(convId: string, toUserIds: string[]): Promise<void> {
-  const dto = await loadConversationDto(convId);
-  if (!dto) return;
-  await publishToUsers(toUserIds, { t: 'conv.new', d: { conversation: dto } });
+  await publishConversationToUsers(convId, toUserIds, 'conv.new');
 }
 
 const IdParams = z.object({ id: z.string().uuid() });
+
+/**
+ * group_add_policy + blocks, checked per TARGET user (API.md §1.13/§1.14):
+ * 'nobody' denies; 'dm_partners' denies unless the adder shares an active DM
+ * with the target; a block (either direction) denies with the SAME response.
+ * Any denial fails the whole request: 403 {error:'group_add_denied',
+ * user_ids:[denied]} — byte-identical between policy and block, so the 403
+ * reveals *a* refusal, never *which* one.
+ */
+export async function deniedGroupAddTargets(adderId: string, targetIds: string[]): Promise<string[]> {
+  if (targetIds.length === 0) return [];
+  const targets = await db
+    .select({ id: schema.users.id, groupAddPolicy: schema.users.groupAddPolicy })
+    .from(schema.users)
+    .where(sql`${schema.users.id} IN (${sql.join(targetIds.map((id) => sql`${id}::uuid`), sql`, `)})`);
+  const adderDmPartners = await dmPartnerIdsOf(adderId);
+  const blockRows = (await db.execute(sql`
+    SELECT blocked_id AS id FROM blocks WHERE blocker_id = ${adderId}
+    UNION
+    SELECT blocker_id AS id FROM blocks WHERE blocked_id = ${adderId}
+  `)) as unknown as { id: string }[];
+  const blocked = new Set(blockRows.map((r) => r.id));
+  const denied: string[] = [];
+  for (const t of targets) {
+    if (
+      blocked.has(t.id) ||
+      t.groupAddPolicy === 'nobody' ||
+      (t.groupAddPolicy === 'dm_partners' && !adderDmPartners.has(t.id))
+    ) {
+      denied.push(t.id);
+    }
+  }
+  return denied;
+}
 
 export async function conversationRoutes(fastify: FastifyInstance): Promise<void> {
   const app = fastify.withTypeProvider<ZodTypeProvider>();
@@ -97,6 +132,9 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
       );
       if (!rate.allowed) throw rateLimited(rate.retryAfterS);
       const body = req.body;
+      // §1.13: every conversation DTO handed back to the requester is
+      // viewer-scoped (receipt reciprocity + last-seen + block clamps).
+      const view = await viewCtxFor(user);
 
       if (body.type === 'dm') {
         if (body.user_id === user.id) throw badRequest('cannot_dm_self');
@@ -106,12 +144,15 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
           .where(eq(schema.users.id, body.user_id))
           .limit(1);
         if (!peer) throw notFound('user_not_found');
+        // §1.14: DM create between a blocked pair is 404-shaped, byte-identical
+        // to an unknown user_id — never a 403 that would confirm the block.
+        if (await isBlockedPair(user.id, body.user_id)) throw notFound('user_not_found');
 
         // dm_key = sorted 'uuidMin:uuidMax' dedupes creation races.
         const dmKey = [user.id, body.user_id].sort().join(':');
         const [existing] = await db.select().from(convs).where(eq(convs.dmKey, dmKey)).limit(1);
         if (existing) {
-          const dto = await loadConversationDto(existing.id);
+          const dto = await loadConversationDto(existing.id, view);
           return reply.status(200).send({ conversation: dto });
         }
 
@@ -128,14 +169,14 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
           if ((err as { code?: string }).code === '23505') {
             const [raced] = await db.select().from(convs).where(eq(convs.dmKey, dmKey)).limit(1);
             if (raced) {
-              const dto = await loadConversationDto(raced.id);
+              const dto = await loadConversationDto(raced.id, view);
               return reply.status(200).send({ conversation: dto });
             }
           }
           throw err;
         }
         await publishConvNew(convId, [user.id, body.user_id]);
-        const dto = await loadConversationDto(convId);
+        const dto = await loadConversationDto(convId, view);
         return reply.status(201).send({ conversation: dto });
       }
 
@@ -149,6 +190,12 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
         .where(sql`${schema.users.id} IN (${sql.join(memberIds.map((id) => sql`${id}::uuid`), sql`, `)})`);
       if (found.length !== memberIds.length) throw notFound('user_not_found');
 
+      // §1.13 group_add_policy / §1.14 blocks — per-target, whole-request fail.
+      const denied = await deniedGroupAddTargets(user.id, memberIds);
+      if (denied.length > 0) {
+        return reply.status(403).send({ error: 'group_add_denied', user_ids: denied });
+      }
+
       const convId = newId();
       await db.transaction(async (tx) => {
         await tx.insert(convs).values({ id: convId, type: 'group', title: body.title, createdBy: user.id });
@@ -158,7 +205,7 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
         ]);
       });
       await publishConvNew(convId, [user.id, ...memberIds]);
-      const dto = await loadConversationDto(convId);
+      const dto = await loadConversationDto(convId, view);
       return reply.status(201).send({ conversation: dto });
     },
   );
@@ -220,7 +267,8 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
     async (req) => {
       const { user } = authed(req);
       await requireActiveParticipant(req.params.id, user.id);
-      const dto = await loadConversationDto(req.params.id);
+      // Viewer-scoped serialization (§1.13): receipt clamping + last-seen.
+      const dto = await loadConversationDto(req.params.id, await viewCtxFor(user));
       if (!dto) throw notFound('conversation_not_found');
       return { conversation: dto };
     },
@@ -243,7 +291,7 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
 
       await db.update(convs).set({ title: req.body.title }).where(eq(convs.id, req.params.id));
       await publishConvUpdated(req.params.id);
-      const dto = await loadConversationDto(req.params.id);
+      const dto = await loadConversationDto(req.params.id, await viewCtxFor(user));
       return { conversation: dto };
     },
   );
@@ -297,7 +345,7 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
       preHandler: requireAuth,
       schema: { params: IdParams, body: AddParticipantsRequestSchema },
     },
-    async (req) => {
+    async (req, reply) => {
       const { user } = authed(req);
       const part = await requireActiveParticipant(req.params.id, user.id);
       const [conv] = await db.select().from(convs).where(eq(convs.id, req.params.id)).limit(1);
@@ -317,6 +365,12 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
           .from(schema.users)
           .where(sql`${schema.users.id} IN (${sql.join(toAdd.map((id) => sql`${id}::uuid`), sql`, `)})`);
         if (found.length !== toAdd.length) throw notFound('user_not_found');
+
+        // §1.13 group_add_policy / §1.14 blocks — per-target, whole-request.
+        const denied = await deniedGroupAddTargets(user.id, toAdd);
+        if (denied.length > 0) {
+          return reply.status(403).send({ error: 'group_add_denied', user_ids: denied });
+        }
 
         // join_seq = last_seq at join time (history-visibility floor); the
         // system message below bumps seq past it, so joiners see it. Watermarks
@@ -355,7 +409,7 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
         await publishConvUpdated(req.params.id, existingActive);
         await publishConvNew(req.params.id, toAdd);
       }
-      const dto = await loadConversationDto(req.params.id);
+      const dto = await loadConversationDto(req.params.id, await viewCtxFor(user));
       return { conversation: dto };
     },
   );

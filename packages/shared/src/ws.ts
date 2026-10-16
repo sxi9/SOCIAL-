@@ -5,12 +5,16 @@ import { z } from 'zod';
 import { PRESENCE_SUB_MAX } from './constants.js';
 import {
   AttachmentSchema,
+  BeaconRoleSchema,
+  BeaconSchema,
   ConversationSchema,
   IsoDateTimeSchema,
+  KudosKindSchema,
   LinkPreviewSchema,
   MessageSchema,
   ReactionEmojiSchema,
   SeqSchema,
+  UserLiteSchema,
   UserPublicSchema,
   UuidSchema,
 } from './api.js';
@@ -145,6 +149,85 @@ export const PreviewReadyEventSchema = z.object({
 });
 export type PreviewReadyEvent = z.infer<typeof PreviewReadyEventSchema>;
 
+// v0.3 (API.md §1.15/§2.3): a new beacon, fanned out ONLY to sockets of users
+// in its audience (friends / same-area / public, minus blocks) — never to
+// anyone who cannot join it (PSYCHOLOGY design rule 2). The beacon DTO is
+// viewer-specific, so the gateway stamps my_state/conversation_id per
+// recipient before sending.
+export const BeaconNewEventSchema = z.object({
+  t: z.literal('beacon.new'),
+  d: z.object({
+    beacon: BeaconSchema,
+  }),
+});
+export type BeaconNewEvent = z.infer<typeof BeaconNewEventSchema>;
+
+// Joins / leave / spark / expiry / cancellation. To the audience; on spark the
+// payload sent to NON-joiners carries status 'sparked' with conversation_id
+// null (their card simply retires) — spark details reach joiners + creator
+// only. reping = true marks the one "needs 1 more" re-notification
+// (repinged_at guard: at most once per beacon).
+export const BeaconUpdatedEventSchema = z.object({
+  t: z.literal('beacon.updated'),
+  d: z.object({
+    beacon: BeaconSchema,
+    reping: z.boolean().default(false),
+  }),
+});
+export type BeaconUpdatedEvent = z.infer<typeof BeaconUpdatedEventSchema>;
+
+// PRIVATE kudos delivery — to the RECIPIENT's sockets only, never fanned to
+// the group, never counted publicly (API.md §1.15; PSYCHOLOGY §9).
+export const BeaconKudosEventSchema = z.object({
+  t: z.literal('beacon.kudos'),
+  d: z.object({
+    beacon_id: UuidSchema,
+    kind: KudosKindSchema,
+    from: UserLiteSchema,
+  }),
+});
+export type BeaconKudosEvent = z.infer<typeof BeaconKudosEventSchema>;
+
+// v0.3 plan roles (API.md §1.16): the FULL roles list on every change (add /
+// claim / release / complete / delete), to the plan conversation's active
+// participants. A dedicated event — deliberately not conv.updated, which
+// re-ships the whole Conversation DTO with participants; roles belong to the
+// beacon and are small (≤ BEACON_ROLES_MAX). Full-list replace means frames
+// are idempotent and reorder-safe; reconnects reconcile from
+// GET /api/beacons/:id/roles, never frame replay.
+export const PlanUpdatedEventSchema = z.object({
+  t: z.literal('plan.updated'),
+  d: z.object({
+    beacon_id: UuidSchema,
+    conversation_id: UuidSchema,
+    roles: z.array(BeaconRoleSchema),
+  }),
+});
+export type PlanUpdatedEvent = z.infer<typeof PlanUpdatedEventSchema>;
+
+// v0.3 polls (API.md §1.17): one frame per effective vote/unvote, to all
+// active participants — the reaction.updated pattern, not a msg.updated
+// re-ship. counts is the NEW aggregate (same length as options). user_id /
+// option_idx (the voter's new choice, null = unvoted) ride ONLY the frame
+// sent to the voter's OWN sockets, so my_vote can reconcile cross-device;
+// everyone else receives aggregates only — per-voter ballots must never be
+// reconstructible from the wire (§1.17: no per-voter lists, a poll is a
+// decision tool, not a scoreboard). Reconnect truth is message DTOs
+// (message.poll), never frame replay.
+export const PollUpdatedEventSchema = z.object({
+  t: z.literal('poll.updated'),
+  d: z.object({
+    poll_id: UuidSchema,
+    conversation_id: UuidSchema,
+    seq: z.number().int().positive(),
+    counts: z.array(z.number().int().nonnegative()),
+    total_votes: z.number().int().nonnegative(),
+    user_id: UuidSchema.optional(),
+    option_idx: z.number().int().nonnegative().nullable().optional(),
+  }),
+});
+export type PollUpdatedEvent = z.infer<typeof PollUpdatedEventSchema>;
+
 export const ErrorEventSchema = z.object({
   t: z.literal('error'),
   d: z.object({
@@ -167,6 +250,11 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
   UserUpdatedEventSchema,
   ReactionUpdatedEventSchema,
   PreviewReadyEventSchema,
+  BeaconNewEventSchema,
+  BeaconUpdatedEventSchema,
+  BeaconKudosEventSchema,
+  PlanUpdatedEventSchema,
+  PollUpdatedEventSchema,
   ErrorEventSchema,
 ]);
 export type ServerEvent = z.infer<typeof ServerEventSchema>;

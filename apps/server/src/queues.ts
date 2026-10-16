@@ -24,14 +24,36 @@ export interface UnfurlJob {
   message?: { id: string; conversation_id: string };
 }
 
-export interface PushJob {
+// v0.3: push jobs are a union — ordinary message pushes plus beacon pushes
+// (beacon.new to offline audience, spark, re-ping, kudos; API.md §1.15). Both
+// run the §2.9-style guards at execution (presence, debounce).
+export interface MessagePushJob {
+  kind?: 'message';
   user_id: string;
   conversation_id: string;
   message_id: string;
   seq: number;
 }
 
+export interface BeaconPushJob {
+  kind: 'beacon';
+  user_id: string;
+  beacon_id: string;
+  title: string;
+  body: string;
+  url: string;
+}
+
+export type PushJob = MessagePushJob | BeaconPushJob;
+
 export type GcJob = Record<string, never>;
+
+// v0.3 queue `beacons` (ARCHITECTURE §10): beacon-expire (1-min sweep),
+// beacon-ritual (hourly), beacon-afterglow (delayed per spark + safety sweep).
+export interface BeaconAfterglowJob {
+  beacon_id: string;
+}
+export type BeaconsJob = BeaconAfterglowJob | Record<string, never>;
 
 export const queueConnection = createRedis();
 const connection = queueConnection;
@@ -41,6 +63,7 @@ export const mediaQueue = new Queue<MediaJob>('media', { connection });
 export const unfurlQueue = new Queue<UnfurlJob>('unfurl', { connection });
 export const pushQueue = new Queue<PushJob>('push', { connection });
 export const gcQueue = new Queue<GcJob>('gc', { connection });
+export const beaconsQueue = new Queue<BeaconsJob>('beacons', { connection });
 
 const defaultJobOpts = {
   removeOnComplete: 1000,
@@ -65,10 +88,51 @@ export function enqueueUnfurl(job: UnfurlJob) {
   return unfurlQueue.add('unfurl', job, { ...defaultJobOpts, attempts: 1 });
 }
 
-export function enqueuePush(job: PushJob, opts: { delayMs?: number } = {}) {
+export function enqueuePush(job: MessagePushJob, opts: { delayMs?: number } = {}) {
   return pushQueue.add('push', job, {
     ...defaultJobOpts,
     attempts: 2,
     ...(opts.delayMs ? { delay: opts.delayMs } : {}),
   });
+}
+
+/** Send-path fan-out (hotspot H2): ONE Redis round trip (addBulk pipelines
+ * internally) instead of one queue.add per offline participant. */
+export function enqueuePushBulk(jobs: { job: MessagePushJob; delayMs?: number }[]) {
+  if (jobs.length === 0) return Promise.resolve([]);
+  return pushQueue.addBulk(
+    jobs.map(({ job, delayMs }) => ({
+      name: 'push',
+      data: job,
+      opts: { ...defaultJobOpts, attempts: 2, ...(delayMs ? { delay: delayMs } : {}) },
+    })),
+  );
+}
+
+export function enqueueBeaconPush(job: BeaconPushJob) {
+  return pushQueue.add('beacon-push', job, { ...defaultJobOpts, attempts: 2 });
+}
+
+/** Beacon fan-out can target a whole audience — same single-round-trip rule. */
+export function enqueueBeaconPushBulk(jobs: BeaconPushJob[]) {
+  if (jobs.length === 0) return Promise.resolve([]);
+  return pushQueue.addBulk(
+    jobs.map((data) => ({ name: 'beacon-push', data, opts: { ...defaultJobOpts, attempts: 2 } })),
+  );
+}
+
+/** Afterglow recap: delayed to expires_at + 2 h (plus a worker safety sweep). */
+export function enqueueAfterglow(beaconId: string, delayMs: number) {
+  return beaconsQueue.add(
+    'beacon-afterglow',
+    { beacon_id: beaconId },
+    {
+      ...defaultJobOpts,
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 10_000 },
+      delay: Math.max(0, delayMs),
+      // One delayed job per beacon; the sweep remains the safety net.
+      jobId: `afterglow:${beaconId}`,
+    },
+  );
 }

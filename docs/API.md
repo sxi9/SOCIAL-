@@ -70,6 +70,55 @@ InvitePublic = { status: 'valid'|'expired'|'exhausted'|'revoked',
 InvitePrivate = { id, token, url,   // url is the app-origin PATH /join/<token>
   kind: 'dm'|'group', conversation_id: string|null,  // null = DM-with-inviter
   status, created_at, expires_at, max_uses, use_count, revoked_at: string|null }
+
+// ---- v0.3 (§1.13–§1.18; ADR-008/ADR-009) ----
+
+// The minimal embeddable identity: joiner piles, seen-by lists, blocked lists,
+// role assignees. Deliberately NO last_seen_at and NO area.
+UserLite = { id, username, display_name, avatar: Avatar }
+
+// v0.3 changes to existing DTOs:
+//  UserPublic  += { beacons_created, beacons_sparked }  // plan karma: profile
+//    facts, never ranked/compared (PSYCHOLOGY rule 3); last_seen_at is null
+//    when show_last_seen (or a block) hides it from the viewer (§1.13).
+//  UserPrivate += { area: string|null }   // self-declared coarse area — OWNER
+//    ONLY, never serialized to others (FEATURES #30); edited via PATCH /users/me.
+//  Message.type += 'poll'; Message += { poll: Poll|null }  // §1.17
+//  Message.metadata += { afterglow? }                      // §1.15 recap
+//  Participant.last_read_seq is serialized as 0 unless the viewer may see that
+//    participant's read state (§1.13 reciprocal receipts) — delivered is never
+//    filtered.
+
+UserSettings = { read_receipts: boolean,             // RECIPROCAL, §1.13
+  show_last_seen: 'everyone'|'dm_partners'|'nobody',
+  show_typing: boolean, invites_paused: boolean,
+  beacon_default_audience: 'friends'|'area'|'public',
+  group_add_policy: 'everyone'|'dm_partners'|'nobody' }
+
+// Viewer-specific. joiners = avatar pile (first 12 by join order; joiner_count
+// carries the rest); needs = max(0, spark_threshold - joiner_count).
+// conversation_id is non-null ONLY for the creator/joiners of a sparked
+// beacon. area is the creator snapshot, only ever sent to matching viewers.
+Beacon = { id, creator: UserLite, vibe, note, audience: 'friends'|'area'|'public',
+  area: string|null, starts_at, expires_at, spark_threshold: 2..10,
+  status: 'open'|'sparked'|'expired'|'cancelled',
+  joiner_count, needs, joiners: UserLite[],
+  my_state: 'creator'|'joined'|'none', conversation_id: string|null,
+  ritual: { rrule, count, skips }|null, created_at }
+
+BeaconRole = { id, beacon_id, label, assignee: UserLite|null, done: boolean,
+  created_at }
+
+// Rides Message.poll on type='poll' messages. counts aligns with options;
+// my_vote is the viewer's option index (null = not voted). No voter lists,
+// no vote timestamps.
+Poll = { id, conversation_id, seq, question, options: string[2..6],
+  closes_at: string|null, counts: number[], total_votes, my_vote: number|null }
+
+// §1.15 afterglow recap system message metadata. run_it_back = the source
+// beacon id (POST /api/beacons/:id/run-it-back re-creates it one-tap).
+AfterglowMetadata = { beacon_id, vibe, participant_ids: string[],
+  photo_attachment_ids: string[], run_it_back }
 ```
 
 Avatar URLs are content-hashed media-proxy URLs (`/api/media/:key`), immutable-cacheable;
@@ -236,6 +285,211 @@ first reaction per emoji). Each **effective** add/remove fans out one
 deliberate delta, not a `msg.updated` re-ship. Clients reconcile on reconnect
 from DTO aggregates (sync/history refetch), never by replaying frames.
 
+### 1.13 Privacy settings (v0.3 — ADR-009)
+
+Settings are columns on `users` (one row read on the presence/typing/receipt
+hot paths — the `avatar_motion` pattern; ADR-009). Every setting is enforced
+**server-side** at the points below; clients only mirror state. There is no
+"all notifications off" switch anywhere, by design (PSYCHOLOGY §6).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/users/me/settings` | — | `200 {settings: UserSettings}` |
+| `PATCH /api/users/me/settings` | any subset of `UserSettings` | `200 {settings}` — applies immediately (serialization-time filtering; nothing stored is rewritten) |
+
+The coarse profile `area` (gates `'area'` beacons, §1.15) is identity, not a
+setting: `PATCH /api/users/me {area}` (`≤ 64` chars, `null` clears). It is
+**owner-private** — in `UserPrivate` only, never shown to anyone (FEATURES #30).
+
+**Enforcement points, per setting (binding for builders):**
+
+| Setting | Server-side enforcement |
+|---|---|
+| `read_receipts` (default `true`) | **Reciprocal.** Watermarks always advance (unread counts, §2.9 push guards unchanged). Filtering is at serialization: (a) `Participant.last_read_seq` serialized to viewer V for participant P is the true value only when `P = V` or **both** P and V have receipts on — else `0`; `last_delivered_seq` is never filtered. (b) `receipt` WS frames from a receipts-off reader go to others with `last_read_seq: 0` (own devices get the true value for cross-device unread sync); the gateway also clamps others' `last_read_seq` to `0` in frames **to** a receipts-off viewer. (c) §1.18 seen-by: receipts-off users never appear in `seen` (they cap at `delivered`); a receipts-off **viewer** gets `403 read_receipts_off` from that endpoint. |
+| `show_last_seen` (default `everyone`) | `UserPublic.last_seen_at` serialized `null` unless the viewer qualifies (`dm_partners` = shares an active DM with the owner; `nobody` = no one). `presence` WS frames to non-qualifying subscribers omit `last_seen_at`; the `online` boolean is unaffected (it is live state, not a timestamp). |
+| `show_typing` (default `true`) | Suppressed **at the gateway**: inbound `typing` frames from a user with it off are dropped before rebroadcast. No error frame — typing is best-effort ephemera. |
+| `invites_paused` (default `false`) | `POST /api/invites` → `403 invites_paused`. `POST /api/invites/:token/accept` on any invite whose **inviter** is paused → `403 invites_paused` (no `use_count` claim). Register-with-token degrades to `invite: null` per §1.1. `GET /:token/public` still renders (the join page shows the paused state on accept failure). |
+| `beacon_default_audience` (default `friends`) | Used by `POST /api/beacons` when `audience` is omitted (§1.15). Pure default — no other enforcement. |
+| `group_add_policy` (default `everyone`) | Checked per **target** user T on `POST /api/conversations {type:'group'}` and `POST /api/conversations/:id/participants`: `nobody` denies; `dm_partners` denies unless the adder shares an active DM with T. Any denied target fails the whole request: `403 {error:'group_add_denied', user_ids:[denied]}`. Blocks produce the **same** response (§1.14) so a 403 never confirms a block. Joining via a group invite (§1.11) is the joiner's own action — the policy governs being *added*, not joining. |
+
+### 1.14 Blocks & reports (v0.3 — ADR-009)
+
+| Method & path | Request | Response |
+|---|---|---|
+| `PUT /api/users/:id/block` | — | `204` (idempotent re-block `204`). `400 block_self`. `404 not_found` unknown id. Does NOT leave shared groups or delete history. |
+| `DELETE /api/users/:id/block` | — | `204` (idempotent). |
+| `GET /api/users/me/blocks` | — | `200 {users: UserLite[]}` — my block list, newest first (the management surface; no timestamps exposed). |
+| `POST /api/reports` | `{kind:'user', user_id, reason?}` \| `{kind:'message', conversation_id, seq, reason?}` \| `{kind:'beacon', beacon_id, reason?}` — `reason ≤ 500` | `201 {id}`. Target must be referenceable by the reporter (message: visible per §1.5 floor; beacon: §1.15-visible or previously joined; user: exists). Stored `status:'open'` for the future admin dashboard (FEATURES #54) — no fan-out, no notification to anyone. Rate **10/hour/user** (`REPORT_RATE_PER_HOUR`) → `429`. |
+
+**Block enforcement (binding, per surface).** Principle: wherever a `403`
+would *confirm* the block, the answer is **404-shaped** — identical to the
+resource never existing. Let B = either direction of a blocked pair.
+
+| Surface | Enforcement |
+|---|---|
+| DM create | `POST /api/conversations {type:'dm'}` between B → `404 not_found` (same body as an unknown `user_id`). Never `403`. |
+| Existing DM | The conversation and history remain readable, but `POST .../messages` into a DM between B → `404 not_found` (frozen both directions). |
+| Group adds | Adding each other → `403 group_add_denied`, byte-identical to the §1.13 policy denial — the 403 reveals *a* refusal, never *which* one. |
+| Group invites | `POST /api/invites/:token/accept` where inviter⊥joiner are B → `404 invite_not_found`. |
+| Existing shared groups | Both stay; messages and §1.18 receipts keep working (group function). Presence, typing, and last-seen between B are suppressed; each is omitted from the other's §1.18 lists and §1.15 joiner piles. |
+| Beacons | Invisible both directions (list, radar count, `beacon.new`/`beacon.updated` fan-out). Join/kudos/report-visibility on each other's beacons → `404 beacon_not_found`. The server never sparks a blocked pair into one brand-new plan group: an **open beacon whose joiner pile already holds anyone blocked w.r.t. the viewer** is unjoinable and therefore invisible to them (list, radar, fan-out, push; join → `404 beacon_not_found`), and the join transaction re-checks the committed pile under the beacon row lock so concurrent joins cannot race past it. |
+| Presence / last-seen | `presence.sub` on each other silently dropped (the existing not-shared-a-conversation rule); `last_seen_at` always `null`. |
+| Profile & search | `GET /api/users/:username` → `404 not_found` both directions; `GET /api/users?q=` excludes both directions. (The blocker manages the relationship from `GET /api/users/me/blocks`.) |
+| Kudos | `POST /api/beacons/:id/kudos` targeting each other → `404 not_found`. |
+| Web push | No push is ever generated between B (the fan-out exclusions above make this structural). |
+
+### 1.15 Beacons (v0.3 — ADR-008, PSYCHOLOGY §1/§3/§5)
+
+The "I'm bored" flow. A beacon is a joinable intent card, not an event: vibe
+chip + optional note, a time window, an audience, and a spark threshold.
+`201` responses return the full DTO immediately — the creator lands on the
+live plan card (pre-building roles, watching the pile) and **never sees a
+waiting state** (PSYCHOLOGY §1).
+
+**Audience** (resolved at read/fan-out time, always minus §1.14 blocks):
+`friends` = users sharing a DM conversation with the creator (both active
+participants); `area` = users whose `users.area` equals the beacon's `area`
+snapshot (citext, case-insensitive); `public` = all users. The `area` value is
+snapshotted from the creator at mint so the audience cannot drift.
+
+**Window presets.** `starts_at`/`expires_at` are client-computed from the
+chips — the server is timezone-blind. Mapping: **now** → `[now, now+4h]`;
+**tonight** → `[18:00, 23:59]` local today; **weekend** → `[Sat 10:00,
+Sun 23:59]` local. Server validation: `starts_at ≥ now−300s`,
+`expires_at − starts_at ≥ 30 min` (`BEACON_MIN_WINDOW_S`), `expires_at ≤
+now + 7d` (`BEACON_MAX_HORIZON_S`). The countdown to `starts_at` is a feature
+(anticipation, PSYCHOLOGY §5) — clients render it from the DTO, no extra API.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/beacons` | `{vibe, note?≤140, audience?, spark_threshold?: 2..10, starts_at, expires_at}` — `audience` defaults to my `beacon_default_audience`; threshold defaults 2 (= groups of 3+, PSYCHOLOGY §3) | `201 {beacon}`. `400 area_required` (audience `area`, my `area` null), `409 beacon_limit` (> 3 simultaneously open, `BEACON_OPEN_MAX`). Rate **10/hour/user**. Bumps my `beacons_created`. Fans `beacon.new` **only to the audience** (never to anyone who can't join — PSYCHOLOGY rule 2); push to offline audience (a beacon is a live invite, §2.9 guards apply). |
+| `GET /api/beacons` | — | `200 {beacons: Beacon[]}` ordered `expires_at ASC` (most urgent first): all `open` beacons visible to me (audience ∪ mine), plus `sparked` ones where I am creator/joiner and `expires_at > now` (the countdown card). Sparked beacons vanish for everyone else — a beacon is visible **only while the viewer can still join** it (FoMO-safe). Joiner piles exclude users blocked w.r.t. the viewer. |
+| `GET /api/beacons/radar` | — | `200 {active_visible_count}` — count of `open` beacons visible to me, excluding my own. **Aggregate only**: no names, no faces, no list (FEATURES #26). |
+| `POST /api/beacons/:id/join` | — | `200 {beacon}` — idempotent re-join `200` no-op. `404 beacon_not_found` (unknown, not in audience, or blocked — identical), `400 beacon_own` (creator), `410 beacon_closed` (not `open` / past `expires_at`). May spark (below) or re-ping (below). Fans `beacon.updated` to the audience. |
+| `DELETE /api/beacons/:id/join` | — | `200 {beacon}` — leave while `open`; idempotent. `409 beacon_sparked` after spark (leave the plan conversation instead, §1.4). Fans `beacon.updated`. |
+| `POST /api/beacons/:id/cancel` | — (creator) | `200 {beacon}` status `cancelled`. `403 forbidden` (not creator), `409 beacon_sparked` (plans survive their beacon). Fans `beacon.updated` — cards silently retire, no "cancelled on you" copy. |
+| `POST /api/beacons/:id/ritualize` | — (creator) | `200 {beacon}` — sets `ritual = {rrule:'FREQ=WEEKLY', count: 1, skips: 0}`. Requires `sparked` ("make it a ritual" after a good plan), **or** the latest run of a paused chain in any status — that is the resume path (re-arms with `skips: 0`). `409 beacon_not_sparked` otherwise. |
+| `POST /api/beacons/:id/run-it-back` | — | `201 {beacon}` — one-tap re-create from the afterglow recap. `:id` must be a `sparked` beacon I created or joined (else `404`). New beacon: creator = **me**, copies vibe/note/audience/threshold, window = `[now, now + original duration]`. `400 area_required` if audience `area` and my `area` is null. Bumps my `beacons_created`; fans `beacon.new`. Run-it-back IS a mint: it draws on the same **10/hour** `POST /api/beacons` budget (shared fixed-window key) → `429`, so a cancel/re-run loop cannot push-spam the audience. |
+| `POST /api/beacons/:id/kudos` | `{to_user_id, kind: 'glad_you_came'\|'glad_you_posted'}` | `204` — idempotent per `(beacon, me, recipient)` (PK), re-sends change nothing. Both parties must be in the spark group; `glad_you_posted` must target the creator; self-kudos `400`. Window: spark → `expires_at + 7d` (`BEACON_KUDOS_WINDOW_S`), else `410 beacon_closed`. Blocked pair → `404 not_found`. Delivery: `beacon.kudos` WS frame + push **to the recipient only**. Never aggregated publicly anywhere — the creator's "3 people were glad you posted" is their own private event stream (PSYCHOLOGY §9, rule 3). |
+
+**Spark (atomic, in the join transaction).** `spark_threshold` counts joiners
+(creator excluded). Join locks the beacon row (`SELECT … FOR UPDATE`), inserts
+the join (`ON CONFLICT DO NOTHING`), recounts; at `count ≥ spark_threshold` it,
+in the same transaction: creates a `group` conversation (creator `admin`, all
+joiners `member`, `join_seq = 0` — founding members see the whole plan),
+inserts the **icebreaker** system message (`metadata.system = {event:
+'beacon_sparked'}`, body = `BEACON_ICEBREAKERS[hash(beacon_id) % len]`),
+inserts the **auto venue poll** (a §1.17 `poll` message, sender `null`,
+question `BEACON_VENUE_POLL_QUESTION`, options `BEACON_VENUE_POLL_OPTIONS`),
+flips the beacon via the guarded `UPDATE … SET status='sparked',
+conversation_id=$c WHERE id=$1 AND status='open'`, bumps the creator's
+`beacons_sparked` (and `ritual_count` if a ritual run), and enqueues the
+afterglow job (delay = `expires_at + 2h − now`). Fan-out after commit:
+`conv.new` + `beacon.updated` (with `conversation_id`) + push **to joiners +
+creator only**; the rest of the audience gets `beacon.updated` with status
+`sparked` and `conversation_id: null` — their card retires, they are never
+told what they're missing (PSYCHOLOGY rule 2 — no spark details, ever).
+
+**Re-ping ("needs 1 more", PSYCHOLOGY §3).** When a join brings the count to
+exactly `spark_threshold − 1` and `repinged_at IS NULL`, the guarded
+`UPDATE beacons SET repinged_at = now() WHERE id=$1 AND repinged_at IS NULL
+AND status='open'` claims the one re-notification: `beacon.updated` with
+`reping: true` + push to the audience (non-joiners). **At most once per
+beacon**, ever — including ritual re-runs (each run is a new row, so each run
+gets one).
+
+**Expiry.** Worker sweep (queue `beacons`, every minute): `UPDATE beacons SET
+status='expired' WHERE status='open' AND expires_at <= now()` → `beacon.updated`
+to the audience. No push, no copy — unsparked beacons die silently.
+
+**Rituals (PSYCHOLOGY §7 — forgiving calendars, never streaks).** Each weekly
+run is a **new beacon row** chained by `ritual_parent_id` (one child max,
+partial unique index). The worker (hourly) takes each terminal ritual run
+(`now > expires_at`, no child) and mints the next: same
+vibe/note/audience/threshold/rrule, `starts_at` advanced in 7-day steps past
+`now`, same duration; `ritual_count` carries over (it increments **on spark**
+— it counts UP: "12 chai nights", never down, never a streak);
+`ritual_skips = sparked ? 0 : skips + 1`. At `ritual_skips ≥ 2`
+(`RITUAL_AUTO_PAUSE_SKIPS`) the worker simply does **not** create the next run
+— the chain auto-pauses with **zero guilt copy**: no notification, no "you
+broke it" (never-build list). Resume = `ritualize` the latest run. Worker-made
+runs do **not** bump `beacons_created`, and fan `beacon.new` to the audience
+like any open beacon.
+
+**Afterglow (PSYCHOLOGY §8).** 2 h after a **sparked** beacon's `expires_at`
+(delayed job + `beacons_afterglow_idx` safety sweep) the worker posts a recap
+**system message in the plan conversation** (never outside it): body is a
+playful one-liner naming the crew; `metadata.afterglow = {beacon_id, vibe,
+participant_ids, photo_attachment_ids (image attachments posted in the
+conversation between spark and expires_at+2h, newest-first, ≤ 6),
+run_it_back: beacon_id}`. `run_it_back` is the one-tap token for
+`POST /api/beacons/:id/run-it-back` — the id is the capability; spark-group
+membership is the authorization. Delivered as a normal `msg.new`; it rides the
+seq log so offline members catch it via `GET /sync`.
+
+### 1.16 Plan roles (v0.3 — PSYCHOLOGY §4)
+
+Named micro-roles on a **sparked** beacon's plan card ("Priya books the
+table"). Visible contribution, never anonymous pooling: a role is a label +
+one named assignee + a done state. Caller must be in the spark group (creator
+or joiner), else `404 beacon_not_found`; the beacon must be `sparked`, else
+`409 beacon_not_sparked`.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/beacons/:id/roles` | — | `200 {roles: BeaconRole[]}` ordered `created_at ASC` (the reconnect/reconcile read) |
+| `POST /api/beacons/:id/roles` | `{label ≤ 40}` | `201 {role}` (unassigned). `409 role_limit` past 12 (`BEACON_ROLES_MAX`). |
+| `POST /api/beacons/:id/roles/:roleId/claim` | — | `200 {role}` — assigns **me**. `409 role_taken` if assigned to someone else; re-claiming my own is idempotent `200`. |
+| `DELETE /api/beacons/:id/roles/:roleId/claim` | — | `200 {role}` — release (assignee or beacon creator). Idempotent on unassigned. |
+| `POST /api/beacons/:id/roles/:roleId/complete` | — | `200 {role}` with `done: true` (assignee or creator). Idempotent. Done states are per-person checkmarks on the card — no percentages, no progress bars. |
+| `DELETE /api/beacons/:id/roles/:roleId` | — | `204` (beacon creator only). |
+
+**Fan-out decision (documented, binding):** every mutation emits one
+**`plan.updated`** WS frame — a dedicated event, deliberately **not**
+`conv.updated` (which re-ships the whole Conversation DTO with participants;
+roles are beacon state, not conversation state). The frame carries the **full
+roles list** (≤ 12 rows), so frames are idempotent and reorder-safe; recipients
+are the plan conversation's active participants. Reconnects reconcile from
+`GET /api/beacons/:id/roles`, never frame replay (the §2.8 doctrine).
+
+### 1.17 Polls (v0.3)
+
+A poll **is a message** (`type: 'poll'`) riding the gapless seq log; the poll
+row is keyed by the message identity `(conversation_id, seq)` — the §1.12
+reactions pattern. It renders inline in chat, powers the sparked-beacon venue
+poll, and later feeds plan food polls (PSYCHOLOGY §5).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/conversations/:id/polls` | `{client_msg_id, question ≤ 200, options: string[2..6] (each ≤ 80), closes_at?}` | `201 {message}` (`200` idempotent replay via `client_msg_id`, §1.5). `message.type='poll'`, `message.poll` populated. Active participant only. Transaction = §1.5 send (seq bump, watermark raise, `msg.new` fan-out, push). |
+| `POST /api/polls/:id/vote` | `{option_idx}` | `200 {poll}` — UPSERT on `(poll_id, user_id)`: **revoting replaces**. `400 bad_option` (idx ≥ options length), `409 poll_closed` (past `closes_at`), `404 not_found` (not a participant / outside my §1.5 visibility floor). |
+| `DELETE /api/polls/:id/vote` | — | `200 {poll}` — unvote; idempotent. `409 poll_closed` after close. |
+
+Aggregates ride the message DTO (`message.poll.counts/total_votes/my_vote`).
+Each **effective** vote change fans out one `poll.updated` delta frame (§2.3)
+to active participants — not a `msg.updated` re-ship. No per-voter lists and
+no vote timestamps in any payload; a poll is a decision tool, not a scoreboard.
+`user_id`/`option_idx` identify the voter **only on the frame sent to the
+voter's own sockets** (cross-device `my_vote` reconcile); every other
+participant receives counts/total_votes alone, so no client can accumulate a
+per-voter ballot map from the deltas.
+
+### 1.18 Seen-by receipts (v0.3 — ADR-009)
+
+| Method & path | Response |
+|---|---|
+| `GET /api/conversations/:id/messages/:seq/receipts` | `200 {seen: UserLite[], delivered: UserLite[]}`. `403 read_receipts_off` when **my own** `read_receipts` is off (reciprocity, §1.13). `404 not_found` if the message is outside my §1.5 visibility floor. |
+
+Computed **from the §2.5 watermarks** — zero new state: over active
+participants excluding the sender, `seen` = `last_read_seq ≥ seq`, `delivered`
+= `last_delivered_seq ≥ seq` and not in `seen`. **No timestamps anywhere in
+the response**, and both lists are ordered by `username` — never by recency
+(a "seen 43 min ago" timestamp turns a receipt into a reply deadline;
+PSYCHOLOGY never-build list). Participants with `read_receipts` off appear at
+most in `delivered`, whatever their true read state. Users blocked w.r.t. the
+viewer are omitted from both lists. This endpoint is the foundation for story
+view lists (v0.5, FEATURES #27).
+
 ---
 
 ## 2. WebSocket protocol
@@ -277,13 +531,18 @@ close `1008`.
 | `user.updated` | `{user: UserPublic}` | profile/avatar change of any conversation peer — fires when the avatar transcode lands (`avatar.version` bumped → swap the image) |
 | `reaction.updated` | `{conversation_id, seq, emoji, count, user_id, removed}` | v0.2 (§1.12): one frame per effective reaction add/remove, to all active participants. `count` is the NEW total for that `(message, emoji)`; `count: 0` removes the chip; `mine` is derived client-side (`user_id === me`). Reconnect truth is the DTO aggregate, not frame replay. |
 | `preview.ready` | `{url_hash, status: 'ok'\|'failed', preview?: LinkPreview}` | to the user who requested the unfurl (composer card) |
+| `beacon.new` | `{beacon: Beacon}` | v0.3 (§1.15): **only to sockets of users in the beacon's audience** (minus blocks) — never to anyone who cannot join (PSYCHOLOGY rule 2). The DTO is viewer-specific: the gateway stamps `my_state`/`conversation_id` per recipient (§2.11). |
+| `beacon.updated` | `{beacon: Beacon, reping: boolean}` | v0.3: joins/leaves/spark/expiry/cancel, to the audience. On spark, non-joiners receive `conversation_id: null` (their card retires; spark details reach joiners + creator only). `reping: true` marks the single "needs 1 more" re-notification (§1.15). |
+| `beacon.kudos` | `{beacon_id, kind, from: UserLite}` | v0.3 (§1.15): **to the recipient's sockets only.** Private by construction — never fanned to the group, never counted publicly. |
+| `plan.updated` | `{beacon_id, conversation_id, roles: BeaconRole[]}` | v0.3 (§1.16): full roles list on every role mutation, to the plan conversation's active participants. Idempotent replace; reconcile from `GET /api/beacons/:id/roles`, never frame replay. |
+| `poll.updated` | `{poll_id, conversation_id, seq, counts: number[], total_votes, user_id?, option_idx?: number\|null}` | v0.3 (§1.17): one delta per effective vote/unvote (`option_idx: null` = unvoted), to active participants — the `reaction.updated` pattern. `user_id`/`option_idx` ride **only the voter's own frame** (their other devices reconcile `my_vote`); frames to everyone else carry aggregates only (no per-voter lists, §1.17). Reconnect truth is `message.poll`. |
 | `error` | `{code, message}` | validation/permission errors on client frames |
 
 ### 2.4 Client → server events
 
 | `t` | `d` payload | Semantics |
 |---|---|---|
-| `delivered` | `{conversation_id, seq}` | "I have **durably stored** (IndexedDB-committed) everything up to `seq`." Server: `last_delivered_seq = GREATEST(stored, seq)`; broadcast coalesced `receipt`. **Push acceptance never triggers this** — only a running client after local persist (receipt honesty). |
+| `delivered` | `{conversation_id, seq}` | "I have **durably stored** (IndexedDB-committed) everything up to `seq`." Server: `last_delivered_seq = GREATEST(stored, seq)`; broadcast coalesced `receipt`. **Push acceptance never triggers this** — only a running client after local persist (receipt honesty). Inbound `delivered`/`read` frames are themselves coalesced server-side to at most one watermark apply per (socket, conversation) per 1000 ms — lossless (max seq wins, read implies delivered) — and a frame that advances nothing is dropped without fan-out, so frame floods cannot amplify into DB/receipt load. |
 | `read` | `{conversation_id, seq}` | same monotonic update for `last_read_seq`; server also raises `last_delivered_seq` to at least `seq` (read implies delivered). Sent when the conversation is visible/scrolled. |
 | `typing` | `{conversation_id}` | server stamps `expires_at = now()+6s` and rebroadcasts to other participants. Client re-sends every ~4 s while typing; **no `typing.stop`** — expiry handles death mid-keystroke. |
 | `presence.sub` | `{user_ids: string[]}` | subscribe to presence for on-screen users only. Cap 100 per socket; each must share a conversation with you, else silently dropped. Server replies with one immediate `presence` per id. |
@@ -365,3 +624,27 @@ subscription.
 | `1001` | server going away / heartbeat timeout | reconnect with backoff |
 | `1008` | protocol violation (repeated malformed frames) | reconnect once; report |
 | `1013` | overloaded, try later | reconnect with backoff, min 10 s |
+
+### 2.11 Privacy filtering at the gateway (v0.3 — ADR-009)
+
+The Redis `events` channel stays a trusted, unfiltered firehose between api
+and worker; **all privacy filtering happens at the per-socket edge** (the WS
+gateway and REST serializers), where the recipient is known. Binding rules:
+
+- `typing`: dropped at ingest when the sender's `show_typing` is off; never
+  rebroadcast between blocked pairs.
+- `receipt`: `last_read_seq` clamped to `0` both when the **reader** has
+  `read_receipts` off (frames to others) and when the **recipient viewer**
+  has it off (reciprocity) — own-session frames always carry true values.
+  `last_delivered_seq` is never clamped.
+- `presence`: `last_seen_at` omitted unless the subscriber qualifies under the
+  target's `show_last_seen`; subscriptions between blocked pairs are silently
+  dropped at `presence.sub` time (indistinguishable from the existing
+  not-shared-a-conversation drop).
+- `beacon.*`: the api publishes one envelope naming the beacon + audience;
+  the gateway resolves recipients (friends/area/public minus blocks) and
+  stamps the viewer-specific fields (`my_state`, `conversation_id`, filtered
+  `joiners`) per socket before sending.
+- Filtering is serialization-only: no stored watermark, presence key, or
+  beacon row is ever rewritten by a settings change, so toggles apply (and
+  un-apply) instantly and retroactively.

@@ -51,6 +51,7 @@ export function messageSnippet(msg: Message | null): string {
   if (msg.type === 'image') return msg.body ? msg.body : 'Photo';
   if (msg.type === 'video') return msg.body ? msg.body : 'Video';
   if (msg.type === 'file') return msg.body ? msg.body : 'File';
+  if (msg.type === 'poll') return msg.poll ? `📊 ${msg.poll.question}` : '📊 Poll';
   return msg.body ?? '';
 }
 

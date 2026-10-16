@@ -3,13 +3,19 @@
 // may arrive duplicated or out of order without harm (API.md §2.5).
 import type {
   Attachment,
+  Beacon,
+  BeaconRole,
   Conversation,
   ConversationListItem,
+  KudosKind,
   LinkPreview,
   Message,
+  Poll,
   SyncResponse,
+  UserLite,
   UserPrivate,
   UserPublic,
+  UserSettings,
 } from '@socialchat/shared';
 import type { OutboxItem } from './db';
 
@@ -25,6 +31,13 @@ export interface PresenceInfo {
 export interface PreviewState {
   status: 'pending' | 'ok' | 'failed';
   preview: LinkPreview | null;
+}
+
+/** A private beacon.kudos arrival (v0.3 §1.15) — recipient-only, session-scoped. */
+export interface KudosArrival {
+  beacon_id: string;
+  kind: KudosKind;
+  from: UserLite;
 }
 
 export interface AppState {
@@ -44,6 +57,19 @@ export interface AppState {
   readyAttachments: Map<string, Attachment>;
   outbox: OutboxItem[];
   activeConversationId: string | null;
+  /** v0.3 beacons (§1.15): only cards the viewer may see/join (FoMO-safe). */
+  beacons: Map<string, Beacon>;
+  beaconsLoaded: boolean;
+  /** Boredom radar — aggregate count only, never names (FEATURES #26). */
+  radarCount: number | null;
+  /** beacon_id → one-shot "needs 1 more" re-ping marker (epoch ms). */
+  repings: Map<string, number>;
+  /** v0.3 plan roles (§1.16), beacon_id → full list (plan.updated replaces). */
+  planRoles: Map<string, BeaconRole[]>;
+  /** Private kudos received this session (recipient-only; never public). */
+  kudos: KudosArrival[];
+  /** v0.3 privacy settings mirror (§1.13) — server-enforced, client-displayed. */
+  settings: UserSettings | null;
 }
 
 const state: AppState = {
@@ -60,6 +86,13 @@ const state: AppState = {
   readyAttachments: new Map(),
   outbox: [],
   activeConversationId: null,
+  beacons: new Map(),
+  beaconsLoaded: false,
+  radarCount: null,
+  repings: new Map(),
+  planRoles: new Map(),
+  kudos: [],
+  settings: null,
 };
 
 let version = 0;
@@ -408,6 +441,176 @@ export function setOutbox(items: OutboxItem[]): void {
   emit();
 }
 
+// ---------------------------------------------------------------------------
+// Beacons (v0.3 — API.md §1.15). The map holds only cards the viewer can still
+// see: `open` ones, plus `sparked` ones where the viewer is in the plan
+// (conversation_id non-null). Everything else retires silently — a beacon is
+// visible only while you can join it (PSYCHOLOGY design rule 2).
+// ---------------------------------------------------------------------------
+
+function beaconVisible(b: Beacon): boolean {
+  const live = new Date(b.expires_at).getTime() > Date.now();
+  if (b.status === 'open') return live;
+  if (b.status === 'sparked') return b.conversation_id !== null && live;
+  return false;
+}
+
+export function setBeacons(list: Beacon[]): void {
+  const next = new Map<string, Beacon>();
+  for (const b of list) if (beaconVisible(b)) next.set(b.id, b);
+  state.beacons = next;
+  state.beaconsLoaded = true;
+  emit();
+}
+
+export function upsertBeacon(b: Beacon, reping = false): void {
+  if (beaconVisible(b)) {
+    state.beacons = new Map(state.beacons).set(b.id, b);
+    if (reping) state.repings = new Map(state.repings).set(b.id, Date.now());
+  } else {
+    const next = new Map(state.beacons);
+    next.delete(b.id);
+    state.beacons = next;
+    state.planRoles.delete(b.id);
+  }
+  emit();
+}
+
+export function removeBeacon(id: string): void {
+  const next = new Map(state.beacons);
+  if (next.delete(id)) {
+    state.beacons = next;
+    state.planRoles.delete(id);
+    emit();
+  }
+}
+
+/** Expiry housekeeping: drop cards whose window closed (worker frames may lag). */
+export function sweepBeacons(): void {
+  let changed = false;
+  const next = new Map(state.beacons);
+  for (const [id, b] of next) {
+    if (!beaconVisible(b)) {
+      next.delete(id);
+      changed = true;
+    }
+  }
+  if (changed) {
+    state.beacons = next;
+    emit();
+  }
+}
+
+export function setRadar(count: number): void {
+  if (state.radarCount === count) return;
+  state.radarCount = count;
+  emit();
+}
+
+/** plan.updated / GET roles: full-list replace — idempotent, reorder-safe. */
+export function setPlanRoles(beaconId: string, roles: BeaconRole[]): void {
+  state.planRoles = new Map(state.planRoles).set(beaconId, roles);
+  emit();
+}
+
+export function patchPlanRole(beaconId: string, role: BeaconRole): void {
+  const list = state.planRoles.get(beaconId) ?? [];
+  const idx = list.findIndex((r) => r.id === role.id);
+  const next = idx === -1 ? [...list, role] : [...list.slice(0, idx), role, ...list.slice(idx + 1)];
+  state.planRoles = new Map(state.planRoles).set(beaconId, next);
+  emit();
+}
+
+export function dropPlanRole(beaconId: string, roleId: string): void {
+  const list = state.planRoles.get(beaconId);
+  if (!list) return;
+  state.planRoles = new Map(state.planRoles).set(
+    beaconId,
+    list.filter((r) => r.id !== roleId)
+  );
+  emit();
+}
+
+/** Private kudos delivery — recipient-only; aggregated by the banner, never shown publicly. */
+export function addKudos(ev: KudosArrival): void {
+  // Idempotent per (beacon, from, kind) — matches the server's PK.
+  if (
+    state.kudos.some(
+      (k) => k.beacon_id === ev.beacon_id && k.from.id === ev.from.id && k.kind === ev.kind
+    )
+  ) {
+    return;
+  }
+  state.kudos = [...state.kudos, ev];
+  emit();
+}
+
+export function clearKudos(): void {
+  if (!state.kudos.length) return;
+  state.kudos = [];
+  emit();
+}
+
+export function setSettings(settings: UserSettings): void {
+  state.settings = settings;
+  emit();
+}
+
+// ---------------------------------------------------------------------------
+// Polls (v0.3 — API.md §1.17). poll.updated deltas patch counts in place;
+// reconnect truth is message.poll (DTO), never frame replay.
+// ---------------------------------------------------------------------------
+
+/** Replace the embedded poll DTO on its message (REST responses, optimistic votes). */
+export function applyPollDto(poll: Poll): void {
+  const patch = (msg: Message): Message => (msg.poll && msg.poll.id === poll.id ? { ...msg, poll } : msg);
+  const changed = patchMessageAt(poll.conversation_id, poll.seq, patch);
+  if (!changed) {
+    const conv = state.conversations.get(poll.conversation_id);
+    if (conv?.last_message && conv.last_message.seq === poll.seq) {
+      conv.last_message = patch(conv.last_message);
+    }
+  }
+  emit();
+}
+
+export interface PollDelta {
+  poll_id: string;
+  conversation_id: string;
+  seq: number;
+  counts: number[];
+  total_votes: number;
+  // Voter identity rides ONLY the voter's own frames (my_vote reconcile);
+  // frames to other participants carry aggregates alone (API.md §1.17).
+  user_id?: string;
+  option_idx?: number | null;
+}
+
+/** poll.updated frame: counts are the NEW aggregate; my_vote derives from user_id === me. */
+export function applyPollUpdated(d: PollDelta): void {
+  const isMe = d.user_id !== undefined && state.me?.id === d.user_id;
+  const patch = (msg: Message): Message =>
+    msg.poll && msg.poll.id === d.poll_id
+      ? {
+          ...msg,
+          poll: {
+            ...msg.poll,
+            counts: d.counts,
+            total_votes: d.total_votes,
+            my_vote: isMe && d.option_idx !== undefined ? d.option_idx : msg.poll.my_vote,
+          },
+        }
+      : msg;
+  const changed = patchMessageAt(d.conversation_id, d.seq, patch);
+  if (!changed) {
+    const conv = state.conversations.get(d.conversation_id);
+    if (conv?.last_message && conv.last_message.seq === d.seq) {
+      conv.last_message = patch(conv.last_message);
+    }
+  }
+  emit();
+}
+
 export function resetOnLogout(): void {
   state.authed = false;
   state.me = null;
@@ -420,5 +623,12 @@ export function resetOnLogout(): void {
   state.readyAttachments = new Map();
   state.outbox = [];
   state.activeConversationId = null;
+  state.beacons = new Map();
+  state.beaconsLoaded = false;
+  state.radarCount = null;
+  state.repings = new Map();
+  state.planRoles = new Map();
+  state.kudos = [];
+  state.settings = null;
   emit();
 }
