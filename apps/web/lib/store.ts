@@ -7,10 +7,12 @@ import type {
   BeaconRole,
   Conversation,
   ConversationListItem,
+  ConversationPrefs,
   KudosKind,
   LinkPreview,
   Message,
   Poll,
+  ScheduledMessage,
   SyncResponse,
   UserLite,
   UserPrivate,
@@ -70,6 +72,12 @@ export interface AppState {
   kudos: KudosArrival[];
   /** v0.3 privacy settings mirror (§1.13) — server-enforced, client-displayed. */
   settings: UserSettings | null;
+  /** v0.4 (§1.24): MY per-conversation prefs (theme/wallpaper/nicknames) —
+   * personal, never anyone else's; synced via prefs.updated (own sockets). */
+  prefs: Map<string, ConversationPrefs>;
+  /** v0.4 (§1.26): MY scheduled messages by id (private until delivery). */
+  scheduled: Map<string, ScheduledMessage>;
+  scheduledLoaded: boolean;
 }
 
 const state: AppState = {
@@ -93,6 +101,9 @@ const state: AppState = {
   planRoles: new Map(),
   kudos: [],
   settings: null,
+  prefs: new Map(),
+  scheduled: new Map(),
+  scheduledLoaded: false,
 };
 
 let version = 0;
@@ -383,6 +394,63 @@ export function applyReactionLocal(conversationId: string, seq: number, emoji: s
   if (changed) emit();
 }
 
+// ---------------------------------------------------------------------------
+// Avatar stamps (v0.4 — API.md §1.19). A stamp frame is a reaction.updated with
+// kind='stamp'; Message.stamps carries the stampers as FACES in first-stamp
+// order (never a counter). Reconnect truth is the DTO's stamps[], not frames.
+// ---------------------------------------------------------------------------
+
+function userLiteFor(conversationId: string, userId: string): UserLite | null {
+  if (state.me && state.me.id === userId) {
+    const { id, username, display_name, avatar } = state.me;
+    return { id, username, display_name, avatar };
+  }
+  const conv = state.conversations.get(conversationId);
+  const p = conv?.participants.find((x) => x.user.id === userId);
+  if (!p) return null;
+  const { id, username, display_name, avatar } = p.user;
+  return { id, username, display_name, avatar };
+}
+
+function patchStamps(msg: Message, userId: string, user: UserLite | null, removed: boolean): Message {
+  const had = msg.stamps.some((u) => u.id === userId);
+  if (removed) {
+    if (!had) return msg;
+    return { ...msg, stamps: msg.stamps.filter((u) => u.id !== userId) };
+  }
+  if (had) return msg; // keep first-stamp order on duplicate frames
+  if (!user) return msg;
+  return { ...msg, stamps: [...msg.stamps, user] };
+}
+
+/** reaction.updated with kind='stamp' (§2.3): add/remove the stamper's face. */
+export function applyStampUpdated(d: {
+  conversation_id: string;
+  seq: number;
+  user_id: string;
+  removed: boolean;
+}): void {
+  const user = userLiteFor(d.conversation_id, d.user_id);
+  const patch = (msg: Message): Message => patchStamps(msg, d.user_id, user, d.removed);
+  const changed = patchMessageAt(d.conversation_id, d.seq, patch);
+  if (changed) {
+    emit();
+    return;
+  }
+  const conv = state.conversations.get(d.conversation_id);
+  if (conv && conv.last_message && conv.last_message.seq === d.seq) {
+    conv.last_message = patch(conv.last_message);
+    emit();
+  }
+}
+
+/** Optimistic local stamp toggle; the WS frame (and DTO on reconnect) confirm. */
+export function applyStampLocal(conversationId: string, seq: number, add: boolean): void {
+  const meId = state.me?.id;
+  if (!meId) return;
+  applyStampUpdated({ conversation_id: conversationId, seq, user_id: meId, removed: !add });
+}
+
 export function applyTyping(conversationId: string, userId: string, expiresAtIso: string): void {
   if (state.me && userId === state.me.id) return;
   let t = state.typing.get(conversationId);
@@ -557,6 +625,34 @@ export function setSettings(settings: UserSettings): void {
 }
 
 // ---------------------------------------------------------------------------
+// Chat prefs (v0.4 — API.md §1.24). PERSONAL: my view only; prefs.updated
+// frames arrive on my own sockets exclusively. Full replace, idempotent.
+// ---------------------------------------------------------------------------
+
+export function setPrefs(prefs: ConversationPrefs): void {
+  state.prefs = new Map(state.prefs).set(prefs.conversation_id, prefs);
+  emit();
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled messages (v0.4 — API.md §1.26). Mine only; scheduled.updated
+// frames sync create/cancel/send across my devices.
+// ---------------------------------------------------------------------------
+
+export function setScheduledList(list: ScheduledMessage[]): void {
+  const next = new Map<string, ScheduledMessage>();
+  for (const s of list) next.set(s.id, s);
+  state.scheduled = next;
+  state.scheduledLoaded = true;
+  emit();
+}
+
+export function upsertScheduled(s: ScheduledMessage): void {
+  state.scheduled = new Map(state.scheduled).set(s.id, s);
+  emit();
+}
+
+// ---------------------------------------------------------------------------
 // Polls (v0.3 — API.md §1.17). poll.updated deltas patch counts in place;
 // reconnect truth is message.poll (DTO), never frame replay.
 // ---------------------------------------------------------------------------
@@ -630,5 +726,8 @@ export function resetOnLogout(): void {
   state.planRoles = new Map();
   state.kudos = [];
   state.settings = null;
+  state.prefs = new Map();
+  state.scheduled = new Map();
+  state.scheduledLoaded = false;
   emit();
 }

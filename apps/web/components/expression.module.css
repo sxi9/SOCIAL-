@@ -1,0 +1,1329 @@
+/* v0.4 Expression pack (API.md §1.19–§1.27) — Bored Blob design language:
+   soft radii, playful pops, strict prefers-reduced-motion guards (motion is
+   REPLACED, nothing disappears). Dark-first; light palette via media query. */
+
+/* =============================== §1.19 stamps ============================= */
+
+.stampRow {
+  display: flex;
+  align-items: center;
+  margin-top: 3px;
+  padding: 0 2px;
+}
+
+.stampRowOwn {
+  justify-content: flex-end;
+}
+
+/* Faces, not counters: each stamp is a reactor's avatar, slightly piled. */
+.stampFace {
+  margin-left: -6px;
+  border-radius: 50%;
+  border: 2px solid var(--bg);
+  background: none;
+  padding: 0;
+  line-height: 0;
+  cursor: pointer;
+  transition: transform 140ms ease;
+  animation: stamp-in 260ms cubic-bezier(0.2, 0.9, 0.3, 1.35);
+}
+
+.stampFace:first-child {
+  margin-left: 0;
+}
+
+.stampFace:hover,
+.stampFace:focus-visible {
+  transform: scale(1.22) rotate(-6deg);
+  z-index: 2;
+  position: relative;
+}
+
+@keyframes stamp-in {
+  from {
+    transform: scale(0.3) rotate(-14deg);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(1.15) rotate(4deg);
+  }
+  to {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+}
+
+/* Stamp option in the reaction picker: your own face as the stamp. */
+.stampPick {
+  background: none;
+  border: none;
+  border-radius: 12px;
+  padding: 4px 6px;
+  cursor: pointer;
+  line-height: 0;
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.stampPick:hover:not(:disabled),
+.stampPick:focus-visible {
+  background: var(--accent-soft);
+  transform: scale(1.18) rotate(-6deg);
+}
+
+.stampPick:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.stampPick img {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: block;
+  object-fit: cover;
+}
+
+.stampPickOn {
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* =========================== §1.20 voice notes ============================ */
+
+.micBtn {
+  flex: none;
+  position: relative;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.micRecording {
+  background: var(--danger) !important;
+  border-color: var(--danger) !important;
+  color: #fff !important;
+  animation: mic-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+
+.recordBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.recordDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--danger);
+  flex: none;
+  animation: rec-blink 1.1s step-end infinite;
+}
+
+@keyframes rec-blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.recordHint {
+  flex: 1;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.recordHintCancel {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+/* Audio bubble: waveform scrubber from the 48-bucket peaks array. */
+.audioBubble {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: min(62vw, 260px);
+  padding: 4px 0 2px;
+}
+
+.audioPlay {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent-strong);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 120ms ease, filter 120ms ease;
+}
+
+.audioPlay:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.audioPlay:active {
+  transform: scale(0.92);
+}
+
+.audioPlay:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.waveWrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.wave {
+  display: flex;
+  align-items: center;
+  gap: 1.5px;
+  height: 30px;
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+}
+
+.waveBar {
+  flex: 1;
+  min-width: 1.5px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+  transition: background 120ms linear;
+}
+
+.waveBarPlayed {
+  background: var(--accent);
+}
+
+.audioMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.speedBtn {
+  flex: none;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.speedBtn:hover {
+  color: var(--accent);
+}
+
+.audioPendingNote {
+  font-size: 12px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ============================= §1.21 doodles ============================== */
+
+/* Sketchy hand-drawn frame around doodle images (and doodle vibe tiles). */
+.doodleFrame {
+  display: inline-block;
+  background: #fffdf5;
+  border: 2.5px solid var(--text);
+  border-radius: 255px 18px 225px 18px / 18px 225px 18px 255px;
+  padding: 5px;
+  transform: rotate(-0.6deg);
+  max-width: 100%;
+}
+
+.doodleFrame img {
+  border-radius: 10px;
+  display: block;
+}
+
+.doodleSheet {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.doodleCanvasWrap {
+  position: relative;
+  width: 100%;
+  background: #fffdf5;
+  border: 2px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.doodleCanvasWrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+}
+
+.doodleTools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.doodleColor {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 2.5px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 120ms ease;
+}
+
+.doodleColor:hover {
+  transform: scale(1.12);
+}
+
+.doodleColorOn {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent);
+}
+
+.doodleTool {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 7px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.doodleToolOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.doodleTool:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ============================ §1.22 effects =============================== */
+
+.effectChipRow {
+  display: flex;
+  align-items: center;
+  /* Right-aligned (the outgoing side): the left-anchored plus menu (.plusPop,
+     ~190px) opens over the composer's top-left corner, so a left-anchored chip
+     would be fully occluded whenever the menu is open — both v0.4 composer
+     affordances must be visible together. */
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 2px 8px;
+}
+
+.effectChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1.5px dashed var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 13px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  animation: chip-rise 200ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.effectChipArmed {
+  border-style: solid;
+  background: var(--accent-strong);
+  color: #fff;
+}
+
+@keyframes chip-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.effectChipX {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0 0 2px;
+  opacity: 0.8;
+}
+
+/* Static badge on a bubble carrying an effect (always present; it IS the
+   reduced-motion representation and the scroll-back marker). */
+.effectBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+/* Full-screen one-shot overlay (plays once per viewer per message). */
+.fxOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.fxPiece {
+  position: absolute;
+  top: -6vh;
+  left: var(--x, 50%);
+  font-size: var(--s, 20px);
+  animation: fx-fall var(--d, 2.6s) linear var(--delay, 0s) 1 both;
+}
+
+@keyframes fx-fall {
+  from {
+    transform: translateY(0) rotate(0deg);
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  to {
+    transform: translateY(112vh) rotate(var(--r, 360deg));
+    opacity: 0;
+  }
+}
+
+.fxConfetti {
+  width: 9px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--c, #ffd166);
+}
+
+.fxRise {
+  position: absolute;
+  bottom: -8vh;
+  top: auto;
+  left: var(--x, 50%);
+  font-size: var(--s, 22px);
+  animation: fx-rise var(--d, 2.8s) ease-out var(--delay, 0s) 1 both;
+}
+
+@keyframes fx-rise {
+  from {
+    transform: translateY(0) scale(0.8);
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  to {
+    transform: translateY(-115vh) translateX(var(--sway, 20px)) scale(1.15);
+    opacity: 0;
+  }
+}
+
+.fxBurst {
+  position: absolute;
+  left: var(--x, 50%);
+  top: var(--y, 40%);
+  font-size: var(--s, 26px);
+  animation: fx-burst var(--d, 1.4s) ease-out var(--delay, 0s) 1 both;
+}
+
+@keyframes fx-burst {
+  from {
+    transform: scale(0.2);
+    opacity: 0;
+  }
+  25% {
+    opacity: 1;
+    transform: scale(1.5);
+  }
+  to {
+    transform: scale(0.7) translateY(28px);
+    opacity: 0;
+  }
+}
+
+/* =========================== §1.23 vibe checks ============================ */
+
+.vibeCard {
+  min-width: min(66vw, 300px);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 2px 0;
+}
+
+.vibePromptTag {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.vibePrompt {
+  font-size: 15.5px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.vibeStripScroll {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding: 2px 0;
+  scrollbar-width: none;
+}
+
+.vibeStripScroll::-webkit-scrollbar {
+  display: none;
+}
+
+.vibeTile {
+  flex: none;
+  width: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.vibeTileMedia {
+  width: 60px;
+  height: 60px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vibeTileMedia img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.vibeTileDoodle {
+  background: #fffdf5;
+  border: 2px solid var(--text);
+  border-radius: 60px 10px 50px 10px / 10px 50px 10px 60px;
+}
+
+.vibeTileName {
+  font-size: 10.5px;
+  color: var(--muted);
+  max-width: 64px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vibeMore {
+  flex: none;
+  width: 60px;
+  height: 60px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vibeCta {
+  align-self: flex-start;
+  border: none;
+  border-radius: 12px;
+  padding: 8px 14px;
+  background: var(--accent-strong);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 120ms ease, filter 120ms ease;
+}
+
+.vibeCta:hover {
+  filter: brightness(1.08);
+}
+
+.vibeCta:active {
+  transform: scale(0.95);
+}
+
+.vibeAnswered {
+  font-size: 12px;
+  color: var(--ok);
+  font-weight: 600;
+}
+
+/* Prompt deck sheet */
+.deckList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 44dvh;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.deckCard {
+  text-align: left;
+  border: 1.5px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 14px;
+  padding: 11px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.deckCard:hover,
+.deckCard:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.deckShuffle {
+  align-self: center;
+}
+
+.replyOptRow {
+  display: flex;
+  gap: 8px;
+}
+
+.replyOpt {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 14px 6px;
+  background: var(--panel-2);
+  border: 1.5px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.replyOpt:hover:not(:disabled),
+.replyOpt:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.replyOpt:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.replyOpt span:first-child {
+  font-size: 24px;
+  line-height: 1;
+}
+
+/* ======================= §1.24 appearance & nicknames ===================== */
+
+.personalTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.swatchGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.swatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 9px 4px 7px;
+  background: var(--panel-2);
+  border: 1.5px solid var(--border);
+  border-radius: 13px;
+  color: var(--text);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: transform 110ms ease, border-color 110ms ease;
+}
+
+.swatch:active {
+  transform: scale(0.94);
+}
+
+.swatchOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 700;
+}
+
+.swatchDot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--panel);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.wpPreview {
+  width: 100%;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background-color: var(--bg);
+}
+
+.nickRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+}
+
+.nickRow input {
+  flex: 1;
+  min-width: 0;
+}
+
+.nickName {
+  flex: none;
+  width: 92px;
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ========================== §1.25 disappearing ============================ */
+
+.tombstone {
+  font-style: italic;
+  color: var(--muted);
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ttlChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  flex: none;
+}
+
+.ttlNote {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 8px 0 0;
+}
+
+/* ========================= §1.26 scheduled & capsules ===================== */
+
+.schedPresets {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.schedRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.schedRow:last-child {
+  border-bottom: none;
+}
+
+.schedBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.schedSnippet {
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedWhen {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.schedCancel {
+  flex: none;
+}
+
+.capsuleToggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 11px 13px;
+  border: 1.5px dashed var(--border);
+  border-radius: 14px;
+  background: var(--panel-2);
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13.5px;
+  text-align: left;
+  width: 100%;
+}
+
+.capsuleToggleOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* Sealed-envelope bubble (delivered capsule, pre-reveal). */
+.capsuleSealed {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 20px;
+  border: none;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+}
+
+.capsuleEnvelope {
+  font-size: 38px;
+  line-height: 1;
+  animation: capsule-bob 2.6s ease-in-out infinite;
+}
+
+@keyframes capsule-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-2deg);
+  }
+  50% {
+    transform: translateY(-4px) rotate(2deg);
+  }
+}
+
+.capsuleHint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.capsuleOpened {
+  animation: capsule-open 420ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+@keyframes capsule-open {
+  from {
+    opacity: 0;
+    transform: scale(0.8) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.capsuleTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+/* ============================ §1.27 mini-games ============================ */
+
+.ttt {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 0;
+  min-width: min(56vw, 230px);
+}
+
+.tttHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.tttStatus {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.tttStatusMine {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.tttBoard {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+  width: min(56vw, 210px);
+}
+
+.tttCell {
+  aspect-ratio: 1;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 26px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 110ms ease, border-color 110ms ease, background 110ms ease;
+}
+
+.tttCell:not(:disabled):hover,
+.tttCell:not(:disabled):focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.tttCell:disabled {
+  cursor: default;
+}
+
+.tttX {
+  color: var(--accent);
+}
+
+.tttO {
+  color: var(--bored-yellow, #f4b83f);
+}
+
+.tttMark {
+  animation: ttt-pop 220ms cubic-bezier(0.2, 0.9, 0.3, 1.35);
+}
+
+@keyframes ttt-pop {
+  from {
+    transform: scale(0.3);
+  }
+  70% {
+    transform: scale(1.2);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+/* Puzzle result bubble (shared emoji grid — no letters, no spoilers). */
+.puzzleShare {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.puzzleShareHead {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.puzzleShareGrid {
+  font-size: 15px;
+  line-height: 1.25;
+  letter-spacing: 1px;
+}
+
+.puzzleShareLink {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* §1.23 stamp reply in the scrollback: the bubble is the sender's face (the
+   collage tile's twin), never an empty body-less shell. */
+.stampReplyBody {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 2px 0;
+}
+
+.stampReplyLabel {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* =========================== composer plus menu =========================== */
+
+.plusPop {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 31;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  min-width: 190px;
+  animation: plus-pop 160ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  transform-origin: bottom left;
+}
+
+@keyframes plus-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.85) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.plusItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 10px;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  padding: 9px 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.plusItem:hover,
+.plusItem:focus-visible {
+  background: var(--accent-soft);
+}
+
+.plusItem span:first-child {
+  font-size: 18px;
+  line-height: 1;
+  width: 22px;
+  text-align: center;
+}
+
+/* ============================ chat themes (§1.24) ========================= */
+/* PERSONAL: these classes land on MY chat page only. Dark-first values;
+   light-mode palettes swap to pastels with dark text. */
+
+.theme_classic {
+  --accent: #6f8cff;
+  --accent-strong: #4f6fff;
+  --accent-soft: rgba(111, 140, 255, 0.16);
+  --bubble-out: #2c3f8f;
+}
+
+.theme_sunset {
+  --accent: #ff8a63;
+  --accent-strong: #e8603a;
+  --accent-soft: rgba(255, 138, 99, 0.16);
+  --bubble-out: #8f3b2c;
+}
+
+.theme_ocean {
+  --accent: #4fc3e8;
+  --accent-strong: #2596c4;
+  --accent-soft: rgba(79, 195, 232, 0.16);
+  --bubble-out: #14537a;
+}
+
+.theme_forest {
+  --accent: #58d08f;
+  --accent-strong: #2f9e5f;
+  --accent-soft: rgba(88, 208, 143, 0.16);
+  --bubble-out: #1f6b43;
+}
+
+.theme_grape {
+  --accent: #b08ae8;
+  --accent-strong: #8d5bd4;
+  --accent-soft: rgba(176, 138, 232, 0.16);
+  --bubble-out: #5b3a96;
+}
+
+.theme_bubblegum {
+  --accent: #f48ebd;
+  --accent-strong: #e2639c;
+  --accent-soft: rgba(244, 142, 189, 0.16);
+  --bubble-out: #93396b;
+}
+
+.theme_mono {
+  --accent: #9aa4b5;
+  --accent-strong: #6b7687;
+  --accent-soft: rgba(154, 164, 181, 0.16);
+  --bubble-out: #3a4150;
+}
+
+.theme_midnight {
+  --accent: #7d95ff;
+  --accent-strong: #5570e8;
+  --accent-soft: rgba(125, 149, 255, 0.14);
+  --bubble-out: #1b2440;
+  --bubble-in: #11182b;
+}
+
+@media (prefers-color-scheme: light) {
+  .theme_classic {
+    --accent: #3d5ef0;
+    --accent-strong: #2946d8;
+    --accent-soft: rgba(61, 94, 240, 0.12);
+    --bubble-out: #d7e0ff;
+  }
+
+  .theme_sunset {
+    --accent: #d85a2f;
+    --accent-strong: #c04e26;
+    --accent-soft: rgba(216, 90, 47, 0.12);
+    --bubble-out: #ffd9c7;
+  }
+
+  .theme_ocean {
+    --accent: #1577a8;
+    --accent-strong: #0f6490;
+    --accent-soft: rgba(21, 119, 168, 0.12);
+    --bubble-out: #cdeafb;
+  }
+
+  .theme_forest {
+    --accent: #1f7f4a;
+    --accent-strong: #176b3d;
+    --accent-soft: rgba(31, 127, 74, 0.12);
+    --bubble-out: #d2f0dd;
+  }
+
+  .theme_grape {
+    --accent: #7444c0;
+    --accent-strong: #6338ab;
+    --accent-soft: rgba(116, 68, 192, 0.12);
+    --bubble-out: #e6dafa;
+  }
+
+  .theme_bubblegum {
+    --accent: #d44487;
+    --accent-strong: #bb3a76;
+    --accent-soft: rgba(212, 68, 135, 0.12);
+    --bubble-out: #fcd9ea;
+  }
+
+  .theme_mono {
+    --accent: #4b5563;
+    --accent-strong: #374151;
+    --accent-soft: rgba(75, 85, 99, 0.12);
+    --bubble-out: #dfe3ea;
+  }
+
+  .theme_midnight {
+    --accent: #33448c;
+    --accent-strong: #273771;
+    --accent-soft: rgba(51, 68, 140, 0.12);
+    --bubble-out: #c9d4f5;
+    --bubble-in: #e8ecf5;
+  }
+}
+
+/* ========================== chat wallpapers (§1.24) ======================= */
+/* CSS patterns only (no uploads in v0.4) — static by construction, tinted
+   from the active accent so they follow the theme and both color schemes. */
+
+.wp_dots {
+  background-image: radial-gradient(
+    color-mix(in srgb, var(--accent) 16%, transparent) 1.5px,
+    transparent 1.6px
+  );
+  background-size: 18px 18px;
+}
+
+.wp_grid {
+  background-image: linear-gradient(color-mix(in srgb, var(--accent) 9%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 9%, transparent) 1px, transparent 1px);
+  background-size: 26px 26px;
+}
+
+.wp_waves {
+  background-image: repeating-radial-gradient(
+    circle at 0 120%,
+    transparent 0,
+    transparent 38px,
+    color-mix(in srgb, var(--accent) 10%, transparent) 38px,
+    color-mix(in srgb, var(--accent) 10%, transparent) 40px
+  );
+}
+
+.wp_stars {
+  background-image: radial-gradient(color-mix(in srgb, var(--accent) 36%, transparent) 1px, transparent 1.3px),
+    radial-gradient(color-mix(in srgb, var(--accent) 22%, transparent) 1px, transparent 1.3px),
+    radial-gradient(color-mix(in srgb, var(--accent) 14%, transparent) 1.6px, transparent 2px);
+  background-size: 110px 110px, 70px 70px, 160px 160px;
+  background-position: 0 0, 35px 45px, 60px 20px;
+}
+
+/* The real stars tile (110/70/160px) puts ~no star inside a 34px-tall preview
+   swatch, rendering it identical to "None" — the preview gets a denser,
+   swatch-scaled tiling so the pattern reads at that size. */
+.wpPreview.wp_stars {
+  background-size: 24px 24px, 15px 15px, 36px 36px;
+  background-position: 3px 4px, 10px 11px, 19px 7px;
+}
+
+.wp_scribbles {
+  background-image: repeating-linear-gradient(
+      45deg,
+      transparent 0,
+      transparent 22px,
+      color-mix(in srgb, var(--accent) 11%, transparent) 22px,
+      color-mix(in srgb, var(--accent) 11%, transparent) 24px,
+      transparent 24px,
+      transparent 30px
+    ),
+    repeating-linear-gradient(
+      -45deg,
+      transparent 0,
+      transparent 34px,
+      color-mix(in srgb, var(--accent) 7%, transparent) 34px,
+      color-mix(in srgb, var(--accent) 7%, transparent) 36px
+    );
+}
+
+.wp_blobs {
+  background-image: radial-gradient(
+      ellipse 220px 170px at 18% 14%,
+      color-mix(in srgb, var(--accent) 12%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 260px 200px at 86% 42%,
+      color-mix(in srgb, var(--accent) 9%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 240px 190px at 30% 88%,
+      color-mix(in srgb, var(--accent) 11%, transparent),
+      transparent 70%
+    );
+}
+
+/* ======================= reduced motion: full stills ====================== */
+
+@media (prefers-reduced-motion: reduce) {
+  .stampFace,
+  .effectChip,
+  .fxPiece,
+  .fxRise,
+  .fxBurst,
+  .capsuleEnvelope,
+  .capsuleOpened,
+  .tttMark,
+  .plusPop,
+  .micRecording,
+  .recordDot {
+    animation: none;
+  }
+
+  .stampFace,
+  .stampPick,
+  .audioPlay,
+  .doodleColor,
+  .swatch,
+  .vibeCta,
+  .tttCell,
+  .waveBar {
+    transition: none;
+  }
+
+  .stampFace:hover,
+  .stampFace:focus-visible,
+  .stampPick:hover:not(:disabled),
+  .stampPick:focus-visible {
+    transform: none;
+  }
+}

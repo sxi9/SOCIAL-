@@ -2,11 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   PAGE_SIZE_DEFAULT,
   type ConversationListItem,
+  type GameMessageResponse,
   type ListMessagesResponse,
   type Message,
+  type MessageEffect,
+  type SendMessageRequest,
 } from '@socialchat/shared';
 import { api } from '@/lib/api';
 import * as db from '@/lib/db';
@@ -18,33 +22,55 @@ import {
   subscribePresence,
   unsubscribePresence,
 } from '@/lib/connection';
+import { claimFirstView, EFFECT_EMOJI, EFFECT_LABEL, wasViewed } from '@/lib/effects';
 import { conversationTitle, dmPeer, formatClock, formatLastSeen, messageSnippet } from '@/lib/format';
 import { uuidv7 } from '@/lib/ids';
-import { toggleReaction } from '@/lib/reactions';
+import { displayNameFor, loadPrefs, themeClassName, wallpaperClassName } from '@/lib/prefs';
+import { toggleReaction, toggleStamp } from '@/lib/reactions';
+import { pendingFor, refreshScheduled } from '@/lib/scheduled';
 import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import AfterglowCard from './AfterglowCard';
 import AttachmentView from './AttachmentView';
 import Avatar from './Avatar';
-import Composer, { type ComposerPayload } from './Composer';
+import ChatInfoSheet from './ChatInfoSheet';
+import Composer, { type ComposerPayload, type PlusAction } from './Composer';
+import DoodleSheet from './DoodleSheet';
+import EffectOverlay from './EffectOverlay';
+import GameTttView from './GameTttView';
 import { InviteButton } from './InviteSheet';
 import PlanHeader from './PlanHeader';
 import PollView from './PollView';
 import PreviewCard from './PreviewCard';
+import PuzzleResultView from './PuzzleResultView';
 import ReactionPicker from './ReactionPicker';
 import ReportSheet from './ReportSheet';
+import ScheduledDrawer from './ScheduledDrawer';
 import SeenBySheet from './SeenBySheet';
 import Ticks, { tickStateFor } from './Ticks';
+import TttChallengeSheet from './TttChallengeSheet';
 import TypingIndicator from './TypingIndicator';
+import VibeCheckSheet from './VibeCheckSheet';
+import VibeCheckView from './VibeCheckView';
 import styles from './chat.module.css';
+import exp from './expression.module.css';
 
 const LONG_PRESS_MS = 420;
 
+const TTL_SHORT: Record<number, string> = {
+  3600: '1h',
+  86400: '24h',
+  604800: '7d',
+  2592000: '30d',
+};
+
 export default function ChatView({ conversationId }: { conversationId: string }) {
   const state = useAppState();
+  const router = useRouter();
   const conv = state.conversations.get(conversationId);
   const messages = state.messages.get(conversationId) ?? [];
   const meId = state.me?.id;
+  const prefs = state.prefs.get(conversationId);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true);
@@ -55,11 +81,27 @@ export default function ChatView({ conversationId }: { conversationId: string })
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [noMoreHistory, setNoMoreHistory] = useState(false);
 
+  // v0.4 sheets & overlays
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [schedOpen, setSchedOpen] = useState(false);
+  const [doodleOpen, setDoodleOpen] = useState(false);
+  const [vibeOpen, setVibeOpen] = useState(false);
+  const [tttPickOpen, setTttPickOpen] = useState(false);
+  const [activeEffect, setActiveEffect] = useState<MessageEffect | null>(null);
+
   // This is the open conversation (read receipts, sync priority).
   useEffect(() => {
     store.setActiveConversation(conversationId);
     return () => store.setActiveConversation(null);
   }, [conversationId]);
+
+  // My personal prefs for this chat (§1.24) + my scheduled list (§1.26).
+  useEffect(() => {
+    void loadPrefs(conversationId);
+  }, [conversationId]);
+  useEffect(() => {
+    if (!store.state.scheduledLoaded) void refreshScheduled().catch(() => undefined);
+  }, []);
 
   // Initial window: IndexedDB tail, then the newest REST page if we lag.
   useEffect(() => {
@@ -160,6 +202,52 @@ export default function ChatView({ conversationId }: { conversationId: string })
     [conversationId]
   );
 
+  const sendRaw = useCallback(
+    async (req: Omit<SendMessageRequest, 'client_msg_id'>): Promise<void> => {
+      stickRef.current = true;
+      await sendMessage(conversationId, { client_msg_id: uuidv7(), ...req });
+    },
+    [conversationId]
+  );
+
+  // §1.27 tic-tac-toe challenge: DM = opponent implied; group = picker sheet.
+  const startTtt = useCallback(
+    async (opponentId?: string): Promise<void> => {
+      const res = await api.post<GameMessageResponse>(`/api/conversations/${conversationId}/games/ttt`, {
+        client_msg_id: uuidv7(),
+        ...(opponentId ? { opponent_id: opponentId } : {}),
+      });
+      stickRef.current = true;
+      store.applyMessage(res.message);
+      void db.storeMessages(conversationId, [res.message]).catch(() => undefined);
+    },
+    [conversationId]
+  );
+
+  const onPlusAction = useCallback(
+    (action: PlusAction) => {
+      if (action === 'doodle') setDoodleOpen(true);
+      else if (action === 'vibe') setVibeOpen(true);
+      else if (action === 'puzzle') router.push('/puzzle');
+      else if (action === 'ttt') {
+        if (conv?.type === 'dm') void startTtt();
+        else setTttPickOpen(true);
+      }
+    },
+    [conv?.type, router, startTtt]
+  );
+
+  // §1.22: a message's one-shot effect fires through here (first view only).
+  const onEffect = useCallback((effect: MessageEffect) => {
+    setActiveEffect((cur) => cur ?? effect);
+  }, []);
+
+  // My nickname map (§1.24) — personal, my view only.
+  const nameFor = useCallback(
+    (userId: string, fallback: string) => prefs?.nicknames[userId] ?? fallback,
+    [prefs]
+  );
+
   if (!conv) {
     return (
       <div className={styles.chatPage}>
@@ -175,7 +263,8 @@ export default function ChatView({ conversationId }: { conversationId: string })
     );
   }
 
-  const title = conversationTitle(conv, meId);
+  const baseTitle = conversationTitle(conv, meId);
+  const title = peer ? displayNameFor(prefs, peer) : baseTitle;
   const presence = peerId ? state.presence.get(peerId) : undefined;
   const activeCount = conv.participants.filter((p) => p.left_at === null).length;
   const subline =
@@ -194,9 +283,10 @@ export default function ChatView({ conversationId }: { conversationId: string })
   const oldestLoaded = messages.length ? messages[0].seq : 0;
   const hasOlder = !noMoreHistory && oldestLoaded > myJoinSeq + 1;
   const pendingOutbox = state.outbox.filter((o) => o.conversation_id === conversationId);
+  const pendingScheduled = pendingFor(conversationId);
 
   return (
-    <div className={styles.chatPage}>
+    <div className={`${styles.chatPage} ${themeClassName(exp, prefs?.theme)}`.trim()}>
       <header className={styles.header}>
         <Link href="/" className={styles.back} aria-label="Back">
           <BackIcon />
@@ -218,13 +308,41 @@ export default function ChatView({ conversationId }: { conversationId: string })
             {state.conn === 'error' ? 'connection error' : state.conn !== 'online' ? 'connecting…' : subline}
           </div>
         </div>
+        {conv.disappear_ttl_s !== null ? (
+          <span className={exp.ttlChip} title={`Messages disappear after ${TTL_SHORT[conv.disappear_ttl_s] ?? ''}`}>
+            ⏳ {TTL_SHORT[conv.disappear_ttl_s] ?? ''}
+          </span>
+        ) : null}
+        {pendingScheduled.length > 0 ? (
+          <button
+            type="button"
+            className="btn btn-ghost btn-icon"
+            aria-label={`${pendingScheduled.length} scheduled ${pendingScheduled.length === 1 ? 'message' : 'messages'}`}
+            onClick={() => setSchedOpen(true)}
+          >
+            <span style={{ position: 'relative', display: 'inline-flex' }}>
+              <ClockIcon />
+              <span className="badge" style={{ position: 'absolute', top: -8, right: -10, minWidth: 16, height: 16, fontSize: 10 }}>
+                {pendingScheduled.length}
+              </span>
+            </span>
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="btn btn-ghost btn-icon"
+          aria-label="Chat settings"
+          onClick={() => setInfoOpen(true)}
+        >
+          <GearIcon />
+        </button>
       </header>
 
       {planBeacon && meId ? <PlanHeader beacon={planBeacon} meId={meId} /> : null}
 
       <div
         ref={scrollRef}
-        className={styles.scroll}
+        className={`${styles.scroll} ${wallpaperClassName(exp, prefs?.wallpaper)}`.trim()}
         onScroll={(e) => {
           const el = e.currentTarget;
           stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -239,7 +357,7 @@ export default function ChatView({ conversationId }: { conversationId: string })
           <div className={styles.emptyChat}>
             <QuietDoodle />
             <h3>It&rsquo;s quiet in here… too quiet.</h3>
-            <p>Say hi, drop a meme, or rope someone else in.</p>
+            <p>Say hi, drop a doodle, or rope someone else in.</p>
             {/* Group chats mint a group-scoped invite (admin-only server-side,
                 §1.11); DMs mint a personal DM-with-me link. */}
             <InviteButton
@@ -256,6 +374,8 @@ export default function ChatView({ conversationId }: { conversationId: string })
             conv={conv}
             meId={meId ?? ''}
             fresh={new Date(msg.created_at).getTime() > mountedAtRef.current}
+            nameFor={nameFor}
+            onEffect={onEffect}
           />
         ))}
         {pendingOutbox.map((item) => (
@@ -266,7 +386,42 @@ export default function ChatView({ conversationId }: { conversationId: string })
       </div>
 
       <TypingIndicator conversation={conv} />
-      <Composer onSubmit={submit} onTyping={() => sendTyping(conversationId)} autoFocus />
+      <Composer
+        onSubmit={submit}
+        onTyping={() => sendTyping(conversationId)}
+        autoFocus
+        conversationId={conversationId}
+        onPlusAction={onPlusAction}
+      />
+
+      {activeEffect ? <EffectOverlay effect={activeEffect} onDone={() => setActiveEffect(null)} /> : null}
+      {infoOpen && meId ? <ChatInfoSheet conv={conv} meId={meId} onClose={() => setInfoOpen(false)} /> : null}
+      {schedOpen ? <ScheduledDrawer conversationId={conversationId} onClose={() => setSchedOpen(false)} /> : null}
+      {doodleOpen ? (
+        <DoodleSheet
+          onClose={() => setDoodleOpen(false)}
+          onSend={async (attachmentId) => {
+            await sendRaw({ type: 'image', attachment_ids: [attachmentId], metadata: { doodle: true } });
+          }}
+        />
+      ) : null}
+      {vibeOpen ? (
+        <VibeCheckSheet
+          onClose={() => setVibeOpen(false)}
+          onSend={async (prompt) => {
+            await sendRaw({ type: 'vibe_check', body: prompt });
+          }}
+        />
+      ) : null}
+      {tttPickOpen && meId ? (
+        <TttChallengeSheet
+          conv={conv}
+          meId={meId}
+          nameFor={nameFor}
+          onClose={() => setTttPickOpen(false)}
+          onPick={(opponentId) => startTtt(opponentId)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -276,16 +431,22 @@ function MessageRow({
   conv,
   meId,
   fresh,
+  nameFor,
+  onEffect,
 }: {
   message: Message;
   conv: ConversationListItem;
   meId: string;
   fresh: boolean;
+  nameFor: (userId: string, fallback: string) => string;
+  onEffect: (effect: MessageEffect) => void;
 }) {
+  const state = useAppState();
   const [picker, setPicker] = useState(false);
   const [info, setInfo] = useState(false);
   const [report, setReport] = useState(false);
   const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const own = message.sender_id === meId;
 
   const cancelPress = useCallback(() => {
     if (pressTimer.current !== null) {
@@ -294,6 +455,49 @@ function MessageRow({
     }
   }, []);
   useEffect(() => cancelPress, [cancelPress]);
+
+  // §1.22: one-shot full-screen effect on FIRST view only (IndexedDB-tracked);
+  // fully replaced by the static bubble badge under prefers-reduced-motion.
+  const effect = message.metadata.effect;
+  const effectSeq = message.seq;
+  const effectConv = message.conversation_id;
+  const deleted = message.deleted_at !== null;
+  useEffect(() => {
+    if (!effect || deleted) return;
+    if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      // Mark it viewed so turning motion back on later never replays history.
+      void claimFirstView('effect', effectConv, effectSeq);
+      return;
+    }
+    let cancelled = false;
+    void claimFirstView('effect', effectConv, effectSeq).then((first) => {
+      if (first && !cancelled) onEffect(effect);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [effect, deleted, effectConv, effectSeq, onEffect]);
+
+  // §1.26 capsule reveal state (client-tracked like effects).
+  const isCapsule = message.metadata.capsule === true && !deleted;
+  const [capsuleOpen, setCapsuleOpen] = useState<boolean | null>(isCapsule ? null : true);
+  const [justOpened, setJustOpened] = useState(false);
+  useEffect(() => {
+    if (!isCapsule) return;
+    let cancelled = false;
+    // The author sees their own capsule open (they wrote it); recipients get
+    // the sealed envelope until their first tap.
+    if (own) {
+      setCapsuleOpen(true);
+      return;
+    }
+    void wasViewed('capsule', message.conversation_id, message.seq).then((seen) => {
+      if (!cancelled) setCapsuleOpen(seen);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isCapsule, own, message.conversation_id, message.seq]);
 
   if (message.type === 'system') {
     // Afterglow recap (v0.3 §1.15) renders as a card, not a system pill.
@@ -309,14 +513,33 @@ function MessageRow({
     }
     return <div className={styles.system}>{message.body ?? messageSnippet(message)}</div>;
   }
-  const own = message.sender_id === meId;
+
+  // §1.25 tombstone: the sweep nulled body/metadata and dropped attachments;
+  // the row (and its seq) survives so the bubble keeps its position.
+  if (deleted) {
+    return (
+      <div className={`${styles.row}${own ? ` ${styles.own}` : ''}`}>
+        <div className={styles.msgCol}>
+          <div className={styles.bubble}>
+            <span className={exp.tombstone}>
+              <span aria-hidden>⏳</span> Message expired
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const sender =
     !own && conv.type === 'group'
       ? message.sender_id === null
         ? message.type === 'poll'
           ? null // the auto venue poll speaks for itself
           : 'Unknown'
-        : conv.participants.find((p) => p.user.id === message.sender_id)?.user.display_name ?? 'Unknown'
+        : (() => {
+            const p = conv.participants.find((x) => x.user.id === message.sender_id);
+            return p ? nameFor(p.user.id, p.user.display_name) : 'Unknown';
+          })()
       : null;
 
   const toggle = (emoji: string, mine: boolean) =>
@@ -328,6 +551,12 @@ function MessageRow({
     setPicker(false);
   };
 
+  const stamped = message.stamps.some((u) => u.id === meId);
+  const stamp = () => {
+    void toggleStamp(message.conversation_id, message.seq, stamped);
+    setPicker(false);
+  };
+
   // Touch: long-press the bubble opens the quick-react row (desktop gets the
   // hover button instead — chat.module.css hides it on hover-less devices).
   const startPress = () => {
@@ -335,32 +564,96 @@ function MessageRow({
     pressTimer.current = setTimeout(() => setPicker(true), LONG_PRESS_MS);
   };
 
+  const sealed = isCapsule && capsuleOpen !== true;
+
+  // §1.23: an avatar-stamp vibe reply is {type:'text', no body, no attachments}
+  // — without its own render path the bubble is an empty shell with only the
+  // clock. The bubble IS the sender's face, mirroring the collage tile.
+  const isStampReply = message.metadata.stamp === true && message.metadata.vibe_reply_seq !== undefined;
+  const stampUser = isStampReply
+    ? conv.participants.find((x) => x.user.id === message.sender_id)?.user ?? null
+    : null;
+
+  const bubbleContent = sealed ? (
+    <button
+      type="button"
+      className={styles.bubble}
+      style={{ border: 'none', cursor: 'pointer', font: 'inherit', textAlign: 'inherit' }}
+      onClick={() => {
+        if (capsuleOpen === null) return; // still checking local state
+        void claimFirstView('capsule', message.conversation_id, message.seq);
+        setJustOpened(true);
+        setCapsuleOpen(true);
+      }}
+      aria-label="Sealed time capsule — tap to open"
+    >
+      <span className={exp.capsuleSealed}>
+        <span className={exp.capsuleEnvelope} aria-hidden>
+          💌
+        </span>
+        <span className={exp.capsuleHint}>{capsuleOpen === null ? 'A time capsule…' : 'Tap to open'}</span>
+      </span>
+    </button>
+  ) : (
+    <div
+      className={`${styles.bubble}${justOpened ? ` ${exp.capsuleOpened}` : ''}`}
+      onTouchStart={startPress}
+      onTouchEnd={cancelPress}
+      onTouchMove={cancelPress}
+      onTouchCancel={cancelPress}
+    >
+      {sender ? <div className={styles.sender}>{sender}</div> : null}
+      {isCapsule ? (
+        <span className={exp.capsuleTag}>
+          <span aria-hidden>💌</span> Time capsule
+        </span>
+      ) : null}
+      {message.attachments.map((att) => (
+        <AttachmentView key={att.id} attachment={att} doodle={message.metadata.doodle === true} />
+      ))}
+      {message.metadata.link_preview ? <PreviewCard preview={message.metadata.link_preview} /> : null}
+      {message.type === 'poll' && message.poll ? (
+        <PollView poll={message.poll} />
+      ) : message.type === 'vibe_check' && message.vibe ? (
+        <VibeCheckView message={message} nameFor={nameFor} />
+      ) : message.type === 'game_ttt' && message.metadata.game ? (
+        <GameTttView message={message} conv={conv} meId={meId} nameFor={nameFor} />
+      ) : message.type === 'puzzle_result' && message.metadata.puzzle ? (
+        <PuzzleResultView puzzle={message.metadata.puzzle} own={own} />
+      ) : isStampReply ? (
+        <span className={exp.stampReplyBody}>
+          {stampUser ? (
+            <Avatar
+              avatar={stampUser.avatar}
+              name={nameFor(stampUser.id, stampUser.display_name)}
+              size={44}
+              animated
+            />
+          ) : null}
+          <span className={exp.stampReplyLabel}>
+            <span aria-hidden>🎭</span> {own ? 'You answered the vibe check' : 'Answered the vibe check'}
+          </span>
+        </span>
+      ) : message.body ? (
+        <span>{message.body}</span>
+      ) : null}
+      <span className={styles.meta}>
+        {effect ? (
+          <span className={exp.effectBadge} title={`Sent with ${EFFECT_LABEL[effect].toLowerCase()}`} aria-label={`Sent with ${EFFECT_LABEL[effect].toLowerCase()}`}>
+            {EFFECT_EMOJI[effect]}
+          </span>
+        ) : null}
+        {formatClock(message.created_at)}
+        {own ? <Ticks state={tickStateFor(message, conv, meId)} /> : null}
+      </span>
+    </div>
+  );
+
   return (
     <div className={`${styles.row}${own ? ` ${styles.own}` : ''}${fresh ? ` ${styles.enter}` : ''}`}>
       <div className={styles.msgCol}>
         <div className={styles.bubbleWrap}>
-          <div
-            className={styles.bubble}
-            onTouchStart={startPress}
-            onTouchEnd={cancelPress}
-            onTouchMove={cancelPress}
-            onTouchCancel={cancelPress}
-          >
-            {sender ? <div className={styles.sender}>{sender}</div> : null}
-            {message.attachments.map((att) => (
-              <AttachmentView key={att.id} attachment={att} />
-            ))}
-            {message.metadata.link_preview ? <PreviewCard preview={message.metadata.link_preview} /> : null}
-            {message.type === 'poll' && message.poll ? (
-              <PollView poll={message.poll} />
-            ) : message.body ? (
-              <span>{message.body}</span>
-            ) : null}
-            <span className={styles.meta}>
-              {formatClock(message.created_at)}
-              {own ? <Ticks state={tickStateFor(message, conv, meId)} /> : null}
-            </span>
-          </div>
+          {bubbleContent}
           <button
             type="button"
             className={styles.reactBtn}
@@ -371,7 +664,13 @@ function MessageRow({
           </button>
           {picker ? (
             <>
-              <ReactionPicker onPick={pick} onClose={() => setPicker(false)} />
+              <ReactionPicker
+                onPick={pick}
+                onClose={() => setPicker(false)}
+                onStamp={stamp}
+                stamped={stamped}
+                myAvatar={state.me?.avatar ?? null}
+              />
               {/* Extra actions ride under the quick-react popover: seen-by info
                   on own messages (§1.18), report on others' (§1.14). */}
               <div className={styles.msgMenu} role="menu">
@@ -415,6 +714,31 @@ function MessageRow({
             onClose={() => setReport(false)}
           />
         ) : null}
+        {/* §1.19 stamps: FACES, not counters — reactor avatars in first-stamp
+            order, animated under the §5 motion rules (Avatar gates internally).
+            Tap your own face to unstamp. */}
+        {message.stamps.length > 0 ? (
+          <div className={`${exp.stampRow}${own ? ` ${exp.stampRowOwn}` : ''}`} aria-label="Avatar stamps">
+            {message.stamps.map((u) =>
+              u.id === meId ? (
+                <button
+                  key={u.id}
+                  type="button"
+                  className={exp.stampFace}
+                  aria-label="Your stamp — tap to remove"
+                  title="You stamped this — tap to remove"
+                  onClick={() => void toggleStamp(message.conversation_id, message.seq, true)}
+                >
+                  <Avatar avatar={u.avatar} name={nameFor(u.id, u.display_name)} size={26} animated />
+                </button>
+              ) : (
+                <span key={u.id} className={exp.stampFace} title={`${nameFor(u.id, u.display_name)} stamped this`}>
+                  <Avatar avatar={u.avatar} name={nameFor(u.id, u.display_name)} size={26} animated />
+                </span>
+              )
+            )}
+          </div>
+        ) : null}
         {message.reactions.length > 0 ? (
           <div className={styles.reactionChips}>
             {message.reactions.map((r) => (
@@ -446,6 +770,29 @@ function SmileIcon() {
       <circle cx="7.4" cy="8.4" r="1" fill="currentColor" />
       <circle cx="12.6" cy="8.4" r="1" fill="currentColor" />
       <path d="M6.8 12 a3.6 3.6 0 0 0 6.4 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
+      <circle cx="10" cy="10" r="2.6" stroke="currentColor" strokeWidth="1.5" />
+      <path
+        d="M10 2.8 L10.9 4.9 a5.4 5.4 0 0 1 2.3 1 l2.2 -0.6 L16.6 7.8 l-1.6 1.6 a5.4 5.4 0 0 1 0 1.2 l1.6 1.6 -1.2 2.5 -2.2 -0.6 a5.4 5.4 0 0 1 -2.3 1 L10 17.2 9.1 15.1 a5.4 5.4 0 0 1 -2.3 -1 l-2.2 0.6 -1.2 -2.5 1.6 -1.6 a5.4 5.4 0 0 1 0 -1.2 L3.4 7.8 4.6 5.3 l2.2 0.6 a5.4 5.4 0 0 1 2.3 -1 Z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ClockIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
+      <circle cx="10" cy="10" r="7.2" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M10 5.8 V10 L13 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
   );
 }

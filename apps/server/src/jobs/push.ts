@@ -24,6 +24,13 @@ function snippetFor(type: string, body: string | null): string {
       return 'Video';
     case 'file':
       return 'File';
+    // v0.4 (§1.20/§1.27): fixed snippets — no content leaks into the push.
+    case 'audio':
+      return 'Voice note';
+    case 'game_ttt':
+      return 'Tic-tac-toe challenge';
+    case 'puzzle_result':
+      return 'Puzzle result';
     default:
       return (body ?? '').slice(0, 140) || 'New message';
   }

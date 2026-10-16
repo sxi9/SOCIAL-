@@ -191,3 +191,171 @@ export const AREA_MAX_CHARS = 64;
 // ---- Reports (v0.3 — API.md §1.14) ----
 export const REPORT_REASON_MAX_CHARS = 500;
 export const REPORT_RATE_PER_HOUR = 10;
+
+// ============================ v0.4 additions =================================
+// Expression pack (FEATURES #31–#38; API.md §1.19–§1.27; ADR-010). Everything
+// below is SELF-HOSTED: no third-party GIF/sticker APIs — the only media is
+// user-generated (avatars, uploads, doodles).
+
+// ---- Avatar stamps (v0.4 — API.md §1.19) ----
+// A stamp is a reaction row (message_reactions.kind = 'stamp') whose "emoji"
+// column holds this sentinel, so the existing PK (conversation_id, seq,
+// user_id, emoji) enforces the one-stamp-per-user-per-message cap for free.
+export const REACTION_KINDS = ['emoji', 'stamp'] as const;
+export const STAMP_REACTION_KEY = ':stamp:';
+// PK-enforced, documented for clients (the second stamp POST is idempotent 204).
+export const STAMPS_PER_USER_PER_MESSAGE_MAX = 1;
+// The 8-distinct cap (REACTIONS_PER_USER_PER_MESSAGE_MAX) counts kind='emoji'
+// rows ONLY — a stamp never eats an emoji slot.
+
+// ---- Voice notes (v0.4 — API.md §1.20) ----
+// Sniffed-MIME allowlist for kind 'audio' (ogg/opus, webm/opus, m4a/aac, mp3).
+export const AUDIO_MIME_ALLOWLIST = [
+  'audio/ogg',
+  'audio/webm',
+  'audio/mp4',
+  'audio/mpeg',
+] as const;
+export const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
+// Worker-probed (ffprobe); longer sources flip the attachment to 'failed'.
+export const MAX_AUDIO_DURATION_S = 300;
+// Fixed-size waveform peaks array stored on the attachment and inlined in the
+// DTO: duration is split into this many equal segments; each bucket is the
+// segment's peak loudness normalized to 0..AUDIO_WAVEFORM_PEAK_MAX (integers).
+export const AUDIO_WAVEFORM_BUCKETS = 48;
+export const AUDIO_WAVEFORM_PEAK_MAX = 100;
+
+// ---- Doodles (v0.4 — API.md §1.21) ----
+// A doodle is an ordinary PNG image upload + metadata.doodle = true on the
+// message (render-with-sketchy-frame flag; zero new server machinery). Client
+// canvas export guidance only — the normal image pipeline enforces real limits.
+export const DOODLE_CANVAS_MAX_PX = 1024;
+
+// ---- Message effects (v0.4 — API.md §1.22) ----
+// metadata.effect on a send. CONSENT RULE (binding): the client may AUTO-
+// SUGGEST an effect when a trigger phrase is typed, but the user must confirm —
+// an effect is NEVER auto-attached or auto-fired (PSYCHOLOGY: the user
+// initiates; no app-pushed surprises). Plays ONCE per viewer per message
+// (client-tracked) with a full prefers-reduced-motion fallback (static badge).
+export const MESSAGE_EFFECTS = ['confetti', 'hearts', 'fireworks', 'snow'] as const;
+// Case-insensitive substring triggers for the composer's suggest chip.
+export const EFFECT_TRIGGERS = [
+  { phrase: 'congrats', effect: 'confetti' },
+  { phrase: 'congratulations', effect: 'confetti' },
+  { phrase: 'happy birthday', effect: 'confetti' },
+  { phrase: 'love you', effect: 'hearts' },
+  { phrase: 'happy new year', effect: 'fireworks' },
+  { phrase: "it's snowing", effect: 'snow' },
+  { phrase: 'its snowing', effect: 'snow' },
+] as const satisfies ReadonlyArray<{
+  phrase: string;
+  effect: (typeof MESSAGE_EFFECTS)[number];
+}>;
+
+// ---- Vibe checks (v0.4 — API.md §1.23) ----
+// Rotating prompt deck (client picks, or writes a custom prompt ≤ the same
+// cap). The prompt IS the message body of a type='vibe_check' message.
+export const VIBE_CHECK_PROMPT_MAX_CHARS = 120;
+export const VIBE_CHECK_PROMPTS = [
+  'post the last photo in your camera roll',
+  'doodle your current mood',
+  'show us your view right now',
+  'your lock screen. no cheating',
+  'draw the weekend in one doodle',
+  "today's outfit check",
+  'what are you eating rn',
+  'show your desk as it actually looks',
+  'doodle your spirit animal',
+  'last thing that made you laugh',
+  'your sky right now',
+  'draw this group as animals',
+  'show the shoes you are wearing',
+  'your most chaotic recent photo',
+  'doodle your dream vacation',
+  'what is in your hand right now',
+  'the oldest photo you still love',
+  'draw your week as weather',
+  'show us your water bottle / mug',
+  'your current tab situation (screenshot it)',
+  'doodle a self-portrait in 30 seconds',
+  'the last thing you cooked',
+  'show something yellow near you',
+  'draw where you wish you were',
+] as const;
+// Reply refs inlined on the vibe message DTO (reply_count carries the rest).
+export const VIBE_REPLIES_PREVIEW_MAX = 12;
+
+// ---- Chat themes / wallpapers / nicknames (v0.4 — API.md §1.24) ----
+// Themes and wallpapers are PERSONAL (my view only, synced across my devices)
+// — never fanned out to other participants. Fixed sets, text + CHECK as usual;
+// wallpapers are CSS patterns, NO uploads in v0.4.
+export const CHAT_THEMES = [
+  'classic',
+  'sunset',
+  'ocean',
+  'forest',
+  'grape',
+  'bubblegum',
+  'mono',
+  'midnight',
+] as const;
+export const CHAT_WALLPAPERS = [
+  'dots',
+  'grid',
+  'waves',
+  'stars',
+  'scribbles',
+  'blobs',
+] as const;
+// Per-(owner, conversation, target) nickname — also personal to the owner.
+export const NICKNAME_MAX_CHARS = 32;
+
+// ---- Disappearing messages (v0.4 — API.md §1.25) ----
+// conversations.disappear_ttl_s is NULL (off) or one of these (CHECK-pinned):
+// 1 hour, 24 hours, 7 days, 30 days.
+export const DISAPPEAR_TTL_OPTIONS_S = [3600, 86400, 604800, 2592000] as const;
+// Worker sweep cadence (queue `timers`, repeatable).
+export const DISAPPEAR_SWEEP_INTERVAL_S = 60;
+
+// ---- Scheduled messages & time capsules (v0.4 — API.md §1.26) ----
+export const SCHEDULED_PENDING_MAX_PER_USER = 50;
+export const SCHEDULED_MIN_LEAD_S = 60;
+// Far enough out for birthday time capsules; one leap-year of horizon.
+export const SCHEDULED_MAX_HORIZON_S = 366 * 24 * 3600;
+export const SCHEDULED_CREATE_RATE_PER_HOUR = 30;
+
+// ---- Mini-games: tic-tac-toe (v0.4 — API.md §1.27) ----
+export const TTT_BOARD_CELLS = 9;
+
+// ---- Daily word puzzle (v0.4 — API.md §1.27) ----
+// The day's word = PUZZLE_WORDLIST[ sha256(`${yyyy-mm-dd}:${PUZZLE_SECRET}`)
+// mod length ] — deterministic per UTC date, unpredictable to clients because
+// the secret is server-side (env PUZZLE_SECRET). The wordlist itself is public
+// (bundled here); guesses are scored SERVER-side only.
+export const PUZZLE_WORD_LENGTH = 5;
+export const PUZZLE_MAX_GUESSES = 6;
+export const PUZZLE_GUESS_REGEX = /^[a-z]{5}$/;
+// Score strings are 5 chars of g (green) / y (yellow) / x (grey); clients map
+// to emoji for the shareable no-spoiler grid.
+export const PUZZLE_SCORE_REGEX = /^[gyx]{5}$/;
+export const PUZZLE_SCORE_EMOJI = { g: '🟩', y: '🟨', x: '⬜' } as const;
+// Curated common 5-letter words. Appending is contract-safe (selection is
+// modulo length, so APPEND ONLY — reordering or removal would reshuffle every
+// future day's word).
+export const PUZZLE_WORDLIST = [
+  'about', 'apple', 'beach', 'brave', 'bread', 'brick', 'charm', 'chess',
+  'cloud', 'crane', 'dance', 'dream', 'drift', 'earth', 'feast', 'flame',
+  'fruit', 'ghost', 'giant', 'glide', 'grape', 'green', 'happy', 'heart',
+  'house', 'juice', 'laugh', 'lemon', 'light', 'lucky', 'lunar', 'maple',
+  'mango', 'money', 'month', 'moose', 'mount', 'music', 'night', 'noble',
+  'ocean', 'olive', 'onion', 'paint', 'party', 'peach', 'pearl', 'piano',
+  'pizza', 'plant', 'plaza', 'pride', 'queen', 'quiet', 'radio', 'raven',
+  'river', 'robot', 'salsa', 'scarf', 'shine', 'smile', 'snack', 'spark',
+  'spice', 'spoon', 'storm', 'story', 'sugar', 'sunny', 'sweet', 'table',
+  'tiger', 'toast', 'torch', 'train', 'truck', 'tulip', 'uncle', 'vivid',
+  'wagon', 'water', 'whale', 'wheat', 'world', 'youth', 'zebra', 'zesty',
+] as const;
+// NO leaderboard, NO rankings, NO streak counters, ever: sharing a grid into a
+// chat is a named, consensual act; a ranked table and a streak are on the
+// PSYCHOLOGY never-build list. GET /api/puzzle/today/friends lists DM partners
+// who POSTED a result (opt-in by sharing), ordered by username — never by score.

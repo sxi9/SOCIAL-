@@ -4,6 +4,10 @@
   height: 100dvh;
   display: flex;
   flex-direction: column;
+  /* Overflow guard: a child's intrinsic min-content width (composer icon row,
+     ttt board, long unbreakable strings) must clip, never inflate the page
+     past the viewport into sideways scrolling on phones. */
+  overflow-x: hidden;
 }
 
 .header {
@@ -53,6 +57,9 @@
 .scroll {
   flex: 1;
   overflow-y: auto;
+  /* overflow-y: auto alone computes overflow-x to auto → a sideways-scrollable
+     message pane whenever anything overflows; clip it instead. */
+  overflow-x: hidden;
   padding: 12px 12px 4px;
   display: flex;
   flex-direction: column;
@@ -619,6 +626,9 @@
 
 .composerInput {
   flex: 1;
+  /* Without this, the textarea's ~180px min-content width can't compress and
+     the 5-icon composer row inflates the whole page past a 390px viewport. */
+  min-width: 0;
   resize: none;
   max-height: 120px;
   min-height: 40px;

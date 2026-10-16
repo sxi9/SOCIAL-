@@ -72,12 +72,15 @@ export async function insertMessage(opts: InsertMessageOpts): Promise<MsgRow> {
     const ids = opts.attachmentIds ?? [];
     if (ids.length > 0) {
       // Must be the sender's own unbound attachments; binding clears
-      // share_import_id (API.md §1.5).
+      // share_import_id (API.md §1.5). An attachment waiting on a pending
+      // scheduled message (v0.4 §1.26) is NOT unbound — it cannot be hijacked
+      // by a normal send.
       const bound = (await tx.execute(sql`
         UPDATE attachments SET message_id = ${msg!.id}, share_import_id = NULL
         WHERE id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
           AND uploader_id = ${opts.senderId}
           AND message_id IS NULL
+          AND scheduled_message_id IS NULL
         RETURNING id
       `)) as unknown as { id: string }[];
       if (bound.length !== ids.length) throw badRequest('invalid_attachments');
@@ -139,6 +142,8 @@ export async function sendSystemMessage(
   body: string,
   actorId?: string,
   targetId?: string,
+  // v0.4 (§1.25): extra system-event fields, e.g. {ttl_s} on disappear_changed.
+  extra?: Record<string, unknown>,
 ): Promise<Message> {
   const msg = await insertMessage({
     conversationId,
@@ -150,8 +155,25 @@ export async function sendSystemMessage(
         event,
         ...(actorId ? { actor_id: actorId } : {}),
         ...(targetId ? { target_id: targetId } : {}),
+        ...(extra ?? {}),
       },
     },
   });
   return fanOutNewMessage(msg);
+}
+
+/**
+ * Full-DTO msg.updated re-ship of one message to the conversation's active
+ * participants (API.md §2.3) — v0.4 uses it for the vibe message's growing
+ * reply collage (§1.23), disappearing tombstones (§1.25) and tic-tac-toe
+ * moves (§1.27). Broadcast DTO: no single viewer, `mine`/`my_*` unset.
+ */
+export async function publishMessageUpdated(msg: MsgRow): Promise<void> {
+  const [dto] = await messageDtos([msg]);
+  if (!dto) return;
+  const recipients = await activeParticipantUserIds(msg.conversationId);
+  await publishToUsers(recipients, {
+    t: 'msg.updated',
+    d: { conversation_id: msg.conversationId, message: dto },
+  });
 }

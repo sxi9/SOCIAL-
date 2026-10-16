@@ -6,8 +6,10 @@ import { PassThrough, type Readable } from 'node:stream';
 import { encode as encodeBlurhash } from 'blurhash';
 import sharp from 'sharp';
 import {
+  AUDIO_MIME_ALLOWLIST,
   AVATAR_SOURCE_MIME_ALLOWLIST,
   IMAGE_MIME_ALLOWLIST,
+  MAX_AUDIO_BYTES,
   MAX_AVATAR_SOURCE_BYTES,
   MAX_FILE_BYTES,
   MAX_IMAGE_BYTES,
@@ -22,7 +24,7 @@ import { SNIFF_BYTES, sniffMime, type SniffResult } from '../../lib/sniff.js';
 import { copyObject, deleteObject, putObject, uploadStream } from '../../s3.js';
 
 export interface ProcessedFile {
-  kind: 'image' | 'video' | 'file';
+  kind: 'image' | 'video' | 'file' | 'audio';
   mime: string;
   originalKey: string;
   thumbKey: string | null;
@@ -75,7 +77,10 @@ export function collectHead(file: Readable, bytes: number): Promise<Head> {
 /** Buffer the remainder of a head-collected stream, enforcing a byte cap. */
 export function bufferRest(file: Readable, { head, ended }: Head, maxBytes: number): Promise<Buffer> {
   if (head.length > maxBytes) return Promise.reject(tooLarge());
-  if (ended) return Promise.resolve(head);
+  // `readableEnded` covers the race where the source (e.g. a busboy file
+  // stream fed in one synchronous burst) emitted 'end' in the microtask gap
+  // after collectHead removed its listeners — 'end' will never fire again.
+  if (ended || file.readableEnded) return Promise.resolve(head);
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [head];
     let size = head.length;
@@ -123,7 +128,11 @@ async function streamToTmp(
   };
 
   push(headInfo.head);
-  if (headInfo.ended) {
+  // `readableEnded` covers the race where the source emitted 'end' between
+  // collectHead's listener cleanup and this wiring (one-burst small files):
+  // waiting on 'end' would deadlock the upload. 'end' only fires with an
+  // empty internal buffer, so the head already holds every byte.
+  if (headInfo.ended || file.readableEnded) {
     pt.end();
   } else {
     file.on('data', (chunk: Buffer) => {
@@ -235,11 +244,19 @@ async function processImage(buf: Buffer, sniff: SniffResult): Promise<ImageResul
   };
 }
 
-function kindOf(sniff: SniffResult): 'image' | 'video' | 'file' {
+function kindOf(sniff: SniffResult): 'image' | 'video' | 'file' | 'audio' {
   const effective = sniff.mime === 'image/apng' ? 'image/png' : sniff.mime;
   if ((IMAGE_MIME_ALLOWLIST as readonly string[]).includes(effective)) return 'image';
   if ((VIDEO_MIME_ALLOWLIST as readonly string[]).includes(sniff.mime)) return 'video';
+  // v0.4 (§1.20): sniffed audio allowlist (ogg/opus, webm/opus, m4a/aac, mp3).
+  if ((AUDIO_MIME_ALLOWLIST as readonly string[]).includes(sniff.mime)) return 'audio';
   return 'file';
+}
+
+function maxBytesFor(kind: 'video' | 'file' | 'audio'): number {
+  if (kind === 'video') return MAX_VIDEO_BYTES;
+  if (kind === 'audio') return MAX_AUDIO_BYTES;
+  return MAX_FILE_BYTES;
 }
 
 async function finishImage(buf: Buffer, sniff: SniffResult, fileName: string | null): Promise<ProcessedFile> {
@@ -280,7 +297,7 @@ export async function processUploadStream(
     return finishImage(buf, sniff, fileName);
   }
 
-  const maxBytes = kind === 'video' ? MAX_VIDEO_BYTES : MAX_FILE_BYTES;
+  const maxBytes = maxBytesFor(kind);
   const { tmpKey, sha256, size } = await streamToTmp(file, headInfo, maxBytes, sniff.mime);
   const originalKey = contentKey(sha256, sniff.ext);
   await copyObject(tmpKey, originalKey);
@@ -294,8 +311,9 @@ export async function processUploadStream(
     sizeBytes: size,
     width: null,
     height: null,
-    // Video derived fields (poster/thumb/blurhash/dims) hydrate via the worker.
-    status: kind === 'video' ? 'pending' : 'ready',
+    // Video derived fields (poster/thumb/blurhash/dims) and audio derived
+    // fields (duration_ms + 48-bucket waveform, §1.20) hydrate via the worker.
+    status: kind === 'video' || kind === 'audio' ? 'pending' : 'ready',
     fileName,
   };
 }
@@ -313,7 +331,7 @@ export async function processUploadBuffer(
     if (buf.length > MAX_IMAGE_BYTES) throw tooLarge();
     return finishImage(buf, sniff, fileName);
   }
-  const maxBytes = kind === 'video' ? MAX_VIDEO_BYTES : MAX_FILE_BYTES;
+  const maxBytes = maxBytesFor(kind);
   if (buf.length > maxBytes) throw tooLarge();
   const originalKey = contentKey(sha256Hex(buf), sniff.ext);
   await putObject(originalKey, buf, sniff.mime);
@@ -326,7 +344,7 @@ export async function processUploadBuffer(
     sizeBytes: buf.length,
     width: null,
     height: null,
-    status: kind === 'video' ? 'pending' : 'ready',
+    status: kind === 'video' || kind === 'audio' ? 'pending' : 'ready',
     fileName,
   };
 }

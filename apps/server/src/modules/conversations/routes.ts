@@ -9,6 +9,7 @@ import {
   ListConversationsQuerySchema,
   MAX_GROUP_PARTICIPANTS,
   UpdateConversationRequestSchema,
+  UpdateDisappearRequestSchema,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
@@ -335,6 +336,58 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
         mime: result.mime,
       });
       return reply.status(202).send({ avatar: avatarDto(updated!) });
+    },
+  );
+
+  // §1.25 PATCH /api/conversations/:id/disappearing — conversation-wide TTL
+  // (null = off). DM: any active participant; group: admin only. Every
+  // EFFECTIVE change drops a 'disappear_changed' system message (the
+  // announcement IS the audit trail); an idempotent re-set is silent.
+  app.patch(
+    '/api/conversations/:id/disappearing',
+    {
+      preHandler: requireAuth,
+      schema: { params: IdParams, body: UpdateDisappearRequestSchema },
+    },
+    async (req) => {
+      const { user } = authed(req);
+      const part = await requireActiveParticipant(req.params.id, user.id);
+      const [conv] = await db.select().from(convs).where(eq(convs.id, req.params.id)).limit(1);
+      if (!conv) throw notFound('conversation_not_found');
+      if (conv.type === 'group' && part.role !== 'admin') throw forbidden();
+
+      // §1.14: a DM frozen by a block refuses the TTL toggle 404-shaped, like
+      // sends/schedules — a blocked user must not push 'disappear_changed'
+      // fan-out through the block, nor arm the sweep to destroy the frozen
+      // DM's shared history (the blocker may need it for a §1.14 report).
+      if (conv.type === 'dm') {
+        const peer = (await activeParticipantUserIds(req.params.id)).find((id) => id !== user.id);
+        if (peer && (await isBlockedPair(user.id, peer))) throw notFound('conversation_not_found');
+      }
+
+      const ttl = req.body.ttl_s;
+      if ((conv.disappearTtlS ?? null) !== (ttl ?? null)) {
+        await db.update(convs).set({ disappearTtlS: ttl }).where(eq(convs.id, req.params.id));
+        const labels: Record<number, string> = {
+          3600: '1 hour',
+          86400: '24 hours',
+          604800: '7 days',
+          2592000: '30 days',
+        };
+        await sendSystemMessage(
+          req.params.id,
+          'disappear_changed',
+          ttl
+            ? `new and existing messages disappear after ${labels[ttl] ?? `${ttl}s`}`
+            : 'disappearing messages turned off',
+          user.id,
+          undefined,
+          { ttl_s: ttl },
+        );
+        await publishConvUpdated(req.params.id);
+      }
+      const dto = await loadConversationDto(req.params.id, await viewCtxFor(user));
+      return { conversation: dto };
     },
   );
 

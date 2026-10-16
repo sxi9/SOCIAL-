@@ -43,13 +43,37 @@ export function sniffMime(buf: Buffer): SniffResult {
     if (['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1'].includes(brand)) {
       return { mime: 'image/heic', ext: 'heic' };
     }
+    // v0.4 (§1.20): M4A/AAC audio containers carry their own ftyp brands.
+    if (['m4a ', 'm4b ', 'm4p '].includes(ascii(buf, 8, 4).toLowerCase())) {
+      return { mime: 'audio/mp4', ext: 'm4a' };
+    }
     // Everything else with an ftyp box is treated as MP4-family video.
     return { mime: 'video/mp4', ext: 'mp4' };
   }
   if (buf.length >= 4 && buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) {
     const head = buf.subarray(0, SNIFF_BYTES).toString('latin1');
-    if (head.includes('webm')) return { mime: 'video/webm', ext: 'webm' };
+    if (head.includes('webm')) {
+      // v0.4 (§1.20): a MediaRecorder voice note is an audio-only webm — the
+      // Tracks element (within the sniff window for streamed recordings) names
+      // codecs. A video codec id wins; an audio-only track list is audio/webm.
+      const hasVideo = head.includes('V_VP8') || head.includes('V_VP9') || head.includes('V_AV1');
+      const hasAudio = head.includes('A_OPUS') || head.includes('A_VORBIS');
+      if (!hasVideo && hasAudio) return { mime: 'audio/webm', ext: 'webm' };
+      return { mime: 'video/webm', ext: 'webm' };
+    }
     return { mime: 'video/x-matroska', ext: 'mkv' };
+  }
+  // v0.4 (§1.20) audio magic: Ogg (opus/vorbis ride the Ogg container).
+  if (buf.length >= 4 && ascii(buf, 0, 4) === 'OggS') {
+    return { mime: 'audio/ogg', ext: 'ogg' };
+  }
+  // MP3: ID3v2 header, or a bare MPEG audio frame sync (0xFFE/0xFFF).
+  if (buf.length >= 3 && ascii(buf, 0, 3) === 'ID3') {
+    return { mime: 'audio/mpeg', ext: 'mp3' };
+  }
+  if (buf.length >= 2 && buf[0] === 0xff && (buf[1]! & 0xe6) === 0xe2) {
+    // Frame sync 11111111 111xxxxx with a valid MPEG layer (not 00).
+    return { mime: 'audio/mpeg', ext: 'mp3' };
   }
   if (buf.length >= 5 && ascii(buf, 0, 5) === '%PDF-') {
     return { mime: 'application/pdf', ext: 'pdf' };

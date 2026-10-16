@@ -239,7 +239,10 @@ function handleFrame(raw: string): void {
       // Same shape of handling as `receipt`: a small delta patches the store
       // live (v0.2 §2.3). Persist the patched DTO so the IndexedDB window
       // shows reactions on next open; reconnect truth stays the DTO aggregate.
-      store.applyReactionUpdated(ev.d);
+      // v0.4 (§1.19): kind='stamp' frames patch Message.stamps (faces) instead
+      // of the emoji chips — the sentinel never renders as an emoji.
+      if (ev.d.kind === 'stamp') store.applyStampUpdated(ev.d);
+      else store.applyReactionUpdated(ev.d);
       const conv = store.state.conversations.get(ev.d.conversation_id);
       const patched =
         store.state.messages.get(ev.d.conversation_id)?.find((m) => m.seq === ev.d.seq) ??
@@ -282,6 +285,16 @@ function handleFrame(raw: string): void {
       }
       break;
     }
+    // v0.4 (§1.24): personal chat prefs — this frame only ever reaches MY own
+    // sockets; full-prefs replace, reconcile from GET prefs on demand.
+    case 'prefs.updated':
+      store.setPrefs(ev.d.prefs);
+      break;
+    // v0.4 (§1.26): my scheduled list changed (create/cancel/send) — author's
+    // own sockets only; the delivery itself arrives as an ordinary msg.new.
+    case 'scheduled.updated':
+      store.upsertScheduled(ev.d.scheduled);
+      break;
     case 'error':
       break;
   }

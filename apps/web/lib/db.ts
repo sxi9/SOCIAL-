@@ -3,7 +3,7 @@
 import type { Message, SendMessageRequest } from '@socialchat/shared';
 
 const DB_NAME = 'socialchat';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export interface ConvMeta {
   conversation_id: string;
@@ -38,6 +38,12 @@ function openDb(): Promise<IDBDatabase> {
         }
         if (!db.objectStoreNames.contains('outbox')) {
           db.createObjectStore('outbox', { keyPath: 'client_msg_id' });
+        }
+        // v0.4 (API.md §1.22/§1.26): one-shot client-side playback markers —
+        // message effects play ONCE per viewer per message, and time-capsule
+        // reveals happen once. Keyed 'kind:conversation_id:seq'.
+        if (!db.objectStoreNames.contains('seen_fx')) {
+          db.createObjectStore('seen_fx', { keyPath: 'key' });
         }
       };
       req.onsuccess = () => resolve(req.result);
@@ -151,6 +157,34 @@ export async function getMessagesTail(conversationId: string, limit: number): Pr
     cursorReq.onerror = () => reject(cursorReq.error ?? new Error('idb cursor failed'));
   });
   return out.reverse();
+}
+
+// ---- One-shot playback markers (v0.4 — API.md §1.22 effects, §1.26 capsules) ----
+
+export type SeenFxKind = 'effect' | 'capsule';
+
+interface SeenFxRow {
+  key: string;
+}
+
+function fxKey(kind: SeenFxKind, conversationId: string, seq: number): string {
+  return `${kind}:${conversationId}:${seq}`;
+}
+
+export async function hasSeenFx(kind: SeenFxKind, conversationId: string, seq: number): Promise<boolean> {
+  const db = await openDb();
+  const tx = db.transaction('seen_fx', 'readonly');
+  const row = await reqDone<SeenFxRow | undefined>(
+    tx.objectStore('seen_fx').get(fxKey(kind, conversationId, seq)) as IDBRequest<SeenFxRow | undefined>
+  );
+  return row !== undefined;
+}
+
+export async function markSeenFx(kind: SeenFxKind, conversationId: string, seq: number): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction('seen_fx', 'readwrite');
+  tx.objectStore('seen_fx').put({ key: fxKey(kind, conversationId, seq) } satisfies SeenFxRow);
+  await txDone(tx);
 }
 
 // ---- Outbound queue of unsent messages (API.md §2.8 step 5) ----

@@ -79,7 +79,12 @@ export async function uploadRoutes(fastify: FastifyInstance): Promise<void> {
       })
       .returning();
 
-    if (result.kind === 'video') await enqueueMedia({ attachment_id: row!.id });
+    // Video poster/dims and audio duration+waveform (§1.20) hydrate in the
+    // worker's `media` queue; the DTO goes out 'pending' and the client gets
+    // attachment.ready / msg.updated when the job lands.
+    if (result.kind === 'video' || result.kind === 'audio') {
+      await enqueueMedia({ attachment_id: row!.id });
+    }
 
     return reply.status(201).send({ attachment: attachmentDto(row!) });
   });

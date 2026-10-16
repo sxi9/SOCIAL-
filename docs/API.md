@@ -119,6 +119,59 @@ Poll = { id, conversation_id, seq, question, options: string[2..6],
 // beacon id (POST /api/beacons/:id/run-it-back re-creates it one-tap).
 AfterglowMetadata = { beacon_id, vibe, participant_ids: string[],
   photo_attachment_ids: string[], run_it_back }
+
+// ---- v0.4 (§1.19–§1.27; ADR-010) ----
+
+// v0.4 changes to existing DTOs:
+//  Message.type += 'audio' | 'vibe_check' | 'game_ttt' | 'puzzle_result'
+//  Message += { stamps: UserLite[],        // §1.19 — FACES, not a counter;
+//                                          // avatars version-busted as usual
+//               vibe: VibeCheck|null }     // §1.23 — iff type='vibe_check'
+//  Message.metadata += { doodle?: true,              // §1.21
+//                        effect?: MessageEffect,     // §1.22
+//                        vibe_reply_seq?: number,    // §1.23
+//                        stamp?: true,               // §1.23 (vibe stamp reply)
+//                        capsule?: true,             // §1.26
+//                        game?: GameTttState,        // §1.27, iff type='game_ttt'
+//                        puzzle?: PuzzleResult }     // §1.27, iff type='puzzle_result'
+//  Attachment.kind += 'audio'; Attachment += { waveform: number[48]|null } // §1.20
+//  Conversation += { disappear_ttl_s: number|null }  // §1.25, conversation-wide
+//  SystemEventMetadata += { ttl_s?: number|null }    // §1.25 'disappear_changed'
+//  ReactionAggregate is UNCHANGED (emoji chips only; stamps ride Message.stamps)
+
+MessageEffect = 'confetti'|'hearts'|'fireworks'|'snow'   // §1.22, DB CHECK-pinned
+
+// §1.23. Vibe reply refs inlined on the vibe message so the collage strip
+// renders with zero extra fetches. replies = first 12 by seq
+// (VIBE_REPLIES_PREVIEW_MAX); reply_count carries the rest; my_reply_seq is
+// viewer-specific. kind derived: stamp > doodle > image. thumb_url is the
+// reply's first attachment thumb (null for stamps — the tile is user.avatar).
+VibeCheck = { prompt, reply_count, my_reply_seq: number|null,
+  replies: [{ seq, user: UserLite, kind: 'image'|'doodle'|'stamp',
+              thumb_url: string|null }] }
+
+// §1.27 tic-tac-toe — the whole game state, on the game message's
+// metadata.game. board is 9 cells row-major; turn/winner are symbols.
+GameTttState = { board: ('x'|'o'|null)[9], players: {x: user_id, o: user_id},
+  turn: 'x'|'o', winner: 'x'|'o'|'draw'|null }
+
+// §1.27 daily-puzzle share (metadata.puzzle on type='puzzle_result').
+// Score rows only ('g'/'y'/'x' per letter) — no letters, no word, no spoiler.
+// SERVER-populated from the sender's stored attempt; unforgeable.
+PuzzleResult = { date: 'YYYY-MM-DD', attempts_used, solved: boolean,
+  grid: string[] }   // each row matches /^[gyx]{5}$/
+
+// §1.24 — PERSONAL (my view only, synced across my devices, never shown to
+// anyone else). nicknames maps target user id → my nickname for them.
+ConversationPrefs = { conversation_id, theme: ChatTheme|null,
+  wallpaper: ChatWallpaper|null, nicknames: Record<user_id, string(≤32)> }
+
+// §1.26 — the author's own view. A time capsule is metadata.capsule=true.
+ScheduledMessage = { id, conversation_id,
+  type: 'text'|'image'|'video'|'file'|'audio', body: string|null,
+  attachments: Attachment[], metadata: { effect?, capsule?: true },
+  deliver_at, status: 'pending'|'sent'|'cancelled', created_at,
+  sent_at: string|null, sent_seq: number|null }
 ```
 
 Avatar URLs are content-hashed media-proxy URLs (`/api/media/:key`), immutable-cacheable;
@@ -490,6 +543,264 @@ most in `delivered`, whatever their true read state. Users blocked w.r.t. the
 viewer are omitted from both lists. This endpoint is the foundation for story
 view lists (v0.5, FEATURES #27).
 
+### 1.19 Avatar stamps (v0.4 — ADR-010)
+
+React with your own animated avatar. A stamp is a `message_reactions` row with
+`kind='stamp'` and the `STAMP_REACTION_KEY` sentinel (`:stamp:`) in the emoji
+column — the existing PK `(conversation_id, seq, user_id, emoji)` therefore
+enforces the **one stamp per user per message** cap with no new state. The
+**same §1.12 routes** gain a `kind` field; every pre-v0.4 payload (`{emoji}`)
+stays valid byte-for-byte (`kind` defaults to `'emoji'`).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/conversations/:id/messages/:seq/reactions` | `{kind?: 'emoji'\|'stamp', emoji?}` — `emoji` required iff `kind='emoji'`, forbidden for `'stamp'` (400 otherwise) | `204` — idempotent, §1.12 semantics unchanged. Stamps additionally require **my** avatar `status='ready'` → else `409 stamp_no_avatar` (there is no face to stamp with). A stamp never consumes one of the 8 distinct-emoji slots (`REACTIONS_PER_USER_PER_MESSAGE_MAX` counts `kind='emoji'` rows only). |
+| `DELETE /api/conversations/:id/messages/:seq/reactions/:emoji` | for a stamp, `:emoji` is the URL-encoded sentinel `:stamp:` | `204` — idempotent, as §1.12. |
+
+**Rendering contract:** stamps are **faces, not counters**. `Message.stamps`
+carries the stampers as `UserLite[]` in first-stamp order; the client renders
+each reactor's avatar — animated WebP under the §5 motion rules
+(`prefers-reduced-motion` + `avatar_motion`), static JPEG otherwise —
+version-busted via `avatar.version` exactly like every other avatar surface.
+No count badge, no aggregation (PSYCHOLOGY rule 3: name people, never scores).
+Fan-out is the same `reaction.updated` delta frame, now carrying `kind` (§2.3);
+recipients resolve the stamper's avatar from the participants they already
+hold. Reconnect truth is `Message.stamps`, never frame replay. Blocked pairs
+in shared groups: stamps keep working like reactions (group function, §1.14).
+
+### 1.20 Voice notes (v0.4 — ADR-010)
+
+A voice note is a message of `type='audio'` with exactly **one** `audio`
+attachment, riding the **existing** §1.6 proxied upload pipeline end to end —
+no new upload machinery.
+
+- **Upload:** `POST /api/uploads` sniffs magic bytes; the new audio allowlist
+  (`AUDIO_MIME_ALLOWLIST`) is **ogg/opus (`audio/ogg`), webm/opus
+  (`audio/webm`), m4a/aac (`audio/mp4`), mp3 (`audio/mpeg`)**; anything else →
+  `415`. Size cap `MAX_AUDIO_BYTES` (10 MB, enforced while streaming) → `413`.
+  Response: `201 {attachment}` with `kind:'audio'`, `status:'pending'`,
+  `waveform: null`.
+- **Worker (queue `media`, same job family as video):** ffprobe the duration —
+  longer than `MAX_AUDIO_DURATION_S` (5 min) flips the attachment to
+  `'failed'` (a recording-side client should never hit this; the cap is
+  server-truth). Then split the duration into `AUDIO_WAVEFORM_BUCKETS` (48)
+  equal segments and measure each segment's peak level (ffmpeg `astats` per
+  segment; `volumedetect` is the acceptable fallback), normalized to integers
+  `0..AUDIO_WAVEFORM_PEAK_MAX` (100). Write `duration_ms` + `waveform`, set
+  `status='ready'`.
+- **Hydration is the existing contract, reused verbatim:** attachment already
+  bound to a message → participants get `msg.updated` (full DTO); not yet
+  bound (composer open) → uploader gets `attachment.ready`. `GET
+  /api/uploads/:id` stays the poll fallback.
+- **Send:** ordinary `POST .../messages` with `type:'audio'` and the one
+  attachment id (`400 audio_attachment_required` when missing/not audio/more
+  than one/**`status='failed'`** — a worker-rejected over-length recording is
+  never bindable — at send time, §1.26 schedule time, or §1.26 delivery time
+  (the delivery transaction re-checks and cancels an audio schedule whose
+  recording failed) — so the duration cap is
+  enforced, not advisory; `'pending'` binds fine and hydrates via
+  `msg.updated`). Push snippet for audio messages is `"Voice note"`.
+- **DTO:** `Attachment.waveform` (48 ints) is inlined so bubbles render the
+  scrubber with zero extra fetches; `duration_ms` drives the timestamp label.
+  Playback UI must not autoplay — tap to play, like every media surface.
+
+### 1.21 Doodles (v0.4)
+
+A doodle is an ordinary **PNG image message** drawn on a client canvas (export
+≤ `DOODLE_CANVAS_MAX_PX` = 1024 px) and sent with `metadata.doodle: true` —
+**zero new server machinery**: the §1.6 image pipeline (EXIF strip, thumb,
+blurhash, inline `ready`) applies unchanged, and the server merely accepts and
+stores the flag (route check: `doodle` is valid only on `type='image'`, else
+`400 bad_metadata`). Clients render doodle messages with the sketchy
+hand-drawn frame (Bored Blob design language); the flag also marks vibe-check
+replies as `kind:'doodle'` tiles (§1.23). Self-hosted rule: doodles and
+uploads are the only "sticker" sources — there is no third-party GIF/sticker
+API anywhere.
+
+### 1.22 Message effects (v0.4 — ADR-010)
+
+`metadata.effect ∈ {confetti, hearts, fireworks, snow}` (`MESSAGE_EFFECTS`,
+DB CHECK-pinned), settable on any client-sent §1.5/§1.20 message.
+
+**Consent rule (binding, PSYCHOLOGY "user-pulled, not app-pushed"):** when a
+trigger phrase is typed (`EFFECT_TRIGGERS`: "congrats", "happy birthday",
+"love you", "it's snowing", …) the composer may **suggest** the matching
+effect as a tappable chip — the effect is attached **only when the sender
+confirms**. It is never auto-attached, and the server never injects one.
+
+**Playback rules (binding):** an effect plays **once per viewer per message**
+— the client records played `(conversation_id, seq)` pairs locally (IndexedDB)
+and never replays on scroll-back, reconnect, or re-render. Under
+`prefers-reduced-motion` the animation is **fully replaced** by a static
+badge/emoji on the bubble (not a reduced animation — none at all). Effects
+never make sound. The push payload is unaffected.
+
+### 1.23 Vibe checks (v0.4 — ADR-010)
+
+"Everyone answers a prompt." A vibe check is a message (`type='vibe_check'`)
+whose **body is the prompt** — picked from the rotating client-side deck
+(`VIBE_CHECK_PROMPTS`, 24 entries) or custom-typed, ≤
+`VIBE_CHECK_PROMPT_MAX_CHARS` (120). Sent via the ordinary §1.5 route
+(`type:'vibe_check'`, `body` required → else `400 prompt_required`); the full
+§1.5 transaction, fan-out and push apply.
+
+**Replies are ordinary messages** in the same conversation carrying
+`metadata.vibe_reply_seq = <the vibe message's seq>`:
+
+- an **image** message (photo), a **doodle** (§1.21), or a **stamp reply**
+  (`type:'text'`, no body, no attachments, `metadata.stamp: true` — the tile
+  is the sender's avatar). `stamp` is valid only alongside `vibe_reply_seq`
+  (`400 bad_metadata` otherwise); other reply shapes → `400 bad_vibe_reply`.
+- `vibe_reply_seq` must reference a visible (§1.5 floor), non-deleted
+  `vibe_check` message in the same conversation → else `404 not_found`.
+- **One reply per user per vibe check** (the collage is one face each):
+  a second reply → `409 vibe_already_replied`.
+
+**Aggregation:** the vibe message's DTO carries `vibe = {prompt, reply_count,
+replies[≤12], my_reply_seq}` (§0). Every accepted reply fans out the reply's
+own `msg.new` **plus** a `msg.updated` full-DTO re-ship of the vibe message —
+the existing hydration path, so the collage strip grows live and reconnects
+reconcile from the DTO as always. Replies tombstoned by §1.25 drop out of the
+aggregate (and the collage) on the same `msg.updated`.
+
+### 1.24 Chat themes, wallpapers & nicknames (v0.4 — ADR-010)
+
+Per-user-per-conversation prefs. **Themes and wallpapers are PERSONAL — they
+change MY view only.** They are never serialized to any other participant, and
+no event about them ever reaches another user: picking the `grape` theme tells
+nobody anything. (This is the explicit opposite of §1.25's conversation-wide
+TTL.) Synced across my devices via the `prefs.updated` WS event (own sockets
+only). Nicknames follow the same rule: the map is the **owner's** private
+labels (self-nicknames allowed); rendering replaces display names in my view
+only.
+
+Fixed sets (text + CHECK, the house enum pattern): `theme ∈ CHAT_THEMES`
+(8 palettes: classic, sunset, ocean, forest, grape, bubblegum, mono,
+midnight), `wallpaper ∈ CHAT_WALLPAPERS` (6 **CSS patterns** — dots, grid,
+waves, stars, scribbles, blobs; **no wallpaper uploads in v0.4**). `null` =
+app default. Themes restyle bubbles/accents; wallpapers paint the scroll
+background; both honor dark mode and `prefers-reduced-motion` (patterns are
+static by construction).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/conversations/:id/prefs` | — | `200 {prefs: ConversationPrefs}` (mine for this conversation; defaults `{theme: null, wallpaper: null, nicknames: {}}` when unset). Active participant only → else `404 not_found`. |
+| `PATCH /api/conversations/:id/prefs` | `{theme?: ChatTheme\|null, wallpaper?: ChatWallpaper\|null, nicknames?: Record<user_id, string(≤32)\|null>}` — omitted = unchanged; explicit `null` resets a theme/wallpaper or **removes** a nickname | `200 {prefs}` (the full new state) + `prefs.updated` to **my own** sockets. Nickname targets must be participants (past or present) of the conversation → else `400 bad_nickname_target`. |
+
+Storage: `conversation_prefs (conversation_id, user_id, theme, wallpaper)` +
+`member_nicknames (conversation_id, owner_id, target_id, nickname ≤ 32)`
+(migration 0004). Rows cascade with the conversation and the user.
+
+### 1.25 Disappearing messages (v0.4 — ADR-010)
+
+`conversations.disappear_ttl_s` — `null` = off, else one of
+`DISAPPEAR_TTL_OPTIONS_S` (**1 h, 24 h, 7 d, 30 d**; CHECK-pinned). This is
+**conversation-wide state** (everyone shares the same TTL), unlike §1.24.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `PATCH /api/conversations/:id/disappearing` | `{ttl_s: 3600\|86400\|604800\|2592000\|null}` | `200 {conversation}`. Permission: DM → **any active participant**; group → **admin only** (`403 forbidden`). A DM **frozen by a block (§1.14) refuses the toggle `404`-shaped**, byte-identical to an unknown conversation, in both directions — like sends and schedules: the toggle pushes `disappear_changed` fan-out and arms the sweep against the shared history, so it is a write surface and blocks apply. Idempotent re-set of the same value is `200` with no system message. Every effective change inserts a `system` message (bumps seq): `metadata.system = {event:'disappear_changed', actor_id, ttl_s}` — the announcement IS the audit trail — and fans out `conv.updated` + the system message's `msg.new`. |
+
+**Sweep (worker queue `timers`, repeatable, every
+`DISAPPEAR_SWEEP_INTERVAL_S`):** for each conversation with a TTL
+(`conversations_disappearing_idx`), **tombstone** messages with
+`created_at < now() − ttl` (walked via `messages_disappear_sweep_idx`):
+
+- `deleted_at = now()`, `body = NULL`, `metadata = '{}'`; the row — and its
+  **seq — is never deleted or reused**, so sync cursors, watermarks, unread
+  math and §1.5 pagination are untouched by construction (ADR-003 survives).
+- attachments of the message: MinIO objects deleted, attachment rows deleted.
+- dependent rows keyed by `(conversation_id, seq)` are removed explicitly
+  (reactions/stamps, poll + votes) — the message row survives, so FK cascades
+  don't fire on their own.
+- `type` and `sender_id` survive (tombstones render "message expired" in the
+  right bubble position); **`system` messages are exempt** (announcements and
+  recaps persist).
+- fan-out: one `msg.updated` per tombstone to active participants (batch-
+  bounded per run; offline clients reconcile via sync + history refetch, where
+  tombstones arrive as ordinary DTOs with `deleted_at` set).
+
+The TTL clock starts at each message's `created_at` — including for §1.26
+scheduled deliveries (delivery time, not schedule time). Messages sent while
+the TTL was off never retroactively expire: the sweep compares against the
+**current** TTL, so turning it on applies to old messages too — the system
+message states this plainly ("new and existing messages disappear after …").
+
+### 1.26 Scheduled messages & time capsules (v0.4 — ADR-010)
+
+Write now, deliver later, as a **real §1.5 message** when `deliver_at`
+arrives. A **time capsule** is the same row with `metadata.capsule: true` and
+a far-out `deliver_at` — pre-delivery it renders as a sealed envelope in the
+author's scheduled list, and the delivered message keeps `metadata.capsule` so
+recipients get the sealed-envelope bubble with a first-view reveal
+(client-tracked like §1.22 effects, reduced-motion fallback opens instantly).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/conversations/:id/scheduled-messages` | `{client_msg_id, type: 'text'\|'image'\|'video'\|'file'\|'audio', body?, attachment_ids?, metadata?: {effect?, capsule?: true}, deliver_at}` | `201 {scheduled}` (`200` idempotent replay on `(author, client_msg_id)`). Active participant only. Window: `now + SCHEDULED_MIN_LEAD_S (60 s) ≤ deliver_at ≤ now + SCHEDULED_MAX_HORIZON_S (366 d)` → else `400 deliver_at_out_of_range`. Attachments must be mine and unbound; they bind to the row via `attachments.scheduled_message_id` (which also shields them from the orphan GC). `409 scheduled_limit` past **50 pending per user** (`SCHEDULED_PENDING_MAX_PER_USER`, counted across conversations). Rate `SCHEDULED_CREATE_RATE_PER_HOUR` (30) → `429`. |
+| `GET /api/scheduled-messages` | — | `200 {scheduled: ScheduledMessage[]}` — **mine only**, all conversations, `pending` first then `deliver_at ASC`, non-pending capped at the latest 50. A pending schedule is private: no other participant can see it exists. |
+| `DELETE /api/scheduled-messages/:id` | — | `204` — cancel (sets `status='cancelled'`, unbinds + orphans its attachments for GC). Only mine → else `404 not_found`. Already sent → `409 scheduled_sent`; re-cancel is idempotent `204`. |
+
+**Delivery (worker queue `timers`):** a delayed job per row plus a
+minute-sweep safety net over `scheduled_due_idx` (the §1.15 afterglow
+pattern). The claim is the idempotent guarded update — `UPDATE
+scheduled_messages SET status='sent', sent_at=now(), sent_seq=$seq WHERE
+id=$1 AND status='pending'` — executed **inside the same transaction** as the
+real message insert (seq bump, author-watermark raise, attachment binding), so
+job retries and sweep/job races can never double-deliver. Then the normal
+fan-out: `msg.new` to participants, push for offline ones, and
+`scheduled.updated` to the **author's own** sockets. If delivery is impossible
+at claim time — author no longer an active participant, DM frozen by a §1.14
+block, conversation deleted, or an audio schedule whose sole recording the
+media worker marked `'failed'` (§1.20 duration cap, re-checked inside the
+delivery transaction) — the row flips to `'cancelled'` instead (never a
+partial send, no error to anyone). Every state change (create/cancel/send)
+emits `scheduled.updated` to the author's sockets for cross-device list sync.
+
+### 1.27 Mini-games: tic-tac-toe & the daily puzzle (v0.4 — ADR-010)
+
+#### Tic-tac-toe
+
+A game is a message (`type='game_ttt'`) whose **whole state lives in
+`metadata.game`** (`GameTttState`, §0): board, players, turn, winner. Moves
+are **server-validated**; the client never computes state. Every accepted move
+is an in-place metadata update fanned out as `msg.updated` (full-DTO replace —
+the existing §2.3 contract), so the board animates live and reconnects
+reconcile from the DTO.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/conversations/:id/games/ttt` | `{client_msg_id, opponent_id?}` — DM: opponent implied (must be omitted); group: required, an active participant | `201 {message}` (`200` idempotent replay). Challenger plays `x` and moves first. `400 bad_opponent` (self, non-participant, or supplied in a DM); blocked pair in a group → `404 not_found` (§1.14 404-shape). The §1.5 send transaction applies (seq bump, `msg.new`, push "Tic-tac-toe challenge"). |
+| `POST /api/games/:messageId/move` | `{cell: 0..8}` | `200 {message}` — the updated game message. Validation under a row lock (`SELECT … FOR UPDATE` on the message): caller is one of the two players (else `404 not_found` — non-players, including other group members, get the same shape as a bad id), it is their turn (`409 game_not_your_turn`), the cell is empty (`409 game_cell_taken`), no winner yet (`409 game_over`). Server flips `turn`, detects win/draw, bumps `edited_at`, fans out `msg.updated`. |
+
+Spectating group members just watch the bubbles update. Games on a §1.25
+tombstoned message are over (`409 game_over` — the state is gone). No
+rematch state, no win tallies, no records: a finished board is just a message
+in the scrollback (PSYCHOLOGY rule 3 — no scores attached to people).
+
+#### Daily word puzzle
+
+One deterministic 5-letter word per **UTC day**:
+`PUZZLE_WORDLIST[sha256("<yyyy-mm-dd>:" + PUZZLE_SECRET) mod wordlist.length]`.
+The wordlist is a public
+shared constant (append-only — reordering would reshuffle future words); the
+secret is server-side env (`PUZZLE_SECRET`), so clients cannot precompute the
+word, and the DB never stores it (`puzzle_attempts` holds only guesses +
+scores). Guesses are scored **server-side only**.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/puzzle/today` | — | `200 {date, attempts: [{guess, score}], solved, remaining}` — my state for today (empty attempts = not started). `score` is 5 chars of `g`(reen)/`y`(ellow)/`x`(grey), duplicate letters scored Wordle-style (greens claimed first, then yellows left-to-right while supply lasts). Never contains the word. |
+| `POST /api/puzzle/guess` | `{guess: /^[a-z]{5}$/}` | `200 {date, attempts, solved, remaining, correct}`. `400 bad_guess` (shape only — any 5 letters are accepted; no dictionary gate in v0.4). `409 puzzle_done` when already solved or 6 attempts used (`PUZZLE_MAX_GUESSES`). The attempt log is one row per (user, UTC day), appended transactionally. |
+| `POST /api/conversations/:id/messages` with `type:'puzzle_result'` | ordinary §1.5 send; `body`/`attachment_ids`/client `metadata.puzzle` are ignored | `201 {message}` — the server **builds `metadata.puzzle` from MY stored attempt** for today (date, attempts_used, solved, `grid` of `g/y/x` rows — no letters, no spoiler, unforgeable). Requires a finished puzzle (solved, or 6 used) → else `409 puzzle_unfinished`. Renders as the emoji grid (`PUZZLE_SCORE_EMOJI`). Push snippet: `"Puzzle result"`. |
+| `GET /api/puzzle/today/friends` | — | `200 {friends: [{user: UserLite, result: PuzzleResult}]}` — DM partners (active DM with me, minus §1.14 blocks) who **opted in by posting** a `puzzle_result` for today into a conversation I'm an active participant of (their latest such post). **Ordered by username — never by score or speed.** |
+
+**Psychology guardrails (binding):** sharing a grid into a chat is a named,
+consensual act and is the ONLY leaderboard-like surface — there is **no
+ranking, no ranked table, no points, no solve-time anywhere** (rule 3), **no
+streak counter and no "don't break it" copy ever** (never-build list), and no
+notification nudges to play. The puzzle entry point is user-pulled only.
+
 ---
 
 ## 2. WebSocket protocol
@@ -521,7 +832,7 @@ close `1008`.
 |---|---|---|
 | `hello` | `{user_id, session_id, server_time, heartbeat_ms}` | first frame |
 | `msg.new` | `{conversation_id, message: Message}` | fan-out to all active participants' sockets |
-| `msg.updated` | `{conversation_id, message: Message}` | **full fresh DTO, replace by `(conversation_id, seq)`** — late link-preview cards, video poster/thumb/blurhash hydration after the worker finishes, Phase-2 edits/tombstones |
+| `msg.updated` | `{conversation_id, message: Message}` | **full fresh DTO, replace by `(conversation_id, seq)`** — late link-preview cards, video poster/thumb/blurhash hydration after the worker finishes, Phase-2 edits/tombstones. v0.4 reuses it verbatim for: audio waveform/duration hydration (§1.20), the vibe message's growing reply collage (§1.23), disappearing-message tombstones (§1.25), tic-tac-toe moves (§1.27). |
 | `attachment.ready` | `{attachment: Attachment}` | to the **uploader only**, when processing finishes before the attachment is bound to a message (composer still open) |
 | `receipt` | `{conversation_id, user_id, last_delivered_seq, last_read_seq}` | **coalesced server-side: at most one per (conversation, user) per 1000 ms** (trailing flush, nothing lost — watermarks are monotonic state) |
 | `typing` | `{conversation_id, user_id, expires_at}` | client clears the indicator at `expires_at` (~6 s); there is no stop event |
@@ -529,13 +840,15 @@ close `1008`.
 | `conv.new` | `{conversation: Conversation}` | you were added / created it on another device |
 | `conv.updated` | `{conversation: Conversation}` | title, membership, group-avatar flip |
 | `user.updated` | `{user: UserPublic}` | profile/avatar change of any conversation peer — fires when the avatar transcode lands (`avatar.version` bumped → swap the image) |
-| `reaction.updated` | `{conversation_id, seq, emoji, count, user_id, removed}` | v0.2 (§1.12): one frame per effective reaction add/remove, to all active participants. `count` is the NEW total for that `(message, emoji)`; `count: 0` removes the chip; `mine` is derived client-side (`user_id === me`). Reconnect truth is the DTO aggregate, not frame replay. |
+| `reaction.updated` | `{conversation_id, seq, kind, emoji, count, user_id, removed}` | v0.2 (§1.12): one frame per effective reaction add/remove, to all active participants. `count` is the NEW total for that `(message, emoji)`; `count: 0` removes the chip; `mine` is derived client-side (`user_id === me`). Reconnect truth is the DTO aggregate, not frame replay. v0.4 (§1.19): `kind` (`'emoji'`\|`'stamp'`, default `'emoji'` so v0.2 frames parse clean); stamp frames carry the `:stamp:` sentinel as `emoji`, recipients resolve the stamper's avatar from participants they hold, and reconnect truth is `Message.stamps`. |
 | `preview.ready` | `{url_hash, status: 'ok'\|'failed', preview?: LinkPreview}` | to the user who requested the unfurl (composer card) |
 | `beacon.new` | `{beacon: Beacon}` | v0.3 (§1.15): **only to sockets of users in the beacon's audience** (minus blocks) — never to anyone who cannot join (PSYCHOLOGY rule 2). The DTO is viewer-specific: the gateway stamps `my_state`/`conversation_id` per recipient (§2.11). |
 | `beacon.updated` | `{beacon: Beacon, reping: boolean}` | v0.3: joins/leaves/spark/expiry/cancel, to the audience. On spark, non-joiners receive `conversation_id: null` (their card retires; spark details reach joiners + creator only). `reping: true` marks the single "needs 1 more" re-notification (§1.15). |
 | `beacon.kudos` | `{beacon_id, kind, from: UserLite}` | v0.3 (§1.15): **to the recipient's sockets only.** Private by construction — never fanned to the group, never counted publicly. |
 | `plan.updated` | `{beacon_id, conversation_id, roles: BeaconRole[]}` | v0.3 (§1.16): full roles list on every role mutation, to the plan conversation's active participants. Idempotent replace; reconcile from `GET /api/beacons/:id/roles`, never frame replay. |
 | `poll.updated` | `{poll_id, conversation_id, seq, counts: number[], total_votes, user_id?, option_idx?: number\|null}` | v0.3 (§1.17): one delta per effective vote/unvote (`option_idx: null` = unvoted), to active participants — the `reaction.updated` pattern. `user_id`/`option_idx` ride **only the voter's own frame** (their other devices reconcile `my_vote`); frames to everyone else carry aggregates only (no per-voter lists, §1.17). Reconnect truth is `message.poll`. |
+| `prefs.updated` | `{conversation_id, prefs: ConversationPrefs}` | v0.4 (§1.24): **to the owner's own sockets ONLY** — prefs are personal, my-view-only state; no other participant ever receives a frame about them. Full-prefs replace (idempotent, reorder-safe); reconnects reconcile from `GET /api/conversations/:id/prefs`. |
+| `scheduled.updated` | `{scheduled: ScheduledMessage}` | v0.4 (§1.26): **to the author's own sockets ONLY** (a pending schedule is private until delivery), on every create/cancel/send — cross-device sync of the scheduled list. The delivery itself reaches everyone as an ordinary `msg.new`. |
 | `error` | `{code, message}` | validation/permission errors on client frames |
 
 ### 2.4 Client → server events

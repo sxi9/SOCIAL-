@@ -13,7 +13,10 @@ import type {
   UserLite,
   UserPrivate,
   UserPublic,
+  VibeCheckAggregate,
+  VibeReplyRef,
 } from '@socialchat/shared';
+import { VIBE_REPLIES_PREVIEW_MAX } from '@socialchat/shared';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { blockedSetOf, blockPairsAmong } from './blocks.js';
@@ -158,6 +161,8 @@ export function attachmentDto(a: AttRow): Attachment {
     url: mediaUrl(a.originalKey),
     thumb_url: a.thumbKey ? mediaUrl(a.thumbKey) : null,
     file_name: a.fileName,
+    // v0.4 (§1.20): 48 worker-computed peaks, audio only; null while pending.
+    waveform: (a.waveform as number[] | null) ?? null,
   };
 }
 
@@ -166,6 +171,8 @@ export function messageDto(
   atts: AttRow[],
   reactions: ReactionAggregate[] = [],
   poll: Poll | null = null,
+  stamps: UserLite[] = [],
+  vibe: VibeCheckAggregate | null = null,
 ): Message {
   return {
     id: m.id,
@@ -179,6 +186,10 @@ export function messageDto(
     attachments: atts.map(attachmentDto),
     reactions,
     poll,
+    // v0.4 (§1.19): stamp reactors in first-stamp order — faces, not a count.
+    stamps,
+    // v0.4 (§1.23): reply aggregate, iff type === 'vibe_check'.
+    vibe,
     created_at: iso(m.createdAt),
     edited_at: isoOrNull(m.editedAt),
     deleted_at: isoOrNull(m.deletedAt),
@@ -224,6 +235,8 @@ export function conversationDto(
     last_seq: c.lastSeq,
     last_message_at: isoOrNull(c.lastMessageAt),
     participants: parts.map(({ p, u }) => participantDto(p, u, view)),
+    // v0.4 (§1.25): conversation-wide disappearing TTL (null = off).
+    disappear_ttl_s: c.disappearTtlS,
     created_at: iso(c.createdAt),
   };
 }
@@ -263,10 +276,12 @@ export async function loadReactionsFor(
     sql`, `,
   );
   const mineExpr = viewerId ? sql`bool_or(user_id = ${viewerId}::uuid)` : sql`false`;
+  // v0.4 (§1.19): aggregates are EMOJI chips only — stamp rows ride
+  // Message.stamps as faces (loadStampsFor), never a counted chip.
   const rows = (await db.execute(sql`
     SELECT conversation_id, seq, emoji, count(*)::int AS count, ${mineExpr} AS mine
     FROM message_reactions
-    WHERE (conversation_id, seq) IN (${tuples})
+    WHERE (conversation_id, seq) IN (${tuples}) AND kind = 'emoji'
     GROUP BY conversation_id, seq, emoji
     ORDER BY min(created_at) ASC, emoji ASC
   `)) as unknown as {
@@ -356,6 +371,133 @@ export async function loadPollsFor(
   return map;
 }
 
+// v0.4 (API.md §1.19): batch stamp loaders — the stampers as UserLite[] in
+// first-stamp order, keyed by the message identity. Faces, not counters
+// (PSYCHOLOGY rule 3); blocked pairs keep working in shared groups (§1.14),
+// so no per-viewer filtering here.
+export async function loadStampsFor(
+  keys: { conversationId: string; seq: number }[],
+): Promise<Map<string, UserLite[]>> {
+  const map = new Map<string, UserLite[]>();
+  if (keys.length === 0) return map;
+  const tuples = sql.join(
+    keys.map((k) => sql`(${k.conversationId}::uuid, ${k.seq}::bigint)`),
+    sql`, `,
+  );
+  const rows = await db
+    .select({ r: schema.messageReactions, u: schema.users })
+    .from(schema.messageReactions)
+    .innerJoin(schema.users, eq(schema.messageReactions.userId, schema.users.id))
+    .where(
+      sql`(${schema.messageReactions.conversationId}, ${schema.messageReactions.seq}) IN (${tuples})
+          AND ${schema.messageReactions.kind} = 'stamp'`,
+    )
+    .orderBy(asc(schema.messageReactions.createdAt));
+  for (const { r, u } of rows) {
+    const key = `${r.conversationId}:${r.seq}`;
+    const list = map.get(key) ?? [];
+    list.push(userLiteDto(u));
+    map.set(key, list);
+  }
+  return map;
+}
+
+// v0.4 (API.md §1.23): batch vibe aggregates for 'vibe_check' messages.
+// Replies are non-deleted messages in the same conversation carrying
+// metadata.vibe_reply_seq = the vibe message's seq. replies = first
+// VIBE_REPLIES_PREVIEW_MAX by seq; reply_count carries the rest; my_reply_seq
+// is viewer-specific (null without a viewer — broadcast frames reconcile from
+// the next viewer-scoped fetch, like reactions `mine`).
+export async function loadVibesFor(
+  vibeRows: MsgRow[],
+  viewerId?: string,
+): Promise<Map<string, VibeCheckAggregate>> {
+  const map = new Map<string, VibeCheckAggregate>();
+  const parents = vibeRows.filter((r) => r.deletedAt === null && r.body !== null);
+  if (parents.length === 0) return map;
+  const tuples = sql.join(
+    parents.map((k) => sql`(${k.conversationId}::uuid, ${k.seq}::bigint)`),
+    sql`, `,
+  );
+  const rows = (await db.execute(sql`
+    SELECT
+      r.conversation_id,
+      (r.metadata->>'vibe_reply_seq')::bigint AS parent_seq,
+      r.seq,
+      (r.metadata ? 'doodle') AS is_doodle,
+      (r.metadata ? 'stamp') AS is_stamp,
+      a.thumb_key,
+      u.id AS user_id, u.username, u.display_name,
+      u.avatar_status, u.avatar_version, u.avatar_static_key, u.avatar_animated_key
+    FROM messages r
+    JOIN users u ON u.id = r.sender_id
+    LEFT JOIN LATERAL (
+      SELECT thumb_key FROM attachments
+      WHERE message_id = r.id ORDER BY created_at ASC LIMIT 1
+    ) a ON true
+    WHERE r.deleted_at IS NULL
+      AND r.metadata ? 'vibe_reply_seq'
+      AND (r.conversation_id, (r.metadata->>'vibe_reply_seq')::bigint) IN (${tuples})
+    ORDER BY r.seq ASC
+  `)) as unknown as {
+    conversation_id: string;
+    parent_seq: string | number;
+    seq: string | number;
+    is_doodle: boolean;
+    is_stamp: boolean;
+    thumb_key: string | null;
+    user_id: string;
+    username: string;
+    display_name: string;
+    avatar_status: string;
+    avatar_version: number;
+    avatar_static_key: string | null;
+    avatar_animated_key: string | null;
+  }[];
+
+  const byParent = new Map<string, { refs: VibeReplyRef[]; count: number; mine: number | null }>();
+  for (const r of rows) {
+    const key = `${r.conversation_id}:${Number(r.parent_seq)}`;
+    const agg = byParent.get(key) ?? { refs: [], count: 0, mine: null };
+    agg.count += 1;
+    // kind derived: stamp > doodle > image (§1.23).
+    const kind = r.is_stamp ? 'stamp' : r.is_doodle ? 'doodle' : 'image';
+    if (agg.refs.length < VIBE_REPLIES_PREVIEW_MAX) {
+      agg.refs.push({
+        seq: Number(r.seq),
+        user: {
+          id: r.user_id,
+          username: r.username,
+          display_name: r.display_name,
+          avatar: avatarDto({
+            avatarStatus: r.avatar_status,
+            avatarVersion: Number(r.avatar_version),
+            avatarStaticKey: r.avatar_static_key,
+            avatarAnimatedKey: r.avatar_animated_key,
+          }),
+        },
+        kind,
+        // Stamps tile with user.avatar — thumb_url is null by construction.
+        thumb_url: kind === 'stamp' ? null : r.thumb_key ? mediaUrl(r.thumb_key) : null,
+      });
+    }
+    if (viewerId && r.user_id === viewerId) agg.mine = Number(r.seq);
+    byParent.set(key, agg);
+  }
+
+  for (const p of parents) {
+    const key = `${p.conversationId}:${p.seq}`;
+    const agg = byParent.get(key);
+    map.set(key, {
+      prompt: p.body!,
+      reply_count: agg?.count ?? 0,
+      replies: agg?.refs ?? [],
+      my_reply_seq: agg?.mine ?? null,
+    });
+  }
+  return map;
+}
+
 /**
  * `viewerId` personalizes `reactions[].mine` and `poll.my_vote`. REST
  * responses (history, sync, send/replay) MUST pass the requesting user.
@@ -367,13 +509,16 @@ export async function loadPollsFor(
  */
 export async function messageDtos(rows: MsgRow[], viewerId?: string): Promise<Message[]> {
   const atts = await loadAttachmentsFor(rows.map((r) => r.id));
-  const reactions = await loadReactionsFor(
-    rows.map((r) => ({ conversationId: r.conversationId, seq: r.seq })),
-    viewerId,
-  );
+  const keys = rows.map((r) => ({ conversationId: r.conversationId, seq: r.seq }));
+  const reactions = await loadReactionsFor(keys, viewerId);
+  const stamps = await loadStampsFor(keys);
   const pollRows = rows.filter((r) => r.type === 'poll');
   const polls = await loadPollsFor(
     pollRows.map((r) => ({ conversationId: r.conversationId, seq: r.seq })),
+    viewerId,
+  );
+  const vibes = await loadVibesFor(
+    rows.filter((r) => r.type === 'vibe_check'),
     viewerId,
   );
   return rows.map((r) =>
@@ -382,6 +527,8 @@ export async function messageDtos(rows: MsgRow[], viewerId?: string): Promise<Me
       atts.get(r.id) ?? [],
       reactions.get(`${r.conversationId}:${r.seq}`) ?? [],
       polls.get(`${r.conversationId}:${r.seq}`) ?? null,
+      stamps.get(`${r.conversationId}:${r.seq}`) ?? [],
+      r.type === 'vibe_check' ? (vibes.get(`${r.conversationId}:${r.seq}`) ?? null) : null,
     ),
   );
 }
@@ -566,7 +713,7 @@ export async function coParticipantUserIds(userId: string): Promise<string[]> {
   return ids;
 }
 
-function rawToMsgRow(r: Record<string, unknown>): MsgRow {
+export function rawToMsgRow(r: Record<string, unknown>): MsgRow {
   return {
     id: r.id as string,
     conversationId: r.conversation_id as string,

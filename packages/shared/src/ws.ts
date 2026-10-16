@@ -7,12 +7,15 @@ import {
   AttachmentSchema,
   BeaconRoleSchema,
   BeaconSchema,
+  ConversationPrefsSchema,
   ConversationSchema,
   IsoDateTimeSchema,
   KudosKindSchema,
   LinkPreviewSchema,
   MessageSchema,
   ReactionEmojiSchema,
+  ReactionKindSchema,
+  ScheduledMessageSchema,
   SeqSchema,
   UserLiteSchema,
   UserPublicSchema,
@@ -126,11 +129,17 @@ export type UserUpdatedEvent = z.infer<typeof UserUpdatedEventSchema>;
 // Deltas are safe to apply out of order per actor because the server emits one
 // frame per successful idempotent write; a reconnect re-reads aggregates from
 // message DTOs (reactions[]) instead of replaying frames.
+// v0.4 (§1.19) adds `kind` (default 'emoji' keeps v0.2 frames parsing clean).
+// For kind='stamp' frames, emoji carries the STAMP_REACTION_KEY sentinel and
+// count is the NEW stamp total; recipients resolve the stamper's avatar from
+// user_id against the participants they already hold (Message.stamps is the
+// reconnect truth, exactly like reactions[] for emoji).
 export const ReactionUpdatedEventSchema = z.object({
   t: z.literal('reaction.updated'),
   d: z.object({
     conversation_id: UuidSchema,
     seq: z.number().int().positive(),
+    kind: ReactionKindSchema.default('emoji'),
     emoji: ReactionEmojiSchema,
     count: z.number().int().nonnegative(),
     user_id: UuidSchema,
@@ -228,6 +237,31 @@ export const PollUpdatedEventSchema = z.object({
 });
 export type PollUpdatedEvent = z.infer<typeof PollUpdatedEventSchema>;
 
+// v0.4 (API.md §1.24): a chat-prefs change (theme / wallpaper / nicknames) —
+// to the OWNER's own sockets ONLY (prefs are personal, my-view-only state; no
+// other participant ever learns them). Full prefs replace: idempotent and
+// reorder-safe; reconnects reconcile from GET /api/conversations/:id/prefs.
+export const PrefsUpdatedEventSchema = z.object({
+  t: z.literal('prefs.updated'),
+  d: z.object({
+    conversation_id: UuidSchema,
+    prefs: ConversationPrefsSchema,
+  }),
+});
+export type PrefsUpdatedEvent = z.infer<typeof PrefsUpdatedEventSchema>;
+
+// v0.4 (API.md §1.26): a scheduled message changed state (created / cancelled
+// / delivered) — to the AUTHOR's own sockets only (cross-device sync of the
+// scheduled list; a pending schedule is private until delivery). The delivery
+// itself reaches everyone as an ordinary msg.new.
+export const ScheduledUpdatedEventSchema = z.object({
+  t: z.literal('scheduled.updated'),
+  d: z.object({
+    scheduled: ScheduledMessageSchema,
+  }),
+});
+export type ScheduledUpdatedEvent = z.infer<typeof ScheduledUpdatedEventSchema>;
+
 export const ErrorEventSchema = z.object({
   t: z.literal('error'),
   d: z.object({
@@ -255,6 +289,8 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
   BeaconKudosEventSchema,
   PlanUpdatedEventSchema,
   PollUpdatedEventSchema,
+  PrefsUpdatedEventSchema,
+  ScheduledUpdatedEventSchema,
   ErrorEventSchema,
 ]);
 export type ServerEvent = z.infer<typeof ServerEventSchema>;

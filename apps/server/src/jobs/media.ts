@@ -10,7 +10,12 @@ import { and, eq, ne, or, sql as dsql } from 'drizzle-orm';
 import { encode as encodeBlurhash } from 'blurhash';
 import { execa } from 'execa';
 import sharp from 'sharp';
-import { THUMB_SIZE_PX } from '@socialchat/shared';
+import {
+  AUDIO_WAVEFORM_BUCKETS,
+  AUDIO_WAVEFORM_PEAK_MAX,
+  MAX_AUDIO_DURATION_S,
+  THUMB_SIZE_PX,
+} from '@socialchat/shared';
 import { db, schema } from '../db/index.js';
 import {
   activeParticipantUserIds,
@@ -72,16 +77,82 @@ async function publishHydration(row: AttRow): Promise<void> {
   }
 }
 
+/**
+ * v0.4 (§1.20): split the decoded mono PCM into AUDIO_WAVEFORM_BUCKETS equal
+ * segments and take each segment's peak |sample|, normalized to integers
+ * 0..AUDIO_WAVEFORM_PEAK_MAX. Pure so the scoring is unit-testable.
+ */
+export function waveformFromPcm(pcm: Buffer, buckets = AUDIO_WAVEFORM_BUCKETS): number[] {
+  const samples = Math.floor(pcm.length / 2);
+  const out = new Array<number>(buckets).fill(0);
+  if (samples === 0) return out;
+  const perBucket = Math.max(1, Math.ceil(samples / buckets));
+  for (let b = 0; b < buckets; b++) {
+    let peak = 0;
+    const start = b * perBucket;
+    const end = Math.min(samples, start + perBucket);
+    for (let i = start; i < end; i++) {
+      const v = Math.abs(pcm.readInt16LE(i * 2));
+      if (v > peak) peak = v;
+    }
+    out[b] = Math.min(AUDIO_WAVEFORM_PEAK_MAX, Math.round((peak / 32768) * AUDIO_WAVEFORM_PEAK_MAX));
+  }
+  return out;
+}
+
+/** v0.4 (§1.20) audio leg of the media job: ffprobe duration (over the 5-min
+ * cap → 'failed'), peak-measure the 48 waveform buckets, hydrate as usual. */
+async function processAudioJob(att: AttRow, dir: string): Promise<void> {
+  const ext = att.originalKey.split('.').pop() ?? 'ogg';
+  const inPath = join(dir, `in.${ext}`);
+  const obj = await getObjectStream(att.originalKey);
+  await pipeline(obj.body, createWriteStream(inPath));
+
+  const probe = await ffprobe(inPath);
+  const durationS = Number(probe.format?.duration ?? 0);
+  if (durationS > MAX_AUDIO_DURATION_S) {
+    // Server-truth duration cap: a recording-side client should never hit it.
+    const [failed] = await db
+      .update(schema.attachments)
+      .set({ status: 'failed' })
+      .where(eq(schema.attachments.id, att.id))
+      .returning();
+    if (failed) await publishHydration(failed);
+    return;
+  }
+
+  // One decode pass to mono 8 kHz s16le PCM, peak-measured per equal segment —
+  // the same measurement astats-per-segment yields, in a single ffmpeg run.
+  const pcmPath = join(dir, 'out.pcm');
+  await execa('ffmpeg', ['-y', '-i', inPath, '-ac', '1', '-ar', '8000', '-f', 's16le', pcmPath]);
+  const waveform = waveformFromPcm(await readFile(pcmPath));
+
+  const [updated] = await db
+    .update(schema.attachments)
+    .set({
+      status: 'ready',
+      durationMs: durationS > 0 ? Math.round(durationS * 1000) : null,
+      waveform,
+    })
+    .where(eq(schema.attachments.id, att.id))
+    .returning();
+  if (updated) await publishHydration(updated);
+}
+
 export async function processMediaJob(job: MediaJob, isFinalAttempt: boolean): Promise<void> {
   const [att] = await db
     .select()
     .from(schema.attachments)
     .where(eq(schema.attachments.id, job.attachment_id))
     .limit(1);
-  if (!att || att.kind !== 'video' || att.status !== 'pending') return;
+  if (!att || (att.kind !== 'video' && att.kind !== 'audio') || att.status !== 'pending') return;
 
   const dir = await mkdtemp(join(tmpdir(), 'media-'));
   try {
+    if (att.kind === 'audio') {
+      await processAudioJob(att, dir);
+      return;
+    }
     const ext = att.originalKey.split('.').pop() ?? 'mp4';
     const inPath = join(dir, `in.${ext}`);
     const obj = await getObjectStream(att.originalKey);

@@ -48,11 +48,40 @@ export function dmPeer(conv: Conversation, meId: string | undefined): UserPublic
 export function messageSnippet(msg: Message | null): string {
   if (!msg) return 'No messages yet';
   if (msg.type === 'system') return msg.body ?? 'Update';
-  if (msg.type === 'image') return msg.body ? msg.body : 'Photo';
+  // v0.4 §1.25: tombstoned by the disappearing-messages sweep.
+  if (msg.deleted_at) return 'Message expired';
+  if (msg.metadata.capsule) return '💌 Time capsule';
+  if (msg.type === 'image') return msg.body ? msg.body : msg.metadata.doodle ? '✏️ Doodle' : 'Photo';
   if (msg.type === 'video') return msg.body ? msg.body : 'Video';
   if (msg.type === 'file') return msg.body ? msg.body : 'File';
+  if (msg.type === 'audio') return '🎤 Voice note';
   if (msg.type === 'poll') return msg.poll ? `📊 ${msg.poll.question}` : '📊 Poll';
+  if (msg.type === 'vibe_check') return `🎭 ${msg.body ?? 'Vibe check'}`;
+  if (msg.type === 'game_ttt') return '🎮 Tic-tac-toe';
+  if (msg.type === 'puzzle_result') return '🧩 Puzzle result';
   return msg.body ?? '';
+}
+
+/** mm:ss label for voice-note durations (v0.4 §1.20). */
+export function formatDuration(ms: number | null): string {
+  const totalS = Math.max(0, Math.round((ms ?? 0) / 1000));
+  const m = Math.floor(totalS / 60);
+  const s = totalS % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+/** Friendly deliver-at label for the scheduled drawer (v0.4 §1.26). */
+export function formatDeliverAt(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === now.toDateString()) return `today at ${time}`;
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  if (d.toDateString() === tomorrow.toDateString()) return `tomorrow at ${time}`;
+  const sameYear = d.getFullYear() === now.getFullYear();
+  const day = d.toLocaleDateString([], sameYear ? { month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric' });
+  return `${day} at ${time}`;
 }
 
 export function unreadOf(item: ConversationListItem): number {

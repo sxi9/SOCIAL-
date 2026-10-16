@@ -7,6 +7,7 @@ import {
   boolean,
   check,
   customType,
+  date,
   foreignKey,
   index,
   inet,
@@ -133,6 +134,13 @@ export const conversations = pgTable(
     dmKey: text('dm_key').unique(),
     lastSeq: bigint('last_seq', { mode: 'number' }).notNull().default(0),
     lastMessageAt: timestamptz('last_message_at'),
+    // v0.4 (migration 0004, API.md §1.25): disappearing-messages TTL. NULL =
+    // off; else one of DISAPPEAR_TTL_OPTIONS_S. Conversation-wide (not
+    // personal); changed via PATCH .../disappearing (any DM participant /
+    // group admin), announced by a 'disappear_changed' system message. The
+    // worker sweep tombstones (never deletes) expired rows — seqs are never
+    // reused.
+    disappearTtlS: integer('disappear_ttl_s'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
   },
   (t) => ({
@@ -142,7 +150,14 @@ export const conversations = pgTable(
       sql`${t.avatarStatus} IN ('none','processing','ready','failed')`,
     ),
     dmKeyCheck: check('conversations_dm_key_check', sql`(${t.type} = 'dm') = (${t.dmKey} IS NOT NULL)`),
+    disappearTtlCheck: check(
+      'conversations_disappear_ttl_s_check',
+      sql`${t.disappearTtlS} IN (3600, 86400, 604800, 2592000)`,
+    ),
     activityIdx: index('conversations_activity_idx').on(sql`${t.lastMessageAt} DESC NULLS LAST`),
+    disappearingIdx: index('conversations_disappearing_idx')
+      .on(t.id)
+      .where(sql`${t.disappearTtlS} IS NOT NULL`),
   }),
 );
 
@@ -202,13 +217,25 @@ export const messages = pgTable(
     pk: primaryKey({ columns: [t.conversationId, t.seq] }),
     seqCheck: check('messages_seq_check', sql`${t.seq} > 0`),
     // v0.3 adds 'poll' (migration 0003): a poll is a message on the seq log.
+    // v0.4 adds 'audio' (voice notes), 'vibe_check' (prompt; replies carry
+    // metadata.vibe_reply_seq), 'game_ttt' (state in metadata.game) and
+    // 'puzzle_result' (metadata.puzzle, server-populated) — migration 0004.
     typeCheck: check(
       'messages_type_check',
-      sql`${t.type} IN ('text','image','video','file','system','poll')`,
+      sql`${t.type} IN ('text','image','video','file','system','poll','audio','vibe_check','game_ttt','puzzle_result')`,
+    ),
+    // v0.4 (§1.22): metadata.effect pinned to the MESSAGE_EFFECTS set.
+    metadataEffectCheck: check(
+      'messages_metadata_effect_check',
+      sql`NOT (${t.metadata} ? 'effect') OR ${t.metadata}->>'effect' IN ('confetti','hearts','fireworks','snow')`,
     ),
     idempotencyIdx: uniqueIndex('messages_idempotency_idx')
       .on(t.conversationId, t.senderId, t.clientMsgId)
       .where(sql`${t.clientMsgId} IS NOT NULL`),
+    // v0.4 (§1.25): the disappearing sweep's inner walk (system rows exempt).
+    disappearSweepIdx: index('messages_disappear_sweep_idx')
+      .on(t.conversationId, t.createdAt)
+      .where(sql`${t.deletedAt} IS NULL AND ${t.type} <> 'system'`),
   }),
 );
 
@@ -262,6 +289,11 @@ export const messageReactions = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     emoji: text('emoji').notNull(),
+    // v0.4 avatar stamps (migration 0004, API.md §1.19): kind='stamp' rows
+    // hold the ':stamp:' sentinel (STAMP_REACTION_KEY) in emoji, so the PK
+    // enforces one stamp per user per message for free. The 8-distinct route
+    // cap counts kind='emoji' rows only.
+    kind: text('kind').notNull().default('emoji'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
   },
   (t) => ({
@@ -274,6 +306,11 @@ export const messageReactions = pgTable(
     emojiCheck: check(
       'message_reactions_emoji_check',
       sql`char_length(${t.emoji}) BETWEEN 1 AND 16`,
+    ),
+    kindCheck: check('message_reactions_kind_check', sql`${t.kind} IN ('emoji','stamp')`),
+    stampKeyCheck: check(
+      'message_reactions_stamp_key_check',
+      sql`(${t.kind} = 'stamp') = (${t.emoji} = ':stamp:')`,
     ),
   }),
 );
@@ -333,6 +370,12 @@ export const attachments = pgTable(
     shareImportId: uuid('share_import_id').references(() => shareImports.id, {
       onDelete: 'set null',
     }),
+    // v0.4 (migration 0004, §1.26): bound to a pending scheduled message —
+    // keeps the orphan GC off it while it waits for delivery.
+    scheduledMessageId: uuid('scheduled_message_id').references(
+      (): AnyPgColumn => scheduledMessages.id,
+      { onDelete: 'set null' },
+    ),
     kind: text('kind').notNull(),
     originalKey: text('original_key').notNull(),
     thumbKey: text('thumb_key'),
@@ -343,16 +386,30 @@ export const attachments = pgTable(
     width: integer('width'),
     height: integer('height'),
     durationMs: integer('duration_ms'),
+    // v0.4 voice notes (migration 0004, §1.20): AUDIO_WAVEFORM_BUCKETS (48)
+    // integer peaks 0..100, worker-computed; NULL for non-audio kinds and
+    // while 'pending'. Inlined into the Attachment DTO.
+    waveform: jsonb('waveform'),
     status: text('status').notNull().default('pending'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
   },
   (t) => ({
-    kindCheck: check('attachments_kind_check', sql`${t.kind} IN ('image','video','file')`),
+    // v0.4 adds 'audio' (migration 0004).
+    kindCheck: check(
+      'attachments_kind_check',
+      sql`${t.kind} IN ('image','video','file','audio')`,
+    ),
     statusCheck: check('attachments_status_check', sql`${t.status} IN ('pending','ready','failed')`),
+    waveformCheck: check(
+      'attachments_waveform_check',
+      sql`${t.waveform} IS NULL OR (jsonb_typeof(${t.waveform}) = 'array' AND jsonb_array_length(${t.waveform}) = 48)`,
+    ),
     messageIdx: index('attachments_message_idx').on(t.messageId),
     orphanIdx: index('attachments_orphan_idx')
       .on(t.createdAt)
-      .where(sql`${t.messageId} IS NULL AND ${t.shareImportId} IS NULL`),
+      .where(
+        sql`${t.messageId} IS NULL AND ${t.shareImportId} IS NULL AND ${t.scheduledMessageId} IS NULL`,
+      ),
   }),
 );
 
@@ -639,5 +696,152 @@ export const reports = pgTable(
       sql`(${t.kind} = 'user' AND ${t.targetUserId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL) OR (${t.kind} = 'message' AND ${t.targetConversationId} IS NOT NULL AND ${t.targetSeq} IS NOT NULL AND ${t.targetUserId} IS NULL AND ${t.targetBeaconId} IS NULL) OR (${t.kind} = 'beacon' AND ${t.targetBeaconId} IS NOT NULL AND ${t.targetUserId} IS NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL)`,
     ),
     queueIdx: index('reports_queue_idx').on(t.status, sql`${t.createdAt} DESC`),
+  }),
+);
+
+// ========================= scheduled messages ================================
+// v0.4 (migration 0004, API.md §1.26, ADR-010). Payload mirrors a §1.5 send;
+// attachments bind via attachments.scheduled_message_id (keeps the orphan GC
+// off them while they wait). Delivery = worker queue `timers` (delayed job per
+// row + minute safety sweep over scheduled_due_idx); the claim is the guarded
+//   UPDATE ... SET status='sent', sent_at=now(), sent_seq=$seq
+//     WHERE id=$1 AND status='pending'
+// in the same transaction as the real message insert — idempotent under job
+// retries and sweep/job races. Undeliverable (author left / DM frozen /
+// conversation gone) flips to 'cancelled'. A time capsule is the same row with
+// metadata.capsule = true.
+
+export const scheduledMessages = pgTable(
+  'scheduled_messages',
+  {
+    id: uuid('id').primaryKey(),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    clientMsgId: uuid('client_msg_id').notNull(),
+    type: text('type').notNull(),
+    body: text('body'),
+    metadata: jsonb('metadata').notNull().default({}), // {effect?, capsule?} only
+    deliverAt: timestamptz('deliver_at').notNull(),
+    status: text('status').notNull().default('pending'),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+    sentAt: timestamptz('sent_at'),
+    // The delivered message's seq (author jump-to after delivery).
+    sentSeq: bigint('sent_seq', { mode: 'number' }),
+  },
+  (t) => ({
+    typeCheck: check(
+      'scheduled_messages_type_check',
+      sql`${t.type} IN ('text','image','video','file','audio')`,
+    ),
+    bodyCheck: check('scheduled_messages_body_check', sql`char_length(${t.body}) <= 8192`),
+    metadataEffectCheck: check(
+      'scheduled_messages_metadata_check',
+      sql`NOT (${t.metadata} ? 'effect') OR ${t.metadata}->>'effect' IN ('confetti','hearts','fireworks','snow')`,
+    ),
+    statusCheck: check(
+      'scheduled_messages_status_check',
+      sql`${t.status} IN ('pending','sent','cancelled')`,
+    ),
+    sentShapeCheck: check(
+      'scheduled_sent_shape_check',
+      sql`(${t.status} = 'sent') = (${t.sentAt} IS NOT NULL AND ${t.sentSeq} IS NOT NULL)`,
+    ),
+    idempotencyIdx: uniqueIndex('scheduled_idempotency_idx').on(t.authorId, t.clientMsgId),
+    dueIdx: index('scheduled_due_idx')
+      .on(t.deliverAt)
+      .where(sql`${t.status} = 'pending'`),
+    byAuthorIdx: index('scheduled_by_author_idx').on(t.authorId, sql`${t.createdAt} DESC`),
+    authorPendingIdx: index('scheduled_author_pending_idx')
+      .on(t.authorId)
+      .where(sql`${t.status} = 'pending'`),
+  }),
+);
+
+// ============================== chat prefs ===================================
+// v0.4 (migration 0004, API.md §1.24). ALL PERSONAL: per (conversation, user),
+// serialized to the owner only, synced across their devices via prefs.updated
+// (own sockets only). Fixed theme/wallpaper sets (CHAT_THEMES /
+// CHAT_WALLPAPERS); wallpapers are CSS patterns — no uploads in v0.4. NULL =
+// app default.
+
+export const conversationPrefs = pgTable(
+  'conversation_prefs',
+  {
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    theme: text('theme'),
+    wallpaper: text('wallpaper'),
+    updatedAt: timestamptz('updated_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.conversationId, t.userId] }),
+    themeCheck: check(
+      'conversation_prefs_theme_check',
+      sql`${t.theme} IN ('classic','sunset','ocean','forest','grape','bubblegum','mono','midnight')`,
+    ),
+    wallpaperCheck: check(
+      'conversation_prefs_wallpaper_check',
+      sql`${t.wallpaper} IN ('dots','grid','waves','stars','scribbles','blobs')`,
+    ),
+  }),
+);
+
+// The owner's private nickname for a target member of one conversation
+// (self-nicknames allowed). Never serialized to anyone but the owner.
+export const memberNicknames = pgTable(
+  'member_nicknames',
+  {
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    ownerId: uuid('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    targetId: uuid('target_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    nickname: text('nickname').notNull(),
+    updatedAt: timestamptz('updated_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.conversationId, t.ownerId, t.targetId] }),
+    nicknameCheck: check(
+      'member_nicknames_nickname_check',
+      sql`char_length(${t.nickname}) BETWEEN 1 AND 32`,
+    ),
+  }),
+);
+
+// ========================== daily puzzle attempts ============================
+// v0.4 (migration 0004, API.md §1.27). One row per (user, UTC day); guesses is
+// the ordered attempt log [{guess, score}]. The day's word is NEVER stored —
+// recomputed from PUZZLE_WORDLIST + env PUZZLE_SECRET, so a dump spoils
+// nothing. NO leaderboard, NO rankings, NO streaks (PSYCHOLOGY never-build).
+
+export const puzzleAttempts = pgTable(
+  'puzzle_attempts',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    puzzleDate: date('puzzle_date', { mode: 'string' }).notNull(), // 'YYYY-MM-DD' (UTC day)
+    guesses: jsonb('guesses').notNull().default([]),
+    solved: boolean('solved').notNull().default(false),
+    updatedAt: timestamptz('updated_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.puzzleDate] }),
+    guessesCheck: check(
+      'puzzle_attempts_guesses_check',
+      sql`jsonb_typeof(${t.guesses}) = 'array' AND jsonb_array_length(${t.guesses}) <= 6`,
+    ),
   }),
 );

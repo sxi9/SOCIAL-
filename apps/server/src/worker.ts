@@ -6,9 +6,11 @@ import { processBeaconsJob } from './jobs/beacons.js';
 import { runGc } from './jobs/gc.js';
 import { processMediaJob } from './jobs/media.js';
 import { initWebPush, processPushJob } from './jobs/push.js';
+import { processTimersJob } from './jobs/timers.js';
 import { processUnfurlJob } from './jobs/unfurl.js';
-import type { AvatarJob, BeaconsJob, MediaJob, PushJob, UnfurlJob } from './queues.js';
-import { beaconsQueue, gcQueue } from './queues.js';
+import { DISAPPEAR_SWEEP_INTERVAL_S } from '@socialchat/shared';
+import type { AvatarJob, BeaconsJob, MediaJob, PushJob, TimersJob, UnfurlJob } from './queues.js';
+import { beaconsQueue, gcQueue, timersQueue } from './queues.js';
 import { createRedis } from './redis.js';
 
 async function main(): Promise<void> {
@@ -39,6 +41,12 @@ async function main(): Promise<void> {
     new Worker<BeaconsJob>('beacons', async (job: Job<BeaconsJob>) => processBeaconsJob(job.name, job.data), {
       connection: createRedis(),
       concurrency: 2,
+    }),
+    // v0.4 (API.md §1.25/§1.26): disappear-sweep | scheduled-deliver |
+    // scheduled-sweep. Delivery is claim-guarded, so concurrency is safe.
+    new Worker<TimersJob>('timers', async (job: Job<TimersJob>) => processTimersJob(job.name, job.data), {
+      connection: createRedis(),
+      concurrency: 4,
     }),
   ];
 
@@ -77,7 +85,25 @@ async function main(): Promise<void> {
     { repeat: { every: 10 * 60_000 }, jobId: 'beacon-afterglow-sweep', removeOnComplete: 10, removeOnFail: 10 },
   );
 
-  console.log('worker: consuming queues avatar | media | unfurl | push | gc | beacons');
+  // v0.4 repeatable timers (API.md §1.25/§1.26): the disappearing-messages
+  // tombstone sweep and the scheduled-delivery minute safety net.
+  await timersQueue.add(
+    'disappear-sweep',
+    {},
+    {
+      repeat: { every: DISAPPEAR_SWEEP_INTERVAL_S * 1000 },
+      jobId: 'disappear-sweep',
+      removeOnComplete: 10,
+      removeOnFail: 10,
+    },
+  );
+  await timersQueue.add(
+    'scheduled-sweep',
+    {},
+    { repeat: { every: 60_000 }, jobId: 'scheduled-sweep', removeOnComplete: 10, removeOnFail: 10 },
+  );
+
+  console.log('worker: consuming queues avatar | media | unfurl | push | gc | beacons | timers');
 
   const shutdown = async () => {
     await Promise.allSettled(workers.map((w) => w.close()));

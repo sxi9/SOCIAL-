@@ -22,6 +22,16 @@ const EnvSchema = z.object({
 
   SESSION_SECRET: z.string().min(16).default('dev-secret-change-me-please'),
 
+  // v0.4 (API.md §1.27): salts the daily-puzzle word selection —
+  // PUZZLE_WORDLIST[sha256(`${yyyy-mm-dd}:${PUZZLE_SECRET}`) mod length].
+  // Server-side only, so clients can never precompute the word. Optional:
+  // when unset (or blank, as a commented-out .env line yields), the secret is
+  // DERIVED from SESSION_SECRET below — never a committed public default,
+  // which would make every day's word precomputable from the public repo.
+  // '' (a blank `PUZZLE_SECRET=` .env line) counts as unset; a non-empty
+  // value shorter than 8 chars fails loudly rather than being ignored.
+  PUZZLE_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(8).optional()),
+
   VAPID_PUBLIC_KEY: z.string().optional(),
   VAPID_PRIVATE_KEY: z.string().optional(),
   VAPID_SUBJECT: z.string().optional(),
@@ -46,6 +56,11 @@ export const config = {
     bucket: env.MINIO_BUCKET,
   },
   sessionSecret: env.SESSION_SECRET,
+  // Unset/blank → derive from SESSION_SECRET (domain-separated), so any
+  // deployment that set its session secret gets an unguessable puzzle salt
+  // for free; setting PUZZLE_SECRET explicitly pins the word schedule so a
+  // session-secret rotation doesn't reshuffle it mid-stream.
+  puzzleSecret: env.PUZZLE_SECRET ?? `puzzle:${env.SESSION_SECRET}`,
   vapid:
     env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY
       ? {

@@ -1,17 +1,19 @@
-import { and, asc, desc, eq, gt, lt, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNull, lt, lte, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
   ListMessagesQuerySchema,
-  type MessageMetadata,
+  PUZZLE_MAX_GUESSES,
   SendMessageRequestSchema,
+  VIBE_CHECK_PROMPT_MAX_CHARS,
+  type MessageMetadata,
   type UserLite,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { blockedSetOf, isBlockedPair } from '../../lib/blocks.js';
 import { activeParticipantUserIds, messageDtos, userLiteDto } from '../../lib/dto.js';
-import { ApiError, badRequest, notFound } from '../../lib/errors.js';
+import { ApiError, badRequest, conflict, notFound } from '../../lib/errors.js';
 import { extractFirstUrl } from '../../lib/urls.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant } from '../conversations/routes.js';
@@ -21,7 +23,8 @@ import {
   requestUnfurl,
   type PreviewLookup,
 } from '../previews/service.js';
-import { fanOutNewMessage, insertMessage } from './service.js';
+import { parseGuesses, utcToday } from '../puzzle/service.js';
+import { fanOutNewMessage, insertMessage, publishMessageUpdated } from './service.js';
 
 const IdParams = z.object({ id: z.string().uuid() });
 const m = schema.messages;
@@ -97,12 +100,114 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       const replay = await findByClientMsgId(convId, user.id, body.client_msg_id);
       if (replay) return reply.status(200).send({ message: replay });
 
-      const text = body.body?.trim() ? body.body : null;
-      const attachmentIds = body.attachment_ids ?? [];
-      if (!text && attachmentIds.length === 0) throw badRequest('empty_message');
-      if (body.type !== 'text' && attachmentIds.length === 0) throw badRequest('missing_attachments');
-
+      let text = body.body?.trim() ? body.body : null;
+      let attachmentIds = body.attachment_ids ?? [];
+      const rider = body.metadata ?? {};
+      const isStampReply = rider.stamp === true;
+      const isVibeReply = rider.vibe_reply_seq !== undefined;
       const metadata: MessageMetadata = {};
+
+      // ---- v0.4 metadata riders, cross-validated (§1.21–§1.23, §1.27) ----
+      // §1.21: doodle flags an ordinary PNG image message — image only.
+      if (rider.doodle && body.type !== 'image') throw badRequest('bad_metadata');
+      // §1.23: a stamp reply is valid only alongside vibe_reply_seq, and is
+      // exactly {type:'text', no body, no attachments} — the tile is my avatar.
+      if (isStampReply && !isVibeReply) throw badRequest('bad_metadata');
+      if (isStampReply && (body.type !== 'text' || text !== null || attachmentIds.length > 0)) {
+        throw badRequest('bad_metadata');
+      }
+      // §1.23: reply shapes are image (photo/doodle) or the stamp tile.
+      if (isVibeReply && !isStampReply && body.type !== 'image') throw badRequest('bad_vibe_reply');
+      if (isVibeReply) {
+        // Must reference a visible (§1.5 floor), non-deleted vibe_check message
+        // in this conversation → else 404 not_found.
+        const [parent] = await db
+          .select({ seq: m.seq })
+          .from(m)
+          .where(
+            and(
+              eq(m.conversationId, convId),
+              eq(m.seq, rider.vibe_reply_seq!),
+              gt(m.seq, part.joinSeq),
+              eq(m.type, 'vibe_check'),
+              isNull(m.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (!parent) throw notFound();
+        metadata.vibe_reply_seq = rider.vibe_reply_seq;
+        if (isStampReply) metadata.stamp = true;
+      }
+      if (rider.doodle) metadata.doodle = true;
+      // §1.22: sender-confirmed effect (consent is client-side but binding —
+      // the server merely stores the confirmed value; the DB CHECK pins the set).
+      if (rider.effect) metadata.effect = rider.effect;
+
+      // §1.23: a vibe check's body IS the prompt.
+      if (body.type === 'vibe_check') {
+        if (!text) throw badRequest('prompt_required');
+        if (text.length > VIBE_CHECK_PROMPT_MAX_CHARS) throw badRequest('prompt_required');
+      }
+
+      if (body.type === 'puzzle_result') {
+        // §1.27: the server builds metadata.puzzle from MY stored attempt —
+        // client body/attachments/metadata.puzzle are ignored (unforgeable).
+        const today = utcToday();
+        const [attempt] = await db
+          .select()
+          .from(schema.puzzleAttempts)
+          .where(
+            and(
+              eq(schema.puzzleAttempts.userId, user.id),
+              eq(schema.puzzleAttempts.puzzleDate, today),
+            ),
+          )
+          .limit(1);
+        const guesses = parseGuesses(attempt?.guesses);
+        if (!attempt || (!attempt.solved && guesses.length < PUZZLE_MAX_GUESSES)) {
+          throw conflict('puzzle_unfinished');
+        }
+        text = null;
+        attachmentIds = [];
+        metadata.puzzle = {
+          date: today,
+          attempts_used: guesses.length,
+          solved: attempt.solved,
+          grid: guesses.map((g) => g.score),
+        };
+      } else {
+        const needsAttachment =
+          body.type === 'image' || body.type === 'video' || body.type === 'file' || body.type === 'audio';
+        if (needsAttachment && attachmentIds.length === 0) {
+          throw badRequest(body.type === 'audio' ? 'audio_attachment_required' : 'missing_attachments');
+        }
+        if (!needsAttachment && !text && attachmentIds.length === 0 && !isStampReply) {
+          throw badRequest('empty_message');
+        }
+      }
+
+      // §1.20: a voice note is exactly ONE audio attachment.
+      if (body.type === 'audio') {
+        if (attachmentIds.length !== 1) throw badRequest('audio_attachment_required');
+        const [att] = await db
+          .select({ kind: schema.attachments.kind, status: schema.attachments.status })
+          .from(schema.attachments)
+          .where(
+            and(
+              eq(schema.attachments.id, attachmentIds[0]!),
+              eq(schema.attachments.uploaderId, user.id),
+              isNull(schema.attachments.messageId),
+            ),
+          )
+          .limit(1);
+        // status 'failed' = the worker's MAX_AUDIO_DURATION_S ffprobe cap (or a
+        // probe error) rejected the recording — binding it would make the 5-min
+        // cap advisory ('pending' is fine: the waveform hydrates via msg.updated).
+        if (!att || att.kind !== 'audio' || att.status === 'failed') {
+          throw badRequest('audio_attachment_required');
+        }
+      }
+
       let pendingUnfurl: PreviewLookup | null = null;
 
       if (body.metadata?.link_preview) {
@@ -144,6 +249,22 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
           body: text,
           metadata,
           attachmentIds,
+          // §1.23: ONE reply per user per vibe check. The seq transaction's
+          // conversations-row lock serializes all senders in the conversation,
+          // so this in-transaction recheck is race-free; a duplicate rolls the
+          // whole insert (and its seq bump) back → 409 vibe_already_replied.
+          withinTx: isVibeReply
+            ? async (tx, inserted) => {
+                const dup = (await tx.execute(sql`
+                  SELECT 1 AS one FROM messages
+                  WHERE conversation_id = ${convId} AND sender_id = ${user.id}
+                    AND deleted_at IS NULL AND id <> ${inserted.id}
+                    AND (metadata->>'vibe_reply_seq')::bigint = ${rider.vibe_reply_seq!}::bigint
+                  LIMIT 1
+                `)) as unknown as { one: number }[];
+                if (dup.length > 0) throw conflict('vibe_already_replied');
+              }
+            : undefined,
         });
       } catch (err) {
         if ((err as { code?: string }).code === '23505') {
@@ -165,7 +286,21 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
         });
       }
 
-      const dto = await fanOutNewMessage(msg);
+      await fanOutNewMessage(msg);
+
+      // §1.23: every accepted vibe reply ALSO re-ships the vibe message as a
+      // full-DTO msg.updated, so the collage strip grows live.
+      if (isVibeReply) {
+        const [parentRow] = await db
+          .select()
+          .from(m)
+          .where(and(eq(m.conversationId, convId), eq(m.seq, rider.vibe_reply_seq!)))
+          .limit(1);
+        if (parentRow) await publishMessageUpdated(parentRow);
+      }
+
+      // Viewer-scoped response (reactions.mine / poll.my_vote / vibe.my_reply_seq).
+      const [dto] = await messageDtos([msg], user.id);
       return reply.status(201).send({ message: dto });
     },
   );

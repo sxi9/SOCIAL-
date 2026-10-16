@@ -30,7 +30,7 @@ Status: ✅ shipped · 🔨 building · 📋 planned
 21. Mascot waves beside the inviter's avatar on join pages
 22. Invite/reaction edge-case fixes with regression tests
 
-## 📋 v0.3 — Beacons + Privacy + Trust foundations
+## ✅ v0.3 — Beacons + Privacy + Trust foundations (shipped)
 
 23. "I'm bored — let's plan" beacon: vibe chips, now/tonight/weekend, audience friends / nearby / public
 24. Live expiring plan cards; "I'm in 🙋" with avatar pile-up; spark threshold ("needs 2 more")
@@ -41,7 +41,7 @@ Status: ✅ shipped · 🔨 building · 📋 planned
 29. Block & report + blocked list (ships WITH public-facing features, never after)
 30. Nearby = coarse opt-in area only; no live GPS, never shown to others
 
-## 📋 v0.4 — Expression pack
+## ✅ v0.4 — Expression pack (shipped)
 
 31. Avatar stamps (react with your own GIF face; auto sticker pack)
 32. Voice notes (hold-to-talk)
@@ -50,7 +50,7 @@ Status: ✅ shipped · 🔨 building · 📋 planned
 35. Vibe check (everyone answers a prompt with a GIF)
 36. Chat themes, wallpapers, per-chat nicknames
 37. Disappearing messages; scheduled messages; time capsules
-38. Mini-games in chat + daily puzzle with friends leaderboard
+38. Mini-games in chat + daily puzzle shared with friends (friends-who-shared strip ordered by username — no leaderboard, no ranking, per PSYCHOLOGY rule 3 and API §1.27)
 
 ## 📋 v0.5 — Local board + social layer
 

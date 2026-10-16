@@ -415,3 +415,135 @@ CREATE TABLE reports (
   )
 );
 CREATE INDEX reports_queue_idx ON reports (status, created_at DESC);
+
+-- ======================= v0.4 — expression pack ==============================
+-- (migration 0004; ADR-010; API.md §1.19–§1.27; FEATURES #31–#38)
+
+-- messages: new client-visible types — 'audio' voice notes (§1.20),
+-- 'vibe_check' prompts (§1.23, replies carry metadata.vibe_reply_seq),
+-- 'game_ttt' (state in metadata.game, §1.27), 'puzzle_result' (server-built
+-- no-spoiler grid, §1.27).
+ALTER TABLE messages DROP CONSTRAINT messages_type_check;
+ALTER TABLE messages ADD CONSTRAINT messages_type_check
+  CHECK (type IN ('text','image','video','file','system','poll',
+                  'audio','vibe_check','game_ttt','puzzle_result'));
+
+-- metadata.effect pinned to MESSAGE_EFFECTS (§1.22; suggest-only client
+-- consent rule — the server never injects an effect).
+ALTER TABLE messages ADD CONSTRAINT messages_metadata_effect_check
+  CHECK (NOT (metadata ? 'effect')
+         OR metadata->>'effect' IN ('confetti','hearts','fireworks','snow'));
+
+-- message_reactions: avatar stamps (§1.19). kind='stamp' rows hold the
+-- ':stamp:' sentinel in emoji, so the existing PK enforces one stamp per user
+-- per message; the 8-distinct route cap counts kind='emoji' rows only.
+ALTER TABLE message_reactions
+  ADD COLUMN kind text NOT NULL DEFAULT 'emoji'
+    CHECK (kind IN ('emoji','stamp'));
+ALTER TABLE message_reactions ADD CONSTRAINT message_reactions_stamp_key_check
+  CHECK ((kind = 'stamp') = (emoji = ':stamp:'));
+
+-- scheduled messages & time capsules (§1.26). Delivery = worker queue `timers`
+-- (delayed job per row + minute sweep over scheduled_due_idx); the claim is a
+-- guarded UPDATE ... WHERE status='pending' inside the same transaction as the
+-- real message insert, so retries/races can never double-deliver. A time
+-- capsule is the same row with metadata.capsule = true.
+CREATE TABLE scheduled_messages (
+  id              uuid PRIMARY KEY,                  -- uuidv7, app-side
+  conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  author_id       uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  client_msg_id   uuid NOT NULL,                     -- create idempotency (unique per author)
+  type            text NOT NULL
+                    CHECK (type IN ('text','image','video','file','audio')),
+  body            text CHECK (char_length(body) <= 8192),  -- MAX_MESSAGE_BODY_CHARS
+  metadata        jsonb NOT NULL DEFAULT '{}'        -- {effect?, capsule?} only
+                    CHECK (NOT (metadata ? 'effect')
+                           OR metadata->>'effect' IN ('confetti','hearts','fireworks','snow')),
+  deliver_at      timestamptz NOT NULL,
+  status          text NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','sent','cancelled')),
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  sent_at         timestamptz,
+  sent_seq        bigint,                            -- delivered message's seq (jump-to)
+  CONSTRAINT scheduled_sent_shape_check
+    CHECK ((status = 'sent') = (sent_at IS NOT NULL AND sent_seq IS NOT NULL))
+);
+CREATE UNIQUE INDEX scheduled_idempotency_idx
+  ON scheduled_messages (author_id, client_msg_id);
+CREATE INDEX scheduled_due_idx
+  ON scheduled_messages (deliver_at) WHERE status = 'pending';   -- delivery sweep
+CREATE INDEX scheduled_by_author_idx
+  ON scheduled_messages (author_id, created_at DESC);            -- list-mine
+CREATE INDEX scheduled_author_pending_idx
+  ON scheduled_messages (author_id) WHERE status = 'pending';    -- 50-pending cap count
+
+-- attachments: 'audio' kind + worker-computed waveform (§1.20); a binding to a
+-- pending scheduled message shields the row from the orphan GC.
+ALTER TABLE attachments DROP CONSTRAINT attachments_kind_check;
+ALTER TABLE attachments ADD CONSTRAINT attachments_kind_check
+  CHECK (kind IN ('image','video','file','audio'));
+ALTER TABLE attachments
+  ADD COLUMN waveform jsonb
+    CHECK (waveform IS NULL
+           OR (jsonb_typeof(waveform) = 'array'
+               AND jsonb_array_length(waveform) = 48));          -- AUDIO_WAVEFORM_BUCKETS
+ALTER TABLE attachments
+  ADD COLUMN scheduled_message_id uuid
+    REFERENCES scheduled_messages(id) ON DELETE SET NULL;
+DROP INDEX attachments_orphan_idx;
+CREATE INDEX attachments_orphan_idx ON attachments (created_at)
+  WHERE message_id IS NULL AND share_import_id IS NULL
+    AND scheduled_message_id IS NULL;
+
+-- conversations: disappearing-messages TTL (§1.25). NULL = off. The worker
+-- sweep (queue `timers`, every minute) TOMBSTONES expired rows — deleted_at
+-- set, body NULLed, metadata emptied, attachments + dependent reaction/poll
+-- rows removed — and NEVER deletes the message row: seqs are never reused.
+-- System messages are exempt.
+ALTER TABLE conversations
+  ADD COLUMN disappear_ttl_s int
+    CHECK (disappear_ttl_s IN (3600, 86400, 604800, 2592000));   -- DISAPPEAR_TTL_OPTIONS_S
+CREATE INDEX conversations_disappearing_idx
+  ON conversations (id) WHERE disappear_ttl_s IS NOT NULL;       -- sweep's outer loop
+CREATE INDEX messages_disappear_sweep_idx
+  ON messages (conversation_id, created_at)
+  WHERE deleted_at IS NULL AND type <> 'system';                 -- sweep's inner walk
+
+-- chat prefs: themes, wallpapers, nicknames (§1.24). ALL PERSONAL: per
+-- (conversation, user), serialized to that user only, synced via prefs.updated
+-- (own sockets). Fixed sets; NO wallpaper uploads in v0.4. NULL = app default.
+CREATE TABLE conversation_prefs (
+  conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  user_id         uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  theme           text CHECK (theme IN ('classic','sunset','ocean','forest',
+                                        'grape','bubblegum','mono','midnight')),  -- CHAT_THEMES
+  wallpaper       text CHECK (wallpaper IN ('dots','grid','waves','stars',
+                                            'scribbles','blobs')),                -- CHAT_WALLPAPERS
+  updated_at      timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (conversation_id, user_id)
+);
+
+-- Nickname map: the owner's private labels for members of one conversation
+-- (self-nicknames allowed). Never serialized to anyone but the owner.
+CREATE TABLE member_nicknames (
+  conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  owner_id        uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  target_id       uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  nickname        text NOT NULL CHECK (char_length(nickname) BETWEEN 1 AND 32),  -- NICKNAME_MAX_CHARS
+  updated_at      timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (conversation_id, owner_id, target_id)
+);
+
+-- daily word puzzle attempts (§1.27). One row per (user, UTC day); the day's
+-- word is NEVER stored — recomputed from PUZZLE_WORDLIST + env PUZZLE_SECRET.
+-- NO leaderboard, NO rankings, NO streaks, ever (PSYCHOLOGY never-build list).
+CREATE TABLE puzzle_attempts (
+  user_id     uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  puzzle_date date NOT NULL,
+  guesses     jsonb NOT NULL DEFAULT '[]'
+                CHECK (jsonb_typeof(guesses) = 'array'
+                       AND jsonb_array_length(guesses) <= 6),    -- PUZZLE_MAX_GUESSES
+  solved      boolean NOT NULL DEFAULT false,
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, puzzle_date)
+);

@@ -3,15 +3,22 @@
 import { z } from 'zod';
 import {
   AREA_MAX_CHARS,
+  AUDIO_WAVEFORM_BUCKETS,
+  AUDIO_WAVEFORM_PEAK_MAX,
   BEACON_NOTE_MAX_CHARS,
   BEACON_ROLE_LABEL_MAX_CHARS,
   BEACON_SPARK_THRESHOLD_MAX,
   BEACON_SPARK_THRESHOLD_MIN,
   BEACON_VIBES,
+  CHAT_THEMES,
+  CHAT_WALLPAPERS,
+  DISAPPEAR_TTL_OPTIONS_S,
   INVITE_TOKEN_REGEX,
   KUDOS_KINDS,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_MESSAGE_BODY_CHARS,
+  MESSAGE_EFFECTS,
+  NICKNAME_MAX_CHARS,
   PAGE_SIZE_DEFAULT,
   PAGE_SIZE_MAX,
   PASSWORD_MIN_LENGTH,
@@ -19,9 +26,15 @@ import {
   POLL_OPTIONS_MAX,
   POLL_OPTIONS_MIN,
   POLL_QUESTION_MAX_CHARS,
+  PUZZLE_GUESS_REGEX,
+  PUZZLE_MAX_GUESSES,
+  PUZZLE_SCORE_REGEX,
   REACTION_EMOJI_MAX_LEN,
+  REACTION_KINDS,
   REPORT_REASON_MAX_CHARS,
+  TTT_BOARD_CELLS,
   USERNAME_REGEX,
+  VIBE_CHECK_PROMPT_MAX_CHARS,
 } from './constants.js';
 
 // ---------------------------------------------------------------------------
@@ -100,7 +113,8 @@ export const UserPrivateSchema = UserPublicSchema.extend({
 });
 export type UserPrivate = z.infer<typeof UserPrivateSchema>;
 
-export const AttachmentKindSchema = z.enum(['image', 'video', 'file']);
+// v0.4 adds 'audio' (API.md §1.20 voice notes).
+export const AttachmentKindSchema = z.enum(['image', 'video', 'file', 'audio']);
 export type AttachmentKind = z.infer<typeof AttachmentKindSchema>;
 
 export const AttachmentStatusSchema = z.enum(['pending', 'ready', 'failed']);
@@ -119,6 +133,16 @@ export const AttachmentSchema = z.object({
   url: z.string(),
   thumb_url: z.string().nullable(),
   file_name: z.string().nullable(),
+  // v0.4 (§1.20): kind 'audio' only — AUDIO_WAVEFORM_BUCKETS integer peaks
+  // (0..AUDIO_WAVEFORM_PEAK_MAX), worker-computed (ffmpeg astats per segment)
+  // and inlined here so bubbles render the waveform with zero extra fetches.
+  // null while status is 'pending' and for every non-audio kind. default(null)
+  // keeps pre-v0.4 payloads parsing clean.
+  waveform: z
+    .array(z.number().int().min(0).max(AUDIO_WAVEFORM_PEAK_MAX))
+    .length(AUDIO_WAVEFORM_BUCKETS)
+    .nullable()
+    .default(null),
 });
 export type Attachment = z.infer<typeof AttachmentSchema>;
 
@@ -133,7 +157,21 @@ export const LinkPreviewSchema = z.object({
 export type LinkPreview = z.infer<typeof LinkPreviewSchema>;
 
 // v0.3 adds 'poll' (API.md §1.17): a poll is a message that rides the seq log.
-export const MessageTypeSchema = z.enum(['text', 'image', 'video', 'file', 'system', 'poll']);
+// v0.4 adds 'audio' (§1.20 voice notes), 'vibe_check' (§1.23), 'game_ttt'
+// (§1.27 tic-tac-toe — state lives in metadata.game), 'puzzle_result' (§1.27
+// — the no-spoiler emoji grid share, metadata.puzzle).
+export const MessageTypeSchema = z.enum([
+  'text',
+  'image',
+  'video',
+  'file',
+  'system',
+  'poll',
+  'audio',
+  'vibe_check',
+  'game_ttt',
+  'puzzle_result',
+]);
 export type MessageType = z.infer<typeof MessageTypeSchema>;
 
 // ---------------------------------------------------------------------------
@@ -163,6 +201,8 @@ export const SystemEventMetadataSchema = z.object({
   event: z.string(),
   actor_id: UuidSchema.optional(),
   target_id: UuidSchema.optional(),
+  // v0.4 (§1.25): on event 'disappear_changed' — the new TTL (null = turned off).
+  ttl_s: z.number().int().positive().nullable().optional(),
 });
 export type SystemEventMetadata = z.infer<typeof SystemEventMetadataSchema>;
 
@@ -186,10 +226,68 @@ export const AfterglowMetadataSchema = z.object({
 });
 export type AfterglowMetadata = z.infer<typeof AfterglowMetadataSchema>;
 
+// ---------------------------------------------------------------------------
+// v0.4 metadata riders (ADR-010). All are plain jsonb fields on messages —
+// durable sends stay REST, fan-out stays msg.new/msg.updated.
+// ---------------------------------------------------------------------------
+
+// §1.22 message effects. CONSENT RULE (binding): clients may auto-SUGGEST on a
+// trigger phrase (EFFECT_TRIGGERS) but the sender must confirm — never
+// auto-attached. Plays once per viewer per message (client-tracked); full
+// prefers-reduced-motion fallback (static badge, zero animation).
+export const MessageEffectSchema = z.enum(MESSAGE_EFFECTS);
+export type MessageEffect = z.infer<typeof MessageEffectSchema>;
+
+// §1.27 tic-tac-toe state, the whole truth on the game message (metadata.game).
+// board is 9 cells row-major; players maps symbol → user id; turn/winner are
+// symbols ('draw' for a full board without a line). Moves are SERVER-validated
+// (POST /api/games/:messageId/move) and fanned out as msg.updated full-DTO
+// replacements — clients never compute game state locally.
+export const TttSymbolSchema = z.enum(['x', 'o']);
+export type TttSymbol = z.infer<typeof TttSymbolSchema>;
+
+export const GameTttStateSchema = z.object({
+  board: z.array(TttSymbolSchema.nullable()).length(TTT_BOARD_CELLS),
+  players: z.object({ x: UuidSchema, o: UuidSchema }),
+  turn: TttSymbolSchema,
+  winner: z.union([TttSymbolSchema, z.literal('draw')]).nullable(),
+});
+export type GameTttState = z.infer<typeof GameTttStateSchema>;
+
+// §1.27 daily puzzle share (metadata.puzzle on type='puzzle_result'). The grid
+// is score rows ('g'/'y'/'x' per letter) — NO letters, NO word: spoiler-free by
+// construction. The server builds this from the sender's own stored attempt
+// (forged grids are impossible); clients render rows via PUZZLE_SCORE_EMOJI.
+export const PuzzleResultMetadataSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), // UTC puzzle day
+  attempts_used: z.number().int().min(1).max(PUZZLE_MAX_GUESSES),
+  solved: z.boolean(),
+  grid: z.array(z.string().regex(PUZZLE_SCORE_REGEX)).min(1).max(PUZZLE_MAX_GUESSES),
+});
+export type PuzzleResultMetadata = z.infer<typeof PuzzleResultMetadataSchema>;
+
 export const MessageMetadataSchema = z.object({
   link_preview: LinkPreviewSchema.optional(),
   system: SystemEventMetadataSchema.optional(),
   afterglow: AfterglowMetadataSchema.optional(), // v0.3; on the recap system message
+  // ---- v0.4 (§1.21–§1.27) ----
+  // §1.21: this image message is a canvas doodle — render with the sketchy
+  // frame. Valid only on type='image' (route-enforced); no other machinery.
+  doodle: z.literal(true).optional(),
+  // §1.22: confirmed-by-sender send effect (DB CHECK pins the set).
+  effect: MessageEffectSchema.optional(),
+  // §1.23: this message answers the vibe check at that seq (same conversation).
+  vibe_reply_seq: z.number().int().positive().optional(),
+  // §1.23: an avatar-stamp vibe reply (no body, no attachment — the tile is the
+  // sender's avatar). Valid only together with vibe_reply_seq (route-enforced).
+  stamp: z.literal(true).optional(),
+  // §1.26: delivered time capsule — sealed-envelope reveal on first view
+  // (client-tracked, reduced-motion fallback opens instantly).
+  capsule: z.literal(true).optional(),
+  // §1.27: tic-tac-toe state; present iff type='game_ttt'.
+  game: GameTttStateSchema.optional(),
+  // §1.27: puzzle share; present iff type='puzzle_result'. Server-populated.
+  puzzle: PuzzleResultMetadataSchema.optional(),
 });
 export type MessageMetadata = z.infer<typeof MessageMetadataSchema>;
 
@@ -198,15 +296,53 @@ export type MessageMetadata = z.infer<typeof MessageMetadataSchema>;
 export const ReactionEmojiSchema = z.string().min(1).max(REACTION_EMOJI_MAX_LEN);
 export type ReactionEmoji = z.infer<typeof ReactionEmojiSchema>;
 
+// v0.4 (§1.19): 'stamp' = react with your own animated avatar. A stamp is a
+// message_reactions row with kind='stamp' and the STAMP_REACTION_KEY sentinel
+// in the emoji column — the existing PK enforces one stamp per user per message.
+export const ReactionKindSchema = z.enum(REACTION_KINDS);
+export type ReactionKind = z.infer<typeof ReactionKindSchema>;
+
 // One aggregate chip per emoji on a message, from the viewer's perspective.
 // Server orders by first-reaction time (min created_at per emoji) so chips
-// never reshuffle as counts change.
+// never reshuffle as counts change. EMOJI reactions only — stamp reactions
+// ride Message.stamps (the renderer needs faces, not a count).
 export const ReactionAggregateSchema = z.object({
   emoji: ReactionEmojiSchema,
   count: z.number().int().positive(),
   mine: z.boolean(),
 });
 export type ReactionAggregate = z.infer<typeof ReactionAggregateSchema>;
+
+// ---------------------------------------------------------------------------
+// Vibe checks (v0.4 — API.md §1.23). The vibe message (type 'vibe_check',
+// body = the prompt) aggregates REPLY REFS so the client renders the collage
+// strip under the prompt with zero extra fetches. Replies are ordinary
+// messages in the same conversation carrying metadata.vibe_reply_seq.
+// ---------------------------------------------------------------------------
+
+export const VibeReplyKindSchema = z.enum(['image', 'doodle', 'stamp']);
+export type VibeReplyKind = z.infer<typeof VibeReplyKindSchema>;
+
+// kind is derived server-side: 'stamp' when metadata.stamp, 'doodle' when
+// metadata.doodle, else 'image'. thumb_url is the reply's first attachment
+// thumb (null for stamps — the tile is user.avatar, version-busted as usual).
+export const VibeReplyRefSchema = z.object({
+  seq: z.number().int().positive(),
+  user: UserLiteSchema,
+  kind: VibeReplyKindSchema,
+  thumb_url: z.string().nullable(),
+});
+export type VibeReplyRef = z.infer<typeof VibeReplyRefSchema>;
+
+// replies = first VIBE_REPLIES_PREVIEW_MAX by seq (reply_count carries the
+// rest); my_reply_seq lets the composer flip to "you answered" cross-device.
+export const VibeCheckAggregateSchema = z.object({
+  prompt: z.string().min(1).max(VIBE_CHECK_PROMPT_MAX_CHARS),
+  reply_count: z.number().int().nonnegative(),
+  replies: z.array(VibeReplyRefSchema),
+  my_reply_seq: z.number().int().positive().nullable(),
+});
+export type VibeCheckAggregate = z.infer<typeof VibeCheckAggregateSchema>;
 
 export const MessageSchema = z.object({
   id: UuidSchema,
@@ -224,6 +360,13 @@ export const MessageSchema = z.object({
   // v0.3 (§1.17): populated iff type === 'poll'; viewer-specific (my_vote).
   // default(null) keeps pre-v0.3 payloads parsing clean.
   poll: PollSchema.nullable().default(null),
+  // v0.4 (§1.19): stamp reactors in first-stamp order — the renderer shows the
+  // reactor avatars themselves (version-busted via avatar.version), so this is
+  // faces, not a counter. default([]) keeps pre-v0.4 payloads parsing clean.
+  stamps: z.array(UserLiteSchema).default([]),
+  // v0.4 (§1.23): populated iff type === 'vibe_check'; viewer-specific
+  // (my_reply_seq). default(null) keeps pre-v0.4 payloads parsing clean.
+  vibe: VibeCheckAggregateSchema.nullable().default(null),
   created_at: IsoDateTimeSchema,
   edited_at: IsoDateTimeSchema.nullable(),
   deleted_at: IsoDateTimeSchema.nullable(),
@@ -257,6 +400,11 @@ export const ConversationSchema = z.object({
   last_seq: SeqSchema,
   last_message_at: IsoDateTimeSchema.nullable(),
   participants: z.array(ParticipantSchema),
+  // v0.4 (§1.25): disappearing-messages TTL — null = off; otherwise one of
+  // DISAPPEAR_TTL_OPTIONS_S (DB CHECK pins the set). Conversation-wide state
+  // (NOT personal like themes): everyone sees the same TTL. default(null)
+  // keeps pre-v0.4 payloads parsing clean.
+  disappear_ttl_s: z.number().int().positive().nullable().default(null),
   created_at: IsoDateTimeSchema,
 });
 export type Conversation = z.infer<typeof ConversationSchema>;
@@ -429,13 +577,29 @@ export type ListMessagesQuery = z.infer<typeof ListMessagesQuerySchema>;
 export const ListMessagesResponseSchema = z.object({ messages: z.array(MessageSchema) });
 export type ListMessagesResponse = z.infer<typeof ListMessagesResponseSchema>;
 
+// v0.4 widens the client-sendable types: 'audio' (§1.20, needs exactly one
+// audio attachment), 'vibe_check' (§1.23, body = the prompt ≤
+// VIBE_CHECK_PROMPT_MAX_CHARS), 'puzzle_result' (§1.27, server populates
+// metadata.puzzle from MY stored attempt — a client-sent puzzle payload is
+// ignored). 'system', 'poll' and 'game_ttt' are never client-sent here (polls
+// and challenges have dedicated routes). The v0.4 metadata riders are
+// cross-validated by the route: doodle ⇒ type 'image'; stamp ⇒ vibe_reply_seq
+// set, no body/attachments; vibe_reply_seq ⇒ targets a visible 'vibe_check'
+// message; effect allowed on any client-sent type.
 export const SendMessageRequestSchema = z.object({
   client_msg_id: UuidSchema, // idempotency key; replay returns 200 with the original row
-  type: z.enum(['text', 'image', 'video', 'file']),
+  type: z.enum(['text', 'image', 'video', 'file', 'audio', 'vibe_check', 'puzzle_result']),
   body: z.string().max(MAX_MESSAGE_BODY_CHARS).optional(),
   attachment_ids: z.array(UuidSchema).max(MAX_ATTACHMENTS_PER_MESSAGE).optional(),
   metadata: z
-    .object({ link_preview: LinkPreviewSchema.optional() })
+    .object({
+      link_preview: LinkPreviewSchema.optional(),
+      // ---- v0.4 ----
+      doodle: z.literal(true).optional(),
+      effect: MessageEffectSchema.optional(),
+      vibe_reply_seq: z.number().int().positive().optional(),
+      stamp: z.literal(true).optional(),
+    })
     .optional(),
 });
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>;
@@ -639,7 +803,17 @@ export type AcceptInviteResponse = z.infer<typeof AcceptInviteResponseSchema>;
 // ReactionEmojiSchema / ReactionAggregateSchema live with the core DTOs above
 // (MessageSchema embeds the aggregate). Fan-out event: ws.ts reaction.updated.
 
-export const AddReactionRequestSchema = z.object({ emoji: ReactionEmojiSchema });
+// v0.4 (§1.19) adds `kind`. default('emoji') keeps every pre-v0.4 client
+// payload ({emoji}) valid byte-for-byte. kind='stamp' takes no emoji (the
+// server stores the STAMP_REACTION_KEY sentinel); kind='emoji' requires one.
+export const AddReactionRequestSchema = z
+  .object({
+    kind: ReactionKindSchema.default('emoji'),
+    emoji: ReactionEmojiSchema.optional(),
+  })
+  .refine((r) => (r.kind === 'emoji') === (r.emoji !== undefined), {
+    message: "emoji is required for kind 'emoji' and forbidden for kind 'stamp'",
+  });
 export type AddReactionRequest = z.infer<typeof AddReactionRequestSchema>;
 
 // ---------------------------------------------------------------------------
@@ -874,3 +1048,181 @@ export const MessageReceiptsResponseSchema = z.object({
   delivered: z.array(UserLiteSchema),
 });
 export type MessageReceiptsResponse = z.infer<typeof MessageReceiptsResponseSchema>;
+
+// ===========================================================================
+// v0.4 — Expression pack (API.md §1.19–§1.27, ADR-010)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// §1.24 Chat themes, wallpapers, nicknames — ALL PERSONAL (my view only).
+// Stored per (conversation, user); synced across MY devices via the
+// prefs.updated WS event (own sockets only); never serialized to anyone else.
+// ---------------------------------------------------------------------------
+
+export const ChatThemeSchema = z.enum(CHAT_THEMES);
+export type ChatTheme = z.infer<typeof ChatThemeSchema>;
+
+export const ChatWallpaperSchema = z.enum(CHAT_WALLPAPERS);
+export type ChatWallpaper = z.infer<typeof ChatWallpaperSchema>;
+
+// nicknames maps target user id → my nickname for them in this conversation
+// (member_nicknames rows). null theme/wallpaper = app default.
+export const ConversationPrefsSchema = z.object({
+  conversation_id: UuidSchema,
+  theme: ChatThemeSchema.nullable(),
+  wallpaper: ChatWallpaperSchema.nullable(),
+  nicknames: z.record(UuidSchema, z.string().min(1).max(NICKNAME_MAX_CHARS)),
+});
+export type ConversationPrefs = z.infer<typeof ConversationPrefsSchema>;
+
+export const PrefsResponseSchema = z.object({ prefs: ConversationPrefsSchema });
+export type PrefsResponse = z.infer<typeof PrefsResponseSchema>;
+
+// PATCH semantics: omitted field = unchanged; explicit null = reset to default
+// (theme/wallpaper) or remove (a nickname map value). Targets of nickname keys
+// must be participants (past or present) of the conversation.
+export const UpdatePrefsRequestSchema = z.object({
+  theme: ChatThemeSchema.nullable().optional(),
+  wallpaper: ChatWallpaperSchema.nullable().optional(),
+  nicknames: z
+    .record(UuidSchema, z.string().min(1).max(NICKNAME_MAX_CHARS).nullable())
+    .optional(),
+});
+export type UpdatePrefsRequest = z.infer<typeof UpdatePrefsRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.25 Disappearing messages — conversation-wide TTL (NOT personal).
+// ---------------------------------------------------------------------------
+
+// The allowed TTLs, pinned (DISAPPEAR_TTL_OPTIONS_S: 1h, 24h, 7d, 30d).
+export const DisappearTtlSchema = z.union([
+  z.literal(DISAPPEAR_TTL_OPTIONS_S[0]),
+  z.literal(DISAPPEAR_TTL_OPTIONS_S[1]),
+  z.literal(DISAPPEAR_TTL_OPTIONS_S[2]),
+  z.literal(DISAPPEAR_TTL_OPTIONS_S[3]),
+]);
+export type DisappearTtl = z.infer<typeof DisappearTtlSchema>;
+
+export const UpdateDisappearRequestSchema = z.object({
+  ttl_s: DisappearTtlSchema.nullable(), // null = turn off
+});
+export type UpdateDisappearRequest = z.infer<typeof UpdateDisappearRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.26 Scheduled messages & time capsules.
+// ---------------------------------------------------------------------------
+
+export const ScheduledStatusSchema = z.enum(['pending', 'sent', 'cancelled']);
+export type ScheduledStatus = z.infer<typeof ScheduledStatusSchema>;
+
+// The author's own view (list-mine). The payload mirrors a §1.5 send; capsule
+// marks a time capsule (sealed-envelope rendering, pre- and post-delivery).
+// sent_seq is the delivered message's seq (jump-to after delivery).
+export const ScheduledMessageSchema = z.object({
+  id: UuidSchema,
+  conversation_id: UuidSchema,
+  type: z.enum(['text', 'image', 'video', 'file', 'audio']),
+  body: z.string().nullable(),
+  attachments: z.array(AttachmentSchema),
+  metadata: z.object({
+    effect: MessageEffectSchema.optional(),
+    capsule: z.literal(true).optional(),
+  }),
+  deliver_at: IsoDateTimeSchema,
+  status: ScheduledStatusSchema,
+  created_at: IsoDateTimeSchema,
+  sent_at: IsoDateTimeSchema.nullable(),
+  sent_seq: z.number().int().positive().nullable(),
+});
+export type ScheduledMessage = z.infer<typeof ScheduledMessageSchema>;
+
+export const CreateScheduledRequestSchema = z.object({
+  client_msg_id: UuidSchema, // idempotency: replay returns the existing row, 200
+  type: z.enum(['text', 'image', 'video', 'file', 'audio']),
+  body: z.string().max(MAX_MESSAGE_BODY_CHARS).optional(),
+  attachment_ids: z.array(UuidSchema).max(MAX_ATTACHMENTS_PER_MESSAGE).optional(),
+  metadata: z
+    .object({
+      effect: MessageEffectSchema.optional(),
+      capsule: z.literal(true).optional(),
+    })
+    .optional(),
+  // Route-enforced window: now + SCHEDULED_MIN_LEAD_S ≤ deliver_at ≤ now +
+  // SCHEDULED_MAX_HORIZON_S (400 deliver_at_out_of_range).
+  deliver_at: IsoDateTimeSchema,
+});
+export type CreateScheduledRequest = z.infer<typeof CreateScheduledRequestSchema>;
+
+export const ScheduledResponseSchema = z.object({ scheduled: ScheduledMessageSchema });
+export type ScheduledResponse = z.infer<typeof ScheduledResponseSchema>;
+
+export const ListScheduledResponseSchema = z.object({
+  scheduled: z.array(ScheduledMessageSchema),
+});
+export type ListScheduledResponse = z.infer<typeof ListScheduledResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.27 Mini-games: tic-tac-toe + daily word puzzle.
+// ---------------------------------------------------------------------------
+
+// POST /api/conversations/:id/games/ttt — challenge. In a DM the opponent is
+// the other party (opponent_id must be omitted); in a group it is required.
+export const CreateTttRequestSchema = z.object({
+  client_msg_id: UuidSchema,
+  opponent_id: UuidSchema.optional(),
+});
+export type CreateTttRequest = z.infer<typeof CreateTttRequestSchema>;
+
+// POST /api/games/:messageId/move — cell is the row-major board index.
+export const TttMoveRequestSchema = z.object({
+  cell: z.number().int().min(0).max(TTT_BOARD_CELLS - 1),
+});
+export type TttMoveRequest = z.infer<typeof TttMoveRequestSchema>;
+
+// Both answer with the full game message (metadata.game is the whole state).
+export const GameMessageResponseSchema = z.object({ message: MessageSchema });
+export type GameMessageResponse = z.infer<typeof GameMessageResponseSchema>;
+
+// One scored attempt: the guessed word stays PRIVATE to its guesser (it only
+// ever appears in the guesser's own responses, never in any shared payload).
+export const PuzzleAttemptSchema = z.object({
+  guess: z.string().regex(PUZZLE_GUESS_REGEX),
+  score: z.string().regex(PUZZLE_SCORE_REGEX),
+});
+export type PuzzleAttempt = z.infer<typeof PuzzleAttemptSchema>;
+
+// GET /api/puzzle/today — never contains the word.
+export const PuzzleTodayResponseSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), // UTC day = puzzle identity
+  attempts: z.array(PuzzleAttemptSchema).max(PUZZLE_MAX_GUESSES),
+  solved: z.boolean(),
+  remaining: z.number().int().min(0).max(PUZZLE_MAX_GUESSES),
+});
+export type PuzzleTodayResponse = z.infer<typeof PuzzleTodayResponseSchema>;
+
+export const PuzzleGuessRequestSchema = z.object({
+  guess: z.string().regex(PUZZLE_GUESS_REGEX),
+});
+export type PuzzleGuessRequest = z.infer<typeof PuzzleGuessRequestSchema>;
+
+// Same shape as today (the new truth after the guess); correct echoes whether
+// THIS guess won, so the client can celebrate without diffing.
+export const PuzzleGuessResponseSchema = PuzzleTodayResponseSchema.extend({
+  correct: z.boolean(),
+});
+export type PuzzleGuessResponse = z.infer<typeof PuzzleGuessResponseSchema>;
+
+// GET /api/puzzle/today/friends — DM partners who OPTED IN by posting a
+// puzzle_result for today into a conversation I participate in. Ordered by
+// username, NEVER by score or speed: a shared grid is fine, a ranked table is
+// on the PSYCHOLOGY never-build list. No streaks anywhere.
+export const PuzzleFriendEntrySchema = z.object({
+  user: UserLiteSchema,
+  result: PuzzleResultMetadataSchema,
+});
+export type PuzzleFriendEntry = z.infer<typeof PuzzleFriendEntrySchema>;
+
+export const PuzzleFriendsResponseSchema = z.object({
+  friends: z.array(PuzzleFriendEntrySchema),
+});
+export type PuzzleFriendsResponse = z.infer<typeof PuzzleFriendsResponseSchema>;

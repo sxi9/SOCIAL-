@@ -2,9 +2,11 @@
 
 import { useState, type CSSProperties } from 'react';
 import type { Attachment } from '@socialchat/shared';
+import AudioBubble from './AudioBubble';
 import BlurhashCanvas from './BlurhashCanvas';
 import { formatBytes } from '@/lib/format';
 import styles from './chat.module.css';
+import exp from './expression.module.css';
 
 function extOf(att: Attachment): string {
   const name = att.file_name ?? '';
@@ -21,24 +23,39 @@ function aspectStyle(att: Attachment): CSSProperties {
   return { aspectRatio: '4 / 3', width: 280 };
 }
 
-export default function AttachmentView({ attachment }: { attachment: Attachment }) {
+export default function AttachmentView({
+  attachment,
+  doodle = false,
+}: {
+  attachment: Attachment;
+  /** v0.4 §1.21: metadata.doodle → sketchy hand-drawn frame. */
+  doodle?: boolean;
+}) {
   const [loaded, setLoaded] = useState(false);
 
+  if (attachment.kind === 'audio') {
+    // v0.4 §1.20: waveform playback bubble; never autoplays.
+    return <AudioBubble attachment={attachment} />;
+  }
+
   if (attachment.kind === 'image') {
+    const img = (
+      <span className={styles.mediaBox} style={aspectStyle(attachment)}>
+        {attachment.blurhash ? <BlurhashCanvas hash={attachment.blurhash} /> : null}
+        {attachment.thumb_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={attachment.thumb_url}
+            alt={attachment.file_name ?? (doodle ? 'Doodle' : 'Photo')}
+            className={loaded ? styles.loaded : undefined}
+            onLoad={() => setLoaded(true)}
+          />
+        ) : null}
+      </span>
+    );
     return (
       <a href={attachment.url} target="_blank" rel="noreferrer">
-        <span className={styles.mediaBox} style={aspectStyle(attachment)}>
-          {attachment.blurhash ? <BlurhashCanvas hash={attachment.blurhash} /> : null}
-          {attachment.thumb_url ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={attachment.thumb_url}
-              alt={attachment.file_name ?? 'Photo'}
-              className={loaded ? styles.loaded : undefined}
-              onLoad={() => setLoaded(true)}
-            />
-          ) : null}
-        </span>
+        {doodle ? <span className={exp.doodleFrame}>{img}</span> : img}
       </a>
     );
   }

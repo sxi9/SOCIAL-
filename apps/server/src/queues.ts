@@ -55,6 +55,13 @@ export interface BeaconAfterglowJob {
 }
 export type BeaconsJob = BeaconAfterglowJob | Record<string, never>;
 
+// v0.4 queue `timers` (API.md §1.25/§1.26): disappear-sweep (repeatable),
+// scheduled-deliver (delayed per row) + scheduled-sweep (minute safety net).
+export interface ScheduledDeliverJob {
+  scheduled_id: string;
+}
+export type TimersJob = ScheduledDeliverJob | Record<string, never>;
+
 export const queueConnection = createRedis();
 const connection = queueConnection;
 
@@ -64,6 +71,7 @@ export const unfurlQueue = new Queue<UnfurlJob>('unfurl', { connection });
 export const pushQueue = new Queue<PushJob>('push', { connection });
 export const gcQueue = new Queue<GcJob>('gc', { connection });
 export const beaconsQueue = new Queue<BeaconsJob>('beacons', { connection });
+export const timersQueue = new Queue<TimersJob>('timers', { connection });
 
 const defaultJobOpts = {
   removeOnComplete: 1000,
@@ -118,6 +126,23 @@ export function enqueueBeaconPushBulk(jobs: BeaconPushJob[]) {
   if (jobs.length === 0) return Promise.resolve([]);
   return pushQueue.addBulk(
     jobs.map((data) => ({ name: 'beacon-push', data, opts: { ...defaultJobOpts, attempts: 2 } })),
+  );
+}
+
+/** Scheduled delivery (API.md §1.26): one delayed job per row; the minute
+ * sweep is the safety net. Delivery itself is idempotent (guarded claim), so
+ * a job/sweep race or retry can never double-send. */
+export function enqueueScheduledDelivery(scheduledId: string, delayMs: number) {
+  return timersQueue.add(
+    'scheduled-deliver',
+    { scheduled_id: scheduledId },
+    {
+      ...defaultJobOpts,
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 10_000 },
+      delay: Math.max(0, delayMs),
+      jobId: `scheduled:${scheduledId}`,
+    },
   );
 }
 

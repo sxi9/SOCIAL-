@@ -9,8 +9,9 @@ import { db, schema } from '../db/index.js';
 import { deleteObject, listKeys } from '../s3.js';
 import type { AttRow } from '../lib/dto.js';
 
-/** Content-hashed keys can be shared across rows — delete only unreferenced objects. */
-async function deleteAttachmentObjects(att: AttRow): Promise<void> {
+/** Content-hashed keys can be shared across rows — delete only unreferenced
+ * objects. Also used by the v0.4 disappearing sweep (jobs/timers.ts). */
+export async function deleteAttachmentObjects(att: AttRow): Promise<void> {
   for (const key of [att.originalKey, att.thumbKey]) {
     if (!key) continue;
     const [other] = await db
@@ -27,7 +28,7 @@ async function deleteAttachmentObjects(att: AttRow): Promise<void> {
   }
 }
 
-async function deleteAttachmentsFully(rows: AttRow[]): Promise<void> {
+export async function deleteAttachmentsFully(rows: AttRow[]): Promise<void> {
   for (const att of rows) {
     await deleteAttachmentObjects(att);
     await db.delete(schema.attachments).where(eq(schema.attachments.id, att.id));

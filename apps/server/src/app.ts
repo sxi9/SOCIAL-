@@ -7,9 +7,13 @@ import { authRoutes } from './modules/auth/routes.js';
 import { beaconRoutes } from './modules/beacons/routes.js';
 import { blockRoutes } from './modules/blocks/routes.js';
 import { conversationRoutes } from './modules/conversations/routes.js';
+import { gameRoutes } from './modules/games/routes.js';
 import { inviteRoutes } from './modules/invites/routes.js';
 import { messageRoutes } from './modules/messages/routes.js';
 import { pollRoutes } from './modules/polls/routes.js';
+import { prefsRoutes } from './modules/prefs/routes.js';
+import { puzzleRoutes } from './modules/puzzle/routes.js';
+import { scheduledRoutes } from './modules/scheduled/routes.js';
 import { previewRoutes } from './modules/previews/routes.js';
 import { pushRoutes } from './modules/push/routes.js';
 import { reactionRoutes } from './modules/reactions/routes.js';
@@ -81,6 +85,10 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
   await app.register(reactionRoutes);
   await app.register(pollRoutes); // v0.3 §1.17
   await app.register(beaconRoutes); // v0.3 §1.15/§1.16
+  await app.register(prefsRoutes); // v0.4 §1.24
+  await app.register(scheduledRoutes); // v0.4 §1.26
+  await app.register(gameRoutes); // v0.4 §1.27
+  await app.register(puzzleRoutes); // v0.4 §1.27
   await app.register(inviteRoutes);
   await app.register(uploadRoutes);
   await app.register(previewRoutes);

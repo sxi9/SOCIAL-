@@ -1,0 +1,289 @@
+/* Daily word puzzle (v0.4 — API.md §1.27). User-pulled only: no streaks, no
+   rankings, no nudges. Bored Blob language; reduced-motion guards below. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom));
+}
+
+.dateLine {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gridRow {
+  display: flex;
+  gap: 6px;
+}
+
+.tile {
+  width: clamp(44px, 13vw, 58px);
+  height: clamp(44px, 13vw, 58px);
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(18px, 5vw, 24px);
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--text);
+  background: var(--panel);
+}
+
+.tileTyped {
+  border-color: var(--accent);
+  animation: tile-pop 120ms ease;
+}
+
+@keyframes tile-pop {
+  from {
+    transform: scale(0.9);
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+.tileScored {
+  border-color: transparent;
+  color: #fff;
+  animation: tile-flip 360ms ease;
+}
+
+@keyframes tile-flip {
+  0% {
+    transform: rotateX(90deg);
+  }
+  100% {
+    transform: rotateX(0);
+  }
+}
+
+.tileG {
+  background: #3aa365;
+}
+
+.tileY {
+  background: #e0a93c;
+}
+
+.tileX {
+  background: color-mix(in srgb, var(--muted) 45%, var(--panel-2));
+}
+
+.kb {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 520px;
+}
+
+.kbRow {
+  display: flex;
+  justify-content: center;
+  gap: 5px;
+}
+
+.key {
+  flex: 1;
+  max-width: 44px;
+  min-width: 0;
+  height: 48px;
+  border: none;
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: filter 100ms ease, transform 100ms ease;
+  padding: 0;
+}
+
+.key:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
+.key:active {
+  transform: scale(0.92);
+}
+
+.key:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.keyWide {
+  max-width: 64px;
+  flex: 1.6;
+  font-size: 12px;
+}
+
+.keyG {
+  background: #3aa365;
+  color: #fff;
+}
+
+.keyY {
+  background: #e0a93c;
+  color: #fff;
+}
+
+.keyX {
+  background: color-mix(in srgb, var(--muted) 38%, var(--panel-2));
+  color: var(--muted);
+}
+
+.doneCard {
+  width: 100%;
+  max-width: 420px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: center;
+  align-items: center;
+  box-shadow: var(--shadow);
+}
+
+.doneCard h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.doneGrid {
+  font-size: 18px;
+  line-height: 1.3;
+  letter-spacing: 2px;
+}
+
+.friends {
+  width: 100%;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.friends h2 {
+  margin: 10px 0 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.friendStrip {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: none;
+}
+
+.friendStrip::-webkit-scrollbar {
+  display: none;
+}
+
+.friendCard {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  min-width: 96px;
+}
+
+.friendName {
+  font-size: 12px;
+  font-weight: 600;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.friendGrid {
+  font-size: 10px;
+  line-height: 1.25;
+  letter-spacing: 1px;
+}
+
+.friendScore {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.shakeRow {
+  animation: row-shake 320ms ease;
+}
+
+@keyframes row-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-6px);
+  }
+  50% {
+    transform: translateX(6px);
+  }
+  75% {
+    transform: translateX(-4px);
+  }
+}
+
+.convPickRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 0;
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.convPickRow:hover {
+  background: var(--panel-2);
+  border-radius: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tileTyped,
+  .tileScored,
+  .shakeRow {
+    animation: none;
+  }
+
+  .key {
+    transition: none;
+  }
+}

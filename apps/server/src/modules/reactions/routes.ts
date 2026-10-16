@@ -1,8 +1,15 @@
-// Reactions (v0.2 — API.md §1.12 + §2.3). Durable writes are REST (idempotent
-// POST/DELETE → 204); each EFFECTIVE add/remove fans out one small
-// reaction.updated delta frame via the Redis `events` channel — deliberately
-// not a msg.updated DTO re-ship. Idempotent no-ops emit nothing; reconnect
-// truth is the DTO aggregate (sync/history refetch), never frame replay.
+// Reactions (v0.2 — API.md §1.12 + §2.3) and avatar stamps (v0.4 — §1.19).
+// Durable writes are REST (idempotent POST/DELETE → 204); each EFFECTIVE
+// add/remove fans out one small reaction.updated delta frame via the Redis
+// `events` channel — deliberately not a msg.updated DTO re-ship. Idempotent
+// no-ops emit nothing; reconnect truth is the DTO aggregate for emoji chips
+// and Message.stamps for stamp faces, never frame replay.
+//
+// A stamp is a message_reactions row with kind='stamp' and the ':stamp:'
+// sentinel (STAMP_REACTION_KEY) in the emoji column — the existing PK
+// (conversation_id, seq, user_id, emoji) enforces the one-stamp-per-user-per-
+// message cap with zero new state. The 8-distinct-emoji cap counts
+// kind='emoji' rows ONLY: a stamp never eats an emoji slot.
 import { and, eq, gt, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
@@ -11,10 +18,13 @@ import {
   AddReactionRequestSchema,
   REACTIONS_PER_USER_PER_MESSAGE_MAX,
   ReactionEmojiSchema,
+  STAMP_REACTION_KEY,
+  type ReactionKind,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
+import { isBlockedPair } from '../../lib/blocks.js';
 import { activeParticipantUserIds } from '../../lib/dto.js';
-import { conflict, notFound } from '../../lib/errors.js';
+import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { publishReactionUpdated } from '../../ws/events.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant } from '../conversations/routes.js';
@@ -46,6 +56,19 @@ async function requireVisibleMessage(convId: string, seq: number, userId: string
   if (!row) throw notFound();
 }
 
+/** §1.14 + v0.4 task rule: no stamps across blocked pairs — a stamp into a
+ * frozen DM is 404-shaped like a send. Shared groups keep working (§1.19). */
+async function requireUnfrozenForStamp(convId: string, userId: string): Promise<void> {
+  const [conv] = await db
+    .select({ type: schema.conversations.type })
+    .from(schema.conversations)
+    .where(eq(schema.conversations.id, convId))
+    .limit(1);
+  if (conv?.type !== 'dm') return;
+  const peer = (await activeParticipantUserIds(convId)).find((id) => id !== userId);
+  if (peer && (await isBlockedPair(userId, peer))) throw notFound();
+}
+
 async function emojiCount(convId: string, seq: number, emoji: string): Promise<number> {
   const rows = (await db.execute(sql`
     SELECT count(*)::int AS n FROM message_reactions
@@ -73,28 +96,48 @@ async function holdsReaction(
 export async function reactionRoutes(fastify: FastifyInstance): Promise<void> {
   const app = fastify.withTypeProvider<ZodTypeProvider>();
 
-  // §1.12 POST .../messages/:seq/reactions {emoji} → 204 idempotent;
-  // 409 reaction_limit at the 9th DISTINCT emoji by one user on one message.
+  // §1.12/§1.19 POST .../messages/:seq/reactions {kind?, emoji?} → 204
+  // idempotent; 409 reaction_limit at the 9th DISTINCT emoji; stamps need my
+  // avatar 'ready' (409 stamp_no_avatar) and never consume an emoji slot.
   app.post(
     '/api/conversations/:id/messages/:seq/reactions',
     { preHandler: requireAuth, schema: { params: SeqParams, body: AddReactionRequestSchema } },
     async (req, reply) => {
       const { user } = authed(req);
       const { id: convId, seq } = req.params;
-      const { emoji } = req.body;
+      const kind: ReactionKind = req.body.kind;
+      // kind='stamp' stores the sentinel; kind='emoji' must not spoof it (the
+      // DB stamp_key_check would reject the row anyway — fail cleanly here).
+      if (kind === 'emoji' && req.body.emoji === STAMP_REACTION_KEY) {
+        throw badRequest('bad_emoji');
+      }
+      const emoji = kind === 'stamp' ? STAMP_REACTION_KEY : req.body.emoji!;
       await requireVisibleMessage(convId, seq, user.id);
 
-      // Re-adding an emoji you already hold: 204, no event — and never a 409,
-      // even when you sit at the distinct-emoji cap.
+      // Re-adding a reaction you already hold: 204, no event — and never a
+      // 409, even at the cap or with a since-deleted avatar.
       if (await holdsReaction(convId, seq, user.id, emoji)) return reply.status(204).send();
 
-      // Guarded insert, serialized per (conversation, seq, user): the cap is a
-      // count-then-insert, so two concurrent adds of DIFFERENT emoji could
-      // both count 7 and both land, overshooting the distinct-emoji cap. A
-      // transaction-scoped advisory lock on the triple serializes them (the
-      // lock releases at commit, after the insert is visible to the next
-      // counter); ON CONFLICT still absorbs a concurrent duplicate of the
-      // SAME reaction.
+      if (kind === 'stamp') {
+        await requireUnfrozenForStamp(convId, user.id);
+        // §1.19: there must be a face to stamp with.
+        if (user.avatarStatus !== 'ready') throw conflict('stamp_no_avatar');
+      }
+
+      // Guarded insert, serialized per (conversation, seq, user): the
+      // distinct-emoji cap is a count-then-insert, so two concurrent adds of
+      // DIFFERENT emoji could both count 7 and both land. A transaction-scoped
+      // advisory lock on the triple serializes them; ON CONFLICT still absorbs
+      // a concurrent duplicate of the SAME reaction. Stamps skip the cap (the
+      // PK on the sentinel row IS the one-per-user-per-message cap).
+      const capGuard =
+        kind === 'emoji'
+          ? sql`WHERE (
+              SELECT count(*) FROM message_reactions
+              WHERE conversation_id = ${convId} AND seq = ${seq}::bigint
+                AND user_id = ${user.id} AND kind = 'emoji'
+            ) < ${REACTIONS_PER_USER_PER_MESSAGE_MAX}`
+          : sql``;
       const inserted = await db.transaction(async (tx) => {
         await tx.execute(sql`
           SELECT pg_advisory_xact_lock(
@@ -102,12 +145,9 @@ export async function reactionRoutes(fastify: FastifyInstance): Promise<void> {
           )
         `);
         return (await tx.execute(sql`
-          INSERT INTO message_reactions (conversation_id, seq, user_id, emoji)
-          SELECT ${convId}::uuid, ${seq}::bigint, ${user.id}::uuid, ${emoji}
-          WHERE (
-            SELECT count(*) FROM message_reactions
-            WHERE conversation_id = ${convId} AND seq = ${seq}::bigint AND user_id = ${user.id}
-          ) < ${REACTIONS_PER_USER_PER_MESSAGE_MAX}
+          INSERT INTO message_reactions (conversation_id, seq, user_id, emoji, kind)
+          SELECT ${convId}::uuid, ${seq}::bigint, ${user.id}::uuid, ${emoji}, ${kind}
+          ${capGuard}
           ON CONFLICT DO NOTHING
           RETURNING emoji
         `)) as unknown as { emoji: string }[];
@@ -125,6 +165,7 @@ export async function reactionRoutes(fastify: FastifyInstance): Promise<void> {
       await publishReactionUpdated(await activeParticipantUserIds(convId), {
         conversation_id: convId,
         seq,
+        kind,
         emoji,
         count,
         user_id: user.id,
@@ -135,7 +176,8 @@ export async function reactionRoutes(fastify: FastifyInstance): Promise<void> {
   );
 
   // §1.12 DELETE .../reactions/:emoji → 204 idempotent (deleting a reaction
-  // you don't hold is 204, no event).
+  // you don't hold is 204, no event). For a stamp, :emoji is the URL-encoded
+  // ':stamp:' sentinel (§1.19).
   app.delete(
     '/api/conversations/:id/messages/:seq/reactions/:emoji',
     { preHandler: requireAuth, schema: { params: EmojiParams } },
@@ -148,15 +190,16 @@ export async function reactionRoutes(fastify: FastifyInstance): Promise<void> {
         DELETE FROM message_reactions
         WHERE conversation_id = ${convId} AND seq = ${seq}::bigint
           AND user_id = ${user.id} AND emoji = ${emoji}
-        RETURNING emoji
-      `)) as unknown as { emoji: string }[];
+        RETURNING kind
+      `)) as unknown as { kind: ReactionKind }[];
 
       if (deleted.length > 0) {
-        // Effective remove; count 0 removes the chip client-side.
+        // Effective remove; count 0 removes the chip (or the stamp face).
         const count = await emojiCount(convId, seq, emoji);
         await publishReactionUpdated(await activeParticipantUserIds(convId), {
           conversation_id: convId,
           seq,
+          kind: deleted[0]!.kind,
           emoji,
           count,
           user_id: user.id,

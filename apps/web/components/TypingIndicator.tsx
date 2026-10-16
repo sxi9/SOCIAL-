@@ -25,8 +25,15 @@ export default function TypingIndicator({ conversation }: { conversation: Conver
 
   let label = '';
   if (typistIds.length) {
+    // v0.4 §1.24: my personal nicknames apply everywhere in my view.
+    const prefs = state.prefs.get(conversation.id);
     const names = typistIds
-      .map((id) => conversation.participants.find((p) => p.user.id === id)?.user.display_name ?? 'Someone')
+      .map(
+        (id) =>
+          prefs?.nicknames[id] ??
+          conversation.participants.find((p) => p.user.id === id)?.user.display_name ??
+          'Someone'
+      )
       .slice(0, 2);
     label =
       typistIds.length === 1

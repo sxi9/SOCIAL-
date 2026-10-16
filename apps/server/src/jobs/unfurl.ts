@@ -209,7 +209,13 @@ async function guardedFetch(
         current = new URL(location, current);
         continue; // next hop re-runs the full checklist
       }
-      if (res.statusCode !== 200) throw new Error(`status ${res.statusCode}`);
+      if (res.statusCode !== 200) {
+        // Consume the body before throwing: an orphaned undici body later
+        // fires its bodyTimeout abort as an unhandled 'error' on the
+        // BodyReadable, crashing the whole worker process.
+        await res.body.dump();
+        throw new Error(`status ${res.statusCode}`);
+      }
 
       const contentType = String(res.headers['content-type'] ?? '');
       const chunks: Buffer[] = [];
