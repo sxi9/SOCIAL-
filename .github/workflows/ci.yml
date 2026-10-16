@@ -53,3 +53,14 @@ jobs:
         run: pnpm -r lint
       - name: Test
         run: pnpm -r test
+
+  # Both production images must build — catches Dockerfile drift (missing
+  # COPYs, bad base images) that host-side pnpm builds can't see.
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build server image
+        run: docker build -f apps/server/Dockerfile -t socialchat-server .
+      - name: Build web image
+        run: docker build -f apps/web/Dockerfile -t socialchat-web .
