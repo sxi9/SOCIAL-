@@ -3,7 +3,6 @@
 import { z } from 'zod';
 import {
   MAX_ATTACHMENTS_PER_MESSAGE,
-  MAX_GROUP_PARTICIPANTS,
   MAX_MESSAGE_BODY_CHARS,
   PAGE_SIZE_DEFAULT,
   PAGE_SIZE_MAX,
@@ -254,10 +253,11 @@ export const CreateConversationRequestSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('group'),
     title: z.string().min(1).max(100),
-    user_ids: z
-      .array(UuidSchema)
-      .min(1)
-      .max(MAX_GROUP_PARTICIPANTS - 1), // + creator = cap 256
+    // No Zod max here: the 256 cap (user_ids + creator) is enforced by the
+    // route so an over-cap create yields the documented machine code
+    // `400 group_too_large`, not a generic validation error (API.md §1.4).
+    // Request body size limits bound the array in practice.
+    user_ids: z.array(UuidSchema).min(1),
   }),
 ]);
 export type CreateConversationRequest = z.infer<typeof CreateConversationRequestSchema>;
@@ -282,11 +282,10 @@ export const UpdateConversationRequestSchema = z.object({
 });
 export type UpdateConversationRequest = z.infer<typeof UpdateConversationRequestSchema>;
 
+// No Zod max: the route checks "existing + added ≤ 256" and answers an
+// over-cap request with the documented `400 group_too_large` (API.md §1.4).
 export const AddParticipantsRequestSchema = z.object({
-  user_ids: z
-    .array(UuidSchema)
-    .min(1)
-    .max(MAX_GROUP_PARTICIPANTS - 1), // total ≤ 256 re-checked server-side
+  user_ids: z.array(UuidSchema).min(1),
 });
 export type AddParticipantsRequest = z.infer<typeof AddParticipantsRequestSchema>;
 

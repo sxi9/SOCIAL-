@@ -2,13 +2,11 @@ import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { CreatePreviewRequestSchema, UNFURL_RATE_PER_HOUR } from '@socialchat/shared';
+import { CreatePreviewRequestSchema } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { badRequest, notFound, rateLimited } from '../../lib/errors.js';
-import { fixedWindow } from '../../lib/ratelimit.js';
-import { enqueueUnfurl } from '../../queues.js';
 import { authed, requireAuth } from '../auth/guard.js';
-import { addPreviewWaiter, lookupPreview, markPending, previewDto } from './service.js';
+import { addPreviewWaiter, lookupPreview, previewDto, requestUnfurl } from './service.js';
 
 export async function previewRoutes(fastify: FastifyInstance): Promise<void> {
   const app = fastify.withTypeProvider<ZodTypeProvider>();
@@ -20,9 +18,6 @@ export async function previewRoutes(fastify: FastifyInstance): Promise<void> {
     { preHandler: requireAuth, schema: { body: CreatePreviewRequestSchema } },
     async (req, reply) => {
       const { user } = authed(req);
-      const rate = await fixedWindow(`previews:${user.id}`, UNFURL_RATE_PER_HOUR, 3600);
-      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
-
       let lookup;
       try {
         lookup = await lookupPreview(req.body.url);
@@ -39,16 +34,9 @@ export async function previewRoutes(fastify: FastifyInstance): Promise<void> {
         // Negative-cached (1h) — stops retry storms.
         return reply.status(200).send({ status: 'failed', url_hash: lookup.hash });
       }
-      if (lookup.state === 'miss') {
-        const shouldEnqueue = await markPending(lookup.hash, lookup.normalized);
-        if (shouldEnqueue) {
-          await enqueueUnfurl({
-            url: lookup.normalized,
-            url_hash: lookup.hash,
-            requested_by: user.id,
-          });
-        }
-      }
+      // Shared chokepoint: charges the 30/hour/user budget and enqueues.
+      const result = await requestUnfurl({ userId: user.id, lookup });
+      if (result.outcome === 'rate_limited') throw rateLimited(result.retryAfterS);
       // Whoever gets a 202 (first requester or a later one landing on an
       // in-flight row) is owed the preview.ready WS event.
       await addPreviewWaiter(lookup.hash, user.id);

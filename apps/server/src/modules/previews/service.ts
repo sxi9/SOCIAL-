@@ -1,8 +1,10 @@
-import type { LinkPreview } from '@socialchat/shared';
+import { UNFURL_RATE_PER_HOUR, type LinkPreview } from '@socialchat/shared';
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { mediaUrl } from '../../lib/media.js';
+import { fixedWindow } from '../../lib/ratelimit.js';
 import { normalizeUrl, urlHash } from '../../lib/urls.js';
+import { enqueueUnfurl } from '../../queues.js';
 import { redis } from '../../redis.js';
 
 export type LinkPreviewRow = typeof schema.linkPreviews.$inferSelect;
@@ -85,4 +87,54 @@ export async function markPending(hash: string, normalized: string): Promise<boo
     .set({ status: 'pending', url: normalized })
     .where(eq(schema.linkPreviews.urlHash, hash));
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// THE unfurl budget chokepoint (ARCHITECTURE §6 / ROADMAP M7): every outbound
+// unfurl fetch — previews POST, message-send URL extraction, share-import
+// creation and claim — is enqueued through here and charged against the
+// per-user 30/hour budget. Nothing else may call enqueueUnfurl.
+// ---------------------------------------------------------------------------
+
+export type UnfurlRequestOutcome =
+  | { outcome: 'enqueued' }
+  /** Nothing to fetch (cache hit / failed / another requester owns the in-flight fetch). */
+  | { outcome: 'skipped' }
+  | { outcome: 'rate_limited'; retryAfterS: number };
+
+export async function requestUnfurl(opts: {
+  userId: string;
+  lookup: PreviewLookup;
+  /** Set on the message-send path: the worker snapshots the card into this
+   * message and hydrates recipients via msg.updated. */
+  message?: { id: string; conversation_id: string };
+}): Promise<UnfurlRequestOutcome> {
+  const { userId, lookup, message } = opts;
+  if (lookup.state !== 'miss' && lookup.state !== 'pending') return { outcome: 'skipped' };
+  // An in-flight fetch owned by another requester already answers a plain
+  // preview request (waiters get preview.ready) — only a message-bound
+  // request must enqueue its own job, since the in-flight one carries no
+  // message ref to hydrate.
+  if (lookup.state === 'pending' && !message) return { outcome: 'skipped' };
+
+  // Budget BEFORE markPending: a row marked pending with no job behind it
+  // would be stuck pending forever. (The tiny race — budget consumed, then
+  // the markPending insert lost to a concurrent requester — over-charges one
+  // unit; harmless.)
+  const rate = await fixedWindow(`unfurl:${userId}`, UNFURL_RATE_PER_HOUR, 3600);
+  if (!rate.allowed) return { outcome: 'rate_limited', retryAfterS: rate.retryAfterS };
+
+  let ownsFetch = true;
+  if (lookup.state === 'miss') {
+    ownsFetch = await markPending(lookup.hash, lookup.normalized);
+  }
+  if (!ownsFetch && !message) return { outcome: 'skipped' };
+
+  await enqueueUnfurl({
+    url: lookup.normalized,
+    url_hash: lookup.hash,
+    requested_by: userId,
+    ...(message ? { message } : {}),
+  });
+  return { outcome: 'enqueued' };
 }

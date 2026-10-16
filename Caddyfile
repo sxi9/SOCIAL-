@@ -5,6 +5,17 @@
 (socialchat) {
 	encode zstd gzip
 
+	# Security headers (M8). CSP notes:
+	#   * img-src adds data:/blob: — blurhash placeholders and local object
+	#     URLs; all real media is same-origin via /api/media/:key.
+	#   * connect-src names ws:/wss: explicitly — modern browsers match the
+	#     same-origin WS upgrade under 'self', older Safari does not.
+	#   * script-src carries 'unsafe-inline' because Next.js App Router embeds
+	#     inline bootstrap/flight-data <script> tags (no nonce pipeline in this
+	#     stack); style-src needs it for Next's inline style runtime. NO
+	#     unsafe-eval anywhere.
+	header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' ws: wss:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+
 	handle /api/* {
 		reverse_proxy api:3000
 	}

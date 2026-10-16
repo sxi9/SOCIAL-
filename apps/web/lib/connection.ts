@@ -2,7 +2,9 @@
 // The socket is a downstream event pipe plus ephemeral upstream signals;
 // durable writes are REST only.
 import {
+  chunk,
   PAGE_SIZE_MAX,
+  PRESENCE_SUB_MAX,
   ServerEventSchema,
   WS_CLOSE_CODES,
   type ClientEvent,
@@ -28,6 +30,9 @@ let ws: WebSocket | null = null;
 let attempt = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let syncRun = 0;
+// Close 1008 (protocol violation) policy (§2.10): reconnect ONCE; a second
+// 1008 means we keep violating the protocol, so stop and surface the error.
+let policyViolationCloses = 0;
 
 const lastDeliveredSent = new Map<string, number>();
 const pendingReads = new Map<string, number>();
@@ -72,10 +77,18 @@ async function bootstrapAuth(): Promise<void> {
 /** Called by the login/register pages after a successful auth response. */
 export function onAuthenticated(): void {
   attempt = 0;
+  policyViolationCloses = 0;
   if (!started) {
     startConnection();
     return;
   }
+  connect();
+}
+
+/** Explicit user retry out of the connection-error state (close 1008 twice). */
+export function retryConnection(): void {
+  attempt = 0;
+  policyViolationCloses = 0;
   connect();
 }
 
@@ -135,6 +148,17 @@ async function handleClose(code: number): Promise<void> {
       }
     }
   }
+  if (code === WS_CLOSE_CODES.POLICY_VIOLATION) {
+    // §2.10 "reconnect once; report": the first 1008 gets one reconnect; a
+    // repeat means this client keeps sending frames the server rejects —
+    // stop retrying and surface a connection-error state the UI shows.
+    policyViolationCloses += 1;
+    console.error(`ws closed with 1008 (protocol violation), occurrence ${policyViolationCloses}`);
+    if (policyViolationCloses > 1) {
+      store.setConn('error');
+      return;
+    }
+  }
   scheduleReconnect(code === WS_CLOSE_CODES.TRY_AGAIN_LATER ? OVERLOAD_MIN_MS : 0);
 }
 
@@ -190,9 +214,22 @@ function handleFrame(raw: string): void {
       store.upsertConversation(ev.d.conversation);
       void db.adoptConversation(ev.d.conversation.id, ev.d.conversation.last_seq, null).catch(() => undefined);
       break;
-    case 'conv.updated':
-      store.upsertConversation(ev.d.conversation);
+    case 'conv.updated': {
+      const conv = ev.d.conversation;
+      const meId = store.state.me?.id;
+      const mine = conv.participants.find((p) => p.user.id === meId);
+      if (meId && (!mine || mine.left_at !== null)) {
+        // The server sends the removed/leaving user their own conv.updated
+        // (§1.4); not being an active participant any more means this
+        // conversation would be missing from the next /api/sync snapshot —
+        // drop it locally right away instead of waiting for that sync.
+        store.removeConversation(conv.id);
+        void db.dropConversation(conv.id).catch(() => undefined);
+      } else {
+        store.upsertConversation(conv);
+      }
       break;
+    }
     case 'user.updated':
       store.applyUserUpdated(ev.d.user);
       break;
@@ -269,16 +306,26 @@ export function sendTyping(conversationId: string): void {
   send({ t: 'typing', d: { conversation_id: conversationId } });
 }
 
+// presence.sub / presence.unsub frames are capped at PRESENCE_SUB_MAX ids
+// each (API.md §2.4) — an oversized frame fails server-side validation, costs
+// a protocol strike and silently drops the whole subscription, so always
+// chunk to the cap.
+function sendPresenceFrames(t: 'presence.sub' | 'presence.unsub', userIds: string[]): void {
+  for (const ids of chunk(userIds, PRESENCE_SUB_MAX)) {
+    send({ t, d: { user_ids: ids } });
+  }
+}
+
 export function subscribePresence(userIds: string[]): void {
   const fresh = userIds.filter((id) => !presenceSubs.has(id));
   for (const id of fresh) presenceSubs.add(id);
-  if (fresh.length) send({ t: 'presence.sub', d: { user_ids: fresh } });
+  if (fresh.length) sendPresenceFrames('presence.sub', fresh);
 }
 
 export function unsubscribePresence(userIds: string[]): void {
   const gone = userIds.filter((id) => presenceSubs.has(id));
   for (const id of gone) presenceSubs.delete(id);
-  if (gone.length) send({ t: 'presence.unsub', d: { user_ids: gone } });
+  if (gone.length) sendPresenceFrames('presence.unsub', gone);
 }
 
 // ---------------------------------------------------------------------------
@@ -391,8 +438,9 @@ async function runSync(): Promise<void> {
 
   await flushOutbox();
   flushReads();
-  // Presence subs are per-socket; re-subscribe after reconnect.
-  if (presenceSubs.size) send({ t: 'presence.sub', d: { user_ids: [...presenceSubs] } });
+  // Presence subs are per-socket; re-subscribe after reconnect, chunked to
+  // PRESENCE_SUB_MAX ids per frame (the accumulated set can exceed the cap).
+  if (presenceSubs.size) sendPresenceFrames('presence.sub', [...presenceSubs]);
 }
 
 async function catchUpConversation(

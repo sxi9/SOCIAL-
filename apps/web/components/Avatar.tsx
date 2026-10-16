@@ -51,10 +51,12 @@ export default function Avatar({ avatar, name, size = 40, animated = false }: Av
   const motion: AvatarMotion = state.me?.avatar_motion ?? 'auto';
   // Gated by prefers-reduced-motion AND avatar_motion; 'reduced' = hover only.
   const motionAllowed = !reducedMotion && motion !== 'off' && (motion === 'auto' || hovered);
-  const showAnimated =
-    animated && motionAllowed && inView && avatar.status === 'ready' && avatar.animated_url !== null;
-  const src =
-    avatar.status === 'ready' ? (showAnimated ? avatar.animated_url : avatar.static_url) : null;
+  // Render whatever URLs the DTO carries, regardless of status: a failed (or
+  // in-flight) transcode KEEPS the previous avatar server-side
+  // (ARCHITECTURE §5), so 'failed'/'processing' still carry the last good
+  // keys. Only 'none' (no avatar) has null URLs → initial-letter fallback.
+  const showAnimated = animated && motionAllowed && inView && avatar.animated_url !== null;
+  const src = showAnimated ? avatar.animated_url : avatar.static_url;
 
   return (
     <span

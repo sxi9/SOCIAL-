@@ -109,7 +109,10 @@ export async function uploadRoutes(fastify: FastifyInstance): Promise<void> {
     let fileAttachment: AttRow | null = null;
     if (key.startsWith('media/')) {
       // Requester must own the object or share a conversation with it
-      // (avatars/previews are readable by any authed user).
+      // (avatars/previews are readable by any authed user). The participant
+      // check applies the same visibility model as the history endpoints
+      // (API.md §1.5/§1.6): seq above the join_seq floor, and for departed
+      // members only messages up to their leave (seq <= left_seq).
       const rows = (await db.execute(sql`
         SELECT a.* FROM attachments a
         WHERE (a.original_key = ${key} OR a.thumb_key = ${key})
@@ -119,6 +122,8 @@ export async function uploadRoutes(fastify: FastifyInstance): Promise<void> {
               SELECT 1 FROM messages m
               JOIN conversation_participants p ON p.conversation_id = m.conversation_id
               WHERE m.id = a.message_id AND p.user_id = ${user.id}
+                AND m.seq > p.join_seq
+                AND (p.left_at IS NULL OR m.seq <= COALESCE(p.left_seq, 0))
             )
           )
         LIMIT 1

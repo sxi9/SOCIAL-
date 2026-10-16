@@ -131,6 +131,23 @@ canvas {
   padding: 4px 16px;
 }
 
+/* Connection-error state (repeated WS close 1008 — reconnects stopped). */
+.error-banner {
+  background: var(--danger);
+  color: #fff;
+}
+
+.banner-retry {
+  background: none;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  margin-left: 6px;
+  padding: 0 10px;
+}
+
 /* ---- buttons & forms ---- */
 
 .btn {

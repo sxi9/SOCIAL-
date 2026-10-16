@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+// ONE canonical URL extractor, shared with the web composer via
+// @socialchat/shared — re-exported here for existing server imports.
+export { extractFirstUrl } from '@socialchat/shared';
 
 const TRACKING_PARAMS = new Set(['fbclid', 'gclid', 'igshid', 'mc_cid', 'mc_eid', 'ref_src']);
 
@@ -20,15 +23,4 @@ export function normalizeUrl(raw: string): string {
 
 export function urlHash(normalizedUrl: string): string {
   return createHash('sha256').update(normalizedUrl).digest('hex');
-}
-
-/** First http(s) URL in a message body, or null. */
-export function extractFirstUrl(body: string): string | null {
-  const match = body.match(/https?:\/\/[^\s<>"')\]]+/i);
-  if (!match) return null;
-  try {
-    return new URL(match[0]).toString();
-  } catch {
-    return null;
-  }
 }

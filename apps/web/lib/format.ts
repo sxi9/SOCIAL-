@@ -1,4 +1,4 @@
-import type { ConversationListItem, Conversation, Message, UserPublic } from '@socialchat/shared';
+import { extractFirstUrl, type ConversationListItem, type Conversation, type Message, type UserPublic } from '@socialchat/shared';
 
 export function formatTime(iso: string): string {
   const d = new Date(iso);
@@ -58,9 +58,8 @@ export function unreadOf(item: ConversationListItem): number {
   return item.unread_count;
 }
 
-const URL_RE = /https?:\/\/[^\s<>"']+/i;
-
+/** The ONE canonical URL extractor — same implementation the server uses
+ * (@socialchat/shared), so composer previews match server-side extraction. */
 export function firstUrl(text: string): string | null {
-  const m = URL_RE.exec(text);
-  return m ? m[0] : null;
+  return extractFirstUrl(text);
 }

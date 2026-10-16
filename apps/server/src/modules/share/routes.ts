@@ -13,7 +13,6 @@ import { newId } from '../../ids.js';
 import { notFound, rateLimited, tooLarge } from '../../lib/errors.js';
 import { sanitizeFileName } from '../../lib/media.js';
 import { parseMultipart } from '../../lib/multipart.js';
-import { fixedWindow } from '../../lib/ratelimit.js';
 import { SNIFF_BYTES, sniffMime } from '../../lib/sniff.js';
 import { redis } from '../../redis.js';
 import { deleteObject, getObjectBuffer, putObject } from '../../s3.js';
@@ -41,9 +40,33 @@ interface StashPayload {
   text?: string;
   url?: string;
   files: StashFile[];
+  /** Creator IP, kept so a claim can free that IP's open-stash slot. */
+  ip?: string;
 }
 
 const stashKey = (id: string) => `stash:${id}`;
+const stashIpKey = (ip: string) => `stash_ip:${ip}`;
+
+/**
+ * True "≤ 3 OPEN stashes per IP" accounting (API.md §1.8 / ARCHITECTURE §6),
+ * not a posts-per-window approximation: a stash occupies a slot only while it
+ * is unclaimed and unexpired. The slot is freed by a claim (ZREM below) or by
+ * expiry (entries older than the TTL are pruned here), and failed/oversized
+ * attempts never consume one (the ZADD happens only after the stash persists).
+ */
+async function openStashBudget(ip: string): Promise<{ open: number; retryAfterS: number }> {
+  const key = stashIpKey(ip);
+  const now = Date.now();
+  await redis.zremrangebyscore(key, 0, now - SHARE_STASH_TTL_S * 1000);
+  const open = await redis.zcard(key);
+  let retryAfterS = SHARE_STASH_TTL_S;
+  if (open > 0) {
+    const oldest = await redis.zrange(key, 0, 0, 'WITHSCORES');
+    const score = Number(oldest[1] ?? now);
+    retryAfterS = Math.max(1, Math.ceil((score + SHARE_STASH_TTL_S * 1000 - now) / 1000));
+  }
+  return { open, retryAfterS };
+}
 
 export async function shareRoutes(fastify: FastifyInstance): Promise<void> {
   const app = fastify.withTypeProvider<ZodTypeProvider>();
@@ -98,8 +121,8 @@ export async function shareRoutes(fastify: FastifyInstance): Promise<void> {
   // §1.8 POST /api/share-stash — UNAUTHENTICATED, hard-limited: ≤ 30 MB total,
   // ≤ 3 open stashes/IP, 30-min Redis TTL, objects under stash/.
   app.post('/api/share-stash', async (req, reply) => {
-    const rate = await fixedWindow(`stash:${req.ip}`, SHARE_STASH_MAX_PER_IP, SHARE_STASH_TTL_S);
-    if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+    const slots = await openStashBudget(req.ip);
+    if (slots.open >= SHARE_STASH_MAX_PER_IP) throw rateLimited(slots.retryAfterS);
 
     const stashId = newId();
     const stashedFiles: StashFile[] = [];
@@ -130,8 +153,12 @@ export async function shareRoutes(fastify: FastifyInstance): Promise<void> {
       text: fields.text ?? fields.share_text,
       url: fields.url ?? fields.share_url,
       files: stashedFiles,
+      ip: req.ip,
     };
     await redis.set(stashKey(stashId), JSON.stringify(payload), 'EX', SHARE_STASH_TTL_S);
+    // Occupy an open-stash slot only once the stash actually exists.
+    await redis.zadd(stashIpKey(req.ip), Date.now(), stashId);
+    await redis.expire(stashIpKey(req.ip), SHARE_STASH_TTL_S);
     return reply.status(201).send({ stash_id: stashId });
   });
 
@@ -158,6 +185,8 @@ export async function shareRoutes(fastify: FastifyInstance): Promise<void> {
       );
 
       await redis.del(stashKey(req.body.stash_id));
+      // Claiming frees the creator IP's open-stash slot.
+      if (payload.ip) await redis.zrem(stashIpKey(payload.ip), req.body.stash_id);
       for (const f of payload.files) await deleteObject(f.key);
       return reply.status(201).send({ import: await shareImportDto(row) });
     },

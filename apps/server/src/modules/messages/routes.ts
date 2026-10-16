@@ -11,10 +11,14 @@ import { db, schema } from '../../db/index.js';
 import { messageDtos } from '../../lib/dto.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 import { extractFirstUrl } from '../../lib/urls.js';
-import { enqueueUnfurl } from '../../queues.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant } from '../conversations/routes.js';
-import { lookupPreview, markPending, previewDto } from '../previews/service.js';
+import {
+  lookupPreview,
+  previewDto,
+  requestUnfurl,
+  type PreviewLookup,
+} from '../previews/service.js';
 import { fanOutNewMessage, insertMessage } from './service.js';
 
 const IdParams = z.object({ id: z.string().uuid() });
@@ -83,7 +87,7 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       if (body.type !== 'text' && attachmentIds.length === 0) throw badRequest('missing_attachments');
 
       const metadata: MessageMetadata = {};
-      let pendingUnfurl: { url: string; hash: string } | null = null;
+      let pendingUnfurl: PreviewLookup | null = null;
 
       if (body.metadata?.link_preview) {
         // Snapshot is validated against (and built from) the cache row, never
@@ -106,8 +110,7 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
             if (lookup.state === 'ok' && lookup.row) {
               metadata.link_preview = previewDto(lookup.row);
             } else if (lookup.state !== 'failed') {
-              if (lookup.state === 'miss') await markPending(lookup.hash, lookup.normalized);
-              pendingUnfurl = { url: lookup.normalized, hash: lookup.hash };
+              pendingUnfurl = lookup; // miss or in-flight — resolved below
             }
           } catch {
             // unparseable URL — no card
@@ -135,11 +138,13 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       if (pendingUnfurl) {
-        // Recipients get the card later via msg.updated (worker hydration).
-        await enqueueUnfurl({
-          url: pendingUnfurl.url,
-          url_hash: pendingUnfurl.hash,
-          requested_by: user.id,
+        // Shared chokepoint: charges the 30/hour/user unfurl budget. Over
+        // budget the message still sends fine — the unfurl is simply not
+        // enqueued (no card). Recipients otherwise get the card later via
+        // msg.updated (worker hydration).
+        await requestUnfurl({
+          userId: user.id,
+          lookup: pendingUnfurl,
           message: { id: msg.id, conversation_id: convId },
         });
       }

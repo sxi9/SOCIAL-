@@ -1,15 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import {
+  chunk,
   CreateConversationRequestSchema,
+  extractFirstUrl,
   ListMessagesQuerySchema,
   MAX_GROUP_PARTICIPANTS,
   PASSWORD_MIN_LENGTH,
+  PRESENCE_SUB_MAX,
+  PresenceSubEventSchema,
   SendMessageRequestSchema,
   ServerEventSchema,
   USERNAME_REGEX,
 } from '../src/index.js';
 
 const UUID = '018f6b2a-0000-7000-8000-000000000000';
+
+function uuidAt(i: number): string {
+  return `018f6b2a-0000-7000-8000-${String(i).padStart(12, '0')}`;
+}
 
 describe('SendMessageRequestSchema', () => {
   it('accepts a text send with a client_msg_id', () => {
@@ -51,6 +59,51 @@ describe('CreateConversationRequestSchema', () => {
     expect(
       CreateConversationRequestSchema.safeParse({ type: 'group', title: 't', user_ids: [UUID] }).success,
     ).toBe(true);
+  });
+
+  it('does not Zod-reject an over-cap group — the route answers 400 group_too_large (API.md §1.4)', () => {
+    const userIds = Array.from({ length: MAX_GROUP_PARTICIPANTS }, (_v, i) => uuidAt(i));
+    expect(
+      CreateConversationRequestSchema.safeParse({ type: 'group', title: 't', user_ids: userIds }).success,
+    ).toBe(true);
+  });
+});
+
+describe('extractFirstUrl (shared — ONE implementation for web + server)', () => {
+  it('finds the first http(s) URL', () => {
+    expect(extractFirstUrl('see https://example.com/x then https://other.test')).toBe(
+      'https://example.com/x',
+    );
+    expect(extractFirstUrl('no links')).toBeNull();
+  });
+
+  it('does not swallow trailing quotes, parens or brackets', () => {
+    expect(extractFirstUrl('("https://example.com/x")')).toBe('https://example.com/x');
+    expect(extractFirstUrl('[link](https://example.com/y)')).toBe('https://example.com/y');
+  });
+});
+
+describe('presence.sub chunking (API.md §2.4)', () => {
+  it('chunk() splits an oversized subscription set into frames the schema accepts', () => {
+    const ids = Array.from({ length: 2 * PRESENCE_SUB_MAX + 50 }, (_v, i) => uuidAt(i));
+    // A single frame with the whole set is over the cap and must fail…
+    expect(PresenceSubEventSchema.safeParse({ t: 'presence.sub', d: { user_ids: ids } }).success).toBe(
+      false,
+    );
+    // …while every chunked frame is within it.
+    const chunks = chunk(ids, PRESENCE_SUB_MAX);
+    expect(chunks.map((c) => c.length)).toEqual([PRESENCE_SUB_MAX, PRESENCE_SUB_MAX, 50]);
+    expect(chunks.flat()).toEqual(ids);
+    for (const c of chunks) {
+      expect(PresenceSubEventSchema.safeParse({ t: 'presence.sub', d: { user_ids: c } }).success).toBe(
+        true,
+      );
+    }
+  });
+
+  it('chunk() handles empty input and rejects nonsense sizes', () => {
+    expect(chunk([], 10)).toEqual([]);
+    expect(() => chunk([1, 2], 0)).toThrow(RangeError);
   });
 });
 

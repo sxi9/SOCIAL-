@@ -3,13 +3,14 @@ import { and, asc, eq } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { attachmentDto } from '../../lib/dto.js';
-import { enqueueMedia, enqueueUnfurl } from '../../queues.js';
+import { enqueueMedia } from '../../queues.js';
 import {
   addPreviewWaiter,
   lookupPreview,
-  markPending,
   previewDto,
+  requestUnfurl,
   type LinkPreviewRow,
+  type PreviewLookup,
 } from '../previews/service.js';
 import type { ProcessedFile } from '../uploads/pipeline.js';
 
@@ -73,7 +74,7 @@ export async function createShareImport(
   files: ProcessedFile[],
 ): Promise<ShareImportRow> {
   let previewUrlHash: string | null = null;
-  let unfurl: { url: string; hash: string } | null = null;
+  let unfurlLookup: PreviewLookup | null = null;
   let storedUrl: string | null = fields.url?.trim() ? fields.url.trim() : null;
 
   if (storedUrl) {
@@ -81,10 +82,7 @@ export async function createShareImport(
       const lookup = await lookupPreview(storedUrl);
       storedUrl = lookup.normalized;
       previewUrlHash = lookup.hash;
-      if (lookup.state === 'miss') {
-        const shouldEnqueue = await markPending(lookup.hash, lookup.normalized);
-        if (shouldEnqueue) unfurl = { url: lookup.normalized, hash: lookup.hash };
-      }
+      if (lookup.state === 'miss') unfurlLookup = lookup;
       if (lookup.state === 'miss' || lookup.state === 'pending') {
         // Another requester may own the in-flight fetch; this user still gets
         // preview.ready when it lands.
@@ -138,8 +136,11 @@ export async function createShareImport(
     );
   for (const v of videoAtts) await enqueueMedia({ attachment_id: v.id });
 
-  if (unfurl) {
-    await enqueueUnfurl({ url: unfurl.url, url_hash: unfurl.hash, requested_by: userId });
+  if (unfurlLookup) {
+    // Shared chokepoint: charges the 30/hour/user unfurl budget (creation AND
+    // claim both land here). Over budget the import still persists — there is
+    // simply no eager fetch; the card can be requested again later.
+    await requestUnfurl({ userId, lookup: unfurlLookup });
   }
   return row;
 }

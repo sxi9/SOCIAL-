@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import Link from 'next/link';
 import { PRESENCE_SUB_MAX, type ConversationListItem } from '@socialchat/shared';
-import { subscribePresence, unsubscribePresence } from '@/lib/connection';
+import { retryConnection, subscribePresence, unsubscribePresence } from '@/lib/connection';
 import { conversationTitle, dmPeer, formatTime, messageSnippet } from '@/lib/format';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
@@ -43,7 +43,16 @@ export default function ConversationListView() {
           <GearIcon />
         </Link>
       </header>
-      {state.conn !== 'online' ? <div className="offline-banner">Offline — reconnecting…</div> : null}
+      {state.conn === 'error' ? (
+        <div className="offline-banner error-banner">
+          Connection error — the server rejected this session.{' '}
+          <button type="button" className="banner-retry" onClick={() => retryConnection()}>
+            Retry
+          </button>
+        </div>
+      ) : state.conn !== 'online' ? (
+        <div className="offline-banner">Offline — reconnecting…</div>
+      ) : null}
 
       {!state.booted ? (
         <div className={styles.empty}>Loading conversations…</div>

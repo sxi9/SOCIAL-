@@ -13,7 +13,9 @@ import type {
 } from '@socialchat/shared';
 import type { OutboxItem } from './db';
 
-export type ConnState = 'connecting' | 'online' | 'offline';
+// 'error' = the client stopped reconnecting (repeated close 1008, §2.10);
+// the UI surfaces it and offers an explicit retry.
+export type ConnState = 'connecting' | 'online' | 'offline' | 'error';
 
 export interface PresenceInfo {
   online: boolean;
@@ -152,6 +154,14 @@ export function upsertConversation(conv: Conversation | ConversationListItem): v
 export function markCaughtUp(conversationId: string): void {
   state.caughtUp.add(conversationId);
   emit();
+}
+
+/** Drop a conversation locally (own removal/leave — §2.8: gone from sync). */
+export function removeConversation(conversationId: string): void {
+  const existed = state.conversations.delete(conversationId);
+  state.messages.delete(conversationId);
+  state.caughtUp.delete(conversationId);
+  if (existed) emit();
 }
 
 function insertBySeq(list: Message[], message: Message): Message[] {

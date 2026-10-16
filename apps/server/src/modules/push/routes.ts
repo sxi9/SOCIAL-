@@ -5,7 +5,7 @@ import { PushSubscribeRequestSchema, PushUnsubscribeRequestSchema } from '@socia
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
-import { ApiError, notFound } from '../../lib/errors.js';
+import { ApiError } from '../../lib/errors.js';
 import { authed, requireAuth } from '../auth/guard.js';
 
 export async function pushRoutes(fastify: FastifyInstance): Promise<void> {
@@ -46,21 +46,21 @@ export async function pushRoutes(fastify: FastifyInstance): Promise<void> {
     },
   );
 
+  // §1.9: unconditionally 204 — the worker may already have pruned the row
+  // (404/410 or 5 failures), and unsubscribing a gone endpoint is a success.
   app.delete(
     '/api/push/subscriptions',
     { preHandler: requireAuth, schema: { body: PushUnsubscribeRequestSchema } },
     async (req, reply) => {
       const { user } = authed(req);
-      const deleted = await db
+      await db
         .delete(schema.pushSubscriptions)
         .where(
           and(
             eq(schema.pushSubscriptions.endpoint, req.body.endpoint),
             eq(schema.pushSubscriptions.userId, user.id),
           ),
-        )
-        .returning({ id: schema.pushSubscriptions.id });
-      if (deleted.length === 0) throw notFound('subscription_not_found');
+        );
       return reply.status(204).send();
     },
   );

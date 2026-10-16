@@ -65,6 +65,10 @@ export function enqueueUnfurl(job: UnfurlJob) {
   return unfurlQueue.add('unfurl', job, { ...defaultJobOpts, attempts: 1 });
 }
 
-export function enqueuePush(job: PushJob) {
-  return pushQueue.add('push', job, { ...defaultJobOpts, attempts: 2 });
+export function enqueuePush(job: PushJob, opts: { delayMs?: number } = {}) {
+  return pushQueue.add('push', job, {
+    ...defaultJobOpts,
+    attempts: 2,
+    ...(opts.delayMs ? { delay: opts.delayMs } : {}),
+  });
 }

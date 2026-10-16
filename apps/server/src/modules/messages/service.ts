@@ -2,7 +2,7 @@
 // UPDATE conversations SET last_seq = last_seq + 1 ... RETURNING locks the row
 // and serializes writers per conversation; the database guarantees total order.
 import { sql } from 'drizzle-orm';
-import type { Message, MessageMetadata, MessageType } from '@socialchat/shared';
+import { OFFLINE_GRACE_S, type Message, type MessageMetadata, type MessageType } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { activeParticipantUserIds, messageDtos, type MsgRow } from '../../lib/dto.js';
@@ -10,6 +10,7 @@ import { badRequest } from '../../lib/errors.js';
 import { enqueuePush } from '../../queues.js';
 import { presenceKey, redis } from '../../redis.js';
 import { publishToUsers } from '../../ws/events.js';
+import { registry } from '../../ws/registry.js';
 
 export interface InsertMessageOpts {
   conversationId: string;
@@ -87,21 +88,33 @@ export async function fanOutNewMessage(msg: MsgRow): Promise<Message> {
 
   if (msg.senderId) {
     const others = participantIds.filter((id) => id !== msg.senderId);
-    if (others.length > 0) {
+    // API.md §2.9: a push job is enqueued when the user has NO LIVE SOCKET at
+    // send time — the in-process registry is the exact truth for that (api is
+    // single-replica, ARCHITECTURE §3). Redis presence is NOT used to decide
+    // the enqueue: it lags a disconnect by the 15 s offline grace (and up to
+    // the 60 s key TTL), which used to silently swallow pushes sent in that
+    // window (skipped jobs are never re-enqueued).
+    const offline = others.filter((id) => !registry.userHasSockets(id));
+    if (offline.length > 0) {
+      // A user who just dropped still holds the presence key through the
+      // grace window, and the worker's guard (a) would skip the job for good.
+      // Delay only those jobs past the grace so the guard reads post-grace
+      // truth: reconnected → correctly skipped; really gone → push delivered.
       const pipeline = redis.pipeline();
-      for (const id of others) pipeline.exists(presenceKey(id));
+      for (const id of offline) pipeline.exists(presenceKey(id));
       const results = (await pipeline.exec()) ?? [];
       await Promise.all(
-        others
-          .filter((_id, i) => results[i]?.[1] !== 1)
-          .map((userId) =>
-            enqueuePush({
+        offline.map((userId, i) =>
+          enqueuePush(
+            {
               user_id: userId,
               conversation_id: msg.conversationId,
               message_id: msg.id,
               seq: msg.seq,
-            }),
+            },
+            { delayMs: results[i]?.[1] === 1 ? (OFFLINE_GRACE_S + 2) * 1000 : 0 },
           ),
+        ),
       );
     }
   }

@@ -188,9 +188,18 @@ export default function ChatView({ conversationId }: { conversationId: string })
         {/* Animated avatar renders in the open-chat header only (§5.4). */}
         <Avatar avatar={headerAvatar} name={title} size={40} animated />
         <div className={styles.headerText}>
-          <h1>{title}</h1>
+          <h1>
+            {peer ? (
+              // DM header links to the peer's public profile page (/u/:username).
+              <Link href={`/u/${encodeURIComponent(peer.username)}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+                {title}
+              </Link>
+            ) : (
+              title
+            )}
+          </h1>
           <div className={`${styles.headerSub}${conv.type === 'dm' && presence?.online ? ` ${styles.online}` : ''}`}>
-            {state.conn !== 'online' ? 'connecting…' : subline}
+            {state.conn === 'error' ? 'connection error' : state.conn !== 'online' ? 'connecting…' : subline}
           </div>
         </div>
       </header>

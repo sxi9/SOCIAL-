@@ -322,15 +322,17 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
         // system message below bumps seq past it, so joiners see it. Watermarks
         // start at the floor so unread math stays sane for late joiners.
         const joinSeq = conv.lastSeq;
-        const now = new Date();
+        // ISO string, not a Date instance: raw db.execute params are passed
+        // through to postgres-js untyped, and it cannot serialize Dates.
+        const nowIso = new Date().toISOString();
         for (const userId of toAdd) {
           await db.execute(sql`
             INSERT INTO conversation_participants
               (conversation_id, user_id, role, joined_at, join_seq, left_at, last_delivered_seq, last_read_seq)
-            VALUES (${req.params.id}, ${userId}, 'member', ${now}, ${joinSeq}::bigint, NULL, ${joinSeq}::bigint, ${joinSeq}::bigint)
+            VALUES (${req.params.id}, ${userId}, 'member', ${nowIso}::timestamptz, ${joinSeq}::bigint, NULL, ${joinSeq}::bigint, ${joinSeq}::bigint)
             ON CONFLICT (conversation_id, user_id) DO UPDATE SET
               role = 'member',
-              joined_at = ${now},
+              joined_at = ${nowIso}::timestamptz,
               join_seq = ${joinSeq}::bigint,
               left_at = NULL,
               left_seq = NULL,
@@ -338,9 +340,18 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
               last_read_seq = GREATEST(conversation_participants.last_read_seq, ${joinSeq}::bigint)
           `);
         }
-        for (const userId of toAdd) {
-          await sendSystemMessage(req.params.id, 'participant_added', 'added to the conversation', user.id, userId);
-        }
+        // ONE system message per add operation (API.md §1.4: "inserts a
+        // system message", singular) — one seq bump, one msg.new fan-out,
+        // however many users were added.
+        await sendSystemMessage(
+          req.params.id,
+          'participant_added',
+          toAdd.length === 1
+            ? 'added to the conversation'
+            : `${toAdd.length} participants were added`,
+          user.id,
+          toAdd.length === 1 ? toAdd[0] : undefined,
+        );
         await publishConvUpdated(req.params.id, existingActive);
         await publishConvNew(req.params.id, toAdd);
       }
@@ -381,7 +392,12 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
         user.id,
         req.params.userId,
       );
-      await publishConvUpdated(req.params.id);
+      // §1.4: the route emits conv.updated without excluding the affected
+      // user — the removed/leaving member's own live clients must learn about
+      // the removal too (activeParticipantUserIds no longer includes them).
+      const recipients = await activeParticipantUserIds(req.params.id);
+      if (!recipients.includes(req.params.userId)) recipients.push(req.params.userId);
+      await publishConvUpdated(req.params.id, recipients);
       return reply.status(204).send();
     },
   );
