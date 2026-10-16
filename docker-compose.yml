@@ -122,16 +122,25 @@ services:
       retries: 12
 
   minio:
-    image: minio/minio:RELEASE.2024-01-16T16-07-38Z
+    # MinIO ended free image distribution in late 2025 — minio/minio is gone
+    # from Docker Hub. bitnamilegacy/minio is the same server (archived
+    # Bitnami build, frozen but functional; fine here since MinIO is never
+    # exposed outside the compose network). It starts via its own run script
+    # and honors MINIO_DATA_DIR; the volume is mounted at both candidate data
+    # paths so objects persist regardless of packaging defaults.
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
     restart: unless-stopped
-    command: ["server", "/data"]
+    user: "0" # fresh named volumes are root-owned; the image's uid 1001 can't write them
+    command: ["/opt/bitnami/scripts/minio/run.sh"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+      MINIO_DATA_DIR: /data
     volumes:
       - minio_data:/data
+      - minio_data:/bitnami/minio/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || timeout 1 bash -c ':> /dev/tcp/127.0.0.1/9000'"]
       interval: 5s
       timeout: 5s
       retries: 12
