@@ -27,3 +27,6 @@ coverage/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local Redis dumps from test runs
+dump.rdb
