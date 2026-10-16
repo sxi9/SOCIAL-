@@ -30,10 +30,13 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    # Host ports are overridable for machines where 80/443 are taken
+    # (a laptop running Apache, another proxy, ...): set HTTP_PORT /
+    # HTTPS_PORT in .env. Production VPS: leave the defaults.
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp" # HTTP/3
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp" # HTTP/3
     environment:
       DOMAIN: ${DOMAIN:-localhost}
     volumes:
