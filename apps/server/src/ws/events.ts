@@ -1,7 +1,7 @@
 // Redis "events" channel — EVERY server→client event is published here and
 // fanned out by the gateway subscriber, so multi-node stays a config change
 // (ARCHITECTURE §3 scaling honesty).
-import type { ReceiptEvent, ServerEvent } from '@socialchat/shared';
+import type { ReactionUpdatedEvent, ReceiptEvent, ServerEvent } from '@socialchat/shared';
 import { RECEIPT_COALESCE_MS } from '@socialchat/shared';
 import { redis } from '../redis.js';
 
@@ -36,6 +36,17 @@ export function publishSessionClose(sessionId: string, code: number): Promise<vo
 
 export function publishUserSessionsClose(userId: string, code: number): Promise<void> {
   return publishEnvelope({ scope: 'user_sessions_close', user_id: userId, code });
+}
+
+// v0.2 (API.md §1.12/§2.3): one reaction.updated delta per EFFECTIVE reaction
+// add/remove, to all active participants — rides the same `users`-scope
+// envelope the gateway already fans out (the event is in the ServerEventSchema
+// union, so multi-node needs nothing new).
+export function publishReactionUpdated(
+  recipients: string[],
+  d: ReactionUpdatedEvent['d'],
+): Promise<void> {
+  return publishToUsers(recipients, { t: 'reaction.updated', d });
 }
 
 // ---------------------------------------------------------------------------

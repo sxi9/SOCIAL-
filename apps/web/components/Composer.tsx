@@ -9,6 +9,7 @@ import type {
   UploadResponse,
 } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { EMOJI_GRID } from '@/lib/emoji';
 import { firstUrl } from '@/lib/format';
 import { useAppState } from '@/lib/useStore';
 import PreviewCard from './PreviewCard';
@@ -55,6 +56,23 @@ export default function Composer({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textRef = useRef<HTMLTextAreaElement | null>(null);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+
+  // Insert at the caret (falls back to appending), keep focus in the textarea.
+  function insertEmoji(emoji: string): void {
+    const el = textRef.current;
+    const start = el?.selectionStart ?? body.length;
+    const end = el?.selectionEnd ?? body.length;
+    setBody((prev) => prev.slice(0, start) + emoji + prev.slice(end));
+    setEmojiOpen(false);
+    requestAnimationFrame(() => {
+      if (el) {
+        el.focus();
+        const pos = start + emoji.length;
+        el.setSelectionRange(pos, pos);
+      }
+    });
+  }
 
   // attachment.ready hydrates pending (video) attachments still in the composer.
   // The store mutates in place and bumps a version, so derive per render.
@@ -230,6 +248,42 @@ export default function Composer({
         </div>
       ) : null}
       <div className={styles.composerRow}>
+        <span className={styles.composerEmoji}>
+          <button
+            type="button"
+            className="btn btn-icon"
+            aria-label="Add an emoji"
+            aria-expanded={emojiOpen}
+            disabled={disabled}
+            onClick={() => setEmojiOpen((v) => !v)}
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
+              <circle cx="10" cy="10" r="7.2" stroke="currentColor" strokeWidth="1.5" />
+              <circle cx="7.4" cy="8.4" r="1" fill="currentColor" />
+              <circle cx="12.6" cy="8.4" r="1" fill="currentColor" />
+              <path d="M6.8 12 a3.6 3.6 0 0 0 6.4 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+          {emojiOpen ? (
+            <>
+              <button
+                type="button"
+                className={styles.pickerBackdrop}
+                aria-label="Close emoji picker"
+                onClick={() => setEmojiOpen(false)}
+              />
+              <div className={styles.composerEmojiPop} role="menu" aria-label="Pick an emoji">
+                <div className={styles.emojiGrid}>
+                  {EMOJI_GRID.map((emoji) => (
+                    <button key={emoji} type="button" role="menuitem" onClick={() => insertEmoji(emoji)}>
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : null}
+        </span>
         <input
           ref={fileInputRef}
           type="file"

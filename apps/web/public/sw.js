@@ -92,7 +92,7 @@ self.addEventListener('push', (event) => {
   } catch {
     payload = {};
   }
-  const title = typeof payload.title === 'string' && payload.title ? payload.title : 'SocialChat';
+  const title = typeof payload.title === 'string' && payload.title ? payload.title : 'Bored Chat';
   const options = {
     body: typeof payload.body === 'string' ? payload.body : '',
     // tag = conversation_id: stacked notifications for one conversation collapse.

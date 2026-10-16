@@ -1,15 +1,23 @@
-# SocialChat
+# Bored Chat
 
-Self-hosted chat for people who want their conversations on their own box.
-One VPS, one `docker compose up -d`, real TLS.
+Self-hosted chat for when the group chat is dead — your conversations on your
+own box. One VPS, one `docker compose up -d`, real TLS. (Formerly SocialChat;
+the rename is user-visible branding only — package names, compose project and
+service names are unchanged, so existing deployments keep their volumes.)
 
 - **Realtime messaging** — 1:1 and group chats (up to 256 members) with typing
   indicators, presence, and honest sent/delivered/read ticks. Offline for a
   month? You sync back exactly; a dropped connection can never lose a message.
+- **Invite links** — mint a `/join/<token>` link and send it anywhere; the
+  landing page shows your animated avatar (pasted links unfurl with your face),
+  and whoever clicks it registers straight into a DM with you or into your
+  group. Links expire after 7 days or 50 joins, and revoke instantly.
+- **Reactions** — long-press (or hover) any bubble for a quick-react row; chips
+  update live for everyone over the same event channel as receipts.
 - **Animated GIF avatars** — upload a GIF, WebP, APNG, or short MP4; it becomes
   a looping avatar (animated on profiles and chat headers, static everywhere
   else, with reduced-motion respected). Groups get them too.
-- **PWA share target** — install it on your phone and SocialChat appears in the
+- **PWA share target** — install it on your phone and Bored Chat appears in the
   OS share sheet. Share a photo, video, or link from any app straight into a
   conversation — even while logged out; nothing is dropped.
 - **Link previews** — shared and typed URLs unfurl into cards server-side

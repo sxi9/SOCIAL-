@@ -63,7 +63,8 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
           .orderBy(desc(m.seq))
           .limit(limit);
       }
-      return { messages: await messageDtos(rows) };
+      // Viewer-scoped DTOs: reactions[].mine is personal (API.md §1.12).
+      return { messages: await messageDtos(rows, user.id) };
     },
   );
 
@@ -168,6 +169,6 @@ async function findByClientMsgId(convId: string, senderId: string, clientMsgId: 
     )
     .limit(1);
   if (!row) return null;
-  const [dto] = await messageDtos([row]);
+  const [dto] = await messageDtos([row], senderId);
   return dto ?? null;
 }

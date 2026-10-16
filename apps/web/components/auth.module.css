@@ -1,0 +1,210 @@
+/* Auth + join scenery: animated gradient, floating blob/avatar cluster, brand
+   block, frosted-glass card. Pure CSS/SVG — no external assets. Dark-first
+   with a light-scheme override; every animation respects reduced motion. */
+
+.scene {
+  position: relative;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  overflow: hidden;
+  background: linear-gradient(135deg, #0b0e14 0%, #16123a 28%, #0b2a3d 55%, #2a1034 80%, #0b0e14 100%);
+  background-size: 320% 320%;
+  animation: scene-drift 20s ease-in-out infinite;
+}
+
+@media (prefers-color-scheme: light) {
+  .scene {
+    background: linear-gradient(135deg, #e8ecfb 0%, #dce9ff 30%, #e4dcff 55%, #d7f3ec 80%, #e8ecfb 100%);
+    background-size: 320% 320%;
+  }
+}
+
+@keyframes scene-drift {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+/* ---- floating blob/avatar cluster ---- */
+
+.blobs {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.blob {
+  position: absolute;
+  border-radius: 58% 42% 55% 45% / 48% 55% 45% 52%;
+  filter: blur(2px);
+  opacity: 0.5;
+  animation: blob-float 9s ease-in-out infinite;
+}
+
+.b1 {
+  width: 180px;
+  height: 180px;
+  top: 6%;
+  left: -40px;
+  background: radial-gradient(circle at 30% 30%, rgba(111, 140, 255, 0.55), rgba(111, 140, 255, 0.12));
+  animation-duration: 11s;
+}
+
+.b2 {
+  width: 130px;
+  height: 130px;
+  bottom: 10%;
+  right: -24px;
+  background: radial-gradient(circle at 35% 30%, rgba(76, 212, 160, 0.5), rgba(76, 212, 160, 0.1));
+  animation-duration: 13s;
+  animation-delay: -4s;
+}
+
+.b3 {
+  width: 90px;
+  height: 90px;
+  top: 16%;
+  right: 12%;
+  background: radial-gradient(circle at 35% 30%, rgba(255, 107, 150, 0.5), rgba(255, 107, 150, 0.1));
+  animation-duration: 9s;
+  animation-delay: -2s;
+}
+
+.face {
+  position: absolute;
+  animation: blob-float 10s ease-in-out infinite;
+  opacity: 0.85;
+}
+
+.f1 {
+  top: 11%;
+  left: 12%;
+  animation-delay: -1s;
+}
+
+.f2 {
+  bottom: 17%;
+  left: 7%;
+  animation-duration: 12s;
+  animation-delay: -5s;
+}
+
+.f3 {
+  top: 30%;
+  right: 7%;
+  animation-duration: 14s;
+  animation-delay: -8s;
+}
+
+@keyframes blob-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-3deg);
+  }
+  50% {
+    transform: translateY(-22px) rotate(4deg);
+  }
+}
+
+/* ---- brand + card ---- */
+
+.content {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.brand {
+  text-align: center;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(34px, 9vw, 44px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: linear-gradient(100deg, var(--accent) 10%, #b78cff 55%, var(--ok) 95%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.pitch {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+@media (prefers-color-scheme: light) {
+  .pitch {
+    color: #4a5670;
+  }
+}
+
+.card {
+  width: 100%;
+  background: color-mix(in srgb, var(--panel) 62%, transparent);
+  backdrop-filter: blur(18px) saturate(1.35);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+  border: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  border-radius: 20px;
+  padding: 24px;
+  box-shadow: var(--shadow);
+}
+
+.formTitle {
+  margin: 0 0 16px;
+  font-size: 20px;
+}
+
+.btnBlock {
+  width: 100%;
+  padding: 11px 14px;
+  font-size: 15px;
+}
+
+.switchLine {
+  margin: 14px 0 0;
+}
+
+.inviteNote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--accent-soft);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+  margin: 0 0 14px;
+}
+
+@media (min-width: 720px) {
+  .content {
+    max-width: 420px;
+    gap: 26px;
+  }
+
+  .card {
+    padding: 28px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scene,
+  .blob,
+  .face {
+    animation: none;
+  }
+}

@@ -6,6 +6,7 @@ import {
   bigint,
   check,
   customType,
+  foreignKey,
   index,
   inet,
   integer,
@@ -171,6 +172,72 @@ export const messages = pgTable(
     idempotencyIdx: uniqueIndex('messages_idempotency_idx')
       .on(t.conversationId, t.senderId, t.clientMsgId)
       .where(sql`${t.clientMsgId} IS NOT NULL`),
+  }),
+);
+
+// ================================ invites ===================================
+// v0.2 (ADR-007). token is PLAINTEXT + unique index — not hashed like session
+// tokens, because GET /api/invites re-displays the /join/<token> URL and the
+// token is a revocable capability, not an auth credential. status is derived
+// (revoked_at > expires_at > use_count >= max_uses > valid), never stored;
+// accepts increment use_count through an atomic guarded UPDATE (see migration
+// 0002).
+
+export const invites = pgTable(
+  'invites',
+  {
+    id: uuid('id').primaryKey(),
+    token: text('token').notNull().unique(),
+    inviterId: uuid('inviter_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    // NULL = DM-with-inviter invite; set = the group this invite joins.
+    conversationId: uuid('conversation_id').references(() => conversations.id, {
+      onDelete: 'cascade',
+    }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+    expiresAt: timestamptz('expires_at')
+      .notNull()
+      .default(sql`now() + interval '7 days'`),
+    maxUses: integer('max_uses').notNull().default(50),
+    useCount: integer('use_count').notNull().default(0),
+    revokedAt: timestamptz('revoked_at'),
+  },
+  (t) => ({
+    maxUsesCheck: check('invites_max_uses_check', sql`${t.maxUses} > 0`),
+    useCountCheck: check('invites_use_count_check', sql`${t.useCount} >= 0`),
+    byInviterIdx: index('invites_by_inviter_idx').on(t.inviterId, sql`${t.createdAt} DESC`),
+  }),
+);
+
+// =========================== message reactions ==============================
+// v0.2. Keyed by the messages PK (conversation_id, seq): the composite FK
+// cascades with message deletion and the PK prefix serves the per-message
+// GROUP BY emoji aggregate. The 8-distinct-emoji-per-user-per-message cap
+// (REACTIONS_PER_USER_PER_MESSAGE_MAX) is enforced in the route transaction.
+
+export const messageReactions = pgTable(
+  'message_reactions',
+  {
+    conversationId: uuid('conversation_id').notNull(),
+    seq: bigint('seq', { mode: 'number' }).notNull(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    emoji: text('emoji').notNull(),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.conversationId, t.seq, t.userId, t.emoji] }),
+    messageFk: foreignKey({
+      name: 'message_reactions_message_fk',
+      columns: [t.conversationId, t.seq],
+      foreignColumns: [messages.conversationId, messages.seq],
+    }).onDelete('cascade'),
+    emojiCheck: check(
+      'message_reactions_emoji_check',
+      sql`char_length(${t.emoji}) BETWEEN 1 AND 16`,
+    ),
   }),
 );
 

@@ -7,6 +7,8 @@ import type { LoginResponse } from '@socialchat/shared';
 import { api, ApiError, safeNext } from '@/lib/api';
 import { onAuthenticated } from '@/lib/connection';
 import { setMe } from '@/lib/store';
+import AuthScene from '@/components/AuthScene';
+import authStyles from '@/components/auth.module.css';
 
 function LoginForm() {
   const router = useRouter();
@@ -43,9 +45,9 @@ function LoginForm() {
   }
 
   return (
-    <div className="center-screen">
-      <form className="card auth-card" onSubmit={(e) => void submit(e)}>
-        <h1>Sign in</h1>
+    <AuthScene>
+      <form onSubmit={(e) => void submit(e)}>
+        <h2 className={authStyles.formTitle}>Welcome back</h2>
         <div className="field">
           <label htmlFor="login-id">Username or email</label>
           <input
@@ -71,17 +73,17 @@ function LoginForm() {
           />
         </div>
         {error ? <p className="error-text">{error}</p> : null}
-        <button className="btn btn-primary" type="submit" disabled={busy} style={{ width: '100%' }}>
+        <button className={`btn btn-primary ${authStyles.btnBlock}`} type="submit" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
-        <p className="muted small" style={{ marginTop: 14 }}>
+        <p className={`muted small ${authStyles.switchLine}`}>
           New here?{' '}
           <Link href={`/register${search.get('next') ? `?next=${encodeURIComponent(safeNext(search.get('next')))}` : ''}`}>
             Create an account
           </Link>
         </p>
       </form>
-    </div>
+    </AuthScene>
   );
 }
 

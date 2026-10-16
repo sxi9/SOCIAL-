@@ -5,9 +5,11 @@ import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod
 import { config } from './config.js';
 import { authRoutes } from './modules/auth/routes.js';
 import { conversationRoutes } from './modules/conversations/routes.js';
+import { inviteRoutes } from './modules/invites/routes.js';
 import { messageRoutes } from './modules/messages/routes.js';
 import { previewRoutes } from './modules/previews/routes.js';
 import { pushRoutes } from './modules/push/routes.js';
+import { reactionRoutes } from './modules/reactions/routes.js';
 import { shareRoutes } from './modules/share/routes.js';
 import { uploadRoutes } from './modules/uploads/routes.js';
 import { userRoutes } from './modules/users/routes.js';
@@ -68,6 +70,8 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
   await app.register(userRoutes);
   await app.register(conversationRoutes);
   await app.register(messageRoutes);
+  await app.register(reactionRoutes);
+  await app.register(inviteRoutes);
   await app.register(uploadRoutes);
   await app.register(previewRoutes);
   await app.register(shareRoutes);

@@ -217,3 +217,44 @@ CREATE TABLE push_subscriptions (
   fail_count      int NOT NULL DEFAULT 0            -- delete at 5 consecutive failures or 404/410
 );
 CREATE INDEX push_by_user_idx ON push_subscriptions (user_id);
+
+-- ================================ invites ===================================
+-- v0.2 invite links (ADR-007, API.md §1.11). token is PLAINTEXT + unique —
+-- deliberately not hashed like sessions.token_hash: GET /api/invites must
+-- re-display /join/<token>, and the token is a revocable, expiring, use-capped
+-- capability, not an auth credential (32 random bytes base64url = 43 chars).
+-- status (valid|expired|exhausted|revoked) is DERIVED, never stored; accepts
+-- run:  UPDATE invites SET use_count = use_count + 1
+--       WHERE id = $1 AND revoked_at IS NULL AND expires_at > now()
+--         AND use_count < max_uses RETURNING *;   -- 0 rows = not acceptable
+
+CREATE TABLE invites (
+  id              uuid PRIMARY KEY,                 -- uuidv7, app-side
+  token           text NOT NULL UNIQUE,             -- plaintext capability
+  inviter_id      uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  conversation_id uuid REFERENCES conversations(id) ON DELETE CASCADE,
+                                                    -- NULL = DM-with-inviter
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  expires_at      timestamptz NOT NULL DEFAULT (now() + interval '7 days'),
+  max_uses        int NOT NULL DEFAULT 50 CHECK (max_uses > 0),
+  use_count       int NOT NULL DEFAULT 0  CHECK (use_count >= 0),
+  revoked_at      timestamptz                       -- DELETE /api/invites/:id
+);
+CREATE INDEX invites_by_inviter_idx ON invites (inviter_id, created_at DESC);
+
+-- =========================== message reactions ==============================
+-- v0.2 (API.md §1.12). Keyed by the messages PK (conversation_id, seq): the
+-- composite FK cascades with deletion and the PK prefix serves the per-message
+-- GROUP BY emoji aggregate. The 8-distinct-emoji cap per (user, message) is
+-- enforced in the route transaction (REACTIONS_PER_USER_PER_MESSAGE_MAX).
+
+CREATE TABLE message_reactions (
+  conversation_id uuid   NOT NULL,
+  seq             bigint NOT NULL,
+  user_id         uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  emoji           text NOT NULL CHECK (char_length(emoji) BETWEEN 1 AND 16),
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (conversation_id, seq, user_id, emoji),
+  FOREIGN KEY (conversation_id, seq)
+    REFERENCES messages (conversation_id, seq) ON DELETE CASCADE
+);

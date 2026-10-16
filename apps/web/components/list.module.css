@@ -17,6 +17,16 @@
   background: var(--panel-2);
 }
 
+.row:hover {
+  background: color-mix(in srgb, var(--panel-2) 55%, transparent);
+}
+
+/* The open conversation in the desktop sidebar. */
+.rowActive,
+.rowActive:hover {
+  background: var(--accent-soft);
+}
+
 .avatarWrap {
   position: relative;
   flex: none;
@@ -75,9 +85,43 @@
 }
 
 .empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
   text-align: center;
   padding: 60px 24px;
   color: var(--muted);
+}
+
+.emptyTitle {
+  margin: 10px 0 0;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.emptyActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.headerInvite {
+  color: var(--accent);
+}
+
+/* Header "new conversation" pencil replaces the FAB from 900px up. */
+.desktopOnly {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .desktopOnly {
+    display: inline-flex;
+  }
 }
 
 .fab {
@@ -95,6 +139,14 @@
   box-shadow: var(--shadow);
   border: none;
   cursor: pointer;
+}
+
+/* The sidebar header pencil takes over from 900px up (list.fab is viewport-
+   fixed and would float over the open chat in the two-pane shell). */
+@media (min-width: 900px) {
+  .fab {
+    display: none;
+  }
 }
 
 /* user search / pickers */

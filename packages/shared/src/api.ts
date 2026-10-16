@@ -2,11 +2,13 @@
 // Field names follow docs/API.md exactly. This file IS the contract.
 import { z } from 'zod';
 import {
+  INVITE_TOKEN_REGEX,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_MESSAGE_BODY_CHARS,
   PAGE_SIZE_DEFAULT,
   PAGE_SIZE_MAX,
   PASSWORD_MIN_LENGTH,
+  REACTION_EMOJI_MAX_LEN,
   USERNAME_REGEX,
 } from './constants.js';
 
@@ -110,6 +112,21 @@ export const MessageMetadataSchema = z.object({
 });
 export type MessageMetadata = z.infer<typeof MessageMetadataSchema>;
 
+// v0.2 reactions (API.md §1.12). Zod's max() counts UTF-16 units — stricter
+// than the DB CHECK's codepoint count for astral emoji, so Zod is binding.
+export const ReactionEmojiSchema = z.string().min(1).max(REACTION_EMOJI_MAX_LEN);
+export type ReactionEmoji = z.infer<typeof ReactionEmojiSchema>;
+
+// One aggregate chip per emoji on a message, from the viewer's perspective.
+// Server orders by first-reaction time (min created_at per emoji) so chips
+// never reshuffle as counts change.
+export const ReactionAggregateSchema = z.object({
+  emoji: ReactionEmojiSchema,
+  count: z.number().int().positive(),
+  mine: z.boolean(),
+});
+export type ReactionAggregate = z.infer<typeof ReactionAggregateSchema>;
+
 export const MessageSchema = z.object({
   id: UuidSchema,
   conversation_id: UuidSchema,
@@ -120,6 +137,9 @@ export const MessageSchema = z.object({
   metadata: MessageMetadataSchema,
   reply_to_id: UuidSchema.nullable(),
   attachments: z.array(AttachmentSchema),
+  // v0.2: aggregated reactions. default([]) keeps pre-v0.2 payloads (IndexedDB
+  // rows, old fixtures) parsing clean; the server always emits the array.
+  reactions: z.array(ReactionAggregateSchema).default([]),
   created_at: IsoDateTimeSchema,
   edited_at: IsoDateTimeSchema.nullable(),
   deleted_at: IsoDateTimeSchema.nullable(),
@@ -172,10 +192,24 @@ export const RegisterRequestSchema = z.object({
   email: z.string().email(),
   password: z.string().min(PASSWORD_MIN_LENGTH),
   display_name: z.string().min(1).max(100),
+  // v0.2 (§1.11): registering through /join/<token> auto-accepts the invite —
+  // DM with the inviter is created (or deduped), or the scoped group joined.
+  // Deliberately LOOSE (max-length only, NOT INVITE_TOKEN_REGEX): per §1.1
+  // registration NEVER fails because of a bad invite, so a malformed token
+  // (e.g. a link truncated by an SMS/mail client) must degrade to
+  // `invite: null` in the handler — not 400 at schema validation.
+  invite_token: z.string().max(256).optional(),
 });
 export type RegisterRequest = z.infer<typeof RegisterRequestSchema>;
 
-export const RegisterResponseSchema = z.object({ user: UserPrivateSchema });
+export const RegisterResponseSchema = z.object({
+  user: UserPrivateSchema,
+  // v0.2: the conversation created/joined via invite_token, else null.
+  // Registration NEVER fails because of a bad/expired invite — the account is
+  // created and invite is null (default(null) keeps the pre-v0.2 handler and
+  // old fixtures valid).
+  invite: z.object({ conversation_id: UuidSchema }).nullable().default(null),
+});
 export type RegisterResponse = z.infer<typeof RegisterResponseSchema>;
 
 export const LoginRequestSchema = z.object({
@@ -427,3 +461,96 @@ export type PushUnsubscribeRequest = z.infer<typeof PushUnsubscribeRequestSchema
 
 export const HealthzResponseSchema = z.object({ ok: z.literal(true) });
 export type HealthzResponse = z.infer<typeof HealthzResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.11 Invites (v0.2 — ADR-007)
+// ---------------------------------------------------------------------------
+
+// Derived, never stored. Precedence when several apply:
+// revoked > expired > exhausted > valid.
+export const InviteStatusSchema = z.enum(['valid', 'expired', 'exhausted', 'revoked']);
+export type InviteStatus = z.infer<typeof InviteStatusSchema>;
+
+// 'dm' = conversation_id is null (accepting creates/dedupes a DM with the
+// inviter); 'group' = scoped to that group conversation.
+export const InviteKindSchema = z.enum(['dm', 'group']);
+export type InviteKind = z.infer<typeof InviteKindSchema>;
+
+export const InviteTokenSchema = z.string().regex(INVITE_TOKEN_REGEX);
+export type InviteToken = z.infer<typeof InviteTokenSchema>;
+
+// Who is inviting you — rendered on the UNAUTHENTICATED /join/<token> page.
+// avatar URLs point at the token-gated proxy GET /api/invites/:token/avatar
+// (?v=static|animated&ver=<avatar.version>), NEVER at /api/media/:key (which is
+// auth-checked). Both are null unless status === 'valid' AND the inviter's
+// avatar is 'ready' — revoking an invite instantly kills its avatar proxy.
+export const InviteInviterSchema = z.object({
+  username: z.string(),
+  display_name: z.string(),
+  avatar: AvatarSchema,
+});
+export type InviteInviter = z.infer<typeof InviteInviterSchema>;
+
+export const InvitePublicSchema = z.object({
+  status: InviteStatusSchema,
+  kind: InviteKindSchema,
+  group_title: z.string().nullable(), // non-null iff kind === 'group'
+  inviter: InviteInviterSchema,
+  expires_at: IsoDateTimeSchema,
+});
+export type InvitePublic = z.infer<typeof InvitePublicSchema>;
+
+export const InvitePublicResponseSchema = z.object({ invite: InvitePublicSchema });
+export type InvitePublicResponse = z.infer<typeof InvitePublicResponseSchema>;
+
+// The minter's own view (POST /api/invites, GET /api/invites).
+export const InvitePrivateSchema = z.object({
+  id: UuidSchema,
+  token: InviteTokenSchema,
+  // App-origin PATH (`/join/<token>`), not an absolute URL: the API does not
+  // know the public origin; web prefixes window.location.origin when copying.
+  url: z.string(),
+  kind: InviteKindSchema,
+  conversation_id: UuidSchema.nullable(), // null = DM-with-inviter invite
+  status: InviteStatusSchema,
+  created_at: IsoDateTimeSchema,
+  expires_at: IsoDateTimeSchema,
+  max_uses: z.number().int().positive(),
+  use_count: z.number().int().nonnegative(),
+  revoked_at: IsoDateTimeSchema.nullable(),
+});
+export type InvitePrivate = z.infer<typeof InvitePrivateSchema>;
+
+export const CreateInviteRequestSchema = z.object({
+  // Omitted ⇒ DM-with-inviter invite. Present ⇒ group invite (minter must be
+  // an ADMIN of that group; DMs cannot be invite-scoped → 400 invite_bad_scope).
+  conversation_id: UuidSchema.optional(),
+});
+export type CreateInviteRequest = z.infer<typeof CreateInviteRequestSchema>;
+
+export const CreateInviteResponseSchema = z.object({ invite: InvitePrivateSchema });
+export type CreateInviteResponse = z.infer<typeof CreateInviteResponseSchema>;
+
+export const ListInvitesResponseSchema = z.object({ invites: z.array(InvitePrivateSchema) });
+export type ListInvitesResponse = z.infer<typeof ListInvitesResponseSchema>;
+
+// GET /api/invites/:token/avatar?v=static|animated (default static — OG
+// unfurlers get the universally supported JPEG unless asked otherwise).
+// An extra `ver` cache-buster query param is accepted and ignored server-side.
+export const InviteAvatarQuerySchema = z.object({
+  v: z.enum(['static', 'animated']).default('static'),
+});
+export type InviteAvatarQuery = z.infer<typeof InviteAvatarQuerySchema>;
+
+// POST /api/invites/:token/accept (already-logged-in path).
+export const AcceptInviteResponseSchema = z.object({ conversation_id: UuidSchema });
+export type AcceptInviteResponse = z.infer<typeof AcceptInviteResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.12 Reactions (v0.2)
+// ---------------------------------------------------------------------------
+// ReactionEmojiSchema / ReactionAggregateSchema live with the core DTOs above
+// (MessageSchema embeds the aggregate). Fan-out event: ws.ts reaction.updated.
+
+export const AddReactionRequestSchema = z.object({ emoji: ReactionEmojiSchema });
+export type AddReactionRequest = z.infer<typeof AddReactionRequestSchema>;

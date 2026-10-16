@@ -151,7 +151,7 @@ async function resolvePinned(hostname: string): Promise<Pinned> {
 
 // ------------------------------ guarded fetch -------------------------------
 
-const USER_AGENT = `SocialChatBot/1.0 (+https://${config.domain})`;
+const USER_AGENT = `BoredChatBot/1.0 (+https://${config.domain})`;
 
 interface FetchResult {
   contentType: string;

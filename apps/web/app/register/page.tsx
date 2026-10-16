@@ -3,10 +3,18 @@
 import { Suspense, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { PASSWORD_MIN_LENGTH, USERNAME_REGEX, type RegisterResponse } from '@socialchat/shared';
+import {
+  INVITE_TOKEN_REGEX,
+  PASSWORD_MIN_LENGTH,
+  USERNAME_REGEX,
+  type RegisterRequest,
+  type RegisterResponse,
+} from '@socialchat/shared';
 import { api, ApiError, safeNext } from '@/lib/api';
 import { onAuthenticated } from '@/lib/connection';
 import { setMe } from '@/lib/store';
+import AuthScene from '@/components/AuthScene';
+import authStyles from '@/components/auth.module.css';
 
 function RegisterForm() {
   const router = useRouter();
@@ -17,6 +25,12 @@ function RegisterForm() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // /join/<token> carries the invite through sign-up (API.md §1.11): the
+  // register request rides invite_token, and the response names the DM/group
+  // conversation to land in. A bad invite never fails registration.
+  const rawInvite = search.get('invite');
+  const inviteToken = rawInvite && INVITE_TOKEN_REGEX.test(rawInvite) ? rawInvite : null;
 
   async function submit(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -32,15 +46,22 @@ function RegisterForm() {
     }
     setBusy(true);
     try {
-      const res = await api.post<RegisterResponse>('/api/auth/register', {
+      const payload: RegisterRequest = {
         username,
         email: email.trim(),
         password,
         display_name: displayName.trim() || username,
-      });
+        ...(inviteToken ? { invite_token: inviteToken } : {}),
+      };
+      const res = await api.post<RegisterResponse>('/api/auth/register', payload);
       setMe(res.user);
       onAuthenticated();
-      router.replace(safeNext(search.get('next')));
+      // Invite accepted during registration → land straight in that chat.
+      if (res.invite?.conversation_id) {
+        router.replace(`/c/${res.invite.conversation_id}`);
+      } else {
+        router.replace(safeNext(search.get('next')));
+      }
     } catch (err) {
       if (err instanceof ApiError && err.code === 'username_taken') {
         setError('That username is taken.');
@@ -59,9 +80,14 @@ function RegisterForm() {
   }
 
   return (
-    <div className="center-screen">
-      <form className="card auth-card" onSubmit={(e) => void submit(e)}>
-        <h1>Create account</h1>
+    <AuthScene>
+      <form onSubmit={(e) => void submit(e)}>
+        <h2 className={authStyles.formTitle}>Join the fun</h2>
+        {inviteToken ? (
+          <p className={authStyles.inviteNote}>
+            <span aria-hidden>🎟️</span> You&rsquo;ve been invited — your chat opens right after sign-up.
+          </p>
+        ) : null}
         <div className="field">
           <label htmlFor="reg-username">Username</label>
           <input
@@ -112,17 +138,17 @@ function RegisterForm() {
           />
         </div>
         {error ? <p className="error-text">{error}</p> : null}
-        <button className="btn btn-primary" type="submit" disabled={busy} style={{ width: '100%' }}>
+        <button className={`btn btn-primary ${authStyles.btnBlock}`} type="submit" disabled={busy}>
           {busy ? 'Creating…' : 'Create account'}
         </button>
-        <p className="muted small" style={{ marginTop: 14 }}>
+        <p className={`muted small ${authStyles.switchLine}`}>
           Already have an account?{' '}
           <Link href={`/login${search.get('next') ? `?next=${encodeURIComponent(safeNext(search.get('next')))}` : ''}`}>
             Sign in
           </Link>
         </p>
       </form>
-    </div>
+    </AuthScene>
   );
 }
 

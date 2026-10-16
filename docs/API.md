@@ -39,10 +39,14 @@ Attachment = { id, kind: 'image'|'video'|'file', mime, size_bytes,
 LinkPreview = { url, site_name: string|null, title: string|null,
   description: string|null, image_url: string|null }   // image_url is OUR origin, never hotlinked
 
+ReactionAggregate = { emoji: string(≤16), count: number, mine: boolean }  // v0.2 §1.12; one chip
+  // per emoji, ordered by first reaction (min created_at) so chips never reshuffle
+
 Message = { id, conversation_id, seq, sender_id: string|null,  // null = system
   type: 'text'|'image'|'video'|'file'|'system', body: string|null,
   metadata: { link_preview?: LinkPreview, system?: { event: string, actor_id?: string, target_id?: string } },
   reply_to_id: string|null, attachments: Attachment[],
+  reactions: ReactionAggregate[],   // v0.2; Zod default [] so pre-v0.2 payloads parse clean
   created_at, edited_at: string|null, deleted_at: string|null }
 
 Participant = { user: UserPublic, role: 'member'|'admin', joined_at, join_seq,
@@ -55,6 +59,17 @@ Conversation = { id, type: 'dm'|'group', title: string|null,
 
 ConversationListItem = Conversation & { unread_count: number,   // last_seq - my last_read_seq
   last_message: Message|null }
+
+// v0.2 invites (§1.11). InvitePublic.inviter.avatar URLs point at the
+// token-gated proxy /api/invites/:token/avatar — NEVER /api/media/:key — and
+// are null unless status='valid' and the inviter's avatar is 'ready'.
+InvitePublic = { status: 'valid'|'expired'|'exhausted'|'revoked',
+  kind: 'dm'|'group', group_title: string|null,   // non-null iff kind='group'
+  inviter: { username, display_name, avatar: Avatar }, expires_at }
+
+InvitePrivate = { id, token, url,   // url is the app-origin PATH /join/<token>
+  kind: 'dm'|'group', conversation_id: string|null,  // null = DM-with-inviter
+  status, created_at, expires_at, max_uses, use_count, revoked_at: string|null }
 ```
 
 Avatar URLs are content-hashed media-proxy URLs (`/api/media/:key`), immutable-cacheable;
@@ -68,7 +83,7 @@ Avatar URLs are content-hashed media-proxy URLs (`/api/media/:key`), immutable-c
 
 | Method & path | Request | Response |
 |---|---|---|
-| `POST /api/auth/register` | `{username, email, password, display_name}` (username `^[a-z0-9_]{3,24}$`, password ≥ 8) | `201 {user: UserPrivate}` + `Set-Cookie: sid`. `409 username_taken \| email_taken`. Rate 3/hour/IP. |
+| `POST /api/auth/register` | `{username, email, password, display_name, invite_token?}` (username `^[a-z0-9_]{3,24}$`, password ≥ 8; `invite_token` from `/join/<token>`, v0.2 §1.11 — accepted as a loose opaque string (≤ 256 chars), NOT shape-validated at the schema: a malformed/truncated token degrades to `invite: null` like any other bad invite) | `201 {user: UserPrivate, invite: {conversation_id}\|null}` + `Set-Cookie: sid`. `invite` names the DM created with the inviter (or the group joined) when a **valid** `invite_token` rode along; registration NEVER fails because of a bad/expired/exhausted invite — the account is created and `invite` is `null`. `409 username_taken \| email_taken`. Rate 3/hour/IP. |
 | `POST /api/auth/login` | `{username_or_email, password}` | `200 {user: UserPrivate}` + cookie. `401 bad_credentials`. Rate 10/min/IP. |
 | `POST /api/auth/logout` | — | `204`; deletes session row, clears cookie, **closes that session's live sockets (4401)**. |
 | `GET /api/auth/sessions` | — | `200 {sessions: [{id, user_agent, ip, created_at, last_seen_at, current: boolean}]}` |
@@ -156,6 +171,60 @@ the share composer works before a socket exists, and a dropped socket can never 
 |---|---|
 | `GET /healthz` | `200 {ok: true}` (public; compose healthcheck) |
 
+### 1.11 Invites (v0.2 — ADR-007, ARCHITECTURE §9)
+
+Any user mints invite tokens; sharing the link `https://<domain>/join/<token>`
+(a **web app** route — the API only ever sees the path in `InvitePrivate.url`)
+lets anyone register straight into a DM with the inviter, or into the group the
+invite is scoped to. Tokens are 32 random bytes base64url (43 chars), generated
+like session tokens but stored **plaintext** with a unique index (ADR-007:
+the owner list must re-display the URL; the token is a revocable capability,
+not a credential). Defaults: `expires_at = now()+7d` (`INVITE_TTL_S`),
+`max_uses = 50` (`INVITE_MAX_USES`). `status` is derived, precedence
+`revoked > expired > exhausted > valid`.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/invites` | `{conversation_id?}` — omitted = DM-with-inviter invite; set = group invite (minter must be an **admin** of that group, matching §1.4 participant adds) | `201 {invite: InvitePrivate}`. `400 invite_bad_scope` (a DM conversation_id), `403 forbidden` (group, not admin), `404 not_found` (unknown/not-a-participant conversation), `409 invite_limit` (more than 20 simultaneously **open** — i.e. `valid` — invites; revoke one or let one lapse first). Rate **30/hour/user** (`INVITE_CREATE_RATE_PER_HOUR`). |
+| `GET /api/invites` | — | `200 {invites: InvitePrivate[]}` — mine, `created_at DESC`, capped at 100 (no cursor in v0.2). Includes revoked/expired rows so the list explains dead links. |
+| `DELETE /api/invites/:id` | — | `204` — revoke (sets `revoked_at`; idempotent re-revoke is also `204`). `404 not_found` if not mine. Existing joins are NOT undone. |
+| `GET /api/invites/:token/public` | **UNAUTHENTICATED** | `200 {invite: InvitePublic}` for any existing token, whatever its status (the join page renders expired/revoked states by name); avatar URLs are null unless `valid`. `404 invite_not_found` for unknown tokens. Rate **60/hour/IP** (`INVITE_PUBLIC_RATE_PER_HOUR_PER_IP`). |
+| `GET /api/invites/:token/avatar?v=static\|animated` | **UNAUTHENTICATED**; `v` default `static` (OG unfurlers get the universally supported JPEG); extra `ver` cache-buster param accepted and ignored | Streaming proxy of the inviter's current avatar from MinIO. **Valid-token-gated**: any non-`valid` status, or inviter avatar not `ready` → `404` (revocation instantly kills the proxy). `v=animated` falls back to static when no animated rendition exists. `Cache-Control: private, max-age=300` (`INVITE_AVATAR_CACHE_TTL_S` — short: the avatar can change version while the token lives). Rate **120/hour/IP** (`INVITE_AVATAR_RATE_PER_HOUR_PER_IP`). |
+| `POST /api/invites/:token/accept` | — (**authed**; the already-logged-in join path) | `200 {conversation_id}`. `404 invite_not_found`; `410 invite_expired \| invite_exhausted \| invite_revoked`; `400 invite_own` (your own invite); `400 group_too_large` (group at the 256 cap). |
+
+**Accept semantics (both paths — `accept` and register-with-token):**
+
+- Atomic guard, no over-redemption under concurrency:
+  `UPDATE invites SET use_count = use_count + 1 WHERE id = $1 AND revoked_at IS
+  NULL AND expires_at > now() AND use_count < max_uses RETURNING *` — zero rows
+  means not acceptable.
+- DM invite: create-or-dedupe the DM via `dm_key` exactly like
+  `POST /api/conversations {type:'dm'}`. Group invite: insert participant with
+  `join_seq = last_seq` (the §1.4 history floor), `role='member'`.
+- A `system` message is dropped in the joined conversation:
+  `metadata.system = {event: 'invite_joined', actor_id: <joiner>, target_id:
+  <inviter>}`, body `joined via invite` — same shape as `participant_added`.
+- Fan-out mirrors §1.4: `conv.new` to the joiner, `conv.updated` to members,
+  all via the Redis `events` channel.
+- Idempotent re-accept: already an active participant (or the DM already
+  exists) → `200 {conversation_id}` **without** incrementing `use_count` and
+  without a system message.
+- Register-with-token runs accept AFTER the user row + session commit; any
+  invite failure leaves registration successful with `invite: null`.
+
+### 1.12 Reactions (v0.2)
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/conversations/:id/messages/:seq/reactions` | `{emoji}` — 1..16 chars (`REACTION_EMOJI_MAX_LEN`; Zod counts UTF-16 units, the DB CHECK codepoints — Zod is binding) | `204` — **idempotent**: re-adding an emoji you already hold is `204`, no event. Must be an active participant; `:seq` must be a visible message (within your `join_seq` floor) else `404 not_found`. A 9th **distinct** emoji by the same user on the same message → `409 reaction_limit` (`REACTIONS_PER_USER_PER_MESSAGE_MAX=8`). |
+| `DELETE /api/conversations/:id/messages/:seq/reactions/:emoji` | `:emoji` URL-encoded | `204` — **idempotent**: deleting a reaction you don't hold is `204`, no event. |
+
+Aggregates ride message DTOs as `reactions: [{emoji, count, mine}]` (ordered by
+first reaction per emoji). Each **effective** add/remove fans out one
+`reaction.updated` WS frame (§2.3) through the Redis `events` channel — a
+deliberate delta, not a `msg.updated` re-ship. Clients reconcile on reconnect
+from DTO aggregates (sync/history refetch), never by replaying frames.
+
 ---
 
 ## 2. WebSocket protocol
@@ -195,6 +264,7 @@ close `1008`.
 | `conv.new` | `{conversation: Conversation}` | you were added / created it on another device |
 | `conv.updated` | `{conversation: Conversation}` | title, membership, group-avatar flip |
 | `user.updated` | `{user: UserPublic}` | profile/avatar change of any conversation peer — fires when the avatar transcode lands (`avatar.version` bumped → swap the image) |
+| `reaction.updated` | `{conversation_id, seq, emoji, count, user_id, removed}` | v0.2 (§1.12): one frame per effective reaction add/remove, to all active participants. `count` is the NEW total for that `(message, emoji)`; `count: 0` removes the chip; `mine` is derived client-side (`user_id === me`). Reconnect truth is the DTO aggregate, not frame replay. |
 | `preview.ready` | `{url_hash, status: 'ok'\|'failed', preview?: LinkPreview}` | to the user who requested the unfurl (composer card) |
 | `error` | `{code, message}` | validation/permission errors on client frames |
 

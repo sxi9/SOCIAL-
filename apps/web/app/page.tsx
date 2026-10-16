@@ -1,10 +1,5 @@
-import AppShell from '@/components/AppShell';
-import ConversationListView from '@/components/ConversationListView';
+import TwoPane from '@/components/TwoPane';
 
 export default function HomePage() {
-  return (
-    <AppShell>
-      <ConversationListView />
-    </AppShell>
-  );
+  return <TwoPane />;
 }

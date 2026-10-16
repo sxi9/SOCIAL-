@@ -8,6 +8,7 @@ import type {
   Message,
   MessageMetadata,
   Participant,
+  ReactionAggregate,
   UserPrivate,
   UserPublic,
 } from '@socialchat/shared';
@@ -78,7 +79,7 @@ export function attachmentDto(a: AttRow): Attachment {
   };
 }
 
-export function messageDto(m: MsgRow, atts: AttRow[]): Message {
+export function messageDto(m: MsgRow, atts: AttRow[], reactions: ReactionAggregate[] = []): Message {
   return {
     id: m.id,
     conversation_id: m.conversationId,
@@ -89,6 +90,7 @@ export function messageDto(m: MsgRow, atts: AttRow[]): Message {
     metadata: (m.metadata ?? {}) as MessageMetadata,
     reply_to_id: m.replyToId,
     attachments: atts.map(attachmentDto),
+    reactions,
     created_at: iso(m.createdAt),
     edited_at: isoOrNull(m.editedAt),
     deleted_at: isoOrNull(m.deletedAt),
@@ -143,15 +145,65 @@ export async function loadAttachmentsFor(messageIds: string[]): Promise<Map<stri
   return map;
 }
 
-export async function messageDtos(rows: MsgRow[]): Promise<Message[]> {
-  const atts = await loadAttachmentsFor(rows.map((r) => r.id));
-  return rows.map((r) => messageDto(r, atts.get(r.id) ?? []));
+// v0.2 (API.md §1.12): batch reaction aggregates — one chip per emoji, count,
+// `mine` from the viewer's perspective, ordered by first reaction
+// (min created_at) so chips never reshuffle as counts change.
+export async function loadReactionsFor(
+  keys: { conversationId: string; seq: number }[],
+  viewerId?: string,
+): Promise<Map<string, ReactionAggregate[]>> {
+  const map = new Map<string, ReactionAggregate[]>();
+  if (keys.length === 0) return map;
+  const tuples = sql.join(
+    keys.map((k) => sql`(${k.conversationId}::uuid, ${k.seq}::bigint)`),
+    sql`, `,
+  );
+  const mineExpr = viewerId ? sql`bool_or(user_id = ${viewerId}::uuid)` : sql`false`;
+  const rows = (await db.execute(sql`
+    SELECT conversation_id, seq, emoji, count(*)::int AS count, ${mineExpr} AS mine
+    FROM message_reactions
+    WHERE (conversation_id, seq) IN (${tuples})
+    GROUP BY conversation_id, seq, emoji
+    ORDER BY min(created_at) ASC, emoji ASC
+  `)) as unknown as {
+    conversation_id: string;
+    seq: string | number;
+    emoji: string;
+    count: number;
+    mine: boolean;
+  }[];
+  for (const r of rows) {
+    const key = `${r.conversation_id}:${Number(r.seq)}`;
+    const list = map.get(key) ?? [];
+    list.push({ emoji: r.emoji, count: Number(r.count), mine: Boolean(r.mine) });
+    map.set(key, list);
+  }
+  return map;
 }
 
-export async function loadMessageDtoById(id: string): Promise<Message | null> {
+/**
+ * `viewerId` personalizes `reactions[].mine`. REST responses (history, sync,
+ * send/replay) MUST pass the requesting user. Broadcast DTOs (msg.new fan-out
+ * of a brand-new message — which cannot have reactions yet — and worker
+ * msg.updated hydration) have no single viewer and leave it unset (`mine`
+ * false); clients reconcile `mine` from reaction.updated frames (`user_id ===
+ * me`) and from the next viewer-scoped fetch (API.md §1.12).
+ */
+export async function messageDtos(rows: MsgRow[], viewerId?: string): Promise<Message[]> {
+  const atts = await loadAttachmentsFor(rows.map((r) => r.id));
+  const reactions = await loadReactionsFor(
+    rows.map((r) => ({ conversationId: r.conversationId, seq: r.seq })),
+    viewerId,
+  );
+  return rows.map((r) =>
+    messageDto(r, atts.get(r.id) ?? [], reactions.get(`${r.conversationId}:${r.seq}`) ?? []),
+  );
+}
+
+export async function loadMessageDtoById(id: string, viewerId?: string): Promise<Message | null> {
   const [row] = await db.select().from(schema.messages).where(eq(schema.messages.id, id)).limit(1);
   if (!row) return null;
-  const [dto] = await messageDtos([row]);
+  const [dto] = await messageDtos([row], viewerId);
   return dto ?? null;
 }
 
@@ -277,7 +329,7 @@ export async function loadListItems(
       AND p.conversation_id IN (${sql.join(convIds.map((id) => sql`${id}::uuid`), sql`, `)})
   `);
   const lastMsgRows = (lastRows as unknown as Record<string, unknown>[]).map(rawToMsgRow);
-  const lastDtos = await messageDtos(lastMsgRows);
+  const lastDtos = await messageDtos(lastMsgRows, userId);
   const lastByConv = new Map(lastDtos.map((m) => [m.conversation_id, m]));
 
   const items: ConversationListItem[] = [];

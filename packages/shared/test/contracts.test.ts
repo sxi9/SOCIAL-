@@ -1,13 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AddReactionRequestSchema,
   chunk,
   CreateConversationRequestSchema,
   extractFirstUrl,
+  INVITE_MAX_USES,
+  INVITE_TOKEN_REGEX,
+  INVITE_TTL_S,
+  InvitePublicSchema,
   ListMessagesQuerySchema,
   MAX_GROUP_PARTICIPANTS,
+  MessageSchema,
   PASSWORD_MIN_LENGTH,
   PRESENCE_SUB_MAX,
   PresenceSubEventSchema,
+  REACTION_EMOJI_MAX_LEN,
+  REACTIONS_PER_USER_PER_MESSAGE_MAX,
+  RegisterRequestSchema,
   SendMessageRequestSchema,
   ServerEventSchema,
   USERNAME_REGEX,
@@ -123,5 +132,96 @@ describe('constants', () => {
     expect(PASSWORD_MIN_LENGTH).toBe(8);
     expect(USERNAME_REGEX.test('valid_user1')).toBe(true);
     expect(USERNAME_REGEX.test('No')).toBe(false);
+  });
+
+  it('holds the v0.2 invariants', () => {
+    expect(INVITE_TTL_S).toBe(7 * 24 * 3600);
+    expect(INVITE_MAX_USES).toBe(50);
+    expect(REACTION_EMOJI_MAX_LEN).toBe(16);
+    expect(REACTIONS_PER_USER_PER_MESSAGE_MAX).toBe(8);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.2 — invites (API.md §1.11) + reactions (§1.12/§2.3)
+// ---------------------------------------------------------------------------
+
+const TOKEN_43 = 'a'.repeat(43); // 32 bytes base64url
+
+describe('invite token shape', () => {
+  it('accepts base64url tokens of 32..128 chars, rejects others', () => {
+    expect(INVITE_TOKEN_REGEX.test(TOKEN_43)).toBe(true);
+    expect(INVITE_TOKEN_REGEX.test('short')).toBe(false);
+    expect(INVITE_TOKEN_REGEX.test(`${'a'.repeat(42)}/`)).toBe(false); // not url-safe
+  });
+
+  it('RegisterRequest takes an optional, deliberately LOOSE invite_token', () => {
+    const base = { username: 'bored_user', email: 'x@example.com', password: 'p'.repeat(8), display_name: 'X' };
+    expect(RegisterRequestSchema.safeParse(base).success).toBe(true);
+    expect(RegisterRequestSchema.safeParse({ ...base, invite_token: TOKEN_43 }).success).toBe(true);
+    // API.md §1.1: registration NEVER fails because of a bad invite — a
+    // malformed/truncated token must pass the schema and degrade to
+    // invite: null in the handler, not 400 the whole registration.
+    expect(RegisterRequestSchema.safeParse({ ...base, invite_token: 'nope' }).success).toBe(true);
+    expect(RegisterRequestSchema.safeParse({ ...base, invite_token: 'a'.repeat(257) }).success).toBe(false);
+  });
+});
+
+describe('InvitePublicSchema', () => {
+  it('parses the join-page payload with proxy avatar URLs', () => {
+    const parsed = InvitePublicSchema.safeParse({
+      status: 'valid',
+      kind: 'group',
+      group_title: 'bored people',
+      inviter: {
+        username: 'hk',
+        display_name: 'HK',
+        avatar: {
+          status: 'ready',
+          version: 3,
+          static_url: `/api/invites/${TOKEN_43}/avatar?v=static&ver=3`,
+          animated_url: `/api/invites/${TOKEN_43}/avatar?v=animated&ver=3`,
+        },
+      },
+      expires_at: '2026-10-23T00:00:00Z',
+    });
+    expect(parsed.success).toBe(true);
+  });
+});
+
+describe('reactions contract', () => {
+  it('Message.reactions defaults to [] so pre-v0.2 payloads parse clean', () => {
+    const parsed = MessageSchema.safeParse({
+      id: UUID,
+      conversation_id: UUID,
+      seq: 1,
+      sender_id: UUID,
+      type: 'text',
+      body: 'hi',
+      metadata: {},
+      reply_to_id: null,
+      attachments: [],
+      created_at: '2026-10-16T00:00:00Z',
+      edited_at: null,
+      deleted_at: null,
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.reactions).toEqual([]);
+  });
+
+  it('AddReactionRequest bounds emoji to 1..REACTION_EMOJI_MAX_LEN', () => {
+    expect(AddReactionRequestSchema.safeParse({ emoji: '👍' }).success).toBe(true);
+    expect(AddReactionRequestSchema.safeParse({ emoji: '' }).success).toBe(false);
+    expect(
+      AddReactionRequestSchema.safeParse({ emoji: 'x'.repeat(REACTION_EMOJI_MAX_LEN + 1) }).success,
+    ).toBe(false);
+  });
+
+  it('ServerEventSchema parses reaction.updated', () => {
+    const parsed = ServerEventSchema.safeParse({
+      t: 'reaction.updated',
+      d: { conversation_id: UUID, seq: 7, emoji: '🔥', count: 0, user_id: UUID, removed: true },
+    });
+    expect(parsed.success).toBe(true);
   });
 });

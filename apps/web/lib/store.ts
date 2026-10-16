@@ -265,6 +265,91 @@ export function markReadLocal(conversationId: string, seq: number): void {
   emit();
 }
 
+// ---------------------------------------------------------------------------
+// Reactions (v0.2 — API.md §1.12). Deltas patch the aggregate in place; the
+// reconnect truth is the DTO's reactions[] (sync/history refetch), never
+// frame replay, so a missed frame heals on the next page load.
+// ---------------------------------------------------------------------------
+
+function patchMessageAt(conversationId: string, seq: number, patch: (msg: Message) => Message): boolean {
+  const list = state.messages.get(conversationId);
+  if (!list) return false;
+  const idx = list.findIndex((m) => m.seq === seq);
+  if (idx === -1) return false;
+  const copy = [...list];
+  copy[idx] = patch(copy[idx]);
+  state.messages.set(conversationId, copy);
+  const conv = state.conversations.get(conversationId);
+  if (conv && conv.last_message && conv.last_message.seq === seq) {
+    conv.last_message = copy[idx];
+  }
+  return true;
+}
+
+interface ReactionDelta {
+  conversation_id: string;
+  seq: number;
+  emoji: string;
+  count: number;
+  user_id: string;
+  removed: boolean;
+}
+
+function patchReactions(msg: Message, d: ReactionDelta, isMe: boolean): Message {
+  const reactions = [...msg.reactions];
+  const i = reactions.findIndex((r) => r.emoji === d.emoji);
+  if (d.count <= 0) {
+    if (i !== -1) reactions.splice(i, 1);
+  } else if (i === -1) {
+    // Chips are ordered by first reaction (min created_at per emoji), so a
+    // brand-new chip appends — matching the server's DTO ordering.
+    reactions.push({ emoji: d.emoji, count: d.count, mine: isMe ? !d.removed : false });
+  } else {
+    reactions[i] = {
+      ...reactions[i],
+      count: d.count,
+      mine: isMe ? !d.removed : reactions[i].mine,
+    };
+  }
+  return { ...msg, reactions };
+}
+
+/** reaction.updated frame: `count` is the NEW authoritative total; 0 drops the chip. */
+export function applyReactionUpdated(d: ReactionDelta): void {
+  const isMe = state.me?.id === d.user_id;
+  const changed = patchMessageAt(d.conversation_id, d.seq, (msg) => patchReactions(msg, d, isMe));
+  if (changed) {
+    emit();
+    return;
+  }
+  // No loaded message window for this conversation — still patch the list
+  // item's last_message when the frame targets it, so the frame isn't dropped
+  // outright and connection.ts can persist the patched DTO (§1.12).
+  const conv = state.conversations.get(d.conversation_id);
+  if (conv && conv.last_message && conv.last_message.seq === d.seq) {
+    conv.last_message = patchReactions(conv.last_message, d, isMe);
+    emit();
+  }
+}
+
+/** Optimistic local toggle (lib/reactions.ts); the WS frame confirms totals. */
+export function applyReactionLocal(conversationId: string, seq: number, emoji: string, add: boolean): void {
+  const changed = patchMessageAt(conversationId, seq, (msg) => {
+    const reactions = [...msg.reactions];
+    const i = reactions.findIndex((r) => r.emoji === emoji);
+    if (add) {
+      if (i === -1) reactions.push({ emoji, count: 1, mine: true });
+      else if (!reactions[i].mine) reactions[i] = { ...reactions[i], count: reactions[i].count + 1, mine: true };
+    } else if (i !== -1 && reactions[i].mine) {
+      const next = reactions[i].count - 1;
+      if (next <= 0) reactions.splice(i, 1);
+      else reactions[i] = { ...reactions[i], count: next, mine: false };
+    }
+    return { ...msg, reactions };
+  });
+  if (changed) emit();
+}
+
 export function applyTyping(conversationId: string, userId: string, expiresAtIso: string): void {
   if (state.me && userId === state.me.id) return;
   let t = state.typing.get(conversationId);

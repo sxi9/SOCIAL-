@@ -74,8 +74,48 @@
   justify-content: flex-end;
 }
 
-.bubble {
+/* New arrivals slide in; history loads render instantly (ChatView gates the
+   class on created_at > mount time). */
+.enter {
+  animation: msg-in 240ms cubic-bezier(0.2, 0.9, 0.3, 1.15);
+}
+
+@keyframes msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.msgCol {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   max-width: min(78%, 480px);
+}
+
+.own .msgCol {
+  align-items: flex-end;
+}
+
+.bubbleWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.own .bubbleWrap {
+  flex-direction: row-reverse;
+}
+
+.bubble {
+  max-width: 100%;
   background: var(--bubble-in);
   border-radius: 16px;
   border-bottom-left-radius: 6px;
@@ -123,6 +163,262 @@
   font-size: 11px;
   color: var(--muted);
   margin-top: 2px;
+}
+
+.emptyChat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  color: var(--muted);
+  padding: 24px;
+}
+
+.emptyChat h3 {
+  margin: 8px 0 0;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.emptyChat p {
+  margin: 0 0 10px;
+  font-size: 13.5px;
+}
+
+/* ---- reactions (v0.2) ---- */
+
+/* Hover affordance on desktop; touch uses long-press instead. */
+.reactBtn {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease, transform 120ms ease;
+  padding: 0;
+}
+
+.row:hover .reactBtn,
+.reactBtn:focus-visible {
+  opacity: 1;
+}
+
+.reactBtn:hover {
+  color: var(--accent);
+  transform: scale(1.1);
+}
+
+@media (hover: none) {
+  .reactBtn {
+    display: none;
+  }
+}
+
+.pickerBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: default;
+}
+
+.picker {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 31;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  max-width: min(88vw, 340px);
+  animation: picker-pop 160ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  transform-origin: bottom left;
+}
+
+.own .picker,
+.picker.pickerRight {
+  left: auto;
+  right: 0;
+  transform-origin: bottom right;
+}
+
+@keyframes picker-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.85) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.quickRow {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.quickRow button,
+.emojiGrid button {
+  background: none;
+  border: none;
+  border-radius: 10px;
+  font-size: 21px;
+  line-height: 1;
+  padding: 7px;
+  cursor: pointer;
+  transition: transform 100ms ease, background 100ms ease;
+}
+
+.quickRow button:hover,
+.emojiGrid button:hover {
+  background: var(--accent-soft);
+  transform: scale(1.18);
+}
+
+.moreBtn {
+  color: var(--muted);
+}
+
+.emojiGrid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 1px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.reactionChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+  padding: 0 2px;
+}
+
+.own .reactionChips {
+  justify-content: flex-end;
+}
+
+.reactionChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+  animation: chip-pop 180ms cubic-bezier(0.2, 0.9, 0.3, 1.3);
+}
+
+.reactionChip:active {
+  transform: scale(0.92);
+}
+
+.reactionChip.reactionMine {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.reactionCount {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  /* Keyed by count in the JSX → remounts and pops on every change. */
+  animation: chip-pop 200ms cubic-bezier(0.2, 0.9, 0.3, 1.3);
+}
+
+.reactionMine .reactionCount {
+  color: var(--accent);
+}
+
+@keyframes chip-pop {
+  from {
+    transform: scale(0.6);
+  }
+  60% {
+    transform: scale(1.15);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+/* ---- composer emoji popover ---- */
+
+.composerEmoji {
+  position: relative;
+}
+
+.composerEmojiPop {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 31;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  width: min(88vw, 320px);
+  animation: picker-pop 160ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  transform-origin: bottom left;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .enter,
+  .picker,
+  .composerEmojiPop,
+  .reactionChip,
+  .reactionCount {
+    animation: none;
+  }
+
+  .reactBtn,
+  .quickRow button,
+  .emojiGrid button,
+  .reactionChip {
+    transition: none;
+  }
+}
+
+/* ---- desktop (two-pane shell ≥900px) ---- */
+
+@media (min-width: 900px) {
+  .chatPage {
+    max-width: none;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* The sidebar is always visible — no back button needed. */
+  .back {
+    display: none;
+  }
+
+  .scroll {
+    padding: 16px 24px 6px;
+  }
 }
 
 /* attachments */

@@ -9,6 +9,7 @@ import {
   IsoDateTimeSchema,
   LinkPreviewSchema,
   MessageSchema,
+  ReactionEmojiSchema,
   SeqSchema,
   UserPublicSchema,
   UuidSchema,
@@ -113,6 +114,27 @@ export const UserUpdatedEventSchema = z.object({
 });
 export type UserUpdatedEvent = z.infer<typeof UserUpdatedEventSchema>;
 
+// v0.2 (API.md §1.12/§2.3): one frame per reaction add/remove, fanned out to
+// all active participants via the Redis `events` channel — deliberately NOT a
+// full msg.updated (a reaction flurry must not re-ship message DTOs with
+// attachments). `count` is the NEW total for (conversation_id, seq, emoji);
+// count 0 removes the chip. `mine` is derived client-side (user_id === me).
+// Deltas are safe to apply out of order per actor because the server emits one
+// frame per successful idempotent write; a reconnect re-reads aggregates from
+// message DTOs (reactions[]) instead of replaying frames.
+export const ReactionUpdatedEventSchema = z.object({
+  t: z.literal('reaction.updated'),
+  d: z.object({
+    conversation_id: UuidSchema,
+    seq: z.number().int().positive(),
+    emoji: ReactionEmojiSchema,
+    count: z.number().int().nonnegative(),
+    user_id: UuidSchema,
+    removed: z.boolean(),
+  }),
+});
+export type ReactionUpdatedEvent = z.infer<typeof ReactionUpdatedEventSchema>;
+
 export const PreviewReadyEventSchema = z.object({
   t: z.literal('preview.ready'),
   d: z.object({
@@ -143,6 +165,7 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
   ConvNewEventSchema,
   ConvUpdatedEventSchema,
   UserUpdatedEventSchema,
+  ReactionUpdatedEventSchema,
   PreviewReadyEventSchema,
   ErrorEventSchema,
 ]);

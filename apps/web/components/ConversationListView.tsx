@@ -7,13 +7,14 @@ import { retryConnection, subscribePresence, unsubscribePresence } from '@/lib/c
 import { conversationTitle, dmPeer, formatTime, messageSnippet } from '@/lib/format';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
+import { InviteButton } from './InviteSheet';
 import styles from './list.module.css';
 
 function sortKey(item: ConversationListItem): number {
   return item.last_message_at ? new Date(item.last_message_at).getTime() : new Date(item.created_at).getTime();
 }
 
-export default function ConversationListView() {
+export default function ConversationListView({ activeId = null }: { activeId?: string | null }) {
   const state = useAppState();
   const meId = state.me?.id;
 
@@ -38,7 +39,15 @@ export default function ConversationListView() {
   return (
     <div className="page">
       <header className="topbar">
-        <h1>SocialChat</h1>
+        <h1>Bored Chat</h1>
+        <InviteButton className={`btn btn-ghost btn-icon ${styles.headerInvite}`} label="" />
+        <Link
+          href="/new"
+          className={`btn btn-ghost btn-icon ${styles.desktopOnly}`}
+          aria-label="New conversation"
+        >
+          <PencilIcon />
+        </Link>
         <Link href="/settings/profile" className="btn btn-ghost btn-icon" aria-label="Settings">
           <GearIcon />
         </Link>
@@ -58,10 +67,17 @@ export default function ConversationListView() {
         <div className={styles.empty}>Loading conversations…</div>
       ) : items.length === 0 ? (
         <div className={styles.empty}>
-          <p>No conversations yet.</p>
-          <Link className="btn btn-primary" href="/new">
-            Start one
-          </Link>
+          <EmptyDoodle />
+          <p className={styles.emptyTitle}>It&rsquo;s quiet in here… too quiet.</p>
+          <p className="muted small">
+            Chats are better with someone on the other end. Send a link, start the chaos.
+          </p>
+          <div className={styles.emptyActions}>
+            <InviteButton className="btn btn-primary" label="Invite a friend" />
+            <Link className="btn" href="/new">
+              Start a chat
+            </Link>
+          </div>
         </div>
       ) : (
         <ul className={styles.list}>
@@ -73,7 +89,11 @@ export default function ConversationListView() {
             const avatar = peer ? peer.avatar : item.avatar;
             return (
               <li key={item.id}>
-                <Link href={`/c/${item.id}`} className={styles.row}>
+                <Link
+                  href={`/c/${item.id}`}
+                  className={`${styles.row}${item.id === activeId ? ` ${styles.rowActive}` : ''}`}
+                  aria-current={item.id === activeId ? 'page' : undefined}
+                >
                   <span className={styles.avatarWrap}>
                     <Avatar avatar={avatar} name={title} size={48} />
                     {peer ? (
@@ -107,6 +127,43 @@ export default function ConversationListView() {
         </svg>
       </Link>
     </div>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M4 20 L4.8 16.2 L16.4 4.6 a1.9 1.9 0 0 1 2.7 0 l0.3 0.3 a1.9 1.9 0 0 1 0 2.7 L7.8 19.2 Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function EmptyDoodle() {
+  return (
+    <svg width="88" height="88" viewBox="0 0 88 88" fill="none" aria-hidden>
+      <path
+        d="M30 16 c-11 0 -19 7.4 -19 17 c0 5 2.2 9.3 6.3 12.3 L15 53 l9 -6.4 c1.9 0.5 3.9 0.7 6 0.7 c11 0 19 -7.4 19 -17 S41 16 30 16 Z"
+        stroke="var(--accent)"
+        strokeWidth="2.4"
+        strokeLinejoin="round"
+        opacity="0.55"
+      />
+      <path
+        d="M58 36 c10 0 17 6.6 17 15 c0 4.4 -1.9 8.2 -5.5 10.9 L72 70 l-8 -5.6 c-1.8 0.4 -3.6 0.6 -6 0.6 c-10 0 -17 -6.6 -17 -15 s7 -14 17 -14 Z"
+        stroke="var(--ok)"
+        strokeWidth="2.4"
+        strokeLinejoin="round"
+        opacity="0.45"
+      />
+      <circle cx="24" cy="33" r="2.2" fill="var(--accent)" opacity="0.55" />
+      <circle cx="31" cy="33" r="2.2" fill="var(--accent)" opacity="0.55" />
+      <circle cx="38" cy="33" r="2.2" fill="var(--accent)" opacity="0.55" />
+    </svg>
   );
 }
 

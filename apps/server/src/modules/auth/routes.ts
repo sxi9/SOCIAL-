@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
+  INVITE_TOKEN_REGEX,
   LoginRequestSchema,
   RegisterRequestSchema,
   type SessionInfo,
@@ -14,6 +15,7 @@ import { newId } from '../../ids.js';
 import { userPrivateDto } from '../../lib/dto.js';
 import { ApiError, conflict, notFound, rateLimited } from '../../lib/errors.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
+import { acceptInvite, findInviteByToken } from '../invites/service.js';
 import { authed, requireAuth } from './guard.js';
 import {
   ARGON2_OPTS,
@@ -69,7 +71,24 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
 
     const { token } = await createSession(user.id, req.headers['user-agent'] ?? null, req.ip);
     setSessionCookie(reply, token);
-    return reply.status(201).send({ user: userPrivateDto(user) });
+
+    // v0.2 (API.md §1.11): register-with-token runs the invite accept AFTER
+    // the user row + session commit. Registration NEVER fails on a bad,
+    // expired, exhausted, revoked or MALFORMED invite — the account stands,
+    // invite: null. The schema deliberately accepts invite_token loosely
+    // (max-length only); the ADR-007 shape check lives here, where failing it
+    // degrades instead of 400ing the whole registration.
+    let invite: { conversation_id: string } | null = null;
+    if (req.body.invite_token && INVITE_TOKEN_REGEX.test(req.body.invite_token)) {
+      try {
+        const row = await findInviteByToken(req.body.invite_token);
+        if (row) invite = await acceptInvite(row, user.id);
+      } catch (err) {
+        req.log.info({ err }, 'register: invite accept failed, account created anyway');
+        invite = null;
+      }
+    }
+    return reply.status(201).send({ user: userPrivateDto(user), invite });
   });
 
   app.post('/api/auth/login', { schema: { body: LoginRequestSchema } }, async (req, reply) => {

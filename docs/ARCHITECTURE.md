@@ -312,3 +312,61 @@ as-is), disappearing messages, i18n.
   `devices`/`device_keys` registry hangs off `sessions`.
 - **Multi-node:** publish all WS fan-out through the already-used Redis `events` channel and
   run N api replicas; `migrate` service already removed the deploy race.
+
+---
+
+## 9. v0.2 — Invite links (signature feature) & reactions
+
+§8's Phase-1 cut line excluded reactions; v0.2 promotes them through exactly the
+seam §8 sketched, and adds the growth feature: shareable invite links. Branding
+note: the product is user-facing **"Bored Chat"** (web manifest, titles, OG
+tags, `/join` page copy). Package names (`@socialchat/*`), the compose project
+and Docker service names are **unchanged** — deployments have volumes bound to
+them; the rename is user-visible only.
+
+**Invite links (API.md §1.11, ADR-007).** Any user mints tokens
+(`POST /api/invites`); the link is `https://<domain>/join/<token>` (a web-app
+route). A `conversation_id`-scoped invite joins that group (minting it is
+admin-only, matching §1.4 participant adds); an unscoped invite creates/dedupes
+a DM with the inviter. Tokens: 32 random bytes base64url (43 chars), stored
+**plaintext** with a unique index — unlike session tokens, because the owner
+list must re-display the URL and the token is a revocable, expiring, use-capped
+capability, not a credential. `status` is derived
+(`revoked > expired > exhausted > valid`); accepts go through one atomic
+guarded `UPDATE … use_count + 1 … WHERE use_count < max_uses RETURNING *`, so
+concurrency can never over-redeem. Joins reuse the existing machinery verbatim:
+`dm_key` dedupe, `join_seq = last_seq` history floor, a `system` message
+(`invite_joined`), `conv.new`/`conv.updated` fan-out over the Redis `events`
+channel. Registration with `invite_token` never fails on a bad invite — account
+first, `invite: null` in the response.
+
+**Why the avatar proxy is public-but-token-gated.** The join page's whole pitch
+is the inviter's ANIMATED avatar ("join Bored Chat — here's who's waiting"),
+rendered for people who by definition have no session, and for OG unfurlers
+(Slack/WhatsApp/iMessage bots) fetching `og:image`. `/api/media/:key` is
+auth-checked and must stay that way, so invites get a dedicated streaming proxy
+`GET /api/invites/:token/avatar?v=static|animated`: the token itself is the
+capability. It never exposes MinIO keys (no enumeration surface), serves only
+while the invite is `valid` — revoking an invite instantly kills its proxy —
+returns 404 unless the inviter's avatar is `ready`, is rate-limited per IP
+(`INVITE_AVATAR_RATE_PER_HOUR_PER_IP`), and sends `Cache-Control: private,
+max-age=300` (short TTL because `avatar_version` can move while the token
+lives; `private` keeps shared caches out of it). Default variant is `static`
+(JPEG — what unfurlers reliably render); the join page itself requests
+`v=animated`, gated by `prefers-reduced-motion` per §5's motion hygiene.
+
+**Reactions (API.md §1.12).** Additive `message_reactions` table keyed by the
+messages PK `(conversation_id, seq)` — the §8 sketch named `message_id`, but
+the composite key is the message identity everything else already uses, and the
+reactions PK `(conversation_id, seq, user_id, emoji)` serves the per-message
+`GROUP BY emoji` aggregate as a PK-prefix scan. Writes are REST
+(idempotent POST/DELETE, 204), fan-out is one small `reaction.updated` delta
+frame via the `events` channel — deliberately not a `msg.updated` DTO re-ship.
+Message DTOs carry `reactions: [{emoji, count, mine}]`; reconnects reconcile
+from DTOs, never frame replay, so the §2.8 sync story is untouched.
+
+Shared constants added (v0.2): `INVITE_TTL_S=604800`, `INVITE_MAX_USES=50`,
+`INVITE_TOKEN_BYTES=32`, `INVITE_CREATE_RATE_PER_HOUR=30`,
+`INVITE_PUBLIC_RATE_PER_HOUR_PER_IP=60`, `INVITE_AVATAR_RATE_PER_HOUR_PER_IP=120`,
+`INVITE_AVATAR_CACHE_TTL_S=300`, `REACTION_EMOJI_MAX_LEN=16`,
+`REACTIONS_PER_USER_PER_MESSAGE_MAX=8`.

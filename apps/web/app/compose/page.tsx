@@ -103,7 +103,7 @@ function ComposeInner() {
           <p className="muted">
             {loadState === 'gone'
               ? 'This shared content is no longer available.'
-              : 'Open the share sheet in another app and pick SocialChat.'}
+              : 'Open the share sheet in another app and pick Bored Chat.'}
           </p>
           <Link className="btn btn-primary" href="/">
             Go to chats

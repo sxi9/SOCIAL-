@@ -73,6 +73,33 @@ export const SHARE_IMPORT_TTL_DAYS = 7;
 export const USERNAME_REGEX = /^[a-z0-9_]{3,24}$/;
 export const PASSWORD_MIN_LENGTH = 8;
 
+// ---- Invite links (v0.2 — API.md §1.11, ARCHITECTURE §9, ADR-007) ----
+// Default lifetime of a minted invite (invites.expires_at = now() + 7 days).
+export const INVITE_TTL_S = 7 * 24 * 3600;
+// Default invites.max_uses per minted link.
+export const INVITE_MAX_USES = 50;
+// Token entropy: 32 random bytes base64url = 43 url-safe chars (same generator
+// as session tokens; stored PLAINTEXT with a unique index — see ADR-007).
+export const INVITE_TOKEN_BYTES = 32;
+// Accepted token shape (base64url alphabet). Lax upper bound so the shape can
+// evolve without breaking old clients; the DB unique index is the arbiter.
+export const INVITE_TOKEN_REGEX = /^[A-Za-z0-9_-]{32,128}$/;
+// Mint rate, per user (M8 sweep style).
+export const INVITE_CREATE_RATE_PER_HOUR = 30;
+// UNAUTHENTICATED endpoints, per IP (Redis fixed-window, like login/register).
+export const INVITE_PUBLIC_RATE_PER_HOUR_PER_IP = 60;
+export const INVITE_AVATAR_RATE_PER_HOUR_PER_IP = 120;
+// Cache-Control: private, max-age for GET /api/invites/:token/avatar — short
+// because the underlying avatar can change version while the token is live.
+export const INVITE_AVATAR_CACHE_TTL_S = 300;
+
+// ---- Reactions (v0.2 — API.md §1.12 + §2.3, ADR-007 companion feature) ----
+// Zod enforces UTF-16 units (client-binding); the DB CHECK enforces the same
+// bound in codepoints — Zod is the stricter of the two for astral emoji.
+export const REACTION_EMOJI_MAX_LEN = 16;
+// Distinct emoji one user may hold on one message; the 9th distinct POST → 409.
+export const REACTIONS_PER_USER_PER_MESSAGE_MAX = 8;
+
 // ---- Protocol caps (API.md) ----
 export const PRESENCE_SUB_MAX = 100;
 export const USER_SEARCH_LIMIT = 20;

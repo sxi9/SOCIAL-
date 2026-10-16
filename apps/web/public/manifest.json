@@ -1,6 +1,6 @@
 {
-  "name": "SocialChat",
-  "short_name": "SocialChat",
+  "name": "Bored Chat",
+  "short_name": "Bored",
   "display": "standalone",
   "start_url": "/",
   "background_color": "#0b0e14",

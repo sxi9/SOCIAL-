@@ -4,10 +4,10 @@ import ServiceWorkerRegister from '@/components/ServiceWorkerRegister';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: { default: 'SocialChat', template: '%s · SocialChat' },
-  description: 'Fast, private messaging.',
+  title: { default: 'Bored Chat', template: '%s · Bored Chat' },
+  description: 'Chat for when the group chat is dead.',
   manifest: '/manifest.json',
-  appleWebApp: { capable: true, statusBarStyle: 'black-translucent', title: 'SocialChat' },
+  appleWebApp: { capable: true, statusBarStyle: 'black-translucent', title: 'Bored Chat' },
 };
 
 export const viewport: Viewport = {

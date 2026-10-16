@@ -3,6 +3,7 @@
 // durable writes are REST only.
 import {
   chunk,
+  PAGE_SIZE_DEFAULT,
   PAGE_SIZE_MAX,
   PRESENCE_SUB_MAX,
   ServerEventSchema,
@@ -233,6 +234,20 @@ function handleFrame(raw: string): void {
     case 'user.updated':
       store.applyUserUpdated(ev.d.user);
       break;
+    case 'reaction.updated': {
+      // Same shape of handling as `receipt`: a small delta patches the store
+      // live (v0.2 §2.3). Persist the patched DTO so the IndexedDB window
+      // shows reactions on next open; reconnect truth stays the DTO aggregate.
+      store.applyReactionUpdated(ev.d);
+      const conv = store.state.conversations.get(ev.d.conversation_id);
+      const patched =
+        store.state.messages.get(ev.d.conversation_id)?.find((m) => m.seq === ev.d.seq) ??
+        (conv?.last_message?.seq === ev.d.seq ? conv.last_message : undefined);
+      if (patched) {
+        void db.storeMessages(ev.d.conversation_id, [patched]).catch(() => undefined);
+      }
+      break;
+    }
     case 'preview.ready':
       store.setPreview(ev.d.url_hash, { status: ev.d.status, preview: ev.d.preview ?? null });
       break;
@@ -424,6 +439,19 @@ async function runSync(): Promise<void> {
     if (conv.last_seq > stored) {
       await catchUpConversation(conv.id, stored, conv.last_seq, run);
     } else {
+      // Caught up by seq — but reactions and edits don't bump seq (§1.12), so
+      // frames missed while disconnected leave stale aggregates behind.
+      // Reconnect truth is the DTO aggregate: adopt the snapshot's fresh
+      // last_message, and refetch the newest page for any conversation whose
+      // message window is loaded (typically the open one).
+      if (conv.last_message) {
+        store.replaceMessage(conv.last_message);
+        await db.storeMessages(conv.id, [conv.last_message]).catch(() => undefined);
+      }
+      if ((store.state.messages.get(conv.id)?.length ?? 0) > 0) {
+        await refreshNewestPage(conv.id, conv.last_seq, run);
+      }
+      if (run !== syncRun) return;
       sendDelivered(conv.id, stored);
       store.markCaughtUp(conv.id);
     }
@@ -441,6 +469,26 @@ async function runSync(): Promise<void> {
   // Presence subs are per-socket; re-subscribe after reconnect, chunked to
   // PRESENCE_SUB_MAX ids per frame (the accumulated set can exceed the cap).
   if (presenceSubs.size) sendPresenceFrames('presence.sub', [...presenceSubs]);
+}
+
+/**
+ * Refresh the newest page of an already-caught-up conversation so seq-less
+ * deltas (reactions §1.12, edits) missed while disconnected reconcile from the
+ * DTO aggregate. Fresh DTOs replace stale ones by (conversation_id, seq) in
+ * both the store and IndexedDB; failures are benign (next open refetches).
+ */
+async function refreshNewestPage(conversationId: string, lastSeq: number, run: number): Promise<void> {
+  let page: ListMessagesResponse;
+  try {
+    page = await api.get<ListMessagesResponse>(
+      `/api/conversations/${conversationId}/messages?before_seq=${lastSeq + 1}&limit=${PAGE_SIZE_DEFAULT}`
+    );
+  } catch {
+    return;
+  }
+  if (run !== syncRun || page.messages.length === 0) return;
+  store.addMessages(conversationId, page.messages);
+  await db.storeMessages(conversationId, page.messages).catch(() => undefined);
 }
 
 async function catchUpConversation(

@@ -34,8 +34,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   const cookie = req.headers.get('cookie');
+  // Re-send the X-Forwarded-For chain Caddy gave us: the api rate-limits
+  // share-stash per client IP (trustProxy:true), and without it every
+  // logged-out share worldwide would land in one bucket keyed on this
+  // container's address (same reasoning as app/join/[token]/page.tsx).
+  const xff = req.headers.get('x-forwarded-for');
   const authedHeaders: Record<string, string> = { 'X-Requested-With': 'fetch' };
   if (cookie) authedHeaders.cookie = cookie;
+  if (xff) authedHeaders['x-forwarded-for'] = xff;
 
   let res: Response;
   try {
@@ -56,9 +62,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (res.status === 401) {
     // No (valid) session: park the payload server-side, claim after login.
     try {
+      const stashHeaders: Record<string, string> = { 'X-Requested-With': 'fetch' };
+      if (xff) stashHeaders['x-forwarded-for'] = xff;
       const stashRes = await fetch(`${apiOrigin}/api/share-stash`, {
         method: 'POST',
-        headers: { 'X-Requested-With': 'fetch' },
+        headers: stashHeaders,
         body: form,
       });
       if (stashRes.ok) {
