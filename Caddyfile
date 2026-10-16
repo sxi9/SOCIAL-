@@ -1,0 +1,30 @@
+# SocialChat edge — the ONE public entrypoint (ARCHITECTURE §3).
+# /api/* and /ws -> api:3000 (reverse_proxy handles the WebSocket upgrade
+# automatically); everything else -> web:3000 (Next.js SSR/PWA).
+
+(socialchat) {
+	encode zstd gzip
+
+	handle /api/* {
+		reverse_proxy api:3000
+	}
+
+	handle /ws {
+		reverse_proxy api:3000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}
+
+# Public site. Automatic HTTPS the moment DNS for {$DOMAIN} points at this box.
+{$DOMAIN} {
+	header Strict-Transport-Security "max-age=31536000"
+	import socialchat
+}
+
+# Plain-HTTP fallback for local testing (no TLS, no cert dance).
+localhost:80 {
+	import socialchat
+}

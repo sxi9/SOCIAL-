@@ -1,0 +1,145 @@
+# SocialChat — single-VPS deployment (ARCHITECTURE §3).
+# Eight services; ONLY caddy publishes host ports. One .env (copy .env.example).
+# api / worker / migrate share the apps/server image with different commands.
+# Local dev (publish postgres/redis/minio on loopback for `pnpm dev`):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres redis minio
+
+name: socialchat
+
+# .env names the MinIO credentials MINIO_ACCESS_KEY/MINIO_SECRET_KEY; the
+# server reads MINIO_ROOT_USER/MINIO_ROOT_PASSWORD — mapped here, one source.
+x-server-env: &server-env
+  NODE_ENV: production
+  DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  REDIS_URL: redis://redis:6379
+  MINIO_ENDPOINT: http://minio:9000
+  MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+  MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+
+x-server-depends: &server-depends
+  migrate:
+    condition: service_completed_successfully
+  postgres:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+  minio:
+    condition: service_healthy
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - api
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    image: socialchat-web
+    restart: unless-stopped
+    environment:
+      # Server-side forward target of app/share/route.ts (Caddy handles
+      # browser /api and /ws; this is the only web->api hop in prod).
+      API_ORIGIN: http://api:3000
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    image: socialchat-server
+    command: ["node", "dist/api.js"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *server-env
+      HOST: 0.0.0.0
+      PORT: "3000"
+    depends_on: *server-depends
+
+  worker:
+    image: socialchat-server # built once by the api service
+    pull_policy: never
+    command: ["node", "dist/worker.js"]
+    restart: unless-stopped
+    env_file: .env
+    environment: *server-env
+    depends_on: *server-depends
+
+  # Run-once: SQL migrations + MinIO bucket init (removes the boot-race hole).
+  migrate:
+    image: socialchat-server
+    pull_policy: never
+    command: ["node", "dist/db/migrate.js"]
+    restart: "no"
+    env_file: .env
+    environment: *server-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    # AOF on: queued BullMQ jobs survive restarts (ARCHITECTURE §1)
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  minio:
+    image: minio/minio:RELEASE.2024-01-16T16-07-38Z
+    restart: unless-stopped
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+  redis_data:
+  minio_data:

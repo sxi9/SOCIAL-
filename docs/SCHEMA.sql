@@ -87,6 +87,8 @@ CREATE TABLE conversation_participants (
   -- now; no migration when channels/late-join groups need it.
   join_seq           bigint NOT NULL DEFAULT 0,
   left_at            timestamptz,                   -- soft leave: history retained up to leave
+  left_seq           bigint,                        -- conversations.last_seq at leave time:
+                                                    -- departed members see only seq <= left_seq
   -- Receipt watermarks (cursors), NOT per-message rows. Monotonic: writes use
   -- GREATEST(stored, incoming). "msg N read by U" <=> U.last_read_seq >= N.
   -- Unread count = conversations.last_seq - last_read_seq. Invariant:

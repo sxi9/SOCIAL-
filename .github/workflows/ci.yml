@@ -1,0 +1,55 @@
+# ROADMAP M0: lint + typecheck + vitest in CI. Postgres + Redis services back
+# the M2 integration tests (migrations are applied by the test setup).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: socialchat
+          POSTGRES_PASSWORD: socialchat
+          POSTGRES_DB: socialchat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U socialchat"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://socialchat:socialchat@localhost:5432/socialchat
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm -r build
+      - name: Lint (typecheck)
+        run: pnpm -r lint
+      - name: Test
+        run: pnpm -r test
