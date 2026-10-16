@@ -310,7 +310,9 @@ select.input {
   color: var(--text);
   border-radius: 10px;
   padding: 10px 12px;
-  font-size: 15px;
+  /* 16px minimum on form controls: iOS Safari auto-zooms (and stays zoomed)
+     when focusing any control whose font-size is below 16px. */
+  font-size: 16px;
   outline: none;
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }

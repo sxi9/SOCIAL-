@@ -1,0 +1,396 @@
+/* The Bored Blob — pure SVG + CSS. Static pose transforms live OUTSIDE the
+   motion media query (a reduced-motion visitor still gets the right pose,
+   instantly); every transition/animation is wrapped in
+   `prefers-reduced-motion: no-preference`. Transform/opacity only. */
+
+.root {
+  display: block;
+  overflow: visible;
+  --m-limb: #4b66e0;
+  --m-lid: #5d77ea;
+  --m-ink: #182142;
+  --m-blush: rgba(255, 107, 150, 0.4);
+}
+
+@media (prefers-color-scheme: light) {
+  .root {
+    --m-limb: #3d55d6;
+    --m-lid: #5b74e8;
+    --m-ink: #15204a;
+  }
+}
+
+/* State classes (one is always present on .root): idle, watch, cover, peek,
+   yawn, shake, wince, celebrate, party, wave, drowsy. Several need no CSS of
+   their own — they exist so selectors below can key off them. */
+.idle,
+.watch,
+.cover,
+.peek,
+.yawn,
+.shake,
+.wince,
+.celebrate,
+.party,
+.wave,
+.drowsy {
+  /* marker classes */
+}
+
+/* ---- parts ---- */
+
+.inner {
+  transform-box: fill-box;
+  transform-origin: 50% 85%;
+}
+
+.bodyBlob {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+}
+
+.eyeWhite {
+  fill: #fff;
+}
+
+.pupil {
+  fill: var(--m-ink);
+}
+
+.lid {
+  fill: var(--m-lid);
+  transform: translateY(0);
+}
+
+.brow {
+  stroke: var(--m-limb);
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  fill: none;
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+}
+
+.happyEye,
+.mouthStroke {
+  stroke: var(--m-ink);
+  stroke-width: 3.4;
+  stroke-linecap: round;
+  fill: none;
+}
+
+.mouthFill {
+  fill: var(--m-ink);
+}
+
+.mouth {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+}
+
+.blush {
+  fill: var(--m-blush);
+}
+
+.limb {
+  fill: none;
+  stroke: var(--m-limb);
+  stroke-width: 10;
+  stroke-linecap: round;
+}
+
+.hand {
+  fill: var(--m-limb);
+}
+
+/* Arm pivots sit roughly on the shoulder (local 0,0) — fill-box percentages
+   chosen from each arm's geometry bounds. */
+.armL,
+.armR {
+  transform-box: fill-box;
+}
+
+.armL {
+  transform-origin: 86% 0%;
+}
+
+.armR {
+  transform-origin: 14% 0%;
+}
+
+/* ---- poses (static, always applied) ---- */
+
+/* Password focus: arms swing up, hands over the eyes; lids close behind the
+   hands so even a slightly-off landing never shows a staring pupil. */
+.cover .armL,
+.peek .armL {
+  transform: rotate(-169deg) scale(1.3);
+}
+
+.cover .armR {
+  transform: rotate(169deg) scale(1.3);
+}
+
+.cover .lid,
+.peek .lidL {
+  transform: translateY(21px);
+}
+
+/* "Show password": the right hand parts and the right eye peeks out. */
+.peek .armR {
+  transform: rotate(118deg) scale(1.08);
+}
+
+.drowsy .lid {
+  transform: translateY(11px);
+}
+
+.yawn .lid {
+  transform: translateY(21px);
+}
+
+.wince .lidL {
+  transform: translateY(15px);
+}
+
+.wince .lidR {
+  transform: translateY(13px);
+}
+
+.shake .lid {
+  transform: translateY(5px);
+}
+
+.shake .browL {
+  transform: rotate(16deg) translateY(2.5px);
+}
+
+.shake .browR {
+  transform: rotate(-16deg) translateY(2.5px);
+}
+
+.wince .browL {
+  transform: rotate(10deg) translateY(1px);
+}
+
+.wince .browR {
+  transform: rotate(-18deg) translateY(3px);
+}
+
+.yawn .browL,
+.yawn .browR,
+.celebrate .browL,
+.celebrate .browR {
+  transform: translateY(-3px);
+}
+
+.wave .armR {
+  transform: rotate(-140deg);
+}
+
+.celebrate .armL,
+.party .armL {
+  transform: rotate(140deg);
+}
+
+.celebrate .armR,
+.party .armR {
+  transform: rotate(-140deg);
+}
+
+/* Party: sunglasses drop onto the face; brows hide underneath. */
+.shades {
+  opacity: 0;
+  transform: translateY(-30px);
+}
+
+.party .shades {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.party .browL,
+.party .browR {
+  opacity: 0;
+}
+
+/* ---- motion (only when the visitor is fine with it) ---- */
+
+@media (prefers-reduced-motion: no-preference) {
+  .lid,
+  .brow {
+    transition: transform 200ms ease, opacity 160ms ease;
+  }
+
+  .armL,
+  .armR {
+    transition: transform 340ms cubic-bezier(0.34, 1.45, 0.5, 1);
+  }
+
+  .shades {
+    transition: transform 520ms cubic-bezier(0.3, 1.6, 0.4, 1), opacity 200ms ease;
+  }
+
+  .bodyBlob {
+    animation: breathe 4.5s ease-in-out infinite;
+  }
+
+  .mouth {
+    animation: mouth-pop 180ms ease;
+  }
+
+  .shake .inner {
+    animation: head-shake 460ms ease;
+  }
+
+  .wince .inner {
+    animation: wince-tilt 500ms ease;
+  }
+
+  .celebrate .inner {
+    animation: happy-bounce 750ms cubic-bezier(0.3, 0.9, 0.4, 1.1);
+  }
+
+  .yawn .inner {
+    animation: yawn-stretch 1.6s ease-in-out;
+  }
+
+  .party .inner {
+    animation: party-bob 0.52s ease-in-out infinite;
+  }
+
+  .wave .armR {
+    animation: arm-wave 1.5s ease-in-out infinite;
+  }
+
+  .party .armL {
+    animation: arm-dance-l 0.52s ease-in-out infinite;
+  }
+
+  .party .armR {
+    animation: arm-dance-r 0.52s ease-in-out infinite;
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1, 1);
+  }
+  50% {
+    transform: scale(1.015, 0.982);
+  }
+}
+
+@keyframes mouth-pop {
+  from {
+    transform: scale(0.6);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+@keyframes head-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  15% {
+    transform: translateX(-4px);
+  }
+  35% {
+    transform: translateX(3.5px);
+  }
+  55% {
+    transform: translateX(-2.5px);
+  }
+  75% {
+    transform: translateX(1.5px);
+  }
+}
+
+@keyframes wince-tilt {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  35% {
+    transform: rotate(-3deg) translateY(1px);
+  }
+  70% {
+    transform: rotate(1.6deg);
+  }
+}
+
+@keyframes happy-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  25% {
+    transform: translateY(-11px);
+  }
+  50% {
+    transform: translateY(0);
+  }
+  70% {
+    transform: translateY(-5px);
+  }
+  85% {
+    transform: translateY(0);
+  }
+}
+
+@keyframes yawn-stretch {
+  0%,
+  100% {
+    transform: scale(1, 1);
+  }
+  30% {
+    transform: scale(0.965, 1.05);
+  }
+  70% {
+    transform: scale(1.02, 0.98);
+  }
+}
+
+@keyframes party-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-2deg);
+  }
+  50% {
+    transform: translateY(-5px) rotate(2deg);
+  }
+}
+
+@keyframes arm-wave {
+  0%,
+  100% {
+    transform: rotate(-124deg);
+  }
+  50% {
+    transform: rotate(-160deg);
+  }
+}
+
+@keyframes arm-dance-l {
+  0%,
+  100% {
+    transform: rotate(124deg);
+  }
+  50% {
+    transform: rotate(156deg);
+  }
+}
+
+@keyframes arm-dance-r {
+  0%,
+  100% {
+    transform: rotate(-156deg);
+  }
+  50% {
+    transform: rotate(-124deg);
+  }
+}

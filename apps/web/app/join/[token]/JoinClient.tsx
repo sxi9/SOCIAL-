@@ -11,6 +11,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { AcceptInviteResponse, InvitePublic, MeResponse } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { useAuthFx } from '@/components/AuthScene';
+import Mascot, { type MascotState } from '@/components/Mascot';
 import styles from './join.module.css';
 
 interface JoinClientProps {
@@ -20,6 +22,10 @@ interface JoinClientProps {
 
 export default function JoinClient({ token, invite }: JoinClientProps) {
   const router = useRouter();
+  // The Bored Blob waves hello next to the inviter (party mode when the logo
+  // easter egg fires in the surrounding AuthScene).
+  const fx = useAuthFx();
+  const waving: MascotState = fx.party ? 'party' : 'wave';
   // null = still probing; the join page lives outside AppShell on purpose
   // (it must render for visitors with no session at all).
   const [authedAs, setAuthedAs] = useState<string | null>(null);
@@ -80,6 +86,7 @@ export default function JoinClient({ token, invite }: JoinClientProps) {
   if (!invite) {
     return (
       <div className={styles.body}>
+        <Mascot state={fx.party ? 'party' : 'wince'} size={96} />
         <h2 className={styles.headline}>Hmm, that link doesn&rsquo;t work</h2>
         <p className={styles.sub}>
           It may have a typo, or it never existed. Invite links look like{' '}
@@ -127,9 +134,20 @@ export default function JoinClient({ token, invite }: JoinClientProps) {
       ? `${name} invited you to “${invite.group_title}”`
       : `${name} invited you to Bored Chat`;
 
+  // Mascot waves next to the inviter's avatar; when the inviter has no avatar
+  // at all, the blob takes center stage instead.
+  const hasAvatar = Boolean(invite.inviter.avatar.static_url ?? invite.inviter.avatar.animated_url);
+
   return (
     <div className={styles.body}>
-      <InviteAvatar invite={invite} />
+      {hasAvatar ? (
+        <div className={styles.duo}>
+          <InviteAvatar invite={invite} />
+          <Mascot state={waving} size={76} className={styles.duoMascot} />
+        </div>
+      ) : (
+        <Mascot state={waving} size={116} />
+      )}
       <h2 className={styles.headline}>{headline}</h2>
       <p className={styles.sub}>
         {invite.kind === 'group'

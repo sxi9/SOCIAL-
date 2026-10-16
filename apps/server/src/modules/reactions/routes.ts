@@ -88,18 +88,30 @@ export async function reactionRoutes(fastify: FastifyInstance): Promise<void> {
       // even when you sit at the distinct-emoji cap.
       if (await holdsReaction(convId, seq, user.id, emoji)) return reply.status(204).send();
 
-      // Guarded insert: the cap check and the write ride one statement, and
-      // ON CONFLICT absorbs a concurrent duplicate of the same reaction.
-      const inserted = (await db.execute(sql`
-        INSERT INTO message_reactions (conversation_id, seq, user_id, emoji)
-        SELECT ${convId}::uuid, ${seq}::bigint, ${user.id}::uuid, ${emoji}
-        WHERE (
-          SELECT count(*) FROM message_reactions
-          WHERE conversation_id = ${convId} AND seq = ${seq}::bigint AND user_id = ${user.id}
-        ) < ${REACTIONS_PER_USER_PER_MESSAGE_MAX}
-        ON CONFLICT DO NOTHING
-        RETURNING emoji
-      `)) as unknown as { emoji: string }[];
+      // Guarded insert, serialized per (conversation, seq, user): the cap is a
+      // count-then-insert, so two concurrent adds of DIFFERENT emoji could
+      // both count 7 and both land, overshooting the distinct-emoji cap. A
+      // transaction-scoped advisory lock on the triple serializes them (the
+      // lock releases at commit, after the insert is visible to the next
+      // counter); ON CONFLICT still absorbs a concurrent duplicate of the
+      // SAME reaction.
+      const inserted = await db.transaction(async (tx) => {
+        await tx.execute(sql`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${convId}::text || ':' || ${seq}::text || ':' || ${user.id}::text, 0)
+          )
+        `);
+        return (await tx.execute(sql`
+          INSERT INTO message_reactions (conversation_id, seq, user_id, emoji)
+          SELECT ${convId}::uuid, ${seq}::bigint, ${user.id}::uuid, ${emoji}
+          WHERE (
+            SELECT count(*) FROM message_reactions
+            WHERE conversation_id = ${convId} AND seq = ${seq}::bigint AND user_id = ${user.id}
+          ) < ${REACTIONS_PER_USER_PER_MESSAGE_MAX}
+          ON CONFLICT DO NOTHING
+          RETURNING emoji
+        `)) as unknown as { emoji: string }[];
+      });
 
       if (inserted.length === 0) {
         // Either a concurrent duplicate landed first (idempotent → 204) or

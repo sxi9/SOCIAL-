@@ -13,6 +13,7 @@ import {
   INVITE_AVATAR_RATE_PER_HOUR_PER_IP,
   INVITE_CREATE_RATE_PER_HOUR,
   INVITE_MAX_USES,
+  INVITE_OPEN_MAX,
   INVITE_PUBLIC_RATE_PER_HOUR_PER_IP,
   INVITE_TOKEN_REGEX,
   INVITE_TTL_S,
@@ -28,7 +29,6 @@ import { getParticipant } from '../conversations/routes.js';
 import {
   acceptInvite,
   findInviteByToken,
-  INVITE_OPEN_MAX,
   invitePrivateDto,
   invitePublicDto,
   inviteStatus,

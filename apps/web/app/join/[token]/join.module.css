@@ -40,6 +40,18 @@
   text-align: center;
 }
 
+/* Inviter avatar + waving mascot side by side (mascot overlaps a touch). */
+.duo {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.duoMascot {
+  margin-left: -16px;
+  margin-bottom: -6px;
+}
+
 .bigAvatar {
   width: 112px;
   height: 112px;

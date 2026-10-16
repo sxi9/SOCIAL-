@@ -29,10 +29,8 @@ import { sendSystemMessage } from '../messages/service.js';
 
 export type InviteRow = typeof schema.invites.$inferSelect;
 
-// A user may hold at most this many simultaneously OPEN (status 'valid')
-// invites — mint past it → 409 invite_limit. Server-local policy knob (not a
-// protocol constant in @socialchat/shared): clients only ever see the error.
-export const INVITE_OPEN_MAX = 20;
+// The open-invite mint cap now lives in @socialchat/shared as INVITE_OPEN_MAX
+// (API.md §1.11); routes.ts imports it from there.
 
 const convs = schema.conversations;
 const cp = schema.conversationParticipants;
@@ -146,6 +144,35 @@ async function refuseClaim(inviteId: string): Promise<never> {
   throw goneByStatus(inviteStatus(fresh));
 }
 
+/**
+ * The §1.4-style join upsert, shared by the group accept and the DM
+ * reactivation so their semantics can never drift: join_seq = last_seq (the
+ * history floor), role 'member', watermarks start at the floor; a departed
+ * member re-joining gets a fresh window (left_at / left_seq cleared).
+ */
+async function upsertParticipantJoin(
+  convId: string,
+  userId: string,
+  joinSeq: number,
+): Promise<void> {
+  // ISO string, not a Date instance: raw db.execute params are passed through
+  // to postgres-js untyped, and it cannot serialize Dates.
+  const nowIso = new Date().toISOString();
+  await db.execute(sql`
+    INSERT INTO conversation_participants
+      (conversation_id, user_id, role, joined_at, join_seq, left_at, last_delivered_seq, last_read_seq)
+    VALUES (${convId}, ${userId}, 'member', ${nowIso}::timestamptz, ${joinSeq}::bigint, NULL, ${joinSeq}::bigint, ${joinSeq}::bigint)
+    ON CONFLICT (conversation_id, user_id) DO UPDATE SET
+      role = 'member',
+      joined_at = ${nowIso}::timestamptz,
+      join_seq = ${joinSeq}::bigint,
+      left_at = NULL,
+      left_seq = NULL,
+      last_delivered_seq = GREATEST(conversation_participants.last_delivered_seq, ${joinSeq}::bigint),
+      last_read_seq = GREATEST(conversation_participants.last_read_seq, ${joinSeq}::bigint)
+  `);
+}
+
 async function fanOutJoin(convId: string, joinerId: string, existingMemberIds: string[]): Promise<void> {
   // Mirrors §1.4: conv.new to the joiner, conv.updated to members — all via
   // the Redis `events` channel.
@@ -160,9 +187,13 @@ async function fanOutJoin(convId: string, joinerId: string, existingMemberIds: s
  * POST /api/invites/:token/accept AND register-with-token (the caller decides
  * whether failures surface as HTTP errors or degrade to `invite: null`).
  *
- * Idempotent re-accept: already an active participant (or the DM already
- * exists) → the conversation id WITHOUT incrementing use_count and without a
- * system message.
+ * Idempotent re-accept: already an ACTIVE participant (or an active party of
+ * the existing DM) → the conversation id WITHOUT incrementing use_count and
+ * without a system message. That dedupe resolves BEFORE status validation, so
+ * it answers even on an expired/revoked/exhausted invite. A re-join after
+ * leaving — DM and group alike — is a genuinely-new join: it status-gates
+ * (the token stays a revocable capability, ADR-007) and claims a use before
+ * the §1.4 re-join upsert (left_at/left_seq cleared, fresh join_seq floor).
  */
 export async function acceptInvite(
   invite: InviteRow,
@@ -170,15 +201,46 @@ export async function acceptInvite(
 ): Promise<{ conversation_id: string }> {
   if (invite.inviterId === joinerId) throw badRequest('invite_own');
 
-  const status = inviteStatus(invite);
-  if (status !== 'valid') throw goneByStatus(status);
-
   if (invite.conversationId === null) {
     // DM-with-inviter invite: create-or-dedupe via dm_key, exactly like
-    // POST /api/conversations {type:'dm'}.
+    // POST /api/conversations {type:'dm'}. The dedupe resolves BEFORE status
+    // validation (§1.11): when the DM already exists the accept answers
+    // 200 {conversation_id} without consuming a use — even on an invite that
+    // has since expired / been revoked / exhausted.
     const dmKey = [invite.inviterId, joinerId].sort().join(':');
     const [existing] = await db.select().from(convs).where(eq(convs.dmKey, dmKey)).limit(1);
-    if (existing) return { conversation_id: existing.id }; // idempotent, no increment
+    if (existing) {
+      const [myPart] = await db
+        .select()
+        .from(cp)
+        .where(and(eq(cp.conversationId, existing.id), eq(cp.userId, joinerId)))
+        .limit(1);
+      // Still an ACTIVE party of the DM → idempotent 200 BEFORE status
+      // validation, no use consumed — even on a dead invite (§1.11).
+      if (myPart && myPart.leftAt === null) {
+        return { conversation_id: existing.id }; // idempotent, no increment
+      }
+      // The joiner had LEFT the DM (handing back the bare id would strand
+      // them on 404 conversation_not_found). A re-join after leaving is a
+      // genuinely-new join, exactly like the group path below: the invite
+      // must still be redeemable — a revoked/expired/exhausted token must NOT
+      // remain a permanent re-entry capability for an ex-member (ADR-007:
+      // the token is a revocable capability) — and a use is claimed. Then
+      // the same §1.4 re-join upsert reactivates them (fresh join_seq =
+      // last_seq history floor, left_at / left_seq cleared) and the usual
+      // join machinery re-announces the conversation.
+      const dmStatus = inviteStatus(invite);
+      if (dmStatus !== 'valid') throw goneByStatus(dmStatus);
+      if (!(await claimUse(invite.id))) await refuseClaim(invite.id);
+      await upsertParticipantJoin(existing.id, joinerId, existing.lastSeq);
+      await sendSystemMessage(existing.id, 'invite_joined', 'joined via invite', joinerId, invite.inviterId);
+      await fanOutJoin(existing.id, joinerId, [invite.inviterId]);
+      return { conversation_id: existing.id };
+    }
+
+    // Genuinely-new DM: only now does invite status gate the join.
+    const status = inviteStatus(invite);
+    if (status !== 'valid') throw goneByStatus(status);
 
     if (!(await claimUse(invite.id))) await refuseClaim(invite.id);
 
@@ -216,31 +278,22 @@ export async function acceptInvite(
     .from(cp)
     .where(and(eq(cp.conversationId, conv.id), eq(cp.userId, joinerId)))
     .limit(1);
+  // Already an ACTIVE member → idempotent 200 BEFORE status validation and
+  // without consuming a use (§1.11) — even on a dead invite.
   if (myPart && myPart.leftAt === null) return { conversation_id: conv.id }; // idempotent
+
+  // Genuinely-new join (first join, or a re-join after leaving): invite
+  // status gates it, then the cap, then the atomic claim.
+  const status = inviteStatus(invite);
+  if (status !== 'valid') throw goneByStatus(status);
 
   const existingActive = await activeParticipantUserIds(conv.id);
   if (existingActive.length + 1 > MAX_GROUP_PARTICIPANTS) throw badRequest('group_too_large');
 
   if (!(await claimUse(invite.id))) await refuseClaim(invite.id);
 
-  // Same upsert as the §1.4 add-participants path: join_seq = last_seq (the
-  // history floor), role 'member', watermarks start at the floor; a departed
-  // member re-joining gets a fresh window.
-  const joinSeq = conv.lastSeq;
-  const nowIso = new Date().toISOString();
-  await db.execute(sql`
-    INSERT INTO conversation_participants
-      (conversation_id, user_id, role, joined_at, join_seq, left_at, last_delivered_seq, last_read_seq)
-    VALUES (${conv.id}, ${joinerId}, 'member', ${nowIso}::timestamptz, ${joinSeq}::bigint, NULL, ${joinSeq}::bigint, ${joinSeq}::bigint)
-    ON CONFLICT (conversation_id, user_id) DO UPDATE SET
-      role = 'member',
-      joined_at = ${nowIso}::timestamptz,
-      join_seq = ${joinSeq}::bigint,
-      left_at = NULL,
-      left_seq = NULL,
-      last_delivered_seq = GREATEST(conversation_participants.last_delivered_seq, ${joinSeq}::bigint),
-      last_read_seq = GREATEST(conversation_participants.last_read_seq, ${joinSeq}::bigint)
-  `);
+  // Same upsert as the §1.4 add-participants path (see upsertParticipantJoin).
+  await upsertParticipantJoin(conv.id, joinerId, conv.lastSeq);
   await sendSystemMessage(conv.id, 'invite_joined', 'joined via invite', joinerId, invite.inviterId);
   await fanOutJoin(conv.id, joinerId, existingActive);
   return { conversation_id: conv.id };

@@ -78,6 +78,9 @@ export const PASSWORD_MIN_LENGTH = 8;
 export const INVITE_TTL_S = 7 * 24 * 3600;
 // Default invites.max_uses per minted link.
 export const INVITE_MAX_USES = 50;
+// A user may hold at most this many simultaneously OPEN (status 'valid')
+// invites; minting past the cap → 409 invite_limit (API.md §1.11).
+export const INVITE_OPEN_MAX = 20;
 // Token entropy: 32 random bytes base64url = 43 url-safe chars (same generator
 // as session tokens; stored PLAINTEXT with a unique index — see ADR-007).
 export const INVITE_TOKEN_BYTES = 32;

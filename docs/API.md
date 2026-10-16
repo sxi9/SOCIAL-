@@ -185,7 +185,7 @@ not a credential). Defaults: `expires_at = now()+7d` (`INVITE_TTL_S`),
 
 | Method & path | Request | Response |
 |---|---|---|
-| `POST /api/invites` | `{conversation_id?}` — omitted = DM-with-inviter invite; set = group invite (minter must be an **admin** of that group, matching §1.4 participant adds) | `201 {invite: InvitePrivate}`. `400 invite_bad_scope` (a DM conversation_id), `403 forbidden` (group, not admin), `404 not_found` (unknown/not-a-participant conversation), `409 invite_limit` (more than 20 simultaneously **open** — i.e. `valid` — invites; revoke one or let one lapse first). Rate **30/hour/user** (`INVITE_CREATE_RATE_PER_HOUR`). |
+| `POST /api/invites` | `{conversation_id?}` — omitted = DM-with-inviter invite; set = group invite (minter must be an **admin** of that group, matching §1.4 participant adds) | `201 {invite: InvitePrivate}`. `400 invite_bad_scope` (a DM conversation_id), `403 forbidden` (group, not admin), `404 not_found` (unknown/not-a-participant conversation), `409 invite_limit` (more than 20 simultaneously **open** — i.e. `valid` — invites (`INVITE_OPEN_MAX`, shared constant); revoke one or let one lapse first). Rate **30/hour/user** (`INVITE_CREATE_RATE_PER_HOUR`). |
 | `GET /api/invites` | — | `200 {invites: InvitePrivate[]}` — mine, `created_at DESC`, capped at 100 (no cursor in v0.2). Includes revoked/expired rows so the list explains dead links. |
 | `DELETE /api/invites/:id` | — | `204` — revoke (sets `revoked_at`; idempotent re-revoke is also `204`). `404 not_found` if not mine. Existing joins are NOT undone. |
 | `GET /api/invites/:token/public` | **UNAUTHENTICATED** | `200 {invite: InvitePublic}` for any existing token, whatever its status (the join page renders expired/revoked states by name); avatar URLs are null unless `valid`. `404 invite_not_found` for unknown tokens. Rate **60/hour/IP** (`INVITE_PUBLIC_RATE_PER_HOUR_PER_IP`). |
@@ -206,9 +206,20 @@ not a credential). Defaults: `expires_at = now()+7d` (`INVITE_TTL_S`),
   <inviter>}`, body `joined via invite` — same shape as `participant_added`.
 - Fan-out mirrors §1.4: `conv.new` to the joiner, `conv.updated` to members,
   all via the Redis `events` channel.
-- Idempotent re-accept: already an active participant (or the DM already
-  exists) → `200 {conversation_id}` **without** incrementing `use_count` and
-  without a system message.
+- Idempotent re-accept: already an **active** participant (group member, or an
+  active party of the existing DM) → `200 {conversation_id}` **without**
+  incrementing `use_count` and without a system message. That dedupe resolves
+  **before** status validation, so it answers `200` even when the invite has
+  since expired, been revoked or become exhausted; a genuinely-new join (first
+  join, or any re-join after leaving — DM and group alike) validates status
+  and claims a use.
+- A DM joiner who had **left** the DM is a genuinely-new join: the invite must
+  still be `valid` (a revoked/expired/exhausted token is NOT a permanent
+  re-entry capability for an ex-member — ADR-007's revocable capability) and a
+  use is claimed; the participant row is then upserted with the §1.4 re-join
+  semantics (fresh `join_seq = last_seq` history floor, `left_at`/`left_seq`
+  cleared, watermarks raised to the floor), the `invite_joined` system message
+  is dropped and the join fan-out below re-announces the conversation.
 - Register-with-token runs accept AFTER the user row + session commit; any
   invite failure leaves registration successful with `invite: null`.
 
