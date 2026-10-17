@@ -51,12 +51,14 @@ for any AI agent or developer: read it first, then the doc it points you to.
    the same cookie authenticates the WS upgrade; logout/revocation closes
    live sockets (code 4401). Mutating routes require the
    `X-Requested-With: fetch` header (CSRF). No JWTs.
-9. **Migrations are append-only** (`0000`…`0007` so far). New schema = new
+9. **Migrations are append-only** (`0000`…`0011` so far). New schema = new
    numbered file + matching `schema.ts` change. The `migrate` compose service
    runs them and creates the MinIO bucket.
 10. **Zero new dependencies by default.** Pin exact versions. New native/
     postinstall deps must be added to `pnpm.onlyBuiltDependencies` in the
-    root `package.json` (pnpm 10 skips postinstall otherwise).
+    root `package.json` (pnpm 10 skips postinstall otherwise). The single
+    approved exception so far: `@simplewebauthn/server`/`browser` for
+    passkeys (v0.9, ADR-021) — don't take it as precedent.
 
 ## Build / test / run
 

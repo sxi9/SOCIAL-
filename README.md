@@ -112,14 +112,36 @@ the whole stack instead: `docker compose up -d --build` and use
 
 ## Ops runbook
 
-### Password reset (CLI-only in MVP — there is no email flow)
+### Signing in (v0.9 auth pack)
+
+Password login is the baseline; on top of it (all first-party, no external
+services — API.md §1.70–1.74, ADR-021):
+
+- **Passkeys** (fingerprint/face/WebAuthn) — enroll in Settings → Security.
+  Passkeys bind to the domain (`WEBAUTHN_RP_ID`, derived from
+  `PUBLIC_ORIGIN`/`DOMAIN` when unset): enroll them on a stable domain only —
+  a quick-tunnel URL changes every run and orphans them.
+- **QR cross-device login** — the login page shows a code; a logged-in phone
+  scans and approves it (WhatsApp-Web style; short-lived, single-use).
+- **Recovery codes** — 6 one-time codes offered at signup and regenerable in
+  Settings → Security; using one revokes all sessions and forces a new
+  password. This is the self-service account recovery (no email needed).
+- **TOTP 2FA** — optional authenticator-app second factor; recovery codes
+  bypass it.
+- **admin → Authentication** — OTP-ready settings (SMTP/SMS slots,
+  per-feature toggles). The toggles stay disabled with "needs SMTP" notes
+  until a mailer release configures delivery; enabling OTP later is
+  configuration, not code.
+
+### Password reset (operator fallback)
 
 ```bash
 docker compose exec api node dist/cli.js reset-password <username>
 ```
 
 Prints a one-time temporary password and revokes all of the user's sessions
-(closing their live sockets).
+(closing their live sockets). Users who saved recovery codes don't need
+this — the login page's "Use a recovery code" path self-serves.
 
 ### Backups
 
@@ -193,6 +215,11 @@ multi-node deployment, video transcoding (originals served as-is).
 Most of these have seams already cut (schema columns, event shapes, queue
 topology). The build order and Phase 2–4 plans live in
 [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+> **This cut line is historical** (the v0.1 MVP). Most of the "out" list has
+> since shipped — reactions, feed/posts, calls, blocking & moderation, the
+> admin panel, stories and more. [`docs/FEATURES.md`](docs/FEATURES.md) is
+> the always-current shipped-vs-planned list.
 
 ---
 
