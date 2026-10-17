@@ -15,6 +15,7 @@ import type {
   DiscoveryOptin,
   EncouragementResponse,
   ExpectationContext,
+  FeedLane,
   KudosKind,
   LinkPreview,
   ListConnectionsResponse,
@@ -118,6 +119,22 @@ export interface FeedbackAsk {
   conversation_id: string;
 }
 
+/** v0.7 (§1.49): one finite feed window per lane. */
+export interface FeedLaneState {
+  posts: Post[] | null;
+  cursor: string | null;
+  /** true once the hard "all caught up" end was reached — the client STOPS. */
+  caughtUp: boolean;
+}
+
+/** v0.7 (§1.54): a transient toast ("Scheduled for today 18:30"). */
+export interface ToastItem {
+  id: number;
+  text: string;
+}
+
+const emptyLane = (): FeedLaneState => ({ posts: null, cursor: null, caughtUp: false });
+
 export interface AppState {
   booted: boolean;
   authed: boolean | null;
@@ -158,11 +175,14 @@ export interface AppState {
   connections: ListConnectionsResponse | null;
   /** v0.5a (§1.34): the story tray — mine + friends-of groups. */
   stories: ListStoriesResponse | null;
-  /** v0.5a (§1.36): the FINITE feed window (null = not loaded yet). */
-  feedPosts: Post[] | null;
-  feedCursor: string | null;
-  /** true once the hard "all caught up" end was reached — the client STOPS. */
-  feedCaughtUp: boolean;
+  /** v0.5a (§1.36) + v0.7 lanes (§1.49): one FINITE window per lane
+   * (null posts = that lane not loaded yet). Both lanes stay hard-ended. */
+  feed: Record<FeedLane, FeedLaneState>;
+  /** v0.7 (§1.54): transient toasts (ToastHost renders them at the toast layer). */
+  toasts: ToastItem[];
+  /** v0.7 (§1.47): recent creator edits by beacon id — powers the brief
+   * "plan updated" note on cards (the reping marker pattern). */
+  beaconEdits: Map<string, { at: number; changed: string[] }>;
   // ---- v0.6 (§1.42–§1.46) ----
   /** Incoming ring (call.invite) — rendered anywhere via GlobalOverlays. */
   callInvite: IncomingCall | null;
@@ -217,9 +237,9 @@ const state: AppState = {
   scheduledLoaded: false,
   connections: null,
   stories: null,
-  feedPosts: null,
-  feedCursor: null,
-  feedCaughtUp: false,
+  feed: { friends: emptyLane(), discover: emptyLane() },
+  toasts: [],
+  beaconEdits: new Map(),
   callInvite: null,
   callUi: null,
   liveCalls: new Map(),
@@ -660,10 +680,15 @@ export function setBeacons(list: Beacon[]): void {
   emit();
 }
 
-export function upsertBeacon(b: Beacon, reping = false): void {
+export function upsertBeacon(b: Beacon, reping = false, edited = false, changed: string[] = []): void {
   if (beaconVisible(b)) {
     state.beacons = new Map(state.beacons).set(b.id, b);
     if (reping) state.repings = new Map(state.repings).set(b.id, Date.now());
+    // v0.7 (§1.47): remember WHAT changed briefly so cards can flash the right
+    // chips; the DTO itself carries the full new state + edited_at.
+    if (edited) {
+      state.beaconEdits = new Map(state.beaconEdits).set(b.id, { at: Date.now(), changed });
+    }
   } else {
     const next = new Map(state.beacons);
     next.delete(b.id);
@@ -981,9 +1006,9 @@ export function resetOnLogout(): void {
   state.scheduledLoaded = false;
   state.connections = null;
   state.stories = null;
-  state.feedPosts = null;
-  state.feedCursor = null;
-  state.feedCaughtUp = false;
+  state.feed = { friends: emptyLane(), discover: emptyLane() };
+  state.toasts = [];
+  state.beaconEdits = new Map();
   state.callInvite = null;
   state.callUi = null;
   state.liveCalls = new Map();
@@ -1124,34 +1149,94 @@ export function sweepStories(): void {
 // ---------------------------------------------------------------------------
 
 export function setFeedPage(
+  lane: FeedLane,
   posts: Post[],
   nextCursor: string | null,
   allCaughtUp: boolean,
   reset: boolean
 ): void {
-  const cur = reset ? [] : state.feedPosts ?? [];
+  const laneState = state.feed[lane];
+  const cur = reset ? [] : laneState.posts ?? [];
   const seen = new Set(cur.map((p) => p.id));
-  state.feedPosts = [...cur, ...posts.filter((p) => !seen.has(p.id))];
-  state.feedCursor = nextCursor;
-  state.feedCaughtUp = allCaughtUp;
+  state.feed = {
+    ...state.feed,
+    [lane]: {
+      posts: [...cur, ...posts.filter((p) => !seen.has(p.id))],
+      cursor: nextCursor,
+      caughtUp: allCaughtUp,
+    },
+  };
   emit();
 }
 
+/** post.new (friends-of fan-out, §1.49) and my own creates. A lane not loaded
+ * yet is skipped — its first GET carries the post. Public posts land in both
+ * lanes (discover is a superset filter, not a dedupe puzzle). */
 export function prependPost(post: Post): void {
-  if (state.feedPosts === null) return; // tab not opened yet — first GET carries it
-  if (state.feedPosts.some((p) => p.id === post.id)) return;
-  state.feedPosts = [post, ...state.feedPosts];
-  emit();
+  const next = { ...state.feed };
+  let changed = false;
+  for (const lane of ['friends', 'discover'] as const) {
+    const ls = next[lane];
+    if (ls.posts === null) continue;
+    if (lane === 'discover' && post.audience !== 'public') continue;
+    if (ls.posts.some((p) => p.id === post.id)) continue;
+    next[lane] = { ...ls, posts: [post, ...ls.posts] };
+    changed = true;
+  }
+  if (changed) {
+    state.feed = next;
+    emit();
+  }
 }
 
 export function replacePost(post: Post): void {
-  if (state.feedPosts === null) return;
-  state.feedPosts = state.feedPosts.map((p) => (p.id === post.id ? post : p));
-  emit();
+  const next = { ...state.feed };
+  let changed = false;
+  for (const lane of ['friends', 'discover'] as const) {
+    const ls = next[lane];
+    if (ls.posts === null) continue;
+    if (!ls.posts.some((p) => p.id === post.id)) continue;
+    next[lane] = { ...ls, posts: ls.posts.map((p) => (p.id === post.id ? post : p)) };
+    changed = true;
+  }
+  if (changed) {
+    state.feed = next;
+    emit();
+  }
 }
 
 export function removePostLocal(postId: string): void {
-  if (state.feedPosts === null) return;
-  state.feedPosts = state.feedPosts.filter((p) => p.id !== postId);
+  const next = { ...state.feed };
+  let changed = false;
+  for (const lane of ['friends', 'discover'] as const) {
+    const ls = next[lane];
+    if (ls.posts === null) continue;
+    if (!ls.posts.some((p) => p.id === postId)) continue;
+    next[lane] = { ...ls, posts: ls.posts.filter((p) => p.id !== postId) };
+    changed = true;
+  }
+  if (changed) {
+    state.feed = next;
+    emit();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Toasts (v0.7 — API.md §1.54). Transient, self-expiring; rendered by
+// GlobalOverlays' ToastHost through Portal at the toast layer of the z-scale.
+// ---------------------------------------------------------------------------
+
+let toastSeq = 0;
+
+export function pushToast(text: string, ttlMs: number): void {
+  const id = ++toastSeq;
+  state.toasts = [...state.toasts, { id, text }];
+  emit();
+  setTimeout(() => dismissToast(id), ttlMs);
+}
+
+export function dismissToast(id: number): void {
+  if (!state.toasts.some((t) => t.id === id)) return;
+  state.toasts = state.toasts.filter((t) => t.id !== id);
   emit();
 }

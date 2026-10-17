@@ -22,6 +22,9 @@ import { upsertConversation } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
 import Avatar from './Avatar';
+import ListingEditSheet from './ListingEditSheet';
+import { LocationChip } from './LocationPicker';
+import Portal from './Portal';
 import ReportSheet from './ReportSheet';
 import Stars from './Stars';
 import TeamUpSheet from './TeamUpSheet';
@@ -49,6 +52,7 @@ export default function ListingDetailSheet({
   const [menu, setMenu] = useState(false);
   const [report, setReport] = useState(false);
   const [teamUpOpen, setTeamUpOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   const mine = state.me?.id === listing.author.id;
   const expired =
@@ -149,6 +153,8 @@ export default function ListingDetailSheet({
   }
 
   return (
+    // v0.6.1 rule: every sheet renders through Portal into <body>.
+    <Portal>
     <div
       className={`${bz.sheetBackdrop} ${bz.beaconVars}`}
       role="presentation"
@@ -175,6 +181,18 @@ export default function ListingDetailSheet({
               <>
                 <button type="button" className={bz.menuBackdrop} aria-label="Close menu" onClick={() => setMenu(false)} />
                 <div className={bz.cardMenu} role="menu" style={{ right: 0, top: 30 }}>
+                  {mine && listing.status === 'active' ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setMenu(false);
+                        setEditOpen(true);
+                      }}
+                    >
+                      Edit listing
+                    </button>
+                  ) : null}
                   {mine && listing.status === 'active' ? (
                     <button type="button" role="menuitem" onClick={() => void close()}>
                       Close listing
@@ -306,6 +324,21 @@ export default function ListingDetailSheet({
               {listing.is_public ? ' · visible everywhere' : ''}
             </dd>
           </div>
+          {/* v0.7 §1.52: the place chip — a LINK out, never a tile embed. */}
+          {listing.location ? (
+            <div className={st.factRow}>
+              <dt>Place</dt>
+              <dd>
+                <LocationChip location={listing.location} />
+              </dd>
+            </div>
+          ) : null}
+          {listing.edited_at ? (
+            <div className={st.factRow}>
+              <dt>Edited</dt>
+              <dd className="muted">{new Date(listing.edited_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</dd>
+            </div>
+          ) : null}
         </dl>
 
         {listing.photos.length > 0 ? (
@@ -333,6 +366,11 @@ export default function ListingDetailSheet({
         <div className={st.ctaCol}>
           {mine ? (
             <>
+              {listing.status === 'active' ? (
+                <button type="button" className="btn" disabled={busy} onClick={() => setEditOpen(true)}>
+                  ✏️ Edit listing
+                </button>
+              ) : null}
               {listing.kind === 'gig' ? (
                 listing.conversation_id ? (
                   <button type="button" className={st.msgBtn} onClick={() => void openConversation(listing.conversation_id as string)}>
@@ -378,7 +416,18 @@ export default function ListingDetailSheet({
             }}
           />
         ) : null}
+        {editOpen ? (
+          <ListingEditSheet
+            listing={listing}
+            onClose={() => setEditOpen(false)}
+            onSaved={(updated) => {
+              setListing(updated);
+              onChanged?.(updated);
+            }}
+          />
+        ) : null}
       </div>
     </div>
+    </Portal>
   );
 }

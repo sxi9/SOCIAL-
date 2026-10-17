@@ -43,6 +43,10 @@ function snippetFor(type: string, body: string | null): string {
       return 'Tic-tac-toe challenge';
     case 'puzzle_result':
       return 'Puzzle result';
+    // v0.7 (§1.52): the fixed location snippet — the place never leaks into
+    // the push.
+    case 'location':
+      return '📍 Location';
     default:
       return (body ?? '').slice(0, 140) || 'New message';
   }

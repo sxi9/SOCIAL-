@@ -101,6 +101,8 @@ export async function storyRoutes(fastify: FastifyInstance): Promise<void> {
             isNull(schema.attachments.scheduledMessageId),
             isNull(schema.attachments.postId),
             isNull(schema.attachments.listingId),
+            // v0.7 (§1.51): feed-comment images bind via comment_id.
+            isNull(schema.attachments.commentId),
           ),
         )
         .limit(1);

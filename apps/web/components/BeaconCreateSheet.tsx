@@ -12,18 +12,19 @@ import {
   BEACON_OPEN_MAX,
   BEACON_SPARK_THRESHOLD_MAX,
   BEACON_SPARK_THRESHOLD_MIN,
-  BEACON_VIBES,
   type BeaconAudience,
-  type BeaconVibe,
+  type Location,
   type SettingsResponse,
   type UpdateMeResponse,
 } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
-import { createBeacon, fmtCountdown, presetWindow, VIBE_EMOJI, VIBE_LABEL, type WhenPreset } from '@/lib/beacons';
+import { createBeacon, fmtCountdown, presetWindow, rememberVibeRecent, type WhenPreset } from '@/lib/beacons';
 import { setMe, setSettings } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
+import { LocationField } from './LocationPicker';
 import Portal from './Portal';
+import VibePicker, { vibeDraftValid, type VibeDraft } from './VibePicker';
 import styles from './beacons.module.css';
 
 const AUDIENCES: { value: BeaconAudience; label: string }[] = [
@@ -37,7 +38,12 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
   const me = state.me;
   const now = useNow(30_000);
 
-  const [vibe, setVibe] = useState<BeaconVibe | null>(null);
+  const [vibeDraft, setVibeDraft] = useState<VibeDraft>({
+    vibe: null,
+    custom_vibe_emoji: '',
+    custom_vibe_label: '',
+  });
+  const [location, setLocation] = useState<Location | null>(null);
   const [when, setWhen] = useState<WhenPreset>('now');
   const [audience, setAudience] = useState<BeaconAudience>(
     state.settings?.beacon_default_audience ?? 'friends'
@@ -118,7 +124,7 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
   }
 
   async function light(): Promise<void> {
-    if (!vibe || busy) return;
+    if (!vibeDraftValid(vibeDraft) || vibeDraft.vibe === null || busy) return;
     const w = presetWindow(when);
     if (!w.valid) {
       setError('That window already closed — pick another time.');
@@ -127,14 +133,24 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
     setBusy(true);
     setError(null);
     try {
+      const isCustom = vibeDraft.vibe === 'custom';
       await createBeacon({
-        vibe,
+        vibe: vibeDraft.vibe,
+        ...(isCustom
+          ? {
+              custom_vibe_emoji: vibeDraft.custom_vibe_emoji,
+              custom_vibe_label: vibeDraft.custom_vibe_label.trim(),
+            }
+          : {}),
         note: note.trim(),
         audience,
         spark_threshold: groupSize - 1,
         starts_at: w.starts_at,
         expires_at: w.expires_at,
+        ...(location ? { location } : {}),
       });
+      // Recents are per-device localStorage only (§1.47).
+      if (isCustom) rememberVibeRecent(vibeDraft.custom_vibe_emoji, vibeDraft.custom_vibe_label.trim());
       // Straight back to the list — the live card is already on top.
       onClose();
     } catch (err) {
@@ -179,21 +195,7 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
         </p>
 
         <div className={styles.sheetLabel}>What&rsquo;s the vibe?</div>
-        <div className={styles.vibeGrid} role="radiogroup" aria-label="Vibe">
-          {BEACON_VIBES.map((v) => (
-            <button
-              key={v}
-              type="button"
-              role="radio"
-              aria-checked={vibe === v}
-              className={`${styles.vibeChip}${vibe === v ? ` ${styles.vibeChipOn}` : ''}`}
-              onClick={() => setVibe(v)}
-            >
-              <span aria-hidden>{VIBE_EMOJI[v]}</span>
-              <span>{VIBE_LABEL[v]}</span>
-            </button>
-          ))}
-        </div>
+        <VibePicker value={vibeDraft} onChange={setVibeDraft} />
 
         <div className={styles.sheetLabel}>When?</div>
         <div className={styles.whenRow} role="radiogroup" aria-label="When">
@@ -287,6 +289,9 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
           <span className={styles.stepHint}>sparks when {groupSize - 1} tap &ldquo;I&rsquo;m in&rdquo;</span>
         </div>
 
+        <div className={styles.sheetLabel}>Where? (optional)</div>
+        <LocationField value={location} onChange={setLocation} />
+
         <div className={styles.sheetLabel}>Anything else?</div>
         <input
           className="input"
@@ -300,7 +305,7 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
         <button
           type="button"
           className={styles.lightBtn}
-          disabled={!vibe || busy || (audience === 'area' && needsArea)}
+          disabled={!vibeDraftValid(vibeDraft) || busy || (audience === 'area' && needsArea)}
           onClick={() => void light()}
         >
           {busy ? 'Lighting…' : 'Light it 🔥'}

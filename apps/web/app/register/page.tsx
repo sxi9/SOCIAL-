@@ -122,7 +122,12 @@ function RegisterForm() {
   return (
     <form onSubmit={(e) => void submit(e)}>
       <div className={authStyles.mascotRow}>
-        <Mascot ref={mascotRef} state={fx.party ? 'party' : mascot} size={96} />
+        {/* v0.7 (§1.54): the wordmark's word drives the ambient mascot. */}
+        <Mascot
+          ref={mascotRef}
+          state={fx.party ? 'party' : mascot === 'watch' && fx.wordMascot ? fx.wordMascot : mascot}
+          size={96}
+        />
       </div>
       <h2 className={authStyles.formTitle}>Join the fun</h2>
       {inviteToken ? (

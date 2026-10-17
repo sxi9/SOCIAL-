@@ -355,6 +355,75 @@ DiscoveryCard = { user: UserLite, scope, note, expires_at, waved: boolean }
 // §1.45, PSYCHOLOGY finding #10. The anonymous instance-wide aggregate —
 // better_percent is null under ENCOURAGEMENT_MIN_SAMPLES (10).
 Encouragement = { sample_size: number, better_percent: number|null }
+
+// ---- v0.7 (§1.47–§1.54; ADR-016) ----
+
+// v0.7 changes to existing DTOs (every new field has a Zod default, so
+// pre-v0.7 payloads — IndexedDB rows, old fixtures — parse clean):
+//  Beacon.vibe gains 'custom' (BEACON_VIBE_VALUES); Beacon += {
+//    custom_vibe_emoji: string|null, custom_vibe_label: string|null,
+//      // §1.47 — non-null iff vibe='custom' (DB shape CHECK)
+//    location: Location|null,     // §1.52 place chip
+//    edited_at: string|null }     // §1.47 edited marker (no edit history,
+//                                 // the §1.30 edited_at pattern)
+//  Message.type += 'location' (§1.52); Message.metadata += {
+//    location?: Location,         // required on type='location'
+//    join_me?: true }             // the "📍 Join me here" variant
+//  Post += { kind: 'text'|'poll'|'game'|'join_card',   // §1.50, default 'text'
+//    audience: 'friends_of'|'public',                  // §1.49, default 'friends_of'
+//    poll: PostPoll|null,         // iff kind='poll'; my_vote viewer-specific
+//    game: PostGame|null,         // iff kind='game'
+//    ref: PostRef|null,           // iff kind='join_card' (stored verbatim)
+//    ref_summary: JoinCardSummary|null,  // viewer-resolved live state; null =
+//                                 // gone / not visible to this viewer
+//    location: Location|null }    // §1.52
+//  PostComment.body loses its 1-char min (an image-only comment is legal);
+//  PostComment += { attachment: Attachment|null,       // §1.51
+//    reactions: CommentReactionAggregate[] }           // §1.51 — faces
+//  Listing (every kind) += { location: Location|null,  // §1.52
+//    edited_at: string|null }     // §1.48 edited marker
+//  GET /api/feed gains ?lane=friends|discover (§1.49).
+//  beacon.updated (§2.3) gains { edited: boolean, changed: string[] }.
+
+// §1.52 — THE location shape, everywhere one can appear (posts, beacons,
+// listings, metadata.location on 'location' messages). label is required;
+// lat/lng are OPTIONAL, both-or-neither, and only ever a user-initiated
+// one-tap SNAPSHOT (no live GPS, no tracking — FEATURES #30 spirit). Clients
+// render map LINKS (geo:/OSM/Google URLs) — never tile embeds, never a map
+// API key (golden rule 7).
+Location = { label: string(≤80), lat?: -90..90, lng?: -180..180 }
+
+// §1.50 poll posts. counts ARE serialized: a vote tally on OPTIONS is a
+// decision tool, not approval attached to a person (ADR-016 argues the
+// distinction vs PSYCHOLOGY rule 3). No voter lists, no vote timestamps.
+PostPoll = { question: string(≤120), options: string[2..6](each ≤80),
+  counts: number[], total_votes, my_vote: number|null }
+
+// §1.50 game posts: an open tic-tac-toe challenge. players = post.author
+// (x, moves first) vs claimed_by (o); the board is an ordinary §1.27
+// game_ttt message in the pair's DM — the post only shows the claim.
+PostGame = { state: 'open'|'claimed', claimed_by: UserLite|null }
+
+// §1.50 join_card target, stored verbatim; live state rides ref_summary.
+PostRef = { type: 'beacon'|'listing', id }
+
+// §1.50 — SERVER-resolved per viewer at serialization time (the
+// reply_context pattern): always current (spark/expiry/close included) and
+// never audience-widening — a viewer the ref is invisible to gets null.
+// joiners ≤ JOIN_CARD_SUMMARY_JOINERS_MAX (4) faces.
+JoinCardSummary =
+  | { type: 'beacon', id, vibe, custom_vibe_emoji, custom_vibe_label, note,
+      status, starts_at, expires_at, joiners: UserLite[], needs,
+      my_state, location: Location|null }
+  | { type: 'listing', id, kind: ListingKind, title, price_text: string|null,
+      status, area, my_contacted: boolean, location: Location|null }
+
+// §1.51 — one chip per (emoji, kind): capped FACES, never a numeric total
+// (the PostReactionAggregate rule). Stamps are kind='stamp' with the
+// ':stamp:' sentinel as emoji (§1.19 machinery); reactors = first
+// COMMENT_REACTORS_PREVIEW_MAX (6) by first-reaction order.
+CommentReactionAggregate = { emoji, kind: 'emoji'|'stamp',
+  reactors: UserLite[], has_more: boolean, mine: boolean }
 ```
 
 Avatar URLs are content-hashed media-proxy URLs (`/api/media/:key`), immutable-cacheable;
@@ -1562,6 +1631,281 @@ can never reach this code path (the 404 above). Payload: `{title:
 "<display_name> needs a rescue call 📞", body: note or '', tag:
 conversation_id, data: {url: /c/<conversation_id>}}`.
 
+### 1.47 Beacon editing, custom vibes, early spark & joiner notifications (v0.7 — ADR-016, FEATURES #60–#63)
+
+Plans change; v0.7 lets the creator change the card instead of cancel-and-
+repost (which would re-ping the audience and lose the joiner pile). Everything
+here notifies **joiners only** — people who committed — never the wider
+audience (PSYCHOLOGY rule 2: a change note is information for people in the
+plan, an ad for everyone else).
+
+**Custom vibes.** `vibe` gains the value `'custom'` (`BEACON_VIBE_VALUES`),
+carried by `custom_vibe_emoji` (≤ 16 UTF-16 units) + `custom_vibe_label`
+(≤ 24 chars, `BEACON_CUSTOM_VIBE_LABEL_MAX_CHARS`) — both required together
+(DB shape CHECK; `400 bad_custom_vibe` on a partial pair or custom fields on a
+preset vibe). Recents are **client-side only** (localStorage, ≤
+`BEACON_CUSTOM_VIBE_RECENTS_MAX` = 6) — never synced, never serialized.
+`POST /api/beacons` accepts the two fields alongside `vibe: 'custom'`.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `PATCH /api/beacons/:id` | any subset of `{vibe (+custom_vibe_emoji/label), note, starts_at, expires_at, spark_threshold, location}` — omitted = unchanged; `location: null` clears | `200 {beacon}` — **creator only** (`403 forbidden`), **status `open` only** (`409 beacon_not_open` — sparked plans change in their group chat, not on the card). Window fields revalidate under the §1.15 rules (both must be sent together when either changes). A new `spark_threshold` must be `≥ max(BEACON_SPARK_THRESHOLD_MIN, current joiner count)` → else `400 threshold_below_joins`; **threshold = current count sparks the beacon inside the edit transaction** (the §1.15 row-locked spark path — lowering the bar to "whoever's here" is a legitimate way to start). Audience is **immutable** (`400 audience_immutable` — re-aiming a live invite is a new beacon). Every effective edit sets `edited_at`, fans `beacon.updated` with `edited: true` + `changed: [field names]` (§2.3) to the audience, and **pushes to current joiners only** ("<creator> changed the plan", §2.9 guards apply). Rate `BEACON_EDIT_RATE_PER_HOUR` (30) → `429`. |
+| `POST /api/beacons/:id/spark-now` | — | `200 {beacon}` — **"start with whoever's here"**: creator only (`403 forbidden`), status `open` (`410 beacon_closed`), **≥ 1 non-creator joiner** (`409 beacon_no_joiners` — a plan needs at least two people). Runs the **existing §1.15 spark transaction verbatim** under the beacon row lock (group create with `join_seq = 0`, icebreaker, auto venue poll, guarded status flip, `beacons_sparked` bump, afterglow job): the threshold is simply not consulted. Fan-out and push are byte-identical to a threshold spark — joiners + creator get the room, the rest of the audience sees the card retire with `conversation_id: null`. |
+| `GET /api/beacons/:id/joins` | — | `200 {joiners: UserLite[]}` — the **"Who's in" sheet** (FEATURES #60): the FULL joiner list in join order (the DTO pile caps at `BEACON_JOINERS_PREVIEW_MAX`). **Audience-gated like the beacon itself**: viewer must be the creator, a joiner, or in the audience of a still-visible beacon → else `404 beacon_not_found` (unknown/invisible/blocked identical, §1.14). Joiners blocked w.r.t. the viewer are omitted. Faces only — join timestamps are never serialized (§1.18 rule). Every face links to the §1.37 profile with Connect/Message (client); profile 404s for blocked pairs still apply there. |
+
+**Joiner notifications (FEATURES #63) — push to joiners ONLY, through the
+§2.9 guards unchanged (offline-only, read-elsewhere, mute, debounce; blocks
+structural).** Four triggers:
+
+- **sparked** — unchanged from §1.15 (joiners + creator get the room).
+- **edited** — the PATCH above; payload `{title: beacon vibe/label, body:
+  "<creator> changed the plan", tag: beacon:<id>, data: {url: /plans}}`.
+- **cancelled** — `POST /api/beacons/:id/cancel` (§1.15) now additionally
+  pushes to joiners (`"<creator> called it off"`); the **non-joiner audience
+  still gets the silent card-retire**, exactly as before — commitment is what
+  earns the notification.
+- **starting soon** — the `beacons` worker sweep (every minute, walking
+  `beacons_starting_soon_idx`) claims beacons whose `starts_at` is within
+  `BEACON_STARTING_SOON_LEAD_S` (30 min) via the guarded `UPDATE beacons SET
+  starting_soon_pinged_at = now() WHERE id=$1 AND starting_soon_pinged_at IS
+  NULL` (the `repinged_at` pattern — **at most once per beacon, ever**), then
+  pushes to joiners (+ the creator of a `sparked` plan): `"starting soon 🎈"`.
+  Beacons with zero joiners are skipped (nothing to remind). **Push only — no
+  WS frame**: a live client is already rendering the countdown (PSYCHOLOGY §5);
+  the §2.9 online guard makes this a phone buzz for absent people, by
+  construction. This is the §2 "one-tap personal reminder" cashed in.
+
+### 1.48 Listing editing (v0.7 — FEATURES #61)
+
+| Method & path | Request | Response |
+|---|---|---|
+| `PATCH /api/listings/:id` | `{kind, title?, body?, price_text?, is_public?, location?, details?}` — `kind` is **echoed** to pick the Zod branch and must match the row (`400 kind_immutable`); `details`, when present, is the **complete per-kind payload revalidated exactly like create** (§1.38) | `200 {listing}` — **author only** (`403 forbidden`), **status `active` only** (`410 listing_closed` for closed/expired — retire-and-repost instead). Per-kind consequences: ride `details.departs_at` must be future (`400 departs_at_past`) and is **re-copied to `expires_at`** (sweeps never parse jsonb, §1.38); room `details.attachment_ids` re-binds — new ids must be mine/kind-image/unbound (`400 bad_attachment`), dropped ones unbind to the orphan GC (objects refcount-guarded §1.31). `area` is **immutable** (the mint snapshot is the visibility contract; move = new listing). Every effective edit sets `edited_at` (the card's "edited" marker). **No fan-out, no push — the board stays pull-based** (§1.38 doctrine); contacters' `listing_ref` snapshots are deliberately NOT rewritten (they are contact-time truth, the forwarded_from pattern). Rate `LISTING_EDIT_RATE_PER_HOUR` (30) → `429`. |
+
+### 1.49 Feed lanes — the public Discover lane (v0.7 — ADR-016, FEATURES #64)
+
+`posts.audience` gains `'public'` (`POST_AUDIENCES`); `POST /api/posts`
+accepts `audience` (default `'friends_of'`). A public post is visible to
+**every non-blocked, non-banned user** — reactions and comments included
+(any viewer of a post may react/comment, as always; §1.36 semantics).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/feed?lane=&cursor=&limit=` | `lane: 'friends'` (default) \| `'discover'` | `200 {posts, next_cursor, all_caught_up}` — **friends** = the v0.5a feed verbatim (my friends-of set + me, every audience). **discover** = `audience='public'` posts instance-wide (walked via `posts_discover_idx`), minus §1.14 blocks both ways and §1.41 banned authors, **including my friends' and my own public posts** (one lane is a superset filter, not a dedupe puzzle). Both lanes: `created_at DESC`, keyset cursor, **finite with the hard `all_caught_up` end — no ranking, no recommendations, no wraparound, no pull-to-refresh loop** (PSYCHOLOGY design rule 5 binds the discover lane exactly as hard; the never-build list is why there is no "trending"). |
+
+**Fan-out decision (binding):** `post.new` keeps its v0.5a recipient set —
+the author's **friends-of sockets only** — for public posts too. The discover
+lane is **pull-only**: strangers see new public posts when **they** open it
+(the §1.38 board logic: a feed post is a standing artifact, not an
+interruption; fanning every public post to every socket is both unbounded and
+an ambient nudge). No push anywhere in the feed, unchanged.
+
+### 1.50 Interactive posts: polls, open challenges, join cards (v0.7 — ADR-016, FEATURES #65)
+
+`posts.kind ∈ {text, poll, game, join_card}` (`POST_KINDS`). Create-shape
+rules (route-enforced, `400 bad_post_shape`): `text` = at least one of
+body/attachments (the v0.5a `empty_post` rule); `poll` requires `poll`,
+forbids attachments; `game` forbids poll/ref/attachments (body = the
+trash-talk caption); `join_card` requires `ref`, forbids attachments.
+Reactions and comments work on every kind (§1.36/§1.51).
+
+#### Poll posts (song polls = options + links in the body)
+
+- **Create:** `POST /api/posts` with `kind:'poll'`, `poll: {question ≤ 120
+  (POST_POLL_QUESTION_MAX_CHARS), options: string[2..6] (each ≤ 80)}` →
+  `post_polls` row keyed by the post id. No `closes_at` — a post poll lives
+  and dies with its post.
+- **Vote:** `POST /api/posts/:id/poll/vote {option_idx}` → `200 {poll:
+  PostPoll}` — UPSERT on `(post, me)`: **revoting replaces** (§1.17
+  semantics). `400 bad_option` (idx ≥ options length), `400 not_a_poll`,
+  `404 not_found` (post invisible — audience/blocks/ban, §1.14 shape).
+  `DELETE /api/posts/:id/poll/vote` unvotes, idempotent, same response.
+- **Aggregates ride the Post DTO** (`post.poll.counts/total_votes/my_vote`).
+  **Counts are allowed here** — a tally on OPTIONS is a group deciding
+  something, not approval attached to a person; the §1.36 faces-not-counters
+  rule governs reactions, not ballots (ADR-016 records the distinction, with
+  the §1.17 chat poll as precedent). No voter lists, no vote timestamps, in
+  any payload, ever. **No live fan-out** — feed surfaces reconcile on pull
+  (§1.36 doctrine); the voter's own `200` carries their fresh truth.
+
+#### Game posts — open tic-tac-toe challenges
+
+- **Create:** `POST /api/posts` with `kind:'game'`. The card renders an open
+  challenge ("first tap plays me").
+- **Claim:** `POST /api/posts/:id/claim-game` → `200 {post, conversation_id,
+  game_seq}`. **First claimer wins, atomically**: the transaction takes
+  `pg_advisory_xact_lock(hashtextextended(post_id, k))` (the TROUBLESHOOTING
+  counter-race pattern) and claims via the guarded `UPDATE posts SET
+  game_claimed_by = $me WHERE id = $1 AND game_claimed_by IS NULL` — zero rows
+  = `409 game_claimed`. In the same transaction: create-or-dedupe the DM with
+  the author (`dm_key`, §1.4) and insert an ordinary **§1.27 `game_ttt`
+  message** — sender = the claimer, `players: {x: post author, o: claimer}`,
+  author moves first (they threw the gauntlet). Moves, spectating and
+  finish states are §1.27 verbatim from here on. Errors: `400 not_a_game`,
+  `400 game_own` (author self-claim), `404 not_found` (invisible post —
+  includes blocked pairs: a blocked pair can never reach the DM-create),
+  `409 game_claimed` (someone was faster; the DTO names them).
+- **DTO:** `post.game = {state: 'open'|'claimed', claimed_by: UserLite|null}`
+  — everyone sees WHO claimed (two named players, not a score); the board
+  itself lives in the pair's DM and is visible only there.
+
+#### Join cards — cross-posting a beacon/listing to the feed
+
+- **Create:** `POST /api/posts` with `kind:'join_card'`, `ref: {type:
+  'beacon'|'listing', id}` (stored verbatim in `posts.ref`), body = optional
+  caption. The ref must be **MINE** (beacon creator / listing author —
+  `404 not_found` otherwise, nothing confirmed) and **live** (`open` beacon /
+  `active` listing → else `410 ref_closed`).
+- **The audience-intersection rule (binding, enforced at create —
+  `400 ref_audience_mismatch`):** the post's audience must be
+  **narrower-or-equal** to the ref's, so a card can never show a thing to
+  someone who cannot act on it (PSYCHOLOGY rule 2, structurally). Audiences
+  must NEST; incomparable pairs refuse:
+
+  | ref | post `friends_of` | post `public` |
+  |---|---|---|
+  | beacon `friends` | ✅ (same set) | ❌ |
+  | beacon `area` | ❌ incomparable (friends ≠ area) | ❌ |
+  | beacon `public` | ✅ | ✅ |
+  | listing `is_public: false` | ❌ incomparable (friends ≠ area) | ❌ |
+  | listing `is_public: true` | ✅ | ✅ |
+
+- **DTO:** `post.ref_summary` is **resolved per viewer at serialization
+  time** (the §1.29 reply_context pattern): always-current status (sparked /
+  expired / cancelled / closed states render honestly), joiner faces (≤ 4) +
+  `needs` + viewer `my_state` for beacons, `my_contacted` for listings. A
+  viewer the ref is not visible to — audience drift is impossible by the rule
+  above, but blocks, bans and deletion are not — gets `ref_summary: null`
+  ("no longer available" card). The summary never carries more than the ref's
+  own DTO would show that viewer.
+- **Join button = the existing routes**: beacon → `POST
+  /api/beacons/:id/join` (§1.15), listing → `POST /api/listings/:id/contact`
+  (§1.39). No new write surface; every guard those routes have applies
+  unchanged. After a successful join the client refetches the post (or the
+  beacon) — no new fan-out.
+
+### 1.51 Comment upgrades: attachments + reactions (v0.7 — FEATURES #66)
+
+- **Image/GIF comments:** `POST /api/posts/:id/comments` gains
+  `attachment_id?` — mine, kind `image` (a GIF is just an image upload, §1.6
+  pipeline verbatim), unbound → `400 bad_attachment`; binds via
+  `attachments.comment_id` (the GC-shield pattern). `body` may now be empty;
+  at least one of body/attachment → else `400 empty_comment`. Deleting a
+  comment (author or post author, §1.36) deletes its attachment (row +
+  objects, **refcount-guarded** §1.31). `PostComment.attachment` inlines the
+  DTO.
+- **Comment reactions:** the §1.19 machinery re-applied to `comment_reactions`
+  — `POST /api/posts/:id/comments/:commentId/reactions {kind?: 'emoji'|'stamp',
+  emoji?}` (emoji required iff kind `'emoji'`; stamps need **my** avatar
+  `ready` → `409 stamp_no_avatar`), `DELETE .../reactions/:emoji` (stamps:
+  the URL-encoded `:stamp:` sentinel). Idempotent both ways, `204`. The 9th
+  **distinct** emoji by one user on one comment →
+  `409 reaction_limit` (`REACTIONS_PER_USER_PER_COMMENT_MAX` = 8; stamps
+  never consume a slot — PK-enforced one stamp per user per comment).
+  Comment must be on a post visible to me → `404 not_found`.
+- **Rendering (binding):** `PostComment.reactions` carries one chip per
+  `(emoji, kind)` as `{emoji, kind, reactors: UserLite[≤ 6], has_more, mine}`
+  (`COMMENT_REACTORS_PREVIEW_MAX`) — **capped faces lists, never totals**
+  (PSYCHOLOGY rule 3). Stamp chips render the reactor avatars themselves
+  (§1.19 motion rules).
+- **No fan-out, no push** — §1.36 doctrine unchanged: viewers (the comment
+  author included) see reactions when they return to the feed. Blocked pairs
+  are filtered from reactor faces both ways.
+
+### 1.52 Locations: chips, drops & "on my way" (v0.7 — FEATURES #67–#68)
+
+One shape everywhere (§0 `Location`): `{label ≤ 80, lat?, lng?}` — lat
+`[-90, 90]`, lng `[-180, 180]`, **both-or-neither** (`400` from Zod). **lat/lng
+are optional and only ever a user-initiated one-tap snapshot** — "attach my
+current location" is an explicit action; nothing is captured ambiently, no
+live GPS exists anywhere, and a label-only location ("the usual chai spot") is
+always enough.
+
+- **Location chips:** `location` is accepted on `POST /api/posts`,
+  `POST /api/beacons` (+ §1.47 PATCH) and `POST /api/listings` (+ §1.48
+  PATCH; explicit `null` clears on either PATCH) and rides the respective
+  DTOs. Visibility is exactly the parent object's — a location never widens
+  an audience.
+- **Chat drops:** `Message.type` gains `'location'` — `POST .../messages`
+  with `type:'location'`, `metadata.location` required (`400
+  location_required`), optional `body` note, optional `metadata.join_me:
+  true` (the "📍 Join me here" variant; both fields invalid on other types →
+  `400 bad_metadata`). Ordinary §1.5 transaction/fan-out; push snippet
+  `"📍 Location"`. Editable? No — `location` is not in
+  `EDITABLE_MESSAGE_TYPES` (drop a new pin); deletable like any message.
+- **On my way (headcount):** a quick action on a `join_me` drop that sends an
+  **ordinary text reply** — `{type:'text', body: ON_MY_WAY_BODY ("On my way
+  🏃"), reply_to_seq: <the drop's seq>}` — zero new server machinery. The
+  drop's bubble renders a headcount strip of the FACES of participants whose
+  on-my-way reply references it (client-derived from local history by
+  `reply_to_seq`; missing pages are one §1.5 fetch away). Faces, not a
+  number badge.
+- **Map links (client, binding):** rendering is a LINK, never an embed — no
+  tile servers, no map SDKs, no API keys (golden rule 7). With lat/lng:
+  `geo:<lat>,<lng>` on mobile plus
+  `https://www.openstreetmap.org/?mlat=<lat>&mlon=<lng>#map=17/<lat>/<lng>`
+  and `https://www.google.com/maps/search/?api=1&query=<lat>,<lng>` as
+  web choices. Label-only: the OSM/Google **search** URLs with the
+  URL-encoded label. Opening a map app is the user leaving our origin by
+  choice; we never fetch map data server-side.
+
+### 1.53 Invite OG banner (v0.7 — FEATURES #70)
+
+The §1.11 join page gets a real share card: a composed 1200×630 image instead
+of the bare avatar.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/invites/:token/og-banner.png` | **UNAUTHENTICATED**; optional `v` cache-buster accepted and ignored | `image/png`, `OG_BANNER_WIDTH_PX × OG_BANNER_HEIGHT_PX` (1200×630), **sharp-composed server-side**: brand gradient background → inviter avatar in a `OG_BANNER_AVATAR_PX` (320) circle (static rendition; **mascot-blob fallback** rendered from an inline SVG when the inviter has no `ready` avatar — the card is good either way) → text overlay "<display_name> invited you to Bored Chat" via an SVG layer (**display_name is XML-escaped** before entering the SVG — it is user input inside markup). **Valid-token-gated exactly like the §1.11 avatar proxy**: any non-`valid` status → `404` (revocation kills the banner within the cache TTL). `Cache-Control: private, max-age=300` (`INVITE_AVATAR_CACHE_TTL_S`) + `ETag: "<avatar_version>"` keyed on the inviter's `avatar_version`, so unfurler re-scrapes revalidate after an avatar change. Rate `INVITE_OG_RATE_PER_HOUR_PER_IP` (120) per IP. Composition is cheap but not free: the handler may memoize the composed PNG in Redis keyed `(token, avatar_version)` with the same TTL. |
+
+**Join page integration (web):** `/join/[token]` SSR metadata switches
+`og:image` and `twitter:image` to the banner URL (absolute, via
+`publicOrigin()` — the TROUBLESHOOTING `PUBLIC_ORIGIN` entry applies) and
+sets `twitter:card: summary_large_image`. The §1.11 avatar proxy keeps
+serving the in-page animated avatar; the banner is the unfurl face only.
+All media stays self-generated and self-hosted (golden rule 7): gradient,
+mascot and text are composed in-process — no fonts, images or services are
+fetched at request time.
+
+### 1.54 Web client contracts: scheduled-send feedback & the flipping wordmark (v0.7 — FEATURES #69, #71)
+
+Web-only; no new API surface. Binding the way §1.29's UI contract is binding.
+
+**Scheduled-send confirmation (FEATURES #69).** On a §1.26 `201`:
+
+- a **success toast** — "Scheduled for <human time>" where the time is
+  formatted in the user's locale/timezone ("today 18:30", "Fri 09:00") from
+  the row's `deliver_at`; visible `SCHEDULED_TOAST_MS` (4 s); rendered
+  through `components/Portal.tsx` at the toast layer of the globals.css
+  z-scale (TROUBLESHOOTING portal/z-index classes apply).
+- a **clock badge on the composer** whenever this conversation has pending
+  schedules: clock glyph + pending count, sourced from
+  `GET /api/scheduled-messages` and kept live by `scheduled.updated` (§2.3 —
+  own-sockets, so the badge is correct cross-device). The count is the
+  user's OWN queue (utility state, not a social number — PSYCHOLOGY rule 3
+  untouched). Tapping it opens the existing `ScheduledDrawer` filtered to
+  the conversation. Badge hidden at zero.
+
+**Flipping wordmark (FEATURES #71).** The auth headline renders "[Bored]
+Chat" where the bracketed word cycles `WORDMARK_WORDS`
+(Bored → Sad → Excited → Happy → Lonely → Hyped) every
+`WORDMARK_FLIP_INTERVAL_MS` (~2.5 s):
+
+- the word sits in a **fixed-width slot** (width of the widest word,
+  measured once) so "Chat" never shifts — a vertical roll animates old-out /
+  new-in (the odometer pattern).
+- the cycle **pauses while the tab is hidden** (`visibilitychange`) and
+  resumes on return; when the animation stops (blur to a form field is fine,
+  it keeps rolling; stopping = reduced-motion or unmount) it **settles on
+  "Bored"** — the product name wins at rest.
+- **the mascot reacts per word** (`components/Mascot.tsx` states): Bored =
+  idle, Sad = droop, Excited = bounce, Happy = smile, Lonely = look around,
+  Hyped = party. State changes ride the same tick as the roll.
+- `prefers-reduced-motion` = **static "Bored Chat"**, no roll, mascot idle
+  (the §1.22 full-replacement rule, not a slower animation). SSR renders
+  "Bored" statically; the cycle starts client-side after mount (the
+  TROUBLESHOOTING hydration entry — never clock-dependent text in SSR
+  output).
+
 ---
 
 ## 2. WebSocket protocol
@@ -1604,7 +1948,7 @@ close `1008`.
 | `reaction.updated` | `{conversation_id, seq, kind, emoji, count, user_id, removed}` | v0.2 (§1.12): one frame per effective reaction add/remove, to all active participants. `count` is the NEW total for that `(message, emoji)`; `count: 0` removes the chip; `mine` is derived client-side (`user_id === me`). Reconnect truth is the DTO aggregate, not frame replay. v0.4 (§1.19): `kind` (`'emoji'`\|`'stamp'`, default `'emoji'` so v0.2 frames parse clean); stamp frames carry the `:stamp:` sentinel as `emoji`, recipients resolve the stamper's avatar from participants they hold, and reconnect truth is `Message.stamps`. |
 | `preview.ready` | `{url_hash, status: 'ok'\|'failed', preview?: LinkPreview}` | to the user who requested the unfurl (composer card) |
 | `beacon.new` | `{beacon: Beacon}` | v0.3 (§1.15): **only to sockets of users in the beacon's audience** (minus blocks) — never to anyone who cannot join (PSYCHOLOGY rule 2). The DTO is viewer-specific: the gateway stamps `my_state`/`conversation_id` per recipient (§2.11). |
-| `beacon.updated` | `{beacon: Beacon, reping: boolean}` | v0.3: joins/leaves/spark/expiry/cancel, to the audience. On spark, non-joiners receive `conversation_id: null` (their card retires; spark details reach joiners + creator only). `reping: true` marks the single "needs 1 more" re-notification (§1.15). |
+| `beacon.updated` | `{beacon: Beacon, reping: boolean, edited: boolean, changed: string[]}` | v0.3: joins/leaves/spark/expiry/cancel, to the audience. On spark, non-joiners receive `conversation_id: null` (their card retires; spark details reach joiners + creator only). `reping: true` marks the single "needs 1 more" re-notification (§1.15). v0.7 (§1.47): `edited: true` marks a creator edit and `changed` names the edited fields (⊆ `BEACON_EDITABLE_FIELDS`) so cards can flash the right chips — the DTO carries the full new state either way; Zod defaults (`false`, `[]`) keep pre-v0.7 frames parsing clean. |
 | `beacon.kudos` | `{beacon_id, kind, from: UserLite}` | v0.3 (§1.15): **to the recipient's sockets only.** Private by construction — never fanned to the group, never counted publicly. |
 | `plan.updated` | `{beacon_id, conversation_id, roles: BeaconRole[]}` | v0.3 (§1.16): full roles list on every role mutation, to the plan conversation's active participants. Idempotent replace; reconcile from `GET /api/beacons/:id/roles`, never frame replay. |
 | `poll.updated` | `{poll_id, conversation_id, seq, counts: number[], total_votes, user_id?, option_idx?: number\|null}` | v0.3 (§1.17): one delta per effective vote/unvote (`option_idx: null` = unvoted), to active participants — the `reaction.updated` pattern. `user_id`/`option_idx` ride **only the voter's own frame** (their other devices reconcile `my_vote`); frames to everyone else carry aggregates only (no per-voter lists, §1.17). Reconnect truth is `message.poll`. |
@@ -1612,7 +1956,7 @@ close `1008`.
 | `scheduled.updated` | `{scheduled: ScheduledMessage}` | v0.4 (§1.26): **to the author's own sockets ONLY** (a pending schedule is private until delivery), on every create/cancel/send — cross-device sync of the scheduled list. The delivery itself reaches everyone as an ordinary `msg.new`. |
 | `connection.updated` | `{connection: Connection, removed: boolean}` | v0.5a (§1.28): **to the two parties only** — and not even both for every transition: request → addressee + requester's own sockets; accept → both; decline → addressee's own sockets only (the requester is never pinged about a rejection); remove → the actor's own sockets only. The DTO is viewer-specific (`user`/`direction` stamped per recipient at the gateway, the `beacon.*` pattern). `removed: true` means the row is gone (decline/remove) and the DTO is its last state. |
 | `story.new` | `{story: Story}` | v0.5a (§1.34): **only to sockets of the author's friends-of audience minus blocks** — never to anyone who cannot view it. `viewed` stamped `false` per recipient. No push. Expiry fans nothing — expired stories drop out of the next `GET`. |
-| `post.new` | `{post: Post}` | v0.5a (§1.36): **only to sockets of the author's friends-of audience minus blocks.** No push. Reactions/comments deliberately fan out NOTHING — viewers reconcile from `GET /api/feed` / `GET /api/posts/:id` when they return (no approval pings, PSYCHOLOGY rules 3/4). |
+| `post.new` | `{post: Post}` | v0.5a (§1.36): **only to sockets of the author's friends-of audience minus blocks.** No push. Reactions/comments deliberately fan out NOTHING — viewers reconcile from `GET /api/feed` / `GET /api/posts/:id` when they return (no approval pings, PSYCHOLOGY rules 3/4). v0.7 (§1.50): `join_card` frames carry **`ref_summary: null`** — the summary is viewer-specific (joiner faces minus the viewer's blocks, §1.14 visibility, `my_state`), so the broadcast never ships one user's view to another; each client resolves its own via `GET /api/posts/:id` before rendering the card. |
 | `call.updated` | `{call: Call}` | v0.6 (§1.42): SERVER-emitted on every durable call transition (create, first join, member join/leave, reject, end, ring timeout), to the conversation's active participants. Full-DTO replace by `call.id`; reconnect truth is `GET /api/conversations/:id/calls`, never frame replay. |
 | `call.invite` / `call.ringing` / `call.accept` / `call.reject` / `call.offer` / `call.answer` / `call.ice` / `call.leave` / `call.end` | relayed (§2.12) | v0.6: RELAYED ephemeral signaling — client frames validated, authorized and forwarded per recipient with `from_user` stamped server-side; **never persisted, never replayed**. Full shapes + recipient sets in §2.12. |
 | `watch.start` / `watch.sync` / `watch.stop` | relayed (§2.12) | v0.6 (§1.43): relayed watch-together state. start/sync carry the FULL state (`conversation_id, video_id, host, position_s, playing`) so mid-session joiners lock on from the next sync; stop carries `{conversation_id}`. |
@@ -1703,6 +2047,12 @@ user, the `muted_until` guard is **skipped for that user** (all other guards
 hold). A mention NEVER overrides a block — blocked pairs are structurally
 excluded from push fan-out (§1.14) and stay that way. Mention pushes fire at
 send time only; §1.30 edits never (re-)push.
+
+**v0.7 joiner notifications (§1.47):** beacon edited / cancelled /
+starting-soon pushes go to **current joiners only** (starting-soon also to
+the creator of a sparked plan), through every guard above unchanged — no
+overrides, no new exceptions. The wider audience is never pushed about a
+plan changing shape (PSYCHOLOGY rule 2); blocks stay structural.
 
 Payload: `{title, body (snippet | "Photo" | "Video" | "File"), tag: conversation_id,
 data: {url: "/c/<conversation_id>"}}`. The service worker shows the notification and deep-links

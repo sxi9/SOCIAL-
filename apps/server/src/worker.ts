@@ -103,6 +103,13 @@ async function main(): Promise<void> {
     {},
     { repeat: { every: 10 * 60_000 }, jobId: 'beacon-afterglow-sweep', removeOnComplete: 10, removeOnFail: 10 },
   );
+  // v0.7 (API.md §1.47): the T-30min "starting soon" ping sweep — every
+  // minute over beacons_starting_soon_idx; push only, claimed once per beacon.
+  await beaconsQueue.add(
+    'beacon-starting-soon',
+    {},
+    { repeat: { every: 60_000 }, jobId: 'beacon-starting-soon', removeOnComplete: 10, removeOnFail: 10 },
+  );
 
   // v0.4 repeatable timers (API.md §1.25/§1.26): the disappearing-messages
   // tombstone sweep and the scheduled-delivery minute safety net.

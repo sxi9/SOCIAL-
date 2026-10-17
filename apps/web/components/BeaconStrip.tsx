@@ -14,14 +14,15 @@ import {
   joinBeacon,
   leaveBeacon,
   refreshBeacons,
-  VIBE_EMOJI,
-  VIBE_LABEL,
+  vibeEmojiOf,
+  vibeLabelOf,
 } from '@/lib/beacons';
 import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
 import Avatar from './Avatar';
 import BeaconCreateSheet from './BeaconCreateSheet';
+import BeaconDetailSheet from './BeaconDetailSheet';
 import ReportSheet from './ReportSheet';
 import styles from './beacons.module.css';
 
@@ -81,15 +82,20 @@ export default function BeaconStrip() {
 
 function BeaconCard({ beacon: b, now }: { beacon: Beacon; now: number }) {
   const router = useRouter();
+  const state = useAppState();
   const [menu, setMenu] = useState(false);
   const [report, setReport] = useState(false);
+  const [detail, setDetail] = useState(false);
   const [joinBusy, setJoinBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const startsMs = new Date(b.starts_at).getTime();
   const upcoming = startsMs > now;
+  // Fixer r1: "in 1h 57m" not "starts in 1h 57m" — the pill competed with the
+  // card title for row width and ellipsized custom vibe labels at 360px (the
+  // detail sheet keeps the long "starts in" wording).
   const countdown = upcoming
-    ? `starts in ${fmtCountdown(b.starts_at, now)}`
+    ? `in ${fmtCountdown(b.starts_at, now)}`
     : `${fmtCountdown(b.expires_at, now)} left`;
   const soon = !upcoming && new Date(b.expires_at).getTime() - now < 3600_000;
 
@@ -133,17 +139,32 @@ function BeaconCard({ beacon: b, now }: { beacon: Beacon; now: number }) {
   const pile = b.joiners.slice(0, PILE_MAX);
   const overflow = Math.max(0, b.joiner_count - pile.length);
 
+  // v0.7 (§1.47): a recent creator edit flashes a "plan updated" note; the
+  // persistent "edited" marker is edited_at on the DTO.
+  const recentEdit = state.beaconEdits.get(b.id);
+  const editNote = recentEdit && Date.now() - recentEdit.at < 60_000;
+
   return (
     <div
       role="listitem"
       className={`${styles.card} ${styles.cardRel}${b.my_state === 'creator' ? ` ${styles.cardMine}` : ''}${sparked ? ` ${styles.cardSparked}` : ''}`}
+      // FEATURES #60: tapping the card expands the detail sheet (Who's in,
+      // edit, spark-now). Inner buttons/links keep their own behavior, and
+      // clicks from PORTALED children (the sheets render into <body> but
+      // React still bubbles their events here) are ignored via contains().
+      onClick={(e) => {
+        const t = e.target as HTMLElement;
+        if (!e.currentTarget.contains(t)) return; // portaled overlay click
+        if (t.closest('button, a')) return;
+        setDetail(true);
+      }}
     >
       <div className={styles.cardTop}>
         <span className={styles.vibeEmoji} aria-hidden>
-          {VIBE_EMOJI[b.vibe]}
+          {vibeEmojiOf(b)}
         </span>
         <span className={styles.cardTitle}>
-          {sparked ? 'IT’S ON 🎉' : `${creatorName} · ${VIBE_LABEL[b.vibe]}`}
+          {sparked ? 'IT’S ON 🎉' : `${creatorName} · ${vibeLabelOf(b)}`}
         </span>
         <span className={`${styles.countdown}${soon ? ` ${styles.countdownSoon}` : ''}`}>{countdown}</span>
         <button
@@ -185,8 +206,19 @@ function BeaconCard({ beacon: b, now }: { beacon: Beacon; now: number }) {
         </>
       ) : null}
       {report ? <ReportSheet target={{ kind: 'beacon', beacon_id: b.id }} onClose={() => setReport(false)} /> : null}
+      {detail ? <BeaconDetailSheet beacon={b} onClose={() => setDetail(false)} /> : null}
 
+      {editNote ? (
+        <span className={styles.editedNote} role="status">
+          ✏️ plan updated
+        </span>
+      ) : b.edited_at ? (
+        <span className={styles.editedNote}>✏️ edited</span>
+      ) : null}
       {b.note ? <p className={styles.cardNote}>{b.note}</p> : null}
+      {b.location ? (
+        <span className={styles.ritualTag}>📍 {b.location.label}</span>
+      ) : null}
       {b.ritual ? (
         <span className={styles.ritualTag}>
           🔁 ritual{b.ritual.count > 0 ? ` · ${b.ritual.count} so far` : ''}
@@ -194,7 +226,15 @@ function BeaconCard({ beacon: b, now }: { beacon: Beacon; now: number }) {
       ) : null}
 
       <div className={styles.cardPeople}>
-        <span className={styles.pile} key={b.joiner_count} aria-label={`${b.joiner_count} in`}>
+        {/* FEATURES #60: the pile is a button — tap to see WHO is in. */}
+        <button
+          type="button"
+          className={styles.pile}
+          key={b.joiner_count}
+          aria-label={`${b.joiner_count} in — see who`}
+          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+          onClick={() => setDetail(true)}
+        >
           <span className={styles.pilePop}>
             <Avatar avatar={b.creator.avatar} name={b.creator.display_name} size={28} />
           </span>
@@ -204,7 +244,7 @@ function BeaconCard({ beacon: b, now }: { beacon: Beacon; now: number }) {
             </span>
           ))}
           {overflow > 0 ? <span className={styles.pileMore}>+{overflow}</span> : null}
-        </span>
+        </button>
         {!sparked && b.needs > 0 ? (
           <span className={`${styles.needs}${b.needs === 1 ? ` ${styles.needsOne}` : ''}`}>
             needs {b.needs} more 🔥

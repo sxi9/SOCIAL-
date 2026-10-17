@@ -9,6 +9,7 @@ import {
   extractYoutubeVideoId,
   FORWARDABLE_MESSAGE_TYPES,
   MAX_MESSAGE_BODY_CHARS,
+  ON_MY_WAY_BODY,
   PAGE_SIZE_DEFAULT,
   PAGE_SIZE_MAX,
   type ConversationListItem,
@@ -66,6 +67,7 @@ import ForwardSheet from './ForwardSheet';
 import GameTttView from './GameTttView';
 import { InviteButton } from './InviteSheet';
 import ListingReviewNudge from './ListingReviewNudge';
+import LocationPickerSheet, { MapLinksRow } from './LocationPicker';
 import PinnedBar from './PinnedBar';
 import PlanHeader from './PlanHeader';
 import PollView from './PollView';
@@ -124,6 +126,7 @@ export default function ChatView({ conversationId }: { conversationId: string })
   const [doodleOpen, setDoodleOpen] = useState(false);
   const [vibeOpen, setVibeOpen] = useState(false);
   const [tttPickOpen, setTttPickOpen] = useState(false);
+  const [locOpen, setLocOpen] = useState(false); // v0.7 §1.52 "Join me here"
   const [activeEffect, setActiveEffect] = useState<MessageEffect | null>(null);
 
   // v0.5a chat power: reply draft (§1.29), forward target (§1.31), jump flash.
@@ -384,6 +387,7 @@ export default function ChatView({ conversationId }: { conversationId: string })
       if (action === 'doodle') setDoodleOpen(true);
       else if (action === 'vibe') setVibeOpen(true);
       else if (action === 'puzzle') router.push('/puzzle');
+      else if (action === 'location') setLocOpen(true);
       else if (action === 'ttt') {
         if (conv?.type === 'dm') void startTtt();
         else setTttPickOpen(true);
@@ -518,21 +522,8 @@ export default function ChatView({ conversationId }: { conversationId: string })
             ⏳ {TTL_SHORT[conv.disappear_ttl_s] ?? ''}
           </span>
         ) : null}
-        {pendingScheduled.length > 0 ? (
-          <button
-            type="button"
-            className="btn btn-ghost btn-icon"
-            aria-label={`${pendingScheduled.length} scheduled ${pendingScheduled.length === 1 ? 'message' : 'messages'}`}
-            onClick={() => setSchedOpen(true)}
-          >
-            <span style={{ position: 'relative', display: 'inline-flex' }}>
-              <ClockIcon />
-              <span className="badge" style={{ position: 'absolute', top: -8, right: -10, minWidth: 16, height: 16, fontSize: 10 }}>
-                {pendingScheduled.length}
-              </span>
-            </span>
-          </button>
-        ) : null}
+        {/* v0.7 (§1.54): the scheduled badge moved onto the COMPOSER — one
+            badge, where the queue is managed. */}
         <button
           type="button"
           className="btn btn-ghost btn-icon"
@@ -669,6 +660,8 @@ export default function ChatView({ conversationId }: { conversationId: string })
           mentionCandidates={mentionCandidates}
           searchMentions={searchMentions}
           hideGames={isChannel}
+          scheduledCount={pendingScheduled.length}
+          onOpenScheduled={() => setSchedOpen(true)}
         />
       ) : (
         // §1.35 channel_read_only — reading and reacting stay open to everyone.
@@ -697,6 +690,24 @@ export default function ChatView({ conversationId }: { conversationId: string })
           onClose={() => setVibeOpen(false)}
           onSend={async (prompt) => {
             await sendRaw({ type: 'vibe_check', body: prompt });
+          }}
+        />
+      ) : null}
+      {locOpen ? (
+        // v0.7 (§1.52): "📍 Join me here" — a one-tap SNAPSHOT drop; the
+        // message is an ordinary §1.5 send with metadata.location + join_me.
+        <LocationPickerSheet
+          title="Join me here"
+          withNote
+          submitLabel="Drop the pin 📍"
+          onClose={() => setLocOpen(false)}
+          onPick={(loc, note) => {
+            setLocOpen(false);
+            void sendRaw({
+              type: 'location',
+              ...(note ? { body: note } : {}),
+              metadata: { location: loc, join_me: true },
+            });
           }}
         />
       ) : null}
@@ -1183,6 +1194,8 @@ function MessageRow({
         <GameTttView message={message} conv={conv} meId={meId} nameFor={nameFor} />
       ) : message.type === 'puzzle_result' && message.metadata.puzzle ? (
         <PuzzleResultView puzzle={message.metadata.puzzle} own={own} />
+      ) : message.type === 'location' && message.metadata.location ? (
+        <LocationDrop message={message} conv={conv} meId={meId} own={own} nameFor={nameFor} />
       ) : isStampReply ? (
         <span className={exp.stampReplyBody}>
           {stampUser ? (
@@ -1461,6 +1474,118 @@ function MessageRow({
 }
 
 /**
+ * v0.7 §1.52: the location-drop bubble. The place renders as LINKS out to the
+ * user's own map app/site (geo:/OSM/Google — lib/locations) — never a tile
+ * embed, never an API key. A join_me drop carries the "On my way 🏃" quick
+ * action: an ORDINARY text reply (reply_to_seq = the drop's seq, body =
+ * ON_MY_WAY_BODY) — zero new machinery; the headcount strip below is FACES of
+ * participants whose on-my-way reply references this drop, derived from the
+ * local history (missing pages are one history fetch away, never a counter).
+ */
+function LocationDrop({
+  message,
+  conv,
+  meId,
+  own,
+  nameFor,
+}: {
+  message: Message;
+  conv: ConversationListItem;
+  meId: string;
+  own: boolean;
+  nameFor: (userId: string, fallback: string) => string;
+}) {
+  const state = useAppState();
+  const [busy, setBusy] = useState(false);
+  const location = message.metadata.location!;
+  const joinMe = message.metadata.join_me === true;
+
+  // Client-derived headcount: dedup by sender, participants only (faces).
+  const omw: UserLite[] = [];
+  if (joinMe) {
+    const seen = new Set<string>();
+    const list = state.messages.get(message.conversation_id) ?? [];
+    for (const m of list) {
+      if (
+        m.reply_to_seq === message.seq &&
+        m.deleted_at === null &&
+        m.body === ON_MY_WAY_BODY &&
+        m.sender_id !== null &&
+        !seen.has(m.sender_id)
+      ) {
+        const p = conv.participants.find((x) => x.user.id === m.sender_id);
+        if (p) {
+          seen.add(m.sender_id);
+          omw.push({
+            id: p.user.id,
+            username: p.user.username,
+            display_name: p.user.display_name,
+            avatar: p.user.avatar,
+          });
+        }
+      }
+    }
+  }
+  const mineOmw = omw.some((u) => u.id === meId);
+
+  async function onMyWay(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await sendMessage(message.conversation_id, {
+        client_msg_id: uuidv7(),
+        type: 'text',
+        body: ON_MY_WAY_BODY,
+        reply_to_seq: message.seq,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span className={soc.locDrop}>
+      <span className={soc.locDropHead}>
+        <span aria-hidden>📍</span>
+        <span>{joinMe ? 'Join me here' : location.label}</span>
+      </span>
+      {/* Fixer r1: the place label shows on the SENDER's own card too — they
+          need to confirm which place they just dropped. */}
+      {joinMe ? <span>{location.label}</span> : null}
+      {message.body ? <span>{message.body}</span> : null}
+      <MapLinksRow location={location} />
+      {joinMe ? (
+        <>
+          {!own && !mineOmw ? (
+            <button
+              type="button"
+              className={soc.onMyWayBtn}
+              disabled={busy}
+              onClick={() => void onMyWay()}
+            >
+              {busy ? 'Sending…' : ON_MY_WAY_BODY}
+            </button>
+          ) : null}
+          {omw.length > 0 ? (
+            <span
+              className={soc.onMyWayRow}
+              aria-label={`On their way: ${omw.map((u) => nameFor(u.id, u.display_name)).join(', ')}`}
+            >
+              <span className={soc.onMyWayFaces} aria-hidden>
+                {omw.map((u) => (
+                  <Avatar key={u.id} avatar={u.avatar} name={nameFor(u.id, u.display_name)} size={20} />
+                ))}
+              </span>
+              <span aria-hidden>on their way 🏃</span>
+            </span>
+          ) : null}
+        </>
+      ) : null}
+    </span>
+  );
+}
+
+/**
  * §1.33 mention highlighting — keyed STRICTLY on metadata.mentions (the server
  * is the only writer; the client never re-parses). Mentioned ids resolve to
  * usernames via the participants the client holds; tokens that cannot resolve
@@ -1581,15 +1706,6 @@ function GearIcon() {
         strokeWidth="1.3"
         strokeLinejoin="round"
       />
-    </svg>
-  );
-}
-
-function ClockIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
-      <circle cx="10" cy="10" r="7.2" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M10 5.8 V10 L13 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
   );
 }

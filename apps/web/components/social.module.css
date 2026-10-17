@@ -1113,11 +1113,560 @@
   color: var(--muted);
 }
 
+/* ===================== v0.7 interactivity pack ===================== */
+
+/* ---- feed lanes (§1.49): Friends | Discover segmented toggle ---- */
+
+.laneRow {
+  display: flex;
+  gap: 8px;
+}
+
+.laneBtn {
+  flex: 1;
+  padding: 9px 6px;
+  background: var(--panel);
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.laneOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ---- composer kind picker (§1.50) ---- */
+
+.kindRow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.kindBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px;
+  background: var(--panel-2);
+  border: 1.5px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.kindBtnOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.pollEditor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.pollEditorRow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.pollEditorRow input {
+  flex: 1;
+  min-width: 0;
+}
+
+.refPickList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.refPick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.refPickOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.refPick:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.refPickText {
+  flex: 1;
+  min-width: 0;
+}
+
+.refPickText strong {
+  display: block;
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.refPickText span {
+  display: block;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+/* ---- poll posts (§1.50): tally bars on OPTIONS (a decision tool) ---- */
+
+.postPoll {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 6px;
+}
+
+.postPollQ {
+  font-weight: 700;
+  font-size: 14px;
+  margin: 0;
+}
+
+.postPollOpt {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 11px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+  overflow: hidden;
+  text-align: left;
+}
+
+.postPollOptMine {
+  border-color: var(--accent);
+}
+
+.postPollBar {
+  position: absolute;
+  inset: 0;
+  width: var(--w, 0%);
+  background: var(--accent-soft);
+  transition: width 260ms ease;
+  pointer-events: none;
+}
+
+.postPollLabel {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.postPollCount {
+  position: relative;
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.postPollOptMine .postPollCount {
+  color: var(--accent);
+}
+
+.postPollMeta {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* ---- game posts (§1.50): the open challenge card ---- */
+
+.gameCard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  margin: 2px 0 6px;
+  font-size: 13.5px;
+}
+
+.gameCardText {
+  flex: 1;
+  min-width: 0;
+}
+
+.gameClaimBtn {
+  flex: none;
+  border: none;
+  border-radius: 10px;
+  padding: 8px 14px;
+  background: var(--accent-strong);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.gameClaimBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ---- join cards (§1.50) ---- */
+
+.joinCard {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  margin: 2px 0 6px;
+  background: color-mix(in srgb, var(--accent-soft) 35%, var(--panel));
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.joinCardHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 14px;
+  min-width: 0;
+}
+
+.joinCardHead > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.joinCardStatus {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--panel-2);
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+
+.joinCardMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.joinCardBtn {
+  align-self: flex-start;
+  border: none;
+  border-radius: 11px;
+  padding: 8px 16px;
+  background: var(--accent-strong);
+  color: #fff;
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.joinCardBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.joinCardGone {
+  font-size: 13px;
+  color: var(--muted);
+  font-style: italic;
+  margin: 2px 0 6px;
+}
+
+/* ---- comment upgrades (§1.51): attachments + face-chip reactions ---- */
+
+.commentImg {
+  display: block;
+  margin-top: 4px;
+  max-width: 220px;
+  max-height: 220px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.commentReactRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.commentFaceChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px 2px 5px;
+  font-size: 12.5px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.commentFaceChipMine {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.commentReactBtn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+.commentReactBtn:hover {
+  color: var(--text);
+  background: var(--panel);
+}
+
+.commentAttachChip {
+  position: relative;
+  display: inline-flex;
+  margin-top: 6px;
+}
+
+.commentAttachChip img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+/* ---- location chips & map links (§1.52) ---- */
+
+.locChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.locChip > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.locLinksRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.locLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+/* The chat "📍 Join me here" drop card. */
+.locDrop {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: min(62vw, 280px);
+  padding: 2px 0;
+}
+
+.locDropHead {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.onMyWayBtn {
+  align-self: flex-start;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 13px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.onMyWayRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.onMyWayFaces {
+  display: inline-flex;
+}
+
+.onMyWayFaces > * {
+  margin-left: -7px;
+  border: 1.5px solid var(--panel);
+  border-radius: 50%;
+}
+
+.onMyWayFaces > :first-child {
+  margin-left: 0;
+}
+
+/* ---- toasts (§1.54): bottom-anchored above the tab bar, z 80 ---- */
+
+.toastHost {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  max-width: min(92vw, 420px);
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 9px 18px;
+  font-size: 13.5px;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+  animation: toast-in 200ms ease;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+/* ---- composer clock badge (§1.54) ---- */
+
+.schedBadgeRow {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 2px 6px;
+}
+
+.schedBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.schedBadge:hover {
+  color: var(--text);
+}
+
+.schedBadgeCount {
+  min-width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--accent-strong);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+}
+
 /* ======================= reduced-motion guards ======================= */
 
 @media (prefers-reduced-motion: reduce) {
   .ringUnviewed {
     animation: none;
+  }
+
+  .toast {
+    animation: none;
+  }
+
+  .postPollBar {
+    transition: none;
   }
 
   .flash {

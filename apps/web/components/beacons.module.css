@@ -95,7 +95,12 @@
 
 .card {
   flex: none;
-  width: min(78vw, 300px);
+  /* Fixer r1: 78vw capped the card at ~304px on a 390px phone while the strip
+     had ~358px of room, so .cardTitle ellipsized a custom vibe label ("You ·
+     wa…") with visible free viewport space left over. Use the real strip
+     width (16px side padding each side + a 16px peek of the next card) and a
+     roomier desktop cap so the title keeps its flex share. */
+  width: min(calc(100vw - 48px), 340px);
   scroll-snap-align: start;
   background: var(--panel);
   border: 1px solid var(--border);
@@ -1012,6 +1017,175 @@
   margin: 8px 0 0;
   font-size: 12.5px;
   color: var(--muted);
+}
+
+/* ---- v0.7 (§1.47): custom vibes, edit sheet, who's-in, spark-now ---- */
+
+.editedNote {
+  font-size: 11.5px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.customVibeBox {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.customEmojiBtn {
+  flex: none;
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  border: 1.5px solid var(--border);
+  background: var(--panel-2);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.customEmojiBtnOn {
+  border-color: var(--bored-yellow-deep);
+}
+
+.customEmojiGrid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 1px;
+  max-height: 180px;
+  overflow-y: auto;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 4px;
+}
+
+.customEmojiGrid button {
+  background: none;
+  border: none;
+  border-radius: 8px;
+  font-size: 20px;
+  line-height: 1;
+  padding: 6px;
+  cursor: pointer;
+}
+
+.customEmojiGrid button:hover {
+  background: var(--accent-soft);
+}
+
+.recentsRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.recentChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+/* Beacon detail sheet (§1.47): facts + Who's in + creator tools. */
+
+.detailFactRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 13.5px;
+}
+
+.detailFactRow > span:first-child {
+  flex: none;
+  width: 72px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.whoRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.whoName {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.whoName span {
+  color: var(--muted);
+  font-size: 12px;
+  margin-left: 6px;
+}
+
+.whoHint {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sparkNowBtn {
+  width: 100%;
+  margin-top: 10px;
+  border: none;
+  border-radius: 14px;
+  padding: 12px;
+  background: var(--ok);
+  color: #06281c;
+  font-size: 14.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.sparkNowBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.confirmBox {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--ok) 55%, var(--border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--ok) 10%, var(--panel));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.confirmBox p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.confirmRow {
+  display: flex;
+  gap: 8px;
+}
+
+.confirmRow > * {
+  flex: 1;
 }
 
 /* ---- reduced motion: everything stills, nothing disappears ---- */

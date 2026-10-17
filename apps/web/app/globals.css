@@ -11,6 +11,7 @@
    69  minimized call pill
    70  in-call screen, 71 incoming-call ring
    72  match moment / roulette goodbye (always wins — it navigates)
+   80  toasts (confirmation popups — above everything that is not navigation)
    NOTE: overlays only hold these ranks because they render through
    components/Portal.tsx into <body>. A position:fixed element inside ANY
    ancestor with transform / filter / backdrop-filter (the blurred .topbar!)

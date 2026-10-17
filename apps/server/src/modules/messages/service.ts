@@ -97,6 +97,7 @@ export async function insertMessage(opts: InsertMessageOpts): Promise<MsgRow> {
           AND scheduled_message_id IS NULL
           AND post_id IS NULL
           AND listing_id IS NULL
+          AND comment_id IS NULL
           AND NOT EXISTS (SELECT 1 FROM stories st WHERE st.attachment_id = attachments.id)
           AND NOT EXISTS (SELECT 1 FROM profile_media pm WHERE pm.attachment_id = attachments.id)
         RETURNING id

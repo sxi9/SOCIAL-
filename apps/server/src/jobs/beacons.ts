@@ -16,6 +16,7 @@ import { sql } from 'drizzle-orm';
 import {
   BEACON_AFTERGLOW_DELAY_S,
   BEACON_AFTERGLOW_PHOTOS_MAX,
+  BEACON_STARTING_SOON_LEAD_S,
   RITUAL_AUTO_PAUSE_SKIPS,
   RITUAL_INTERVAL_S,
   type AfterglowMetadata,
@@ -46,6 +47,64 @@ export async function runBeaconExpireSweep(): Promise<void> {
   for (const raw of rows) {
     // Cards silently retire — beacon.updated only, no push (§1.15 expiry).
     await fanBeacon(rawToBeaconRow(raw), 'beacon.updated');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// beacon-starting-soon (v0.7 — API.md §1.47, FEATURES #63)
+// ---------------------------------------------------------------------------
+
+/** The push word for a beacon's vibe (§1.47 custom vibes). */
+function vibeWordOf(b: Pick<BeaconRow, 'vibe' | 'customVibeLabel'>): string {
+  return b.vibe === 'custom' ? (b.customVibeLabel ?? 'plan') : b.vibe;
+}
+
+/**
+ * The T-30min "starting soon 🎈" ping — PUSH ONLY, no WS frame (a live client
+ * already renders the countdown; the §2.9 presence guard makes this a phone
+ * buzz for absent people by construction). Walks beacons_starting_soon_idx:
+ * open/sparked beacons inside BEACON_STARTING_SOON_LEAD_S with no ping claimed
+ * yet; the claim is the guarded UPDATE ... WHERE starting_soon_pinged_at IS
+ * NULL (the repinged_at pattern — at most once per beacon, EVER). Recipients:
+ * joiners, plus the creator of a SPARKED plan; zero-joiner beacons are skipped
+ * (nothing to remind — and never a guilt nudge, PSYCHOLOGY never-build list).
+ */
+export async function runStartingSoonSweep(): Promise<void> {
+  const due = (await db.execute(sql`
+    SELECT * FROM beacons
+    WHERE status IN ('open', 'sparked')
+      AND starting_soon_pinged_at IS NULL
+      AND starts_at > now()
+      AND starts_at <= now() + make_interval(secs => ${BEACON_STARTING_SOON_LEAD_S})
+      AND expires_at > now()
+  `)) as unknown as Record<string, unknown>[];
+  for (const raw of due) {
+    const beacon = rawToBeaconRow(raw);
+    const joinRows = (await db.execute(sql`
+      SELECT user_id FROM beacon_joins WHERE beacon_id = ${beacon.id} ORDER BY created_at ASC
+    `)) as unknown as { user_id: string }[];
+    const joinerIds = joinRows.map((r) => r.user_id);
+    if (joinerIds.length === 0) continue; // nothing to remind
+
+    // One-shot claim — concurrent/replayed sweeps collapse to one ping.
+    const claimed = (await db.execute(sql`
+      UPDATE beacons SET starting_soon_pinged_at = now()
+      WHERE id = ${beacon.id} AND starting_soon_pinged_at IS NULL
+      RETURNING id
+    `)) as unknown as { id: string }[];
+    if (claimed.length === 0) continue;
+
+    const recipients =
+      beacon.status === 'sparked' ? [beacon.creatorId, ...joinerIds] : joinerIds;
+    await pushBeacon(recipients, {
+      beacon_id: beacon.id,
+      title: `Your ${vibeWordOf(beacon)} plan is starting soon 🎈`,
+      body: beacon.note || 'Starting in about 30 minutes',
+      url:
+        beacon.status === 'sparked' && beacon.conversationId
+          ? `/c/${beacon.conversationId}`
+          : '/plans',
+    });
   }
 }
 
@@ -218,6 +277,8 @@ export async function processBeaconsJob(name: string, job: BeaconsJob): Promise<
   switch (name) {
     case 'beacon-expire':
       return runBeaconExpireSweep();
+    case 'beacon-starting-soon':
+      return runStartingSoonSweep();
     case 'beacon-ritual':
       return runRitualSweep();
     case 'beacon-afterglow':

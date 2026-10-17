@@ -5,7 +5,7 @@
 // machinery exists anywhere (FEATURES #45). Room photos ride the EXISTING
 // §1.6 upload pipeline (kind image), bound server-side via details.attachment_ids.
 import { useEffect, useRef, useState } from 'react';
-import type { Attachment, CreateListingRequest, Listing, ListingKind, UploadResponse } from '@socialchat/shared';
+import type { Attachment, CreateListingRequest, Listing, ListingKind, Location, UploadResponse } from '@socialchat/shared';
 import {
   AREA_MAX_CHARS,
   LISTING_ACTIVE_MAX_PER_USER,
@@ -25,6 +25,8 @@ import { createListing, KIND_EMOJI } from '@/lib/listings';
 import { setMe } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import type { UpdateMeResponse } from '@socialchat/shared';
+import { LocationField } from './LocationPicker';
+import Portal from './Portal';
 import { StarPicker } from './Stars';
 import bz from './beacons.module.css';
 import st from './board.module.css';
@@ -52,6 +54,7 @@ export default function ListingCreateSheet({
   const [priceText, setPriceText] = useState('');
   const [area, setArea] = useState(me?.area ?? '');
   const [isPublic, setIsPublic] = useState(false);
+  const [location, setLocation] = useState<Location | null>(null); // v0.7 §1.52
   // gig
   const [direction, setDirection] = useState<'offering' | 'seeking'>('offering');
   const [tagsDraft, setTagsDraft] = useState('');
@@ -126,6 +129,7 @@ export default function ListingCreateSheet({
       price_text: priceText.trim() ? priceText.trim() : null,
       area: area.trim() ? area.trim() : undefined,
       is_public: isPublic,
+      ...(location ? { location } : {}),
     };
     switch (kind) {
       case 'gig':
@@ -211,6 +215,8 @@ export default function ListingCreateSheet({
     kind === 'room' ? 'Monthly price (just text — e.g. “₹9k / month”)' : 'Price (just text — e.g. “₹500”, “free”, “split petrol”)';
 
   return (
+    // v0.6.1 rule: every sheet renders through Portal into <body>.
+    <Portal>
     <div
       className={`${bz.sheetBackdrop} ${bz.beaconVars}`}
       role="presentation"
@@ -451,6 +457,9 @@ export default function ListingCreateSheet({
               onChange={(e) => setArea(e.target.value)}
             />
 
+            <div className={bz.sheetLabel}>Place chip (optional)</div>
+            <LocationField value={location} onChange={setLocation} />
+
             <div className={st.toggleRow}>
               <div>
                 <label htmlFor="listing-public">Show outside my area</label>
@@ -475,5 +484,6 @@ export default function ListingCreateSheet({
         )}
       </div>
     </div>
+    </Portal>
   );
 }

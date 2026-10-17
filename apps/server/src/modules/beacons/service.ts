@@ -18,6 +18,7 @@ import {
   BEACON_VENUE_POLL_QUESTION,
   type Beacon,
   type BeaconUpdatedEvent,
+  type Location,
   type UserLite,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
@@ -257,6 +258,9 @@ function beaconDtoFromParts(
     id: row.id,
     creator: userLiteDto(parts.creator),
     vibe: row.vibe as Beacon['vibe'],
+    // v0.7 (§1.47): the creator's own chip — non-null iff vibe='custom'.
+    custom_vibe_emoji: row.customVibeEmoji,
+    custom_vibe_label: row.customVibeLabel,
     note: row.note,
     audience: row.audience as Beacon['audience'],
     // Creator-area snapshot; 'area' beacons only ever reach matching viewers.
@@ -275,6 +279,10 @@ function beaconDtoFromParts(
     ritual: row.ritualRrule
       ? { rrule: row.ritualRrule, count: row.ritualCount, skips: row.ritualSkips }
       : null,
+    // v0.7 (§1.52): the optional place chip — visibility is the beacon's own.
+    location: (row.location as Location | null) ?? null,
+    // v0.7 (§1.47): the "edited" marker (no edit history, the §1.30 pattern).
+    edited_at: row.editedAt ? row.editedAt.toISOString() : null,
     created_at: row.createdAt.toISOString(),
   };
 }
@@ -304,7 +312,10 @@ export async function loadBeaconDtoFor(row: BeaconRow, viewerId: string): Promis
 export async function fanBeacon(
   row: BeaconRow,
   event: 'beacon.new' | 'beacon.updated',
-  opts: { reping?: boolean } = {},
+  // v0.7 (§1.47): edited/changed mark a creator edit on the beacon.updated
+  // frame (changed ⊆ BEACON_EDITABLE_FIELDS); Zod defaults keep old clients
+  // parsing clean.
+  opts: { reping?: boolean; edited?: boolean; changed?: string[] } = {},
 ): Promise<void> {
   const partsMap = await loadBeaconParts([row]);
   const parts = partsMap.get(row.id);
@@ -345,7 +356,12 @@ export async function fanBeacon(
     if (event === 'beacon.new') {
       await publishToUsers(userIds, { t: 'beacon.new', d: { beacon: dto } });
     } else {
-      const d: BeaconUpdatedEvent['d'] = { beacon: dto, reping: opts.reping ?? false };
+      const d: BeaconUpdatedEvent['d'] = {
+        beacon: dto,
+        reping: opts.reping ?? false,
+        edited: opts.edited ?? false,
+        changed: opts.changed ?? [],
+      };
       await publishToUsers(userIds, { t: 'beacon.updated', d });
     }
   }
@@ -390,6 +406,313 @@ export interface JoinOutcome {
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * §1.14 spark-time re-check, under the caller's beacon row lock: a block
+ * created AFTER two members entered the pile must never be minted into the
+ * brand-new plan group. Re-checks every pair among the would-be founding
+ * members (creator + committed joiners) and evicts the stale join of each
+ * blocked pair — the non-creator when the creator is involved, otherwise the
+ * later joiner. Returns the cleaned joiner list (join order preserved) and
+ * the evicted set.
+ */
+export async function evictStaleBlockedPairs(
+  tx: Tx,
+  beaconId: string,
+  creatorId: string,
+  joinerIds: string[],
+): Promise<{ joinerIds: string[]; evicted: Set<string> }> {
+  const evicted = new Set<string>();
+  if (joinerIds.length === 0) return { joinerIds, evicted };
+  const stalePairs = (await tx.execute(sql`
+    WITH members AS (
+      SELECT user_id FROM beacon_joins WHERE beacon_id = ${beaconId}
+      UNION SELECT ${creatorId}::uuid
+    )
+    SELECT bl.blocker_id AS a, bl.blocked_id AS b FROM blocks bl
+    WHERE bl.blocker_id IN (SELECT user_id FROM members)
+      AND bl.blocked_id IN (SELECT user_id FROM members)
+  `)) as unknown as { a: string; b: string }[];
+  if (stalePairs.length === 0) return { joinerIds, evicted };
+  const joinOrder = new Map(joinerIds.map((id, i) => [id, i]));
+  for (const { a, b } of stalePairs) {
+    if (a === creatorId) evicted.add(b);
+    else if (b === creatorId) evicted.add(a);
+    else evicted.add((joinOrder.get(a) ?? -1) >= (joinOrder.get(b) ?? -1) ? a : b);
+  }
+  await tx.execute(sql`
+    DELETE FROM beacon_joins
+    WHERE beacon_id = ${beaconId} AND user_id IN (${sql.join(
+      [...evicted].map((id) => sql`${id}::uuid`),
+      sql`, `,
+    )})
+  `);
+  return { joinerIds: joinerIds.filter((id) => !evicted.has(id)), evicted };
+}
+
+/**
+ * THE §1.15 spark machinery, verbatim, under the caller's beacon row lock:
+ * plan group (creator admin, joiners members, join_seq = 0), seq 1 icebreaker,
+ * seq 2 auto venue poll, the guarded status flip (belt-and-braces), ritual
+ * count + creator karma bumps. Reused unchanged by the threshold spark
+ * (joinAndMaybeSpark), the §1.47 edit-transaction spark (threshold lowered to
+ * the current count) and POST .../spark-now. Returns the new conversation id.
+ * Fan-out, push and the afterglow job stay the caller's post-commit duty.
+ */
+export async function sparkUnderLock(
+  tx: Tx,
+  beacon: { id: string; creatorId: string; vibe: string },
+  joinerIds: string[],
+): Promise<string> {
+  const conversationId = newId();
+  const nowIso = new Date().toISOString();
+  await tx.execute(sql`
+    INSERT INTO conversations (id, type, title, created_by, last_seq, last_message_at)
+    VALUES (${conversationId}, 'group', ${`${capitalize(beacon.vibe)} plan`}, ${beacon.creatorId}, 2, ${nowIso}::timestamptz)
+  `);
+  // Founding members: creator admin + all joiners, join_seq = 0 so everyone
+  // sees the whole plan from seq 1.
+  await tx.execute(sql`
+    INSERT INTO conversation_participants (conversation_id, user_id, role, join_seq)
+    VALUES (${conversationId}, ${beacon.creatorId}, 'admin', 0)
+  `);
+  for (const jid of joinerIds) {
+    await tx.execute(sql`
+      INSERT INTO conversation_participants (conversation_id, user_id, role, join_seq)
+      VALUES (${conversationId}, ${jid}, 'member', 0)
+      ON CONFLICT DO NOTHING
+    `);
+  }
+  // seq 1: the icebreaker system message (event beacon_sparked).
+  await tx.insert(schema.messages).values({
+    id: newId(),
+    conversationId,
+    seq: 1,
+    senderId: null,
+    type: 'system',
+    body: icebreakerFor(beacon.id),
+    metadata: { system: { event: 'beacon_sparked' } },
+  });
+  // seq 2: the auto venue poll (a §1.17 poll message, sender null).
+  await tx.insert(schema.messages).values({
+    id: newId(),
+    conversationId,
+    seq: 2,
+    senderId: null,
+    type: 'poll',
+    body: BEACON_VENUE_POLL_QUESTION,
+    metadata: {},
+  });
+  await tx.insert(schema.polls).values({
+    id: newId(),
+    conversationId,
+    seq: 2,
+    question: BEACON_VENUE_POLL_QUESTION,
+    options: [...BEACON_VENUE_POLL_OPTIONS],
+  });
+  // The guarded flip — belt-and-braces under the row lock. ritual_count
+  // increments ON SPARK (counts UP; API.md §1.15 rituals).
+  const flipped = (await tx.execute(sql`
+    UPDATE beacons SET
+      status = 'sparked',
+      conversation_id = ${conversationId},
+      ritual_count = ritual_count + (CASE WHEN ritual_rrule IS NOT NULL THEN 1 ELSE 0 END)
+    WHERE id = ${beacon.id} AND status = 'open'
+    RETURNING id
+  `)) as unknown as { id: string }[];
+  if (flipped.length === 0) throw new Error('beacon spark race (impossible under lock)');
+  await tx.execute(sql`
+    UPDATE users SET beacons_sparked = beacons_sparked + 1 WHERE id = ${beacon.creatorId}
+  `);
+  return conversationId;
+}
+
+export interface SparkNowOutcome {
+  row: BeaconRow;
+  conversationId: string;
+  joinerIds: string[];
+}
+
+// -----------------------------------------------------------------------------
+// v0.7 (§1.47) PATCH /api/beacons/:id — the edit transaction. The route owns
+// request-shape validation (custom-vibe pairing, window rules, audience
+// immutability); this function owns everything that must happen under the
+// beacon row lock: the threshold floor against the CURRENT joiner count, the
+// field writes + edited_at, and the equality spark (threshold lowered to
+// "whoever's here") through the §1.15 machinery verbatim.
+// -----------------------------------------------------------------------------
+
+export interface BeaconEditInput {
+  vibe?: string;
+  /** Effective only when the new vibe is 'custom'; cleared otherwise. */
+  customVibeEmoji?: string;
+  customVibeLabel?: string;
+  note?: string;
+  startsAt?: Date;
+  expiresAt?: Date;
+  sparkThreshold?: number;
+  /** undefined = unchanged; null clears the chip. */
+  location?: Location | null;
+}
+
+export interface BeaconEditOutcome {
+  row: BeaconRow;
+  changed: string[]; // ⊆ BEACON_EDITABLE_FIELDS
+  sparked: boolean;
+  conversationId: string | null;
+  joinerIds: string[];
+}
+
+export async function editOpenBeacon(
+  beaconId: string,
+  input: BeaconEditInput,
+): Promise<BeaconEditOutcome | 'threshold_below_joins' | null> {
+  return db.transaction(async (tx) => {
+    const locked = (await tx.execute(sql`
+      SELECT * FROM beacons WHERE id = ${beaconId} FOR UPDATE
+    `)) as unknown as Record<string, unknown>[];
+    if (!locked[0]) return null;
+    const row = rawToBeaconRow(locked[0]);
+    if (row.status !== 'open' || row.expiresAt.getTime() <= Date.now()) return null;
+
+    const joinRows = (await tx.execute(sql`
+      SELECT user_id FROM beacon_joins WHERE beacon_id = ${beaconId} ORDER BY created_at ASC
+    `)) as unknown as { user_id: string }[];
+    const joinerIds = joinRows.map((r) => r.user_id);
+
+    // The threshold floor binds against the COMMITTED joiner count under the
+    // row lock — a concurrent join cannot slip beneath it.
+    if (input.sparkThreshold !== undefined && input.sparkThreshold < joinerIds.length) {
+      return 'threshold_below_joins';
+    }
+
+    // Effective new values (the route already enforced the custom-vibe pair).
+    const newVibe = input.vibe ?? row.vibe;
+    const newEmoji =
+      newVibe === 'custom' ? (input.customVibeEmoji ?? row.customVibeEmoji) : null;
+    const newLabel =
+      newVibe === 'custom' ? (input.customVibeLabel ?? row.customVibeLabel) : null;
+    const newNote = input.note ?? row.note;
+    const newStartsAt = input.startsAt ?? row.startsAt;
+    const newExpiresAt = input.expiresAt ?? row.expiresAt;
+    const newThreshold = input.sparkThreshold ?? row.sparkThreshold;
+    const newLocation =
+      input.location === undefined ? ((row.location as Location | null) ?? null) : input.location;
+
+    const changed: string[] = [];
+    if (newVibe !== row.vibe) changed.push('vibe');
+    if (newEmoji !== row.customVibeEmoji) changed.push('custom_vibe_emoji');
+    if (newLabel !== row.customVibeLabel) changed.push('custom_vibe_label');
+    if (newNote !== row.note) changed.push('note');
+    if (newStartsAt.getTime() !== row.startsAt.getTime()) changed.push('starts_at');
+    if (newExpiresAt.getTime() !== row.expiresAt.getTime()) changed.push('expires_at');
+    if (newThreshold !== row.sparkThreshold) changed.push('spark_threshold');
+    if (JSON.stringify(newLocation) !== JSON.stringify((row.location as Location | null) ?? null)) {
+      changed.push('location');
+    }
+
+    if (changed.length === 0) {
+      // A no-op PATCH is a 200 of the current state — no edited_at bump, no
+      // fan-out, no push (nothing changed for anyone).
+      return { row, changed, sparked: false, conversationId: null, joinerIds };
+    }
+
+    await tx
+      .update(b)
+      .set({
+        vibe: newVibe,
+        customVibeEmoji: newEmoji,
+        customVibeLabel: newLabel,
+        note: newNote,
+        startsAt: newStartsAt,
+        expiresAt: newExpiresAt,
+        sparkThreshold: newThreshold,
+        location: newLocation,
+        editedAt: new Date(),
+      })
+      .where(eq(b.id, beaconId));
+
+    // threshold == current count sparks INSIDE the edit transaction — lowering
+    // the bar to "whoever's here" is a legitimate way to start (§1.47). The
+    // §1.14 stale-pair eviction runs first, exactly like the threshold spark;
+    // a cleaned pile that no longer reaches the bar simply does not spark.
+    let sparked = false;
+    let conversationId: string | null = null;
+    let sparkJoinerIds = joinerIds;
+    if (
+      input.sparkThreshold !== undefined &&
+      joinerIds.length > 0 &&
+      newThreshold <= joinerIds.length
+    ) {
+      const cleaned = await evictStaleBlockedPairs(tx, beaconId, row.creatorId, joinerIds);
+      sparkJoinerIds = cleaned.joinerIds;
+      if (sparkJoinerIds.length >= newThreshold && sparkJoinerIds.length > 0) {
+        conversationId = await sparkUnderLock(
+          tx,
+          { id: beaconId, creatorId: row.creatorId, vibe: newVibe },
+          sparkJoinerIds,
+        );
+        sparked = true;
+      }
+    }
+
+    const [fresh] = (await tx.execute(
+      sql`SELECT * FROM beacons WHERE id = ${beaconId}`,
+    )) as unknown as Record<string, unknown>[];
+    return {
+      row: rawToBeaconRow(fresh!),
+      changed,
+      sparked,
+      conversationId,
+      joinerIds: sparkJoinerIds,
+    };
+  });
+}
+
+/**
+ * v0.7 (§1.47) POST /api/beacons/:id/spark-now — "start with whoever's here":
+ * the existing spark transaction under the beacon row lock, with the threshold
+ * simply not consulted. Returns null when the beacon is not 'open' (or past
+ * expires_at) under the lock, and 'no_joiners' when the cleaned pile is empty
+ * (a plan needs at least two people). The §1.14 stale-pair eviction runs
+ * exactly like the threshold-spark path.
+ */
+export async function sparkNow(beaconId: string): Promise<SparkNowOutcome | 'no_joiners' | null> {
+  return db.transaction(async (tx) => {
+    const locked = (await tx.execute(sql`
+      SELECT * FROM beacons WHERE id = ${beaconId} FOR UPDATE
+    `)) as unknown as Record<string, unknown>[];
+    const raw = locked[0];
+    if (!raw) return null;
+    const status = raw.status as string;
+    const expiresAt = new Date(raw.expires_at as string | Date);
+    if (status !== 'open' || expiresAt.getTime() <= Date.now()) return null;
+    const creatorId = raw.creator_id as string;
+
+    const joinRows = (await tx.execute(sql`
+      SELECT user_id FROM beacon_joins WHERE beacon_id = ${beaconId} ORDER BY created_at ASC
+    `)) as unknown as { user_id: string }[];
+    const { joinerIds } = await evictStaleBlockedPairs(
+      tx,
+      beaconId,
+      creatorId,
+      joinRows.map((r) => r.user_id),
+    );
+    if (joinerIds.length < 1) return 'no_joiners';
+
+    const conversationId = await sparkUnderLock(
+      tx,
+      { id: beaconId, creatorId, vibe: raw.vibe as string },
+      joinerIds,
+    );
+    const [fresh] = (await tx.execute(
+      sql`SELECT * FROM beacons WHERE id = ${beaconId}`,
+    )) as unknown as Record<string, unknown>[];
+    return { row: rawToBeaconRow(fresh!), conversationId, joinerIds };
+  });
 }
 
 /**
@@ -465,105 +788,20 @@ export async function joinAndMaybeSpark(
       // §1.14 spark-time re-check, still under the row lock: the pre-insert
       // check above only cleared the INCOMING joiner against the pile, but a
       // block created while two members were already sitting in the pile
-      // would otherwise be sparked into one brand-new plan group. Re-check
-      // every pair among the would-be founding members and evict the stale
-      // join of each blocked pair — the non-creator when the creator is
-      // involved, otherwise the later joiner — then re-evaluate the
-      // threshold against the cleaned pile.
-      const stalePairs = (await tx.execute(sql`
-        WITH members AS (
-          SELECT user_id FROM beacon_joins WHERE beacon_id = ${beaconId}
-          UNION SELECT ${creatorId}::uuid
-        )
-        SELECT bl.blocker_id AS a, bl.blocked_id AS b FROM blocks bl
-        WHERE bl.blocker_id IN (SELECT user_id FROM members)
-          AND bl.blocked_id IN (SELECT user_id FROM members)
-      `)) as unknown as { a: string; b: string }[];
-      if (stalePairs.length > 0) {
-        const joinOrder = new Map(joinerIds.map((id, i) => [id, i]));
-        const evicted = new Set<string>();
-        for (const { a, b } of stalePairs) {
-          if (a === creatorId) evicted.add(b);
-          else if (b === creatorId) evicted.add(a);
-          else evicted.add((joinOrder.get(a) ?? -1) >= (joinOrder.get(b) ?? -1) ? a : b);
-        }
-        await tx.execute(sql`
-          DELETE FROM beacon_joins
-          WHERE beacon_id = ${beaconId} AND user_id IN (${sql.join(
-            [...evicted].map((id) => sql`${id}::uuid`),
-            sql`, `,
-          )})
-        `);
-        joinerIds = joinerIds.filter((id) => !evicted.has(id));
-        // The incoming joiner themselves hit a block committed between the
-        // pre-insert check and here: their join is gone again, and the
-        // caller answers the same 404-shaped §1.14 refusal as above.
-        if (evicted.has(userId)) return 'blocked';
-      }
+      // would otherwise be sparked into one brand-new plan group. Evict the
+      // stale join of each blocked pair, then re-evaluate the threshold
+      // against the cleaned pile.
+      const cleaned = await evictStaleBlockedPairs(tx, beaconId, creatorId, joinerIds);
+      joinerIds = cleaned.joinerIds;
+      // The incoming joiner themselves hit a block committed between the
+      // pre-insert check and here: their join is gone again, and the
+      // caller answers the same 404-shaped §1.14 refusal as above.
+      if (cleaned.evicted.has(userId)) return 'blocked';
     }
 
     if (inserted && joinerIds.length >= threshold) {
-      // ---- SPARK ----
-      conversationId = newId();
-      const nowIso = new Date().toISOString();
-      await tx.execute(sql`
-        INSERT INTO conversations (id, type, title, created_by, last_seq, last_message_at)
-        VALUES (${conversationId}, 'group', ${`${capitalize(vibe)} plan`}, ${creatorId}, 2, ${nowIso}::timestamptz)
-      `);
-      // Founding members: creator admin + all joiners, join_seq = 0 so
-      // everyone sees the whole plan from seq 1.
-      await tx.execute(sql`
-        INSERT INTO conversation_participants (conversation_id, user_id, role, join_seq)
-        VALUES (${conversationId}, ${creatorId}, 'admin', 0)
-      `);
-      for (const jid of joinerIds) {
-        await tx.execute(sql`
-          INSERT INTO conversation_participants (conversation_id, user_id, role, join_seq)
-          VALUES (${conversationId}, ${jid}, 'member', 0)
-          ON CONFLICT DO NOTHING
-        `);
-      }
-      // seq 1: the icebreaker system message (event beacon_sparked).
-      await tx.insert(schema.messages).values({
-        id: newId(),
-        conversationId,
-        seq: 1,
-        senderId: null,
-        type: 'system',
-        body: icebreakerFor(beaconId),
-        metadata: { system: { event: 'beacon_sparked' } },
-      });
-      // seq 2: the auto venue poll (a §1.17 poll message, sender null).
-      await tx.insert(schema.messages).values({
-        id: newId(),
-        conversationId,
-        seq: 2,
-        senderId: null,
-        type: 'poll',
-        body: BEACON_VENUE_POLL_QUESTION,
-        metadata: {},
-      });
-      await tx.insert(schema.polls).values({
-        id: newId(),
-        conversationId,
-        seq: 2,
-        question: BEACON_VENUE_POLL_QUESTION,
-        options: [...BEACON_VENUE_POLL_OPTIONS],
-      });
-      // The guarded flip — belt-and-braces under the row lock. ritual_count
-      // increments ON SPARK (counts UP; API.md §1.15 rituals).
-      const flipped = (await tx.execute(sql`
-        UPDATE beacons SET
-          status = 'sparked',
-          conversation_id = ${conversationId},
-          ritual_count = ritual_count + (CASE WHEN ritual_rrule IS NOT NULL THEN 1 ELSE 0 END)
-        WHERE id = ${beaconId} AND status = 'open'
-        RETURNING id
-      `)) as unknown as { id: string }[];
-      if (flipped.length === 0) throw new Error('beacon spark race (impossible under lock)');
-      await tx.execute(sql`
-        UPDATE users SET beacons_sparked = beacons_sparked + 1 WHERE id = ${creatorId}
-      `);
+      // ---- SPARK (the §1.15 machinery, shared with spark-now/§1.47) ----
+      conversationId = await sparkUnderLock(tx, { id: beaconId, creatorId, vibe }, joinerIds);
       sparked = true;
     } else if (inserted && joinerIds.length === threshold - 1) {
       // Re-ping ("needs 1 more") — the one-shot guarded claim, at most once
@@ -593,9 +831,16 @@ export function rawToBeaconRow(r: Record<string, unknown>): BeaconRow {
     id: r.id as string,
     creatorId: r.creator_id as string,
     vibe: r.vibe as string,
+    customVibeEmoji: (r.custom_vibe_emoji as string | null) ?? null,
+    customVibeLabel: (r.custom_vibe_label as string | null) ?? null,
     note: r.note as string,
     audience: r.audience as string,
     area: (r.area as string | null) ?? null,
+    location: (r.location as unknown) ?? null,
+    editedAt: r.edited_at ? new Date(r.edited_at as string | Date) : null,
+    startingSoonPingedAt: r.starting_soon_pinged_at
+      ? new Date(r.starting_soon_pinged_at as string | Date)
+      : null,
     startsAt: new Date(r.starts_at as string | Date),
     expiresAt: new Date(r.expires_at as string | Date),
     sparkThreshold: Number(r.spark_threshold),

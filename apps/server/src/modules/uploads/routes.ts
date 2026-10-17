@@ -131,16 +131,48 @@ export async function uploadRoutes(fastify: FastifyInstance): Promise<void> {
                 AND m.seq > p.join_seq
                 AND (p.left_at IS NULL OR m.seq <= COALESCE(p.left_seq, 0))
             )
-            -- §1.36: feed attachments are readable by the post's audience
-            -- (author's friends-of set, minus §1.14 blocks — both directions).
+            -- §1.36/§1.49: feed attachments are readable by the post's
+            -- audience — the author's friends-of set, or ANY authed user for
+            -- audience='public' posts (non-banned author), minus §1.14 blocks
+            -- both directions (mirrors requireVisiblePost in modules/feed).
             OR EXISTS (
               SELECT 1 FROM posts po
               WHERE po.id = a.post_id
-                AND ${friendsOfPairCond(user.id, sql`po.author_id`)}
+                AND (
+                  ${friendsOfPairCond(user.id, sql`po.author_id`)}
+                  OR (po.audience = 'public' AND NOT EXISTS (
+                    SELECT 1 FROM users bu
+                    WHERE bu.id = po.author_id AND bu.banned_at IS NOT NULL))
+                )
                 AND NOT EXISTS (
                   SELECT 1 FROM blocks bl
                   WHERE (bl.blocker_id = ${user.id} AND bl.blocked_id = po.author_id)
                      OR (bl.blocker_id = po.author_id AND bl.blocked_id = ${user.id}))
+            )
+            -- §1.51: comment-bound attachments (GIF/image comments) resolve
+            -- through the parent post's visibility — friends-of OR
+            -- audience='public' (non-banned author), minus §1.14 blocks
+            -- against BOTH the post author and the comment author (a blocked
+            -- commenter's media is as invisible as their comment).
+            OR EXISTS (
+              SELECT 1 FROM post_comments pc
+              JOIN posts po ON po.id = pc.post_id
+              WHERE pc.id = a.comment_id
+                AND (
+                  po.author_id = ${user.id}
+                  OR ${friendsOfPairCond(user.id, sql`po.author_id`)}
+                  OR (po.audience = 'public' AND NOT EXISTS (
+                    SELECT 1 FROM users bu
+                    WHERE bu.id = po.author_id AND bu.banned_at IS NOT NULL))
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM blocks bl
+                  WHERE (bl.blocker_id = ${user.id} AND bl.blocked_id = po.author_id)
+                     OR (bl.blocker_id = po.author_id AND bl.blocked_id = ${user.id}))
+                AND NOT EXISTS (
+                  SELECT 1 FROM blocks bl
+                  WHERE (bl.blocker_id = ${user.id} AND bl.blocked_id = pc.author_id)
+                     OR (bl.blocker_id = pc.author_id AND bl.blocked_id = ${user.id}))
             )
             -- §1.34: story media — unexpired, viewer in the author's audience.
             OR EXISTS (

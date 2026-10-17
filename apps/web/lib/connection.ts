@@ -21,7 +21,7 @@ import { refreshBeacons } from './beacons';
 import { refreshConnections } from './connections';
 import * as db from './db';
 import { onRouletteExpired, refreshOptin } from './discovery';
-import { refreshFeed } from './feed';
+import { adoptIncomingPost, refreshFeed } from './feed';
 import { registerEventSender } from './signals';
 import * as store from './store';
 import { refreshStories } from './stories';
@@ -282,7 +282,9 @@ function handleFrame(raw: string): void {
       store.upsertBeacon(ev.d.beacon);
       break;
     case 'beacon.updated':
-      store.upsertBeacon(ev.d.beacon, ev.d.reping);
+      // v0.7 (§1.47): edited/changed mark a creator edit so cards can flash
+      // the changed chips; the DTO carries the full new state either way.
+      store.upsertBeacon(ev.d.beacon, ev.d.reping, ev.d.edited, ev.d.changed);
       break;
     // PRIVATE kudos — this socket IS the recipient; never rendered publicly.
     case 'beacon.kudos':
@@ -327,8 +329,10 @@ function handleFrame(raw: string): void {
       break;
     // v0.5a (§1.36): friends-of audience only. Reactions/comments deliberately
     // fan out nothing — the feed reconciles from GET when the viewer returns.
+    // v0.7 (§1.50): join_card frames arrive with ref_summary stripped (it is
+    // viewer-specific) — adoptIncomingPost resolves MY view via GET first.
     case 'post.new':
-      store.prependPost(ev.d.post);
+      void adoptIncomingPost(ev.d.post);
       break;
     // v0.6 calls (§1.42/§2.12): relayed signaling + the server-emitted
     // call.updated all route to the media engine (lib/webrtc.ts).
@@ -560,7 +564,10 @@ async function runSync(): Promise<void> {
   // window is already open — its own tab fetches on first visit.
   void refreshConnections();
   void refreshStories();
-  if (store.state.feedPosts !== null) void refreshFeed().catch(() => undefined);
+  // v0.7 (§1.49): lanes reconcile independently — only windows already open.
+  for (const lane of ['friends', 'discover'] as const) {
+    if (store.state.feed[lane].posts !== null) void refreshFeed(lane).catch(() => undefined);
+  }
   // v0.6 (§1.44): my opt-in state reconciles from REST once the Local tab has
   // looked at it (frames never carry it — it is owner-only state).
   if (store.state.discoveryLoaded) void refreshOptin();

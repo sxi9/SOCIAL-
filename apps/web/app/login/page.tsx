@@ -76,7 +76,14 @@ function LoginForm() {
   return (
     <form onSubmit={(e) => void submit(e)}>
       <div className={authStyles.mascotRow}>
-        <Mascot ref={mascotRef} state={fx.party ? 'party' : mascot} size={96} />
+        {/* v0.7 (§1.54): while ambient ('watch'), the mascot reacts to the
+            flipping wordmark's current word; interactions (password cover,
+            error shake, success) always win over the word. */}
+        <Mascot
+          ref={mascotRef}
+          state={fx.party ? 'party' : mascot === 'watch' && fx.wordMascot ? fx.wordMascot : mascot}
+          size={96}
+        />
       </div>
       <h2 className={authStyles.formTitle}>Welcome back</h2>
       <div className="field">

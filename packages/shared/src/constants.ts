@@ -646,3 +646,124 @@ export const RESCUE_MAX_PER_DAY = 3;
 // Default message body when the rescuer sends no note (also the push copy —
 // "<display_name> needs a rescue call 📞").
 export const RESCUE_DEFAULT_BODY = 'needs a rescue call 📞';
+
+// ============================ v0.7 additions =================================
+// Interactivity pack (FEATURES #60–#71; API.md §1.47–§1.54; ADR-016).
+// PSYCHOLOGY.md stays binding everywhere here: the discover lane is FINITE
+// with a hard all_caught_up end and NO ranking; poll-option counts are a VOTE
+// TALLY on choices, never approval attached to a person (the distinction is
+// argued in ADR-016); comment reactions render as capped FACES lists, never
+// totals; joiner notifications go to people who COMMITTED to a plan — never
+// to anyone who cannot join (design rule 2); locations are user-initiated
+// snapshots, never live tracking; no third-party map tiles or API keys.
+
+// ---- Beacon editing & custom vibes (v0.7 — API.md §1.47) ----
+// The full beacons.vibe VALUE set = the BEACON_VIBES preset chips + 'custom'
+// (which requires custom_vibe_emoji + custom_vibe_label on the row). Keep in
+// sync with BEACON_VIBES above and the beacons_vibe_check DB CHECK.
+export const BEACON_VIBE_VALUES = [
+  'food',
+  'chai',
+  'walk',
+  'game',
+  'movie',
+  'study',
+  'sport',
+  'chill',
+  'custom',
+] as const;
+export const BEACON_CUSTOM_VIBE_LABEL_MAX_CHARS = 24; // one word-ish, the tag bound
+// Zod counts UTF-16 units, like REACTION_EMOJI_MAX_LEN (astral emoji fit).
+export const BEACON_CUSTOM_VIBE_EMOJI_MAX_LEN = 16;
+// Client-side recents for the custom-vibe picker (localStorage, per device —
+// never synced, never serialized; FEATURES #61 "recents remembered").
+export const BEACON_CUSTOM_VIBE_RECENTS_MAX = 6;
+// PATCH /api/beacons/:id budget (fixed window, per user).
+export const BEACON_EDIT_RATE_PER_HOUR = 30;
+// The editable field set — the `changed` array on the edited beacon.updated
+// frame only ever names these (API.md §1.47).
+export const BEACON_EDITABLE_FIELDS = [
+  'vibe',
+  'custom_vibe_emoji',
+  'custom_vibe_label',
+  'note',
+  'starts_at',
+  'expires_at',
+  'spark_threshold',
+  'location',
+] as const;
+// Starting-soon worker ping: joiners (+ the creator of a sparked plan) get one
+// push when starts_at is this close. Claimed once per beacon via the guarded
+// UPDATE on starting_soon_pinged_at (the repinged_at pattern). §2.9 guards
+// apply — a user with the app open has the countdown card already.
+export const BEACON_STARTING_SOON_LEAD_S = 30 * 60;
+
+// ---- Listing editing (v0.7 — API.md §1.48) ----
+// PATCH /api/listings/:id budget (fixed window, per user) — the beacon-edit
+// bound re-applied to the board.
+export const LISTING_EDIT_RATE_PER_HOUR = 30;
+
+// ---- Feed lanes & public posts (v0.7 — API.md §1.49) ----
+export const FEED_LANES = ['friends', 'discover'] as const;
+export const POST_AUDIENCES = ['friends_of', 'public'] as const;
+
+// ---- Interactive posts (v0.7 — API.md §1.50, ADR-016) ----
+export const POST_KINDS = ['text', 'poll', 'game', 'join_card'] as const;
+// Post polls are snappier than chat polls (POLL_QUESTION_MAX_CHARS=200):
+// a feed card is a glance, not a thread. Options reuse the §1.17 bounds
+// (POLL_OPTIONS_MIN/MAX, POLL_OPTION_MAX_CHARS).
+export const POST_POLL_QUESTION_MAX_CHARS = 120;
+// What a join_card may point at (posts.ref jsonb {type, id}).
+export const POST_REF_TYPES = ['beacon', 'listing'] as const;
+// Joiner faces inlined on a join_card's live beacon summary (the pile
+// preview; the full pile lives on GET /api/beacons/:id).
+export const JOIN_CARD_SUMMARY_JOINERS_MAX = 4;
+
+// ---- Comment upgrades (v0.7 — API.md §1.51) ----
+// Distinct emoji one user may hold on one comment; the 9th distinct → 409.
+// Stamps ride the ':stamp:' sentinel (STAMP_REACTION_KEY) with kind='stamp'
+// and never eat an emoji slot — the §1.19 machinery, re-applied.
+export const REACTIONS_PER_USER_PER_COMMENT_MAX = 8;
+// Reactor FACES inlined per (emoji, kind) chip on a comment; has_more carries
+// the rest. NEVER a numeric total (PSYCHOLOGY design rule 3).
+export const COMMENT_REACTORS_PREVIEW_MAX = 6;
+
+// ---- Locations (v0.7 — API.md §1.52) ----
+// {label ≤ 80, lat?, lng?} — lat/lng are OPTIONAL, both-or-neither, and only
+// ever a user-initiated one-tap SNAPSHOT (no live GPS, no tracking, nothing
+// ambient — the FEATURES #30 line holds). Rendering is a LINK (geo:/OSM/
+// Google URL built client-side) — no tile embeds, no map API keys ever
+// (self-hosted ethos, CLAUDE.md golden rule 7).
+export const LOCATION_LABEL_MAX_CHARS = 80;
+export const LOCATION_LAT_MIN = -90;
+export const LOCATION_LAT_MAX = 90;
+export const LOCATION_LNG_MIN = -180;
+export const LOCATION_LNG_MAX = 180;
+// The on-my-way quick action is an ORDINARY text reply (reply_to_seq = the
+// location message's seq) with this exact body — zero new server machinery;
+// the location bubble derives its headcount faces from these replies.
+export const ON_MY_WAY_BODY = 'On my way 🏃';
+
+// ---- Invite OG banner (v0.7 — API.md §1.53) ----
+// GET /api/invites/:token/og-banner.png — sharp-composed server-side (brand
+// gradient + inviter avatar circle or the mascot-blob fallback + SVG text
+// overlay; display_name is XML-ESCAPED before it enters the SVG). Valid-
+// token-gated and rate-limited exactly like the §1.11 avatar proxy; cache
+// keyed on the inviter's avatar_version.
+export const OG_BANNER_WIDTH_PX = 1200;
+export const OG_BANNER_HEIGHT_PX = 630;
+export const OG_BANNER_AVATAR_PX = 320;
+export const INVITE_OG_RATE_PER_HOUR_PER_IP = 120; // the avatar-proxy budget
+
+// ---- Scheduled-send feedback (v0.7 — API.md §1.54, web-only) ----
+// Toast lifetime for the "Scheduled for <time>" confirmation. The pending
+// count on the composer clock badge is the user's OWN utility state (their
+// queued sends) — not a social counter; PSYCHOLOGY rule 3 is untouched.
+export const SCHEDULED_TOAST_MS = 4000;
+
+// ---- Flipping wordmark (v0.7 — API.md §1.54, web-only) ----
+// The auth headline "[Bored] Chat" cycles these on a fixed-width slot with a
+// vertical roll; pauses while the tab is hidden; settles on 'Bored';
+// prefers-reduced-motion renders static 'Bored'. The mascot reacts per word.
+export const WORDMARK_WORDS = ['Bored', 'Sad', 'Excited', 'Happy', 'Lonely', 'Hyped'] as const;
+export const WORDMARK_FLIP_INTERVAL_MS = 2500;

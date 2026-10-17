@@ -33,7 +33,10 @@
 .celebrate,
 .party,
 .wave,
-.drowsy {
+.drowsy,
+.droop,
+.happy,
+.lookaround {
   /* marker classes */
 }
 
@@ -188,6 +191,31 @@
   transform: rotate(-140deg);
 }
 
+/* v0.7 wordmark states (static poses — correct under reduced motion too). */
+
+/* Sad: outer brow ends droop, half lids, frown (mouth map), slight sag. */
+.droop .browL {
+  transform: rotate(-14deg) translateY(2px);
+}
+
+.droop .browR {
+  transform: rotate(14deg) translateY(2px);
+}
+
+.droop .lid {
+  transform: translateY(8px);
+}
+
+.droop .inner {
+  transform: translateY(3px);
+}
+
+/* Happy: brows up + grin (mouth map). */
+.happy .browL,
+.happy .browR {
+  transform: translateY(-3px);
+}
+
 .celebrate .armL,
 .party .armL {
   transform: rotate(140deg);
@@ -269,6 +297,32 @@
 
   .party .armR {
     animation: arm-dance-r 0.52s ease-in-out infinite;
+  }
+
+  /* Lonely: pupils dart around looking for company. CSS animations beat the
+     eye-tracking inline transform while active (cascade rule), so this wins
+     cleanly and hands control back when the state changes. */
+  .lookaround .pupil {
+    animation: look-around 2.6s ease-in-out infinite;
+  }
+}
+
+@keyframes look-around {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  22% {
+    transform: translateX(-3.2px);
+  }
+  48% {
+    transform: translateX(-3.2px);
+  }
+  64% {
+    transform: translateX(3.2px);
+  }
+  86% {
+    transform: translateX(3.2px);
   }
 }
 

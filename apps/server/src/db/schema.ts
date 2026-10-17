@@ -271,9 +271,11 @@ export const messages = pgTable(
     // v0.4 adds 'audio' (voice notes), 'vibe_check' (prompt; replies carry
     // metadata.vibe_reply_seq), 'game_ttt' (state in metadata.game) and
     // 'puzzle_result' (metadata.puzzle, server-populated) — migration 0004.
+    // v0.7 adds 'location' (migration 0008, §1.52): a "📍 join me here" drop —
+    // the place rides metadata.location (+ optional metadata.join_me).
     typeCheck: check(
       'messages_type_check',
-      sql`${t.type} IN ('text','image','video','file','system','poll','audio','vibe_check','game_ttt','puzzle_result')`,
+      sql`${t.type} IN ('text','image','video','file','system','poll','audio','vibe_check','game_ttt','puzzle_result','location')`,
     ),
     // v0.4 (§1.22): metadata.effect pinned to the MESSAGE_EFFECTS set.
     metadataEffectCheck: check(
@@ -451,6 +453,11 @@ export const attachments = pgTable(
     listingId: uuid('listing_id').references((): AnyPgColumn => listings.id, {
       onDelete: 'set null',
     }),
+    // v0.7 (migration 0008, §1.51): bound to a feed comment — same pattern
+    // (post_comments.attachment_id is the reference, this is the GC shield).
+    commentId: uuid('comment_id').references((): AnyPgColumn => postComments.id, {
+      onDelete: 'set null',
+    }),
     kind: text('kind').notNull(),
     originalKey: text('original_key').notNull(),
     thumbKey: text('thumb_key'),
@@ -491,7 +498,7 @@ export const attachments = pgTable(
     orphanIdx: index('attachments_orphan_idx')
       .on(t.createdAt)
       .where(
-        sql`${t.messageId} IS NULL AND ${t.shareImportId} IS NULL AND ${t.scheduledMessageId} IS NULL AND ${t.postId} IS NULL AND ${t.listingId} IS NULL`,
+        sql`${t.messageId} IS NULL AND ${t.shareImportId} IS NULL AND ${t.scheduledMessageId} IS NULL AND ${t.postId} IS NULL AND ${t.listingId} IS NULL AND ${t.commentId} IS NULL`,
       ),
   }),
 );
@@ -538,10 +545,24 @@ export const beacons = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     vibe: text('vibe').notNull(),
+    // v0.7 (migration 0008, §1.47): the creator's own chip — emoji + word,
+    // both non-null exactly when vibe='custom' (shape CHECK below).
+    customVibeEmoji: text('custom_vibe_emoji'),
+    customVibeLabel: text('custom_vibe_label'),
     note: text('note').notNull().default(''),
     audience: text('audience').notNull(),
     // Creator-area snapshot; required iff audience = 'area'.
     area: citext('area'),
+    // v0.7 (migration 0008, §1.52): optional place chip {label, lat?, lng?} —
+    // jsonb type pinned here, shape authority is the shared LocationSchema.
+    location: jsonb('location'),
+    // v0.7 (§1.47): set on every effective creator edit (the "edited" marker;
+    // no edit history is stored — the §1.30 pattern).
+    editedAt: timestamptz('edited_at'),
+    // v0.7 (§1.47): the T-30min starting-soon ping, claimed once per beacon
+    // via the guarded UPDATE ... WHERE starting_soon_pinged_at IS NULL (the
+    // repinged_at pattern).
+    startingSoonPingedAt: timestamptz('starting_soon_pinged_at'),
     startsAt: timestamptz('starts_at').notNull(),
     expiresAt: timestamptz('expires_at').notNull(),
     sparkThreshold: integer('spark_threshold').notNull().default(2),
@@ -560,9 +581,26 @@ export const beacons = pgTable(
     createdAt: timestamptz('created_at').notNull().defaultNow(),
   },
   (t) => ({
+    // v0.7 (migration 0008) adds 'custom' — BEACON_VIBE_VALUES.
     vibeCheck: check(
       'beacons_vibe_check',
-      sql`${t.vibe} IN ('food','chai','walk','game','movie','study','sport','chill')`,
+      sql`${t.vibe} IN ('food','chai','walk','game','movie','study','sport','chill','custom')`,
+    ),
+    customVibeEmojiCheck: check(
+      'beacons_custom_vibe_emoji_check',
+      sql`char_length(${t.customVibeEmoji}) BETWEEN 1 AND 16`,
+    ),
+    customVibeLabelCheck: check(
+      'beacons_custom_vibe_label_check',
+      sql`char_length(${t.customVibeLabel}) BETWEEN 1 AND 24`,
+    ),
+    customVibeShapeCheck: check(
+      'beacons_custom_vibe_shape_check',
+      sql`(${t.vibe} = 'custom') = (${t.customVibeEmoji} IS NOT NULL AND ${t.customVibeLabel} IS NOT NULL)`,
+    ),
+    locationCheck: check(
+      'beacons_location_check',
+      sql`${t.location} IS NULL OR jsonb_typeof(${t.location}) = 'object'`,
     ),
     noteCheck: check('beacons_note_check', sql`char_length(${t.note}) <= 140`),
     audienceCheck: check(
@@ -606,6 +644,10 @@ export const beacons = pgTable(
     ritualParentIdx: uniqueIndex('beacons_ritual_parent_idx')
       .on(t.ritualParentId)
       .where(sql`${t.ritualParentId} IS NOT NULL`),
+    // v0.7 (§1.47): the starting-soon sweep walk (worker queue `beacons`).
+    startingSoonIdx: index('beacons_starting_soon_idx')
+      .on(t.startsAt)
+      .where(sql`${t.status} IN ('open','sparked') AND ${t.startingSoonPingedAt} IS NULL`),
   }),
 );
 
@@ -1075,19 +1117,65 @@ export const posts = pgTable(
     authorId: uuid('author_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    // v0.7 (migration 0008, §1.50): 'text' | 'poll' | 'game' | 'join_card'.
+    // Poll state lives in post_polls/post_poll_votes; the game claim lives
+    // here (columns below); a join_card's target lives in `ref`.
+    kind: text('kind').notNull().default('text'),
     body: text('body').notNull().default(''),
     attachmentIds: jsonb('attachment_ids').notNull().default([]),
+    // v0.7 (§1.49) adds 'public' — the discover lane. Resolved at read/
+    // fan-out time minus blocks and banned authors, like every audience.
     audience: text('audience').notNull().default('friends_of'),
+    // v0.7 (§1.50): join_card target {type: 'beacon'|'listing', id} — stored
+    // VERBATIM (shape authority: shared PostRefSchema); the live summary is
+    // resolved per viewer at serialization time. The audience-intersection
+    // rule (a post may never widen its ref's audience) binds at create.
+    ref: jsonb('ref'),
+    // v0.7 (§1.50): the open-challenge claim — NULL until the FIRST claimer
+    // wins the advisory-locked guarded UPDATE ... WHERE game_claimed_by IS
+    // NULL (the spark pattern). The board itself is an ordinary game_ttt
+    // message in the claimer↔author DM.
+    gameClaimedBy: uuid('game_claimed_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    // v0.7 (migration 0008, §1.52): optional place chip — jsonb type pinned
+    // here, shape authority is the shared LocationSchema.
+    location: jsonb('location'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
   },
   (t) => ({
+    kindCheck: check(
+      'posts_kind_check',
+      sql`${t.kind} IN ('text','poll','game','join_card')`,
+    ),
     bodyCheck: check('posts_body_check', sql`char_length(${t.body}) <= 2000`),
     attachmentIdsCheck: check(
       'posts_attachment_ids_check',
       sql`jsonb_typeof(${t.attachmentIds}) = 'array' AND jsonb_array_length(${t.attachmentIds}) <= 4`,
     ),
-    audienceCheck: check('posts_audience_check', sql`${t.audience} IN ('friends_of')`),
+    // v0.7 (migration 0008) adds 'public' — POST_AUDIENCES.
+    audienceCheck: check(
+      'posts_audience_check',
+      sql`${t.audience} IN ('friends_of','public')`,
+    ),
+    refCheck: check('posts_ref_check', sql`${t.ref} IS NULL OR jsonb_typeof(${t.ref}) = 'object'`),
+    refShapeCheck: check(
+      'posts_ref_shape_check',
+      sql`(${t.kind} = 'join_card') = (${t.ref} IS NOT NULL)`,
+    ),
+    gameClaimShapeCheck: check(
+      'posts_game_claim_shape_check',
+      sql`${t.gameClaimedBy} IS NULL OR ${t.kind} = 'game'`,
+    ),
+    locationCheck: check(
+      'posts_location_check',
+      sql`${t.location} IS NULL OR jsonb_typeof(${t.location}) = 'object'`,
+    ),
     byAuthorIdx: index('posts_by_author_idx').on(t.authorId, sql`${t.createdAt} DESC`),
+    // v0.7 (§1.49): the discover-lane read — finite keyset, like the friends lane.
+    discoverIdx: index('posts_discover_idx')
+      .on(sql`${t.createdAt} DESC`)
+      .where(sql`${t.audience} = 'public'`),
   }),
 );
 
@@ -1124,12 +1212,105 @@ export const postComments = pgTable(
     authorId: uuid('author_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    body: text('body').notNull(),
+    // v0.7 (migration 0008, §1.51): body may be empty — an image/GIF-only
+    // comment is legal; at least one of body/attachment is route-enforced.
+    body: text('body').notNull().default(''),
+    // v0.7 (§1.51): one optional image attachment via the EXISTING §1.6
+    // pipeline (attachments.comment_id is the binding/GC shield twin; the
+    // explicit AnyPgColumn annotations break the two-table inference cycle).
+    attachmentId: uuid('attachment_id').references((): AnyPgColumn => attachments.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
   },
   (t) => ({
-    bodyCheck: check('post_comments_body_check', sql`char_length(${t.body}) BETWEEN 1 AND 500`),
+    // v0.7 (migration 0008): the BETWEEN 1 AND 500 lower bound is dropped.
+    bodyCheck: check('post_comments_body_check', sql`char_length(${t.body}) <= 500`),
     byPostIdx: index('post_comments_by_post_idx').on(t.postId, t.createdAt),
+    attachmentIdx: index('post_comments_attachment_idx').on(t.attachmentId),
+  }),
+);
+
+// v0.7 (migration 0008, §1.50). One poll per poll post (post_id PK); options
+// jsonb like the §1.17 chat polls (per-option bound Zod-enforced — the house
+// metadata pattern). No closes_at: a post poll lives and dies with its post.
+// Counts here are a VOTE TALLY on options — a decision tool, never approval
+// attached to a person (ADR-016 argues the PSYCHOLOGY rule-3 distinction).
+
+export const postPolls = pgTable(
+  'post_polls',
+  {
+    postId: uuid('post_id')
+      .primaryKey()
+      .references(() => posts.id, { onDelete: 'cascade' }),
+    question: text('question').notNull(),
+    options: jsonb('options').notNull(), // array of 2..6 option strings
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    questionCheck: check(
+      'post_polls_question_check',
+      sql`char_length(${t.question}) BETWEEN 1 AND 120`,
+    ),
+    optionsCheck: check(
+      'post_polls_options_check',
+      sql`jsonb_typeof(${t.options}) = 'array' AND jsonb_array_length(${t.options}) BETWEEN 2 AND 6`,
+    ),
+  }),
+);
+
+// Revote REPLACES (UPSERT on the PK — the §1.17 poll_votes semantics). The
+// only reads are per-option aggregates and the voter's own my_vote row: no
+// voter lists, no vote timestamps in any payload.
+
+export const postPollVotes = pgTable(
+  'post_poll_votes',
+  {
+    postId: uuid('post_id')
+      .notNull()
+      .references(() => postPolls.postId, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    optionIdx: integer('option_idx').notNull(),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.postId, t.userId] }),
+    optionIdxCheck: check('post_poll_votes_option_idx_check', sql`${t.optionIdx} >= 0`),
+  }),
+);
+
+// v0.7 (migration 0008, §1.51). Emoji + avatar-stamp reactions on comments —
+// the §1.19 machinery re-applied: a stamp is kind='stamp' with the ':stamp:'
+// sentinel (STAMP_REACTION_KEY) in the emoji column, so the PK enforces one
+// stamp per user per comment; the 8-distinct-emoji route cap counts
+// kind='emoji' rows only. Rendered as capped FACES lists, never totals.
+
+export const commentReactions = pgTable(
+  'comment_reactions',
+  {
+    commentId: uuid('comment_id')
+      .notNull()
+      .references(() => postComments.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    emoji: text('emoji').notNull(),
+    kind: text('kind').notNull().default('emoji'),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.commentId, t.userId, t.emoji, t.kind] }),
+    emojiCheck: check(
+      'comment_reactions_emoji_check',
+      sql`char_length(${t.emoji}) BETWEEN 1 AND 16`,
+    ),
+    kindCheck: check('comment_reactions_kind_check', sql`${t.kind} IN ('emoji','stamp')`),
+    stampKeyCheck: check(
+      'comment_reactions_stamp_key_check',
+      sql`(${t.kind} = 'stamp') = (${t.emoji} = ':stamp:')`,
+    ),
   }),
 );
 
@@ -1215,6 +1396,11 @@ export const listings = pgTable(
     conversationId: uuid('conversation_id').references(() => conversations.id, {
       onDelete: 'set null',
     }),
+    // v0.7 (migration 0008, §1.52): optional place chip — jsonb type pinned
+    // here, shape authority is the shared LocationSchema.
+    location: jsonb('location'),
+    // v0.7 (§1.48): set on every effective author edit (the "edited" marker).
+    editedAt: timestamptz('edited_at'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     expiresAt: timestamptz('expires_at'),
   },
@@ -1231,6 +1417,10 @@ export const listings = pgTable(
     statusCheck: check(
       'listings_status_check',
       sql`${t.status} IN ('active','closed','expired')`,
+    ),
+    locationCheck: check(
+      'listings_location_check',
+      sql`${t.location} IS NULL OR jsonb_typeof(${t.location}) = 'object'`,
     ),
     expiryShapeCheck: check(
       'listings_expiry_shape_check',

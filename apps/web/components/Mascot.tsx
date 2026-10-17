@@ -44,7 +44,12 @@ export type MascotState =
   | 'wince'
   | 'celebrate'
   | 'party'
-  | 'wave';
+  | 'wave'
+  // v0.7 (§1.54) wordmark reactions: Sad = droop, Happy = smile, Lonely =
+  // look around (Excited reuses 'celebrate', Hyped reuses 'party').
+  | 'droop'
+  | 'happy'
+  | 'lookaround';
 
 export interface MascotHandle {
   /** Aim the eyes at a viewport point (input caret); null resumes pointer tracking. */
@@ -301,15 +306,17 @@ const Mascot = forwardRef<MascotHandle, MascotProps>(function Mascot(
       ? 'yawn'
       : expr === 'drowsy'
         ? 'flat'
-        : expr === 'shake'
+        : expr === 'shake' || expr === 'droop'
           ? 'frown'
           : expr === 'wince'
             ? 'wobble'
-            : expr === 'celebrate' || expr === 'party' || expr === 'wave'
+            : expr === 'celebrate' || expr === 'party' || expr === 'wave' || expr === 'happy'
               ? 'grin'
               : expr === 'cover' || expr === 'peek'
                 ? 'o'
-                : 'smile';
+                : expr === 'lookaround'
+                  ? 'flat'
+                  : 'smile';
 
   return (
     <svg

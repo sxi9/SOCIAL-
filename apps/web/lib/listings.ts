@@ -6,6 +6,7 @@ import type {
   ContactListingResponse,
   ConversationResponse,
   CreateListingRequest,
+  UpdateListingRequest,
   CreatePersonReviewRequest,
   Listing,
   ListingContactsResponse,
@@ -68,6 +69,14 @@ export async function getListing(id: string): Promise<Listing> {
 
 export async function createListing(req: CreateListingRequest): Promise<Listing> {
   const res = await api.post<ListingResponse>('/api/listings', req);
+  return res.listing;
+}
+
+/** v0.7 (§1.48): author edit — kind echoed to pick the Zod branch (immutable);
+ * `details`, when present, is the COMPLETE per-kind payload (revalidated like
+ * create). No fan-out ever — the board stays pull-based. */
+export async function updateListing(id: string, req: UpdateListingRequest): Promise<Listing> {
+  const res = await api.patch<ListingResponse>(`/api/listings/${id}`, req);
   return res.listing;
 }
 

@@ -8,6 +8,7 @@ import type { ScheduledMessage } from '@socialchat/shared';
 import { formatDeliverAt } from '@/lib/format';
 import { cancelScheduled, pendingFor, refreshScheduled } from '@/lib/scheduled';
 import { useAppState } from '@/lib/useStore';
+import Portal from './Portal';
 import sheetStyles from './beacons.module.css';
 import exp from './expression.module.css';
 
@@ -58,6 +59,8 @@ export default function ScheduledDrawer({ conversationId, onClose }: ScheduledDr
   }
 
   return (
+    // v0.6.1 rule: every sheet renders through Portal into <body>.
+    <Portal>
     <div
       className={sheetStyles.sheetBackdrop}
       role="presentation"
@@ -112,5 +115,6 @@ export default function ScheduledDrawer({ conversationId, onClose }: ScheduledDr
         {error ? <p className="error-text">{error}</p> : null}
       </div>
     </div>
+    </Portal>
   );
 }

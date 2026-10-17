@@ -73,6 +73,8 @@ export function kindLabel(type: Message['type']): string {
       return 'Tic-tac-toe';
     case 'puzzle_result':
       return 'Puzzle result';
+    case 'location':
+      return 'Location';
     default:
       return 'Message';
   }
@@ -97,6 +99,10 @@ export function messageSnippet(msg: Message | null): string {
   if (msg.type === 'vibe_check') return `🎭 ${msg.body ?? 'Vibe check'}`;
   if (msg.type === 'game_ttt') return '🎮 Tic-tac-toe';
   if (msg.type === 'puzzle_result') return '🧩 Puzzle result';
+  // v0.7 §1.52: the push snippet is "📍 Location"; join_me names the variant.
+  if (msg.type === 'location') {
+    return msg.metadata.join_me ? '📍 Join me here' : '📍 Location';
+  }
   return msg.body ?? '';
 }
 

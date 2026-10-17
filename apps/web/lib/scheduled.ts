@@ -1,12 +1,14 @@
 // Scheduled messages & time capsules (v0.4 — API.md §1.26). Mine only, private
 // until delivery; scheduled.updated frames keep the list in sync cross-device.
-import type {
-  CreateScheduledRequest,
-  ListScheduledResponse,
-  ScheduledMessage,
-  ScheduledResponse,
+import {
+  SCHEDULED_TOAST_MS,
+  type CreateScheduledRequest,
+  type ListScheduledResponse,
+  type ScheduledMessage,
+  type ScheduledResponse,
 } from '@socialchat/shared';
 import { api } from './api';
+import { formatDeliverAt } from './format';
 import * as store from './store';
 
 export async function refreshScheduled(): Promise<void> {
@@ -23,6 +25,9 @@ export async function createScheduled(
     payload
   );
   store.upsertScheduled(res.scheduled);
+  // v0.7 (§1.54): the success toast — "Scheduled for <human time>", locale-
+  // formatted from the row's deliver_at, visible SCHEDULED_TOAST_MS (4 s).
+  store.pushToast(`Scheduled for ${formatDeliverAt(res.scheduled.deliver_at)}`, SCHEDULED_TOAST_MS);
   return res.scheduled;
 }
 

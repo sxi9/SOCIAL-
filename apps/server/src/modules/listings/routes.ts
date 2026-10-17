@@ -16,9 +16,11 @@ import {
   LISTING_ACTIVE_MAX_PER_USER,
   LISTING_CONTACT_RATE_PER_HOUR,
   LISTING_CREATE_RATE_PER_HOUR,
+  LISTING_EDIT_RATE_PER_HOUR,
   LISTING_TTL_S,
   ListListingsQuerySchema,
   TeamUpRequestSchema,
+  UpdateListingRequestSchema,
   type ListingRef,
   type RideDetails,
   type RoomDetails,
@@ -154,6 +156,7 @@ export async function listingRoutes(fastify: FastifyInstance): Promise<void> {
           isPublic: body.is_public,
           details: body.details,
           status: 'active',
+          location: body.location ?? null, // v0.7 (§1.52)
           expiresAt,
         });
         // Room photos bind via attachments.listing_id (the post_id GC-shield
@@ -168,7 +171,7 @@ export async function listingRoutes(fastify: FastifyInstance): Promise<void> {
                 AND uploader_id = ${user.id}
                 AND kind = 'image'
                 AND message_id IS NULL AND scheduled_message_id IS NULL
-                AND post_id IS NULL AND listing_id IS NULL
+                AND post_id IS NULL AND listing_id IS NULL AND comment_id IS NULL
                 AND NOT EXISTS (SELECT 1 FROM stories st WHERE st.attachment_id = attachments.id)
                 AND NOT EXISTS (SELECT 1 FROM profile_media pm WHERE pm.attachment_id = attachments.id)
               RETURNING id
@@ -284,6 +287,101 @@ export async function listingRoutes(fastify: FastifyInstance): Promise<void> {
         await db.update(listings).set({ status: 'closed' }).where(eq(listings.id, row.l.id));
       }
       const fresh = await loadListingWithAuthor(row.l.id);
+      const [dto] = await listingDtos([fresh!], user.id);
+      return { listing: dto };
+    },
+  );
+
+  // v0.7 §1.48 PATCH /api/listings/:id — author only, status 'active' only.
+  // `kind` is echoed to pick the Zod branch and must match the row (it is
+  // immutable); `details`, when present, is the COMPLETE per-kind payload
+  // revalidated exactly like create. NO fan-out, no push — the board stays
+  // pull-based; contacters' listing_ref snapshots are deliberately untouched.
+  app.patch(
+    '/api/listings/:id',
+    { preHandler: requireAuth, schema: { params: IdParams, body: UpdateListingRequestSchema } },
+    async (req) => {
+      const { user } = authed(req);
+      const row = await loadListingWithAuthor(req.params.id);
+      if (!row) throw notFound('listing_not_found');
+      const l = row.l;
+      if (l.authorId !== user.id) throw forbidden();
+      if (l.kind !== req.body.kind) throw badRequest('kind_immutable');
+      if (derivedListingStatus(l) !== 'active') throw gone('listing_closed');
+      const rate = await fixedWindow(`listingedit:${user.id}`, LISTING_EDIT_RATE_PER_HOUR, 3600);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+
+      const body = req.body;
+
+      // Per-kind consequences (§1.48). Ride: departs_at must be future and is
+      // re-copied to expires_at (sweeps never parse jsonb, §1.38).
+      let newExpiresAt = l.expiresAt;
+      if (body.kind === 'ride' && body.details !== undefined) {
+        const departs = new Date((body.details as RideDetails).departs_at);
+        if (departs.getTime() <= Date.now()) throw badRequest('departs_at_past');
+        newExpiresAt = departs;
+      }
+
+      // Effective new values — omitted = unchanged; location null clears.
+      const next = {
+        title: body.title ?? l.title,
+        body: body.body ?? l.body,
+        priceText: body.price_text === undefined ? l.priceText : body.price_text,
+        isPublic: body.is_public ?? l.isPublic,
+        location:
+          body.location === undefined ? ((l.location as unknown) ?? null) : body.location,
+        details: body.details === undefined ? l.details : body.details,
+        expiresAt: newExpiresAt,
+      };
+      const changed =
+        next.title !== l.title ||
+        next.body !== l.body ||
+        next.priceText !== l.priceText ||
+        next.isPublic !== l.isPublic ||
+        JSON.stringify(next.location) !== JSON.stringify((l.location as unknown) ?? null) ||
+        JSON.stringify(next.details) !== JSON.stringify(l.details) ||
+        (next.expiresAt?.getTime() ?? null) !== (l.expiresAt?.getTime() ?? null);
+
+      if (changed) {
+        await db.transaction(async (tx) => {
+          await tx
+            .update(listings)
+            .set({ ...next, editedAt: new Date() })
+            .where(eq(listings.id, l.id));
+          // Room photos re-bind (§1.48): new ids must be mine/kind-image/
+          // unbound (400 bad_attachment rolls the edit back); dropped ones
+          // unbind into the orphan GC (objects refcount-guarded, §1.31).
+          if (body.kind === 'room' && body.details !== undefined) {
+            const nextIds = ((body.details as RoomDetails).attachment_ids ?? []) as string[];
+            const prevIds = ((l.details as RoomDetails).attachment_ids ?? []) as string[];
+            const added = nextIds.filter((id) => !prevIds.includes(id));
+            const dropped = prevIds.filter((id) => !nextIds.includes(id));
+            if (dropped.length > 0) {
+              await tx.execute(sql`
+                UPDATE attachments SET listing_id = NULL
+                WHERE listing_id = ${l.id}
+                  AND id IN (${sql.join(dropped.map((a) => sql`${a}::uuid`), sql`, `)})
+              `);
+            }
+            if (added.length > 0) {
+              const bound = (await tx.execute(sql`
+                UPDATE attachments SET listing_id = ${l.id}, share_import_id = NULL
+                WHERE id IN (${sql.join(added.map((a) => sql`${a}::uuid`), sql`, `)})
+                  AND uploader_id = ${user.id}
+                  AND kind = 'image'
+                  AND message_id IS NULL AND scheduled_message_id IS NULL
+                  AND post_id IS NULL AND listing_id IS NULL AND comment_id IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM stories st WHERE st.attachment_id = attachments.id)
+                  AND NOT EXISTS (SELECT 1 FROM profile_media pm WHERE pm.attachment_id = attachments.id)
+                RETURNING id
+              `)) as unknown as { id: string }[];
+              if (bound.length !== added.length) throw badRequest('bad_attachment');
+            }
+          }
+        });
+      }
+
+      const fresh = await loadListingWithAuthor(l.id);
       const [dto] = await listingDtos([fresh!], user.id);
       return { listing: dto };
     },

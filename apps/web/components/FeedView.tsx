@@ -1,67 +1,109 @@
 'use client';
 
-// The Feed tab (v0.5a — API.md §1.36, PSYCHOLOGY design rule 5). FINITE by
-// construction: keyset pages to a hard "all caught up" end card and STOPS.
-// No pull-to-refresh and no infinite loop — refreshing is an explicit, labeled
-// tap (slot-machine mechanics are on the never-build list); new posts also
-// arrive live via post.new. Reactions render FACES, never counts; comments
-// have no counter; nothing here pings anyone (viewers reconcile by looking).
-import { useCallback, useEffect, useRef, useState } from 'react';
+// The Feed tab (v0.5a §1.36 + v0.7 §1.49–§1.52, PSYCHOLOGY design rule 5).
+// FINITE by construction IN BOTH LANES: keyset pages to a hard "all caught up"
+// end card and STOPS — no wraparound, no ranking, no pull-to-refresh loop.
+// v0.7: the Friends | Discover lane toggle (§1.49), the post kind picker
+// (text / poll / game / join card, §1.50), inline poll voting (a tally on
+// OPTIONS — never approval on a person; ADR-016), open game challenges
+// (first tap claims, advisory-locked server-side), join cards riding live
+// viewer-resolved summaries, image/GIF comments and comment reactions with
+// capped FACES lists (§1.51), and location chips (§1.52). Reactions render
+// FACES, never counts; nothing here pings anyone.
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
-import type { Attachment, Post, PostComment, UploadResponse } from '@socialchat/shared';
+import { useRouter } from 'next/navigation';
+import type {
+  Attachment,
+  Conversation,
+  CreatePostRequest,
+  FeedLane,
+  JoinCardSummary,
+  Listing,
+  Location,
+  Post,
+  PostAudience,
+  PostComment,
+  PostKind,
+  ReactionKind,
+  UploadResponse,
+  UserLite,
+} from '@socialchat/shared';
 import {
+  POLL_OPTION_MAX_CHARS,
+  POLL_OPTIONS_MAX,
+  POLL_OPTIONS_MIN,
   POST_BODY_MAX_CHARS,
   POST_COMMENT_MAX_CHARS,
   POST_MAX_ATTACHMENTS,
+  POST_POLL_QUESTION_MAX_CHARS,
+  STAMP_REACTION_KEY,
 } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { vibeEmojiOf, vibeLabelOf } from '@/lib/beacons';
 import { QUICK_REACTIONS } from '@/lib/emoji';
 import {
   addComment,
+  addCommentReaction,
+  claimGame,
   createPost,
   deleteComment,
   deletePost,
   listComments,
   loadMoreFeed,
+  patchCommentReaction,
   refetchPost,
   refreshFeed,
+  removeCommentReaction,
   togglePostReaction,
+  votePostPoll,
 } from '@/lib/feed';
 import { formatTime } from '@/lib/format';
+import { KIND_EMOJI, KIND_LABEL, listMine } from '@/lib/listings';
+import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
+import { LocationChip, LocationField } from './LocationPicker';
+import Portal from './Portal';
+import ReactionPicker from './ReactionPicker';
 import bz from './beacons.module.css';
 import st from './social.module.css';
 
+const LONG_PRESS_MS = 420;
+
 export default function FeedView() {
   const state = useAppState();
+  const [lane, setLane] = useState<FeedLane>('friends');
   const [loading, setLoading] = useState(false);
   const [moreBusy, setMoreBusy] = useState(false);
 
-  const posts = state.feedPosts;
+  const laneState = state.feed[lane];
+  const posts = laneState.posts;
 
+  // First open of a lane loads its window; switching back keeps it.
   useEffect(() => {
-    if (state.feedPosts === null && state.authed === true) {
+    if (laneState.posts === null && state.authed === true) {
       setLoading(true);
-      void refreshFeed()
+      void refreshFeed(lane)
         .catch(() => undefined)
         .finally(() => setLoading(false));
     }
-  }, [state.feedPosts, state.authed]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lane, laneState.posts === null, state.authed]);
 
   const refresh = useCallback(() => {
     setLoading(true);
-    void refreshFeed()
+    void refreshFeed(lane)
       .catch(() => undefined)
       .finally(() => setLoading(false));
-  }, []);
+  }, [lane]);
 
   const more = useCallback(() => {
     setMoreBusy(true);
-    void loadMoreFeed()
+    void loadMoreFeed(lane)
       .catch(() => undefined)
       .finally(() => setMoreBusy(false));
-  }, []);
+  }, [lane]);
 
   return (
     <div className="page">
@@ -72,42 +114,77 @@ export default function FeedView() {
         </button>
       </header>
       <div className={st.feedWrap}>
-        <PostComposerCard />
+        {/* v0.7 (§1.49): the lane toggle — two finite windows, no ranking. */}
+        <div className={st.laneRow} role="radiogroup" aria-label="Feed lane">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={lane === 'friends'}
+            className={`${st.laneBtn}${lane === 'friends' ? ` ${st.laneOn}` : ''}`}
+            onClick={() => setLane('friends')}
+          >
+            Friends
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={lane === 'discover'}
+            className={`${st.laneBtn}${lane === 'discover' ? ` ${st.laneOn}` : ''}`}
+            onClick={() => setLane('discover')}
+          >
+            Discover
+          </button>
+        </div>
+
+        <PostComposerCard lane={lane} />
         {posts === null ? (
           <p className="muted small" style={{ textAlign: 'center' }}>
             <span className="spinner" style={{ display: 'inline-block', verticalAlign: 'middle', marginRight: 8 }} />
-            Loading your people…
+            {lane === 'friends' ? 'Loading your people…' : 'Loading public posts…'}
           </p>
         ) : posts.length === 0 ? (
           <div className={st.endCard}>
             <span className={st.endEmoji} aria-hidden>
               🫧
             </span>
-            <h3>Nothing here yet</h3>
-            <p>
-              Posts from your friends land here — connect with people from their{' '}
-              <Link href="/connections">profiles</Link>, or post something first.
-            </p>
+            {lane === 'friends' ? (
+              <>
+                <h3>Nothing here yet</h3>
+                <p>
+                  Posts from your friends land here — connect with people from their{' '}
+                  <Link href="/connections">profiles</Link>, or post something first.
+                </p>
+              </>
+            ) : (
+              <>
+                <h3>No public posts yet</h3>
+                <p>Discover shows what anyone on this server shares publicly. Be the first.</p>
+              </>
+            )}
           </div>
         ) : (
           <>
             {posts.map((post) => (
               <PostCard key={post.id} post={post} meId={state.me?.id ?? ''} />
             ))}
-            {state.feedCursor !== null ? (
+            {laneState.cursor !== null ? (
               <button type="button" className={st.refreshPill} onClick={more} disabled={moreBusy}>
                 {moreBusy ? 'Loading…' : 'Show older posts'}
               </button>
             ) : null}
-            {state.feedCaughtUp ? (
-              // The HARD end. No wraparound, no "keep scrolling" — a visit has
-              // a bottom, and this is it (PSYCHOLOGY rule 5).
+            {laneState.caughtUp ? (
+              // The HARD end, per lane. No wraparound, no "keep scrolling" —
+              // a visit has a bottom, and this is it (PSYCHOLOGY rule 5).
               <div className={st.endCard} role="status">
                 <span className={st.endEmoji} aria-hidden>
                   🎉
                 </span>
                 <h3>You&rsquo;re all caught up</h3>
-                <p>That&rsquo;s everything from your people. Go make something worth posting.</p>
+                <p>
+                  {lane === 'friends'
+                    ? 'That’s everything from your people. Go make something worth posting.'
+                    : 'That’s every public post here. The feed has a bottom on purpose.'}
+                </p>
               </div>
             ) : null}
           </>
@@ -118,14 +195,92 @@ export default function FeedView() {
 }
 
 // ---------------------------------------------------------------------------
+// Composer: kind picker (§1.50) + audience (§1.49) + location (§1.52)
+// ---------------------------------------------------------------------------
 
-function PostComposerCard() {
+const KIND_PICKS: { kind: PostKind; icon: string; label: string }[] = [
+  { kind: 'text', icon: '✏️', label: 'Post' },
+  { kind: 'poll', icon: '📊', label: 'Poll' },
+  { kind: 'game', icon: '🎮', label: 'Challenge' },
+  { kind: 'join_card', icon: '📣', label: 'Join my…' },
+];
+
+interface RefCandidate {
+  type: 'beacon' | 'listing';
+  id: string;
+  title: string;
+  sub: string;
+  emoji: string;
+  /** Audiences the §1.50 nesting table allows for this ref. */
+  allowed: PostAudience[];
+}
+
+function PostComposerCard({ lane }: { lane: FeedLane }) {
+  const state = useAppState();
+  const [kind, setKind] = useState<PostKind>('text');
+  const [audience, setAudience] = useState<PostAudience>('friends_of');
+
+  // Fixer r1: the composer FOLLOWS the active lane — writing from Discover
+  // defaults the audience chip to Public (and the placeholder with it), so the
+  // post lands in the lane the user is looking at. The chip stays manually
+  // flippable after the lane switch.
+  useEffect(() => {
+    setAudience(lane === 'discover' ? 'public' : 'friends_of');
+  }, [lane]);
   const [body, setBody] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(0);
+  const [location, setLocation] = useState<Location | null>(null);
+  // poll
+  const [question, setQuestion] = useState('');
+  const [options, setOptions] = useState<string[]>(['', '']);
+  // join_card
+  const [refSel, setRefSel] = useState<{ type: 'beacon' | 'listing'; id: string } | null>(null);
+  const [myListings, setMyListings] = useState<Listing[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+
+  // Candidates for a join card: MY open beacons (already in the store) + MY
+  // active listings (one fetch when the picker opens). Eligibility follows the
+  // §1.50 audience-NESTING table — a card never shows a thing to someone who
+  // cannot act on it.
+  useEffect(() => {
+    if (kind !== 'join_card' || myListings !== null) return;
+    void listMine()
+      .then((all) => setMyListings(all.filter((l) => l.status === 'active')))
+      .catch(() => setMyListings([]));
+  }, [kind, myListings]);
+
+  const candidates: RefCandidate[] = [];
+  if (kind === 'join_card') {
+    for (const b of state.beacons.values()) {
+      if (b.my_state !== 'creator' || b.status !== 'open') continue;
+      candidates.push({
+        type: 'beacon',
+        id: b.id,
+        title: `${vibeEmojiOf(b)} ${vibeLabelOf(b)}${b.note ? ` — ${b.note}` : ''}`,
+        sub: `beacon · ${b.audience === 'public' ? 'public' : b.audience === 'friends' ? 'friends' : 'my area'}`,
+        emoji: '🔥',
+        allowed:
+          b.audience === 'public'
+            ? ['friends_of', 'public']
+            : b.audience === 'friends'
+              ? ['friends_of']
+              : [], // 'area' is incomparable with both post audiences (§1.50)
+      });
+    }
+    for (const l of myListings ?? []) {
+      candidates.push({
+        type: 'listing',
+        id: l.id,
+        title: l.title,
+        sub: `${KIND_LABEL[l.kind].toLowerCase()} · ${l.is_public ? 'public' : 'area only'}`,
+        emoji: KIND_EMOJI[l.kind],
+        allowed: l.is_public ? ['friends_of', 'public'] : [],
+      });
+    }
+  }
 
   async function upload(files: FileList | null): Promise<void> {
     if (!files) return;
@@ -140,9 +295,7 @@ function PostComposerCard() {
         const form = new FormData();
         form.append('file', file, file.name);
         const res = await api.postForm<UploadResponse>('/api/uploads', form);
-        setAttachments((prev) =>
-          prev.length < POST_MAX_ATTACHMENTS ? [...prev, res.attachment] : prev
-        );
+        setAttachments((prev) => (prev.length < POST_MAX_ATTACHMENTS ? [...prev, res.attachment] : prev));
       } catch (err) {
         if (err instanceof ApiError && err.status === 413) setError(`${file.name} is too large.`);
         else if (err instanceof ApiError && err.status === 415) setError(`${file.name}: unsupported type.`);
@@ -153,35 +306,188 @@ function PostComposerCard() {
     }
   }
 
+  const trimmedOptions = options.map((o) => o.trim()).filter((o) => o.length > 0);
+  const canPost = ((): boolean => {
+    if (busy || uploading > 0) return false;
+    if (kind === 'text') return body.trim().length > 0 || attachments.length > 0;
+    if (kind === 'poll') return question.trim().length > 0 && trimmedOptions.length >= POLL_OPTIONS_MIN;
+    if (kind === 'game') return true; // the caption is optional trash talk
+    return refSel !== null;
+  })();
+
   async function post(): Promise<void> {
-    const trimmed = body.trim();
-    if (busy || uploading > 0 || (!trimmed && attachments.length === 0)) return;
+    if (!canPost) return;
     setBusy(true);
     setError(null);
+    const req: CreatePostRequest = {
+      kind,
+      audience,
+      body: body.trim(),
+      attachment_ids: kind === 'text' ? attachments.map((a) => a.id) : [],
+      ...(kind === 'poll' ? { poll: { question: question.trim(), options: trimmedOptions } } : {}),
+      ...(kind === 'join_card' && refSel ? { ref: refSel } : {}),
+      ...(location ? { location } : {}),
+    };
     try {
-      await createPost(trimmed, attachments.map((a) => a.id));
+      await createPost(req);
       setBody('');
       setAttachments([]);
+      setQuestion('');
+      setOptions(['', '']);
+      setRefSel(null);
+      setLocation(null);
+      setKind('text');
     } catch (err) {
-      if (err instanceof ApiError && err.status === 429) setError('Easy there — posting limit for this hour.');
-      else setError('Could not post — try again.');
+      if (err instanceof ApiError && err.code === 'ref_audience_mismatch') {
+        setError('That card’s own audience is narrower than the post’s — switch the post to Friends.');
+      } else if (err instanceof ApiError && err.code === 'ref_closed') {
+        setError('That one already closed — pick something still live.');
+      } else if (err instanceof ApiError && err.status === 429) {
+        setError('Easy there — posting limit for this hour.');
+      } else if (err instanceof ApiError && err.status === 400) {
+        setError('That post shape didn’t work — check the fields and try again.');
+      } else {
+        setError('Could not post — try again.');
+      }
     } finally {
       setBusy(false);
     }
   }
 
-  const canPost = !busy && uploading === 0 && (body.trim().length > 0 || attachments.length > 0);
-
   return (
     <div className={st.composerCard}>
+      <div className={st.kindRow} role="radiogroup" aria-label="Post kind">
+        {KIND_PICKS.map((k) => (
+          <button
+            key={k.kind}
+            type="button"
+            role="radio"
+            aria-checked={kind === k.kind}
+            className={`${st.kindBtn}${kind === k.kind ? ` ${st.kindBtnOn}` : ''}`}
+            onClick={() => setKind(k.kind)}
+          >
+            <span aria-hidden>{k.icon}</span>
+            {k.label}
+          </button>
+        ))}
+      </div>
+
       <textarea
         value={body}
         maxLength={POST_BODY_MAX_CHARS}
-        placeholder="What's up? Your friends will see it."
+        placeholder={
+          kind === 'poll'
+            ? 'Anything to add under the poll? (song links go here)'
+            : kind === 'game'
+              ? 'Talk your trash — first tap plays you.'
+              : kind === 'join_card'
+                ? 'Say why they should jump in…'
+                : audience === 'public'
+                  ? "What's up? Anyone on this server can see it."
+                  : "What's up? Your friends will see it."
+        }
         aria-label="Write a post"
         onChange={(e) => setBody(e.target.value)}
       />
-      {attachments.length > 0 ? (
+
+      {kind === 'poll' ? (
+        <div className={st.pollEditor}>
+          <input
+            className="input"
+            placeholder="The question — “song for the ride?”"
+            aria-label="Poll question"
+            value={question}
+            maxLength={POST_POLL_QUESTION_MAX_CHARS}
+            onChange={(e) => setQuestion(e.target.value)}
+          />
+          {options.map((opt, i) => (
+            <div key={i} className={st.pollEditorRow}>
+              <input
+                className="input"
+                placeholder={`Option ${i + 1}`}
+                aria-label={`Poll option ${i + 1}`}
+                value={opt}
+                maxLength={POLL_OPTION_MAX_CHARS}
+                onChange={(e) =>
+                  setOptions((prev) => prev.map((o, j) => (j === i ? e.target.value : o)))
+                }
+              />
+              {options.length > POLL_OPTIONS_MIN ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-icon"
+                  aria-label={`Remove option ${i + 1}`}
+                  onClick={() => setOptions((prev) => prev.filter((_, j) => j !== i))}
+                >
+                  ×
+                </button>
+              ) : null}
+            </div>
+          ))}
+          {options.length < POLL_OPTIONS_MAX ? (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              style={{ alignSelf: 'flex-start' }}
+              onClick={() => setOptions((prev) => [...prev, ''])}
+            >
+              + Add option
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {kind === 'game' ? (
+        <p className="muted small" style={{ margin: '8px 0 0' }}>
+          🎮 An open tic-tac-toe challenge — the first person to tap Claim plays you (you move
+          first). The board opens in a DM between you two.
+        </p>
+      ) : null}
+
+      {kind === 'join_card' ? (
+        <div className={st.refPickList} role="radiogroup" aria-label="What to cross-post">
+          {myListings === null && candidates.length === 0 ? (
+            <p className="muted small" style={{ margin: 0 }}>
+              Looking for your live beacons and listings…
+            </p>
+          ) : candidates.length === 0 ? (
+            <p className="muted small" style={{ margin: 0 }}>
+              Nothing live to share — light a beacon or post to the board first.
+            </p>
+          ) : (
+            candidates.map((c) => {
+              const ok = c.allowed.includes(audience);
+              const on = refSel !== null && refSel.type === c.type && refSel.id === c.id;
+              return (
+                <button
+                  key={`${c.type}:${c.id}`}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  className={`${st.refPick}${on ? ` ${st.refPickOn}` : ''}`}
+                  disabled={!ok}
+                  onClick={() => setRefSel({ type: c.type, id: c.id })}
+                >
+                  <span aria-hidden>{c.emoji}</span>
+                  <span className={st.refPickText}>
+                    <strong>{c.title}</strong>
+                    <span>
+                      {c.sub}
+                      {!ok
+                        ? audience === 'public'
+                          ? ' — not public, so it can’t go in a public post'
+                          : ' — its audience doesn’t cover your friends'
+                        : ''}
+                    </span>
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
+      ) : null}
+
+      {kind === 'text' && attachments.length > 0 ? (
         <div className={`${st.postImages} ${st[`postImages${Math.min(attachments.length, 4)}`]}`} style={{ marginTop: 8 }}>
           {attachments.map((a) => (
             <span key={a.id} style={{ position: 'relative' }}>
@@ -200,29 +506,48 @@ function PostComposerCard() {
           ))}
         </div>
       ) : null}
+
+      <div style={{ marginTop: 8 }}>
+        <LocationField value={location} onChange={setLocation} />
+      </div>
+
       {error ? <p className="error-text">{error}</p> : null}
       <div className={st.composerFoot}>
-        <input
-          ref={fileRef}
-          type="file"
-          hidden
-          multiple
-          accept="image/*,video/mp4,video/webm"
-          onChange={(e) => {
-            void upload(e.target.files);
-            e.target.value = '';
-          }}
-        />
+        {kind === 'text' ? (
+          <>
+            <input
+              ref={fileRef}
+              type="file"
+              hidden
+              multiple
+              accept="image/*,video/mp4,video/webm"
+              onChange={(e) => {
+                void upload(e.target.files);
+                e.target.value = '';
+              }}
+            />
+            <button
+              type="button"
+              className="btn btn-icon"
+              aria-label="Add images"
+              disabled={attachments.length >= POST_MAX_ATTACHMENTS || uploading > 0}
+              onClick={() => fileRef.current?.click()}
+            >
+              📷
+            </button>
+            {uploading > 0 ? <span className="spinner" /> : null}
+          </>
+        ) : null}
+        {/* §1.49: audience — friends-of (default) or truly public. */}
         <button
           type="button"
-          className="btn btn-icon"
-          aria-label="Add images"
-          disabled={attachments.length >= POST_MAX_ATTACHMENTS || uploading > 0}
-          onClick={() => fileRef.current?.click()}
+          className={st.kindBtn}
+          aria-label={`Audience: ${audience === 'public' ? 'public — anyone on this server' : 'friends'}. Tap to switch`}
+          onClick={() => setAudience((a) => (a === 'public' ? 'friends_of' : 'public'))}
         >
-          📷
+          <span aria-hidden>{audience === 'public' ? '🌐' : '👥'}</span>
+          {audience === 'public' ? 'Public' : 'Friends'}
         </button>
-        {uploading > 0 ? <span className="spinner" /> : null}
         <span style={{ flex: 1 }} />
         <button type="button" className="btn btn-primary" disabled={!canPost} onClick={() => void post()}>
           {busy ? 'Posting…' : 'Post'}
@@ -232,6 +557,8 @@ function PostComposerCard() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Post card
 // ---------------------------------------------------------------------------
 
 function PostCard({ post, meId }: { post: Post; meId: string }) {
@@ -271,6 +598,7 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
           <strong>{post.author.display_name}</strong>
           <span>
             @{post.author.username} · {formatTime(post.created_at)}
+            {post.audience === 'public' ? ' · 🌐 public' : ''}
           </span>
         </span>
         {own ? (
@@ -298,6 +626,12 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
       </div>
 
       {post.body ? <p className={st.postBody}>{post.body}</p> : null}
+
+      {/* ---- v0.7 kind riders (§1.50) ---- */}
+      {post.kind === 'poll' && post.poll ? <PostPollView post={post} /> : null}
+      {post.kind === 'game' && post.game ? <PostGameView post={post} meId={meId} /> : null}
+      {post.kind === 'join_card' ? <JoinCardView post={post} meId={meId} /> : null}
+
       {post.attachments.length > 0 ? (
         <div className={`${st.postImages} ${st[`postImages${Math.min(post.attachments.length, 4)}`]}`}>
           {post.attachments.map((a) =>
@@ -310,6 +644,12 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
               </a>
             )
           )}
+        </div>
+      ) : null}
+
+      {post.location ? (
+        <div style={{ margin: '2px 0 6px' }}>
+          <LocationChip location={post.location} />
         </div>
       ) : null}
 
@@ -385,16 +725,343 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// Poll posts (§1.50): counts on OPTIONS are a decision tool (ADR-016) — no
+// voter lists, no timestamps, ever. Tap to vote, tap again to unvote, tap
+// another option to revote (UPSERT).
+// ---------------------------------------------------------------------------
+
+function PostPollView({ post }: { post: Post }) {
+  const poll = post.poll!;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function vote(idx: number): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await votePostPoll(post.id, poll.my_vote === idx ? null : idx);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) setError('This poll is gone.');
+      else setError('Could not vote — try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className={st.postPoll}>
+      <p className={st.postPollQ}>📊 {poll.question}</p>
+      {poll.options.map((opt, i) => {
+        const count = poll.counts[i] ?? 0;
+        const pct = poll.total_votes > 0 ? Math.round((count / poll.total_votes) * 100) : 0;
+        const mine = poll.my_vote === i;
+        return (
+          <button
+            key={i}
+            type="button"
+            className={`${st.postPollOpt}${mine ? ` ${st.postPollOptMine}` : ''}`}
+            style={{ '--w': `${pct}%` } as React.CSSProperties}
+            disabled={busy}
+            aria-pressed={mine}
+            aria-label={`${opt} — ${count} ${count === 1 ? 'vote' : 'votes'}${mine ? '. Your vote — tap to remove' : '. Tap to vote'}`}
+            onClick={() => void vote(i)}
+          >
+            <span className={st.postPollBar} aria-hidden />
+            <span className={st.postPollLabel}>
+              {mine ? '✓ ' : ''}
+              {opt}
+            </span>
+            <span className={st.postPollCount} aria-hidden>
+              {count}
+            </span>
+          </button>
+        );
+      })}
+      <span className={st.postPollMeta}>
+        {poll.total_votes === 0
+          ? 'No votes yet — be the tiebreaker before there’s a tie.'
+          : `${poll.total_votes} ${poll.total_votes === 1 ? 'vote' : 'votes'} · tap again to change`}
+      </span>
+      {error ? <p className="error-text" style={{ margin: 0 }}>{error}</p> : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Game posts (§1.50): the open challenge — first Claim wins (server-side
+// advisory lock), and the claimer lands straight on the §1.27 board in a DM.
+// ---------------------------------------------------------------------------
+
+function PostGameView({ post, meId }: { post: Post; meId: string }) {
+  const router = useRouter();
+  const game = post.game!;
+  const own = post.author.id === meId;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function claim(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await claimGame(post.id);
+      // Land on the board: make sure the DM is locally known, then go.
+      if (!store.state.conversations.has(res.conversation_id)) {
+        try {
+          const conv = await api.get<{ conversation: Conversation }>(
+            `/api/conversations/${res.conversation_id}`
+          );
+          store.upsertConversation(conv.conversation);
+        } catch {
+          /* the conv.new frame will carry it */
+        }
+      }
+      router.push(`/c/${res.conversation_id}`);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'game_claimed') {
+        setError('Someone was faster — the gauntlet is taken.');
+        void refetchPost(post.id);
+      } else if (err instanceof ApiError && err.code === 'game_own') {
+        setError('You can’t claim your own challenge 😄');
+      } else {
+        setError('Could not claim — try again.');
+      }
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className={st.gameCard}>
+      <span aria-hidden style={{ fontSize: 22 }}>
+        🎮
+      </span>
+      <span className={st.gameCardText}>
+        {game.state === 'open' ? (
+          own ? (
+            <>Open tic-tac-toe challenge — waiting for a taker. You move first.</>
+          ) : (
+            <>
+              <strong>{post.author.display_name}</strong> threw down an open tic-tac-toe gauntlet.
+              First tap plays them.
+            </>
+          )
+        ) : game.claimed_by ? (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Avatar avatar={game.claimed_by.avatar} name={game.claimed_by.display_name} size={22} />
+            <span>
+              <strong>{game.claimed_by.id === meId ? 'You' : game.claimed_by.display_name}</strong>{' '}
+              claimed it — the board lives in their DM.
+            </span>
+          </span>
+        ) : (
+          <>Claimed.</>
+        )}
+        {error ? <span className="error-text" style={{ display: 'block' }}>{error}</span> : null}
+      </span>
+      {game.state === 'open' && !own ? (
+        <button type="button" className={st.gameClaimBtn} disabled={busy} onClick={() => void claim()}>
+          {busy ? 'Claiming…' : 'Claim 🎯'}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Join cards (§1.50): the viewer-resolved live summary; the Join button is
+// the EXISTING join/contact route, then a single-post refetch.
+// ---------------------------------------------------------------------------
+
+function JoinCardView({ post, meId }: { post: Post; meId: string }) {
+  const router = useRouter();
+  const own = post.author.id === meId;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const summary: JoinCardSummary | null = post.ref_summary;
+
+  if (!summary) {
+    // Deleted, blocked or otherwise invisible — the honest "gone" card.
+    return <p className={st.joinCardGone}>This one is no longer available.</p>;
+  }
+
+  async function joinBeaconRef(id: string): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post(`/api/beacons/${id}/join`);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'beacon_own') setError('That one is yours 😄');
+      else if (err instanceof ApiError && (err.status === 404 || err.status === 410)) {
+        setError('Too late — it just closed.');
+      } else {
+        setError('Could not join — try again.');
+      }
+    } finally {
+      await refetchPost(post.id);
+      setBusy(false);
+    }
+  }
+
+  async function contactListingRef(id: string): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.post<{ conversation_id: string }>(`/api/listings/${id}/contact`);
+      if (!store.state.conversations.has(res.conversation_id)) {
+        try {
+          const conv = await api.get<{ conversation: Conversation }>(
+            `/api/conversations/${res.conversation_id}`
+          );
+          store.upsertConversation(conv.conversation);
+        } catch {
+          /* conv.new will carry it */
+        }
+      }
+      void refetchPost(post.id);
+      router.push(`/c/${res.conversation_id}`);
+      return;
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'listing_closed') setError('This one just closed.');
+      else if (err instanceof ApiError && err.status === 404) setError('This listing is gone.');
+      else setError('Could not open a chat — try again.');
+      void refetchPost(post.id);
+    }
+    setBusy(false);
+  }
+
+  if (summary.type === 'beacon') {
+    const live = summary.status === 'open';
+    const statusLabel =
+      summary.status === 'open'
+        ? summary.needs > 0
+          ? `needs ${summary.needs} more 🔥`
+          : 'sparking…'
+        : summary.status === 'sparked'
+          ? 'IT’S ON 🎉'
+          : summary.status === 'cancelled'
+            ? 'called off'
+            : 'wrapped up';
+    return (
+      <div className={st.joinCard}>
+        <div className={st.joinCardHead}>
+          <span aria-hidden>{vibeEmojiOf(summary)}</span>
+          <span>
+            {vibeLabelOf(summary)}
+            {summary.note ? ` — ${summary.note}` : ''}
+          </span>
+          <span className={st.joinCardStatus}>{statusLabel}</span>
+        </div>
+        <div className={st.joinCardMeta}>
+          {summary.joiners.length > 0 ? (
+            <span className={st.facePile} aria-label={`${summary.joiners.length} in`}>
+              {summary.joiners.map((u) => (
+                <Avatar key={u.id} avatar={u.avatar} name={u.display_name} size={22} />
+              ))}
+            </span>
+          ) : null}
+          <span>
+            starts{' '}
+            {new Date(summary.starts_at).toLocaleString([], {
+              weekday: 'short',
+              hour: '2-digit',
+              minute: '2-digit',
+            })}
+          </span>
+          {summary.location ? <LocationChip location={summary.location} /> : null}
+        </div>
+        {error ? <p className="error-text" style={{ margin: 0 }}>{error}</p> : null}
+        {live ? (
+          summary.my_state === 'creator' ? (
+            <span className={st.joinCardMeta}>your beacon — watching the pile</span>
+          ) : summary.my_state === 'joined' ? (
+            <span className={st.joinCardMeta}>you&rsquo;re in 🙌</span>
+          ) : (
+            <button
+              type="button"
+              className={st.joinCardBtn}
+              disabled={busy}
+              onClick={() => void joinBeaconRef(summary.id)}
+            >
+              {busy ? 'Joining…' : 'Join 🙋'}
+            </button>
+          )
+        ) : null}
+      </div>
+    );
+  }
+
+  const live = summary.status === 'active';
+  return (
+    <div className={st.joinCard}>
+      <div className={st.joinCardHead}>
+        <span aria-hidden>{KIND_EMOJI[summary.kind]}</span>
+        <span>{summary.title}</span>
+        <span className={st.joinCardStatus}>{live ? KIND_LABEL[summary.kind].toLowerCase() : summary.status}</span>
+      </div>
+      <div className={st.joinCardMeta}>
+        <span>📍 {summary.area}</span>
+        {summary.price_text ? <span>{summary.price_text}</span> : null}
+        {summary.location ? <LocationChip location={summary.location} /> : null}
+      </div>
+      {error ? <p className="error-text" style={{ margin: 0 }}>{error}</p> : null}
+      {live && !own ? (
+        <button
+          type="button"
+          className={st.joinCardBtn}
+          disabled={busy}
+          onClick={() => void contactListingRef(summary.id)}
+        >
+          {busy ? 'Opening…' : summary.my_contacted ? 'Open your chat →' : 'Message them'}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Comments (§1.51): image/GIF attachments + reactions with capped FACES.
+// ---------------------------------------------------------------------------
 
 function PostComments({ post, meId }: { post: Post; meId: string }) {
+  const state = useAppState();
   // Inline: the DTO's latest 3 (ASC) until expanded, then the full paged list.
   const [expanded, setExpanded] = useState<PostComment[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [attachment, setAttachment] = useState<Attachment | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
   const shown = expanded ?? post.comments;
+
+  const meLite: UserLite | null = state.me
+    ? {
+        id: state.me.id,
+        username: state.me.username,
+        display_name: state.me.display_name,
+        avatar: state.me.avatar,
+      }
+    : null;
+
+  /** Patch one comment wherever it is rendered from (expanded or the DTO). */
+  const patchLocal = useCallback(
+    (next: PostComment): void => {
+      if (expanded) {
+        setExpanded((prev) => (prev ? prev.map((c) => (c.id === next.id ? next : c)) : prev));
+      } else {
+        store.replacePost({
+          ...post,
+          comments: post.comments.map((c) => (c.id === next.id ? next : c)),
+        });
+      }
+    },
+    [expanded, post]
+  );
 
   async function expand(): Promise<void> {
     try {
@@ -417,14 +1084,36 @@ function PostComments({ post, meId }: { post: Post; meId: string }) {
     }
   }
 
+  async function uploadAttachment(files: FileList | null): Promise<void> {
+    const file = files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      const res = await api.postForm<UploadResponse>('/api/uploads', form);
+      if (res.attachment.kind !== 'image') setError('Comments take images and GIFs only.');
+      else setAttachment(res.attachment);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 413) setError('That image is too large.');
+      else if (err instanceof ApiError && err.status === 415) setError('Unsupported image type.');
+      else setError('Could not upload that image.');
+    } finally {
+      setUploading(false);
+    }
+  }
+
   async function submit(): Promise<void> {
     const body = draft.trim();
-    if (!body || busy) return;
+    // §1.51: at least one of body / attachment — an image-only reply is legal.
+    if ((!body && !attachment) || busy || uploading) return;
     setBusy(true);
     setError(null);
     try {
-      const comment = await addComment(post.id, body);
+      const comment = await addComment(post.id, body, attachment?.id);
       setDraft('');
+      setAttachment(null);
       if (expanded) setExpanded([...expanded, comment]);
       else await refetchPost(post.id);
     } catch {
@@ -444,26 +1133,38 @@ function PostComments({ post, meId }: { post: Post; meId: string }) {
     }
   }
 
+  /** §1.51 toggle: optimistic faces patch, then the feed's pull reconciles. */
+  async function toggleReaction(comment: PostComment, kind: ReactionKind, emoji: string): Promise<void> {
+    if (!meLite) return;
+    const key = kind === 'stamp' ? STAMP_REACTION_KEY : emoji;
+    const chip = comment.reactions.find((r) => r.kind === kind && r.emoji === key);
+    const removing = chip?.mine ?? false;
+    patchLocal(patchCommentReaction(comment, kind, emoji, meLite, !removing));
+    try {
+      if (removing) await removeCommentReaction(post.id, comment.id, kind, emoji);
+      else await addCommentReaction(post.id, comment.id, kind, kind === 'emoji' ? emoji : undefined);
+    } catch (err) {
+      // Roll back on failure; name the one interesting error.
+      patchLocal(comment);
+      if (err instanceof ApiError && err.code === 'reaction_limit') {
+        setError('Reaction limit reached (8 per comment).');
+      } else if (err instanceof ApiError && err.code === 'stamp_no_avatar') {
+        setError('Add an avatar first to stamp with your face.');
+      }
+    }
+  }
+
   return (
     <div>
       {shown.map((c) => (
-        <div key={c.id} className={st.commentRow}>
-          <Avatar avatar={c.author.avatar} name={c.author.display_name} size={26} />
-          <span className={st.commentBubble}>
-            <strong>{c.author.display_name}</strong>
-            <p>{c.body}</p>
-          </span>
-          {c.author.id === meId || post.author.id === meId ? (
-            <button
-              type="button"
-              className={st.commentDelete}
-              aria-label="Delete comment"
-              onClick={() => void removeComment(c)}
-            >
-              ×
-            </button>
-          ) : null}
-        </div>
+        <CommentRow
+          key={c.id}
+          comment={c}
+          meId={meId}
+          canDelete={c.author.id === meId || post.author.id === meId}
+          onDelete={() => void removeComment(c)}
+          onToggleReaction={(kind, emoji) => void toggleReaction(c, kind, emoji)}
+        />
       ))}
       {expanded === null && post.has_more_comments ? (
         <button type="button" className={st.moreComments} onClick={() => void expand()}>
@@ -476,11 +1177,45 @@ function PostComments({ post, meId }: { post: Post; meId: string }) {
         </button>
       ) : null}
       {error ? <p className="error-text">{error}</p> : null}
+      {attachment ? (
+        <span className={st.commentAttachChip}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={attachment.thumb_url ?? attachment.url} alt="" />
+          <button
+            type="button"
+            className={st.gifToolBtn}
+            style={{ position: 'absolute', top: 2, right: 2 }}
+            aria-label="Remove image"
+            onClick={() => setAttachment(null)}
+          >
+            ×
+          </button>
+        </span>
+      ) : null}
       <div className={st.commentInputRow}>
+        <input
+          ref={fileRef}
+          type="file"
+          hidden
+          accept="image/*"
+          onChange={(e) => {
+            void uploadAttachment(e.target.files);
+            e.target.value = '';
+          }}
+        />
+        <button
+          type="button"
+          className="btn btn-icon"
+          aria-label="Attach an image or GIF to your comment"
+          disabled={uploading || attachment !== null}
+          onClick={() => fileRef.current?.click()}
+        >
+          {uploading ? <span className="spinner" /> : '🖼'}
+        </button>
         <input
           value={draft}
           maxLength={POST_COMMENT_MAX_CHARS}
-          placeholder="Say something back…"
+          placeholder={attachment ? 'Add words too? (optional)' : 'Say something back…'}
           aria-label="Write a comment"
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
@@ -490,10 +1225,184 @@ function PostComments({ post, meId }: { post: Post; meId: string }) {
             }
           }}
         />
-        <button type="button" className="btn" disabled={busy || !draft.trim()} onClick={() => void submit()}>
+        <button
+          type="button"
+          className="btn"
+          disabled={busy || uploading || (!draft.trim() && !attachment)}
+          onClick={() => void submit()}
+        >
           Reply
         </button>
       </div>
     </div>
+  );
+}
+
+function CommentRow({
+  comment,
+  meId,
+  canDelete,
+  onDelete,
+  onToggleReaction,
+}: {
+  comment: PostComment;
+  meId: string;
+  canDelete: boolean;
+  onDelete: () => void;
+  onToggleReaction: (kind: ReactionKind, emoji: string) => void;
+}) {
+  const state = useAppState();
+  const [picker, setPicker] = useState(false);
+  const bubbleRef = useRef<HTMLSpanElement | null>(null);
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelPress = useCallback(() => {
+    if (pressTimer.current !== null) {
+      clearTimeout(pressTimer.current);
+      pressTimer.current = null;
+    }
+  }, []);
+  useEffect(() => cancelPress, [cancelPress]);
+
+  const myStamped = comment.reactions.some((r) => r.kind === 'stamp' && r.mine);
+
+  return (
+    <div className={st.commentRow}>
+      <Link href={`/u/${encodeURIComponent(comment.author.username)}`} aria-label={`${comment.author.display_name} — open profile`}>
+        <Avatar avatar={comment.author.avatar} name={comment.author.display_name} size={26} />
+      </Link>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span
+          ref={bubbleRef}
+          className={st.commentBubble}
+          style={{ display: 'block' }}
+          // §1.51: long-press opens the reaction picker (desktop has the 🙂 button).
+          onTouchStart={() => {
+            cancelPress();
+            pressTimer.current = setTimeout(() => setPicker(true), LONG_PRESS_MS);
+          }}
+          onTouchEnd={cancelPress}
+          onTouchMove={cancelPress}
+          onTouchCancel={cancelPress}
+        >
+          <strong>{comment.author.display_name}</strong>
+          {comment.body ? <p>{comment.body}</p> : null}
+          {comment.attachment ? (
+            <a href={comment.attachment.url} target="_blank" rel="noreferrer">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                className={st.commentImg}
+                src={comment.attachment.thumb_url ?? comment.attachment.url}
+                alt=""
+                loading="lazy"
+              />
+            </a>
+          ) : null}
+        </span>
+        {/* One chip per (emoji, kind): capped FACES, never totals (§1.51). */}
+        <span className={st.commentReactRow}>
+          {comment.reactions.map((r) => (
+            <button
+              key={`${r.kind}:${r.emoji}`}
+              type="button"
+              className={`${st.commentFaceChip}${r.mine ? ` ${st.commentFaceChipMine}` : ''}`}
+              aria-label={`${r.kind === 'stamp' ? 'Avatar stamp' : r.emoji} — ${r.reactors
+                .map((u) => u.display_name)
+                .join(', ')}${r.has_more ? ' and more' : ''}${r.mine ? '. Yours — tap to remove' : '. Tap to react too'}`}
+              onClick={() => onToggleReaction(r.kind, r.kind === 'stamp' ? STAMP_REACTION_KEY : r.emoji)}
+            >
+              {r.kind === 'emoji' ? <span aria-hidden>{r.emoji}</span> : null}
+              <span className={st.facePile} aria-hidden>
+                {r.reactors.map((u) => (
+                  <Avatar key={u.id} avatar={u.avatar} name={u.display_name} size={16} />
+                ))}
+              </span>
+              {r.has_more ? (
+                <span className={st.faceMore} aria-hidden>
+                  &amp; more
+                </span>
+              ) : null}
+            </button>
+          ))}
+          <button
+            type="button"
+            className={st.commentReactBtn}
+            aria-label="React to this comment"
+            aria-expanded={picker}
+            onClick={() => setPicker((v) => !v)}
+          >
+            🙂+
+          </button>
+        </span>
+      </span>
+      {canDelete ? (
+        <button type="button" className={st.commentDelete} aria-label="Delete comment" onClick={onDelete}>
+          ×
+        </button>
+      ) : null}
+      {picker ? (
+        <CommentReactionOverlay anchorRef={bubbleRef}>
+          <ReactionPicker
+            onPick={(emoji) => {
+              setPicker(false);
+              onToggleReaction('emoji', emoji);
+            }}
+            onClose={() => setPicker(false)}
+            onStamp={() => {
+              setPicker(false);
+              onToggleReaction('stamp', STAMP_REACTION_KEY);
+            }}
+            stamped={myStamped}
+            myAvatar={state.me?.avatar ?? null}
+          />
+        </CommentReactionOverlay>
+      ) : null}
+    </div>
+  );
+}
+
+/** The ChatView MessageActionsOverlay pattern, trimmed: the picker renders
+ * through Portal into <body>, FIXED at the comment bubble's rect, so the feed
+ * card's overflow and stacking contexts cannot clip it (v0.6.1 class). */
+function CommentReactionOverlay({
+  anchorRef,
+  children,
+}: {
+  anchorRef: React.RefObject<HTMLSpanElement | null>;
+  children: ReactNode;
+}) {
+  const [rect] = useState(() => {
+    const el = anchorRef.current;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: r.height };
+  });
+  const layoutBox = useCallback((box: HTMLDivElement | null) => {
+    if (!box) return;
+    const picker = box.querySelector<HTMLElement>('[data-overlay-part="picker"]');
+    if (!picker) return;
+    const pr = picker.getBoundingClientRect();
+    if (pr.top < 8) {
+      // Bubble near the top of the viewport: drop the picker below instead.
+      picker.style.bottom = 'auto';
+      picker.style.top = `calc(100% + 6px)`;
+    }
+    if (pr.left < 8) {
+      picker.style.left = '0';
+    } else if (pr.right > window.innerWidth - 8) {
+      picker.style.left = 'auto';
+      picker.style.right = '0';
+    }
+  }, []);
+  if (!rect) return null;
+  return (
+    <Portal>
+      <div
+        ref={layoutBox}
+        style={{ position: 'fixed', zIndex: 31, left: rect.left, top: rect.top, width: rect.width, height: rect.height }}
+      >
+        {children}
+      </div>
+    </Portal>
   );
 }

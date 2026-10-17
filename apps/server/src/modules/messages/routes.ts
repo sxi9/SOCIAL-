@@ -142,6 +142,16 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
         metadata.vibe_reply_seq = rider.vibe_reply_seq;
         if (isStampReply) metadata.stamp = true;
       }
+      // ---- v0.7 §1.52: the 'location' drop ("📍 join me here") ----
+      // metadata.location required on type 'location' (400 location_required);
+      // location/join_me riders invalid on every other type (400 bad_metadata).
+      if (body.type === 'location') {
+        if (!rider.location) throw badRequest('location_required');
+        metadata.location = rider.location;
+        if (rider.join_me) metadata.join_me = true;
+      } else if (rider.location !== undefined || rider.join_me !== undefined) {
+        throw badRequest('bad_metadata');
+      }
       if (rider.doodle) metadata.doodle = true;
       // §1.22: sender-confirmed effect (consent is client-side but binding —
       // the server merely stores the confirmed value; the DB CHECK pins the set).
@@ -199,7 +209,15 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
         if (needsAttachment && attachmentIds.length === 0) {
           throw badRequest(body.type === 'audio' ? 'audio_attachment_required' : 'missing_attachments');
         }
-        if (!needsAttachment && !text && attachmentIds.length === 0 && !isStampReply) {
+        // v0.7 (§1.52): a location drop is complete without a body — the pin
+        // itself is the content; the note stays optional.
+        if (
+          !needsAttachment &&
+          !text &&
+          attachmentIds.length === 0 &&
+          !isStampReply &&
+          body.type !== 'location'
+        ) {
           throw badRequest('empty_message');
         }
       }

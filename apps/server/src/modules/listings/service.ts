@@ -4,7 +4,7 @@
 // (PSYCHOLOGY design rules 2/4) — the §1.39 contact/team-up paths reuse the
 // ordinary DM/group machinery, which is theirs, not the board's.
 import { inArray, sql } from 'drizzle-orm';
-import type { Listing, ListingKind, ListingStatus, RoomDetails } from '@socialchat/shared';
+import type { Listing, ListingKind, ListingStatus, Location, RoomDetails } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { attachmentDto, userLiteDto, type AttRow, type UserRow } from '../../lib/dto.js';
 
@@ -114,6 +114,10 @@ export async function listingDtos(
       photos,
       my_contacted: l.authorId !== viewerId && contacted.has(l.id),
       conversation_id: convVisible ? l.conversationId : null,
+      // v0.7 (§1.52): the optional place chip — visibility is the card's own.
+      location: (l.location as Location | null) ?? null,
+      // v0.7 (§1.48): the "edited" marker (no edit history, the §1.30 pattern).
+      edited_at: l.editedAt ? l.editedAt.toISOString() : null,
       created_at: l.createdAt.toISOString(),
       expires_at: l.expiresAt ? l.expiresAt.toISOString() : null,
     } as Listing;

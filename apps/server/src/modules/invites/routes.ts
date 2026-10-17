@@ -7,23 +7,29 @@ import { sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
+import sharp from 'sharp';
 import {
   CreateInviteRequestSchema,
   INVITE_AVATAR_CACHE_TTL_S,
   INVITE_AVATAR_RATE_PER_HOUR_PER_IP,
   INVITE_CREATE_RATE_PER_HOUR,
   INVITE_MAX_USES,
+  INVITE_OG_RATE_PER_HOUR_PER_IP,
   INVITE_OPEN_MAX,
   INVITE_PUBLIC_RATE_PER_HOUR_PER_IP,
   INVITE_TOKEN_REGEX,
   INVITE_TTL_S,
   InviteAvatarQuerySchema,
+  OG_BANNER_AVATAR_PX,
+  OG_BANNER_HEIGHT_PX,
+  OG_BANNER_WIDTH_PX,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { badRequest, conflict, forbidden, notFound, rateLimited } from '../../lib/errors.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
-import { getObjectStream } from '../../s3.js';
+import { redis } from '../../redis.js';
+import { getObjectBuffer, getObjectStream } from '../../s3.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { invitesEnabled } from '../admin/service.js';
 import { getParticipant } from '../conversations/routes.js';
@@ -61,6 +67,106 @@ async function loadInviteOr404(token: string): Promise<InviteRow> {
   const invite = await findInviteByToken(token);
   if (!invite) throw notFound('invite_not_found');
   return invite;
+}
+
+// ---------------------------------------------------------------------------
+// v0.7 §1.53 — the OG banner. Everything is composed IN-PROCESS: gradient,
+// mascot and text are inline SVG rendered by sharp; no fonts, images or
+// services are fetched at request time (golden rule 7).
+// ---------------------------------------------------------------------------
+
+/** display_name is user input entering SVG markup — ALWAYS escaped (§1.53). */
+function escapeXml(s: string): string {
+  return s.replace(/[<>&'"]/g, (c) => {
+    switch (c) {
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '&':
+        return '&amp;';
+      case "'":
+        return '&apos;';
+      default:
+        return '&quot;';
+    }
+  });
+}
+
+/** The mascot blob fallback — the card is good with or without an avatar. */
+function mascotSvg(size: number): Buffer {
+  const s = size;
+  return Buffer.from(`<svg width="${s}" height="${s}" viewBox="0 0 320 320" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="160" cy="160" r="156" fill="#ffffff" fill-opacity="0.92"/>
+  <path d="M160 52c62 0 112 44 112 106 0 64-50 110-112 110S48 222 48 158C48 96 98 52 160 52z" fill="#6f8cff"/>
+  <circle cx="122" cy="150" r="20" fill="#ffffff"/>
+  <circle cx="198" cy="150" r="20" fill="#ffffff"/>
+  <circle cx="126" cy="154" r="9" fill="#1d2440"/>
+  <circle cx="202" cy="154" r="9" fill="#1d2440"/>
+  <path d="M128 208q32 26 64 0" stroke="#1d2440" stroke-width="10" stroke-linecap="round" fill="none"/>
+</svg>`);
+}
+
+/** 1200×630 sharp composition: brand gradient → avatar/mascot circle → text. */
+async function composeOgBanner(inviter: {
+  displayName: string;
+  avatarStatus: string;
+  avatarStaticKey: string | null;
+}): Promise<Buffer> {
+  const W = OG_BANNER_WIDTH_PX;
+  const H = OG_BANNER_HEIGHT_PX;
+  const A = OG_BANNER_AVATAR_PX;
+
+  const background = Buffer.from(`<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4f6fff"/>
+      <stop offset="0.55" stop-color="#6f8cff"/>
+      <stop offset="1" stop-color="#8f7bff"/>
+    </linearGradient>
+  </defs>
+  <rect width="${W}" height="${H}" fill="url(#g)"/>
+  <circle cx="90" cy="560" r="180" fill="#ffffff" fill-opacity="0.08"/>
+  <circle cx="1130" cy="80" r="220" fill="#ffffff" fill-opacity="0.08"/>
+  <circle cx="${W / 2}" cy="${90 + A / 2}" r="${A / 2 + 12}" fill="#ffffff" fill-opacity="0.35"/>
+</svg>`);
+
+  // Avatar circle: the static rendition when ready, else the mascot blob.
+  let face: Buffer | null = null;
+  if (inviter.avatarStatus === 'ready' && inviter.avatarStaticKey) {
+    try {
+      const raw = await getObjectBuffer(inviter.avatarStaticKey);
+      const square = await sharp(raw).resize(A, A, { fit: 'cover' }).png().toBuffer();
+      const mask = Buffer.from(
+        `<svg width="${A}" height="${A}"><circle cx="${A / 2}" cy="${A / 2}" r="${A / 2}" fill="#fff"/></svg>`,
+      );
+      face = await sharp(square)
+        .composite([{ input: mask, blend: 'dest-in' }])
+        .png()
+        .toBuffer();
+    } catch {
+      face = null; // storage hiccup → the mascot keeps the card good
+    }
+  }
+  if (!face) {
+    face = await sharp(mascotSvg(A)).resize(A, A).png().toBuffer();
+  }
+
+  const name = escapeXml(inviter.displayName);
+  const textLayer = Buffer.from(`<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+  <text x="${W / 2}" y="500" text-anchor="middle" font-family="DejaVu Sans, Helvetica, Arial, sans-serif"
+        font-size="56" font-weight="700" fill="#ffffff">${name}</text>
+  <text x="${W / 2}" y="562" text-anchor="middle" font-family="DejaVu Sans, Helvetica, Arial, sans-serif"
+        font-size="38" fill="#ffffff" fill-opacity="0.9">invited you to Bored Chat</text>
+</svg>`);
+
+  return sharp(background)
+    .composite([
+      { input: face, top: 90, left: Math.round((W - A) / 2) },
+      { input: textLayer, top: 0, left: 0 },
+    ])
+    .png()
+    .toBuffer();
 }
 
 export async function inviteRoutes(fastify: FastifyInstance): Promise<void> {
@@ -258,6 +364,57 @@ export async function inviteRoutes(fastify: FastifyInstance): Promise<void> {
       }
       reply.header('content-type', obj.contentType ?? 'application/octet-stream');
       return reply.send(obj.body);
+    },
+  );
+
+  // v0.7 §1.53 GET /api/invites/:token/og-banner.png — UNAUTHENTICATED, the
+  // join page's unfurl face: sharp-composed 1200×630 (gradient → avatar circle
+  // or mascot fallback → XML-escaped display-name overlay). Valid-token-gated
+  // exactly like the avatar proxy (revocation kills it within the cache TTL);
+  // ETag keyed on avatar_version so unfurler re-scrapes revalidate after an
+  // avatar change. The composed PNG is memoized in Redis per (token,
+  // avatar_version) with the same TTL. Optional `v` cache-buster is accepted
+  // and ignored (no querystring schema binds it).
+  app.get(
+    '/api/invites/:token/og-banner.png',
+    { schema: { params: TokenParams } },
+    async (req, reply) => {
+      const rate = await fixedWindow(`inviteog:${req.ip}`, INVITE_OG_RATE_PER_HOUR_PER_IP, 3600);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+
+      const invite = await loadInviteOr404(req.params.token);
+      if (inviteStatus(invite) !== 'valid') throw notFound();
+      const [inviter] = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.id, invite.inviterId))
+        .limit(1);
+      if (!inviter) throw notFound();
+
+      const etag = `"${inviter.avatarVersion}"`;
+      reply.header('cache-control', `private, max-age=${INVITE_AVATAR_CACHE_TTL_S}`);
+      reply.header('etag', etag);
+      reply.header('x-content-type-options', 'nosniff');
+      if (req.headers['if-none-match'] === etag) return reply.status(304).send();
+
+      const memoKey = `ogbanner:${invite.token}:${inviter.avatarVersion}`;
+      let png: Buffer | null = null;
+      try {
+        png = await redis.getBuffer(memoKey);
+      } catch {
+        png = null; // memo is best-effort only
+      }
+      if (!png) {
+        png = await composeOgBanner(inviter);
+        try {
+          await redis.set(memoKey, png, 'EX', INVITE_AVATAR_CACHE_TTL_S);
+        } catch {
+          // best-effort memo
+        }
+      }
+      reply.header('content-type', 'image/png');
+      reply.header('content-length', String(png.length));
+      return reply.send(png);
     },
   );
 

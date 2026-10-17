@@ -80,6 +80,8 @@ export async function runGc(): Promise<void> {
         isNull(schema.attachments.postId),
         // v0.5b (§1.38): room-listing photos bind via listing_id.
         isNull(schema.attachments.listingId),
+        // v0.7 (§1.51): feed-comment images bind via comment_id.
+        isNull(schema.attachments.commentId),
         lt(schema.attachments.createdAt, orphanCutoff),
         sql`NOT EXISTS (SELECT 1 FROM stories s WHERE s.attachment_id = ${schema.attachments.id})`,
         sql`NOT EXISTS (SELECT 1 FROM profile_media pm WHERE pm.attachment_id = ${schema.attachments.id})`,

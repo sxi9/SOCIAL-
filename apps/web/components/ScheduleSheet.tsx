@@ -10,6 +10,7 @@ import { ApiError } from '@/lib/api';
 import { formatDeliverAt } from '@/lib/format';
 import { uuidv7 } from '@/lib/ids';
 import { createScheduled } from '@/lib/scheduled';
+import Portal from './Portal';
 import sheetStyles from './beacons.module.css';
 import exp from './expression.module.css';
 
@@ -99,6 +100,8 @@ export default function ScheduleSheet({ conversationId, draft, onClose, onSchedu
   const maxLocal = toLocalInputValue(new Date(Date.now() + SCHEDULED_MAX_HORIZON_S * 1000));
 
   return (
+    // v0.6.1 rule: every sheet renders through Portal into <body>.
+    <Portal>
     <div
       className={sheetStyles.sheetBackdrop}
       role="presentation"
@@ -184,5 +187,6 @@ export default function ScheduleSheet({ conversationId, draft, onClose, onSchedu
         {error ? <p className="error-text">{error}</p> : null}
       </div>
     </div>
+    </Portal>
   );
 }

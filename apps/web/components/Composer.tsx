@@ -34,8 +34,9 @@ export interface ComposerPayload {
   metadata?: { link_preview?: LinkPreview; effect?: MessageEffect };
 }
 
-/** Actions the chat page handles from the "+" menu (v0.4). */
-export type PlusAction = 'doodle' | 'vibe' | 'ttt' | 'puzzle';
+/** Actions the chat page handles from the "+" menu (v0.4; v0.7 adds the
+ * §1.52 "📍 Join me here" location drop). */
+export type PlusAction = 'doodle' | 'vibe' | 'ttt' | 'puzzle' | 'location';
 
 interface ComposerProps {
   onSubmit: (payload: ComposerPayload) => Promise<boolean>;
@@ -57,6 +58,11 @@ interface ComposerProps {
   searchMentions?: (q: string) => Promise<UserLite[]>;
   /** Channels: games need peers, not audiences — hide the ttt entry. */
   hideGames?: boolean;
+  /** v0.7 (§1.54): pending scheduled sends for THIS conversation — renders the
+   * clock badge on the composer (hidden at zero). My own utility state. */
+  scheduledCount?: number;
+  /** Tapping the clock badge opens the ScheduledDrawer (page-owned). */
+  onOpenScheduled?: () => void;
 }
 
 type RecState = { phase: 'recording'; startedAt: number; cancelArmed: boolean } | null;
@@ -74,6 +80,8 @@ export default function Composer({
   mentionCandidates,
   searchMentions,
   hideGames,
+  scheduledCount,
+  onOpenScheduled,
 }: ComposerProps) {
   const state = useAppState();
   const [body, setBody] = useState(initialBody ?? '');
@@ -505,6 +513,8 @@ export default function Composer({
     // §1.35: games are not startable in channels (peers, not audiences).
     ...(hideGames ? [] : [{ action: 'ttt' as PlusAction, icon: '🎮', label: 'Tic-tac-toe' }]),
     { action: 'puzzle', icon: '🧩', label: 'Daily puzzle' },
+    // v0.7 (§1.52): drop a pin — "join me here", with the on-my-way reply.
+    { action: 'location', icon: '📍', label: 'Join me here' },
   ];
 
   const scheduleDraft: ScheduleDraft | null = (() => {
@@ -520,6 +530,25 @@ export default function Composer({
 
   return (
     <div className={styles.composer}>
+      {/* v0.7 (§1.54): the clock badge — clock glyph + MY pending count for
+          this conversation, live via scheduled.updated; hidden at zero. */}
+      {scheduledCount !== undefined && scheduledCount > 0 && onOpenScheduled ? (
+        <div className={soc.schedBadgeRow}>
+          <button
+            type="button"
+            className={soc.schedBadge}
+            aria-label={`${scheduledCount} scheduled ${scheduledCount === 1 ? 'message' : 'messages'} — open the list`}
+            onClick={onOpenScheduled}
+          >
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden>
+              <circle cx="10" cy="10" r="7.2" stroke="currentColor" strokeWidth="1.5" />
+              <path d="M10 5.8 V10 L13 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            scheduled
+            <span className={soc.schedBadgeCount}>{scheduledCount}</span>
+          </button>
+        </div>
+      ) : null}
       {error ? <div className="error-text">{error}</div> : null}
       {preview && !previewDismissed ? (
         <PreviewCard

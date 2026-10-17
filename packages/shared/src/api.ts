@@ -43,7 +43,6 @@ import {
   BEACON_ROLE_LABEL_MAX_CHARS,
   BEACON_SPARK_THRESHOLD_MAX,
   BEACON_SPARK_THRESHOLD_MIN,
-  BEACON_VIBES,
   CHAT_THEMES,
   CHAT_WALLPAPERS,
   DISAPPEAR_TTL_OPTIONS_S,
@@ -78,6 +77,20 @@ import {
   EXPECTATION_VERDICTS,
   RESCUE_MAX_TARGETS,
   RESCUE_NOTE_MAX_CHARS,
+  // ---- v0.7 (API.md §1.47–§1.54; ADR-016) ----
+  BEACON_CUSTOM_VIBE_EMOJI_MAX_LEN,
+  BEACON_CUSTOM_VIBE_LABEL_MAX_CHARS,
+  BEACON_VIBE_VALUES,
+  FEED_LANES,
+  LOCATION_LABEL_MAX_CHARS,
+  LOCATION_LAT_MAX,
+  LOCATION_LAT_MIN,
+  LOCATION_LNG_MAX,
+  LOCATION_LNG_MIN,
+  POST_AUDIENCES,
+  POST_KINDS,
+  POST_POLL_QUESTION_MAX_CHARS,
+  POST_REF_TYPES,
 } from './constants.js';
 
 // ---------------------------------------------------------------------------
@@ -203,6 +216,8 @@ export type LinkPreview = z.infer<typeof LinkPreviewSchema>;
 // v0.4 adds 'audio' (§1.20 voice notes), 'vibe_check' (§1.23), 'game_ttt'
 // (§1.27 tic-tac-toe — state lives in metadata.game), 'puzzle_result' (§1.27
 // — the no-spoiler emoji grid share, metadata.puzzle).
+// v0.7 adds 'location' (§1.52): a "📍 join me here" drop — the place rides
+// metadata.location (+ optional metadata.join_me), body is an optional note.
 export const MessageTypeSchema = z.enum([
   'text',
   'image',
@@ -214,6 +229,7 @@ export const MessageTypeSchema = z.enum([
   'vibe_check',
   'game_ttt',
   'puzzle_result',
+  'location',
 ]);
 export type MessageType = z.infer<typeof MessageTypeSchema>;
 
@@ -249,8 +265,10 @@ export const SystemEventMetadataSchema = z.object({
 });
 export type SystemEventMetadata = z.infer<typeof SystemEventMetadataSchema>;
 
-// v0.3 beacons (API.md §1.15): the fixed vibe chip set.
-export const BeaconVibeSchema = z.enum(BEACON_VIBES);
+// v0.3 beacons (API.md §1.15): the vibe chips. v0.7 (§1.47) widens the VALUE
+// set with 'custom' (BEACON_VIBE_VALUES = BEACON_VIBES + 'custom'); a custom
+// vibe carries custom_vibe_emoji + custom_vibe_label on the beacon DTO.
+export const BeaconVibeSchema = z.enum(BEACON_VIBE_VALUES);
 export type BeaconVibe = z.infer<typeof BeaconVibeSchema>;
 
 // v0.3 afterglow recap (API.md §1.15): rides the recap SYSTEM message the
@@ -337,6 +355,29 @@ export const ListingRefSchema = z.object({
 });
 export type ListingRef = z.infer<typeof ListingRefSchema>;
 
+// v0.5b listing status — moved up in v0.7 (ahead of its §1.38 block) because
+// the §1.50 join_card live summary needs it (the ListingKindSchema precedent).
+export const ListingStatusSchema = z.enum(['active', 'closed', 'expired']);
+export type ListingStatus = z.infer<typeof ListingStatusSchema>;
+
+// v0.7 locations (§1.52): the ONE location shape, everywhere a location can
+// appear — posts, beacons, listings, and metadata.location on 'location'
+// messages. label is required (a location always has a human name); lat/lng
+// are OPTIONAL, both-or-neither, and only ever a user-initiated one-tap
+// SNAPSHOT — no live GPS, no tracking, nothing ambient (the FEATURES #30
+// line). Clients render map LINKS (geo:/OSM/Google URLs) — never tile embeds,
+// never a map API key (CLAUDE.md golden rule 7).
+export const LocationSchema = z
+  .object({
+    label: z.string().min(1).max(LOCATION_LABEL_MAX_CHARS),
+    lat: z.number().min(LOCATION_LAT_MIN).max(LOCATION_LAT_MAX).optional(),
+    lng: z.number().min(LOCATION_LNG_MIN).max(LOCATION_LNG_MAX).optional(),
+  })
+  .refine((l) => (l.lat === undefined) === (l.lng === undefined), {
+    message: 'lat and lng come together or not at all',
+  });
+export type Location = z.infer<typeof LocationSchema>;
+
 // v0.6 calls (§1.42): defined up here (ahead of the §1.42 block) because the
 // call_ref metadata rider below needs them.
 export const CallKindSchema = z.enum(CALL_KINDS);
@@ -399,6 +440,13 @@ export const MessageMetadataSchema = z.object({
   // §1.46: this message is a rescue SOS — render the rescue card with the
   // one-tap "call <name>" action. SERVER-written by POST /api/rescue only.
   rescue: z.literal(true).optional(),
+  // ---- v0.7 (§1.52) ----
+  // The place a type='location' message drops (required on that type,
+  // 400 location_required otherwise; invalid on every other type).
+  location: LocationSchema.optional(),
+  // "📍 Join me here": renders the join-me variant with the ON_MY_WAY_BODY
+  // quick reply. Valid only on type='location' (route-enforced).
+  join_me: z.literal(true).optional(),
 });
 export type MessageMetadata = z.infer<typeof MessageMetadataSchema>;
 
@@ -768,9 +816,12 @@ export type ListMessagesResponse = z.infer<typeof ListMessagesResponseSchema>;
 // cross-validated by the route: doodle ⇒ type 'image'; stamp ⇒ vibe_reply_seq
 // set, no body/attachments; vibe_reply_seq ⇒ targets a visible 'vibe_check'
 // message; effect allowed on any client-sent type.
+// v0.7 (§1.52) adds 'location': metadata.location required (400
+// location_required), optional metadata.join_me: true — both riders invalid on
+// every other type (400 bad_metadata).
 export const SendMessageRequestSchema = z.object({
   client_msg_id: UuidSchema, // idempotency key; replay returns 200 with the original row
-  type: z.enum(['text', 'image', 'video', 'file', 'audio', 'vibe_check', 'puzzle_result']),
+  type: z.enum(['text', 'image', 'video', 'file', 'audio', 'vibe_check', 'puzzle_result', 'location']),
   body: z.string().max(MAX_MESSAGE_BODY_CHARS).optional(),
   // v0.5a (§1.29): reply — the seq of a visible message in the SAME
   // conversation (route-enforced: within my floor, exists; tombstoned targets
@@ -785,6 +836,9 @@ export const SendMessageRequestSchema = z.object({
       effect: MessageEffectSchema.optional(),
       vibe_reply_seq: z.number().int().positive().optional(),
       stamp: z.literal(true).optional(),
+      // ---- v0.7 (§1.52) ----
+      location: LocationSchema.optional(),
+      join_me: z.literal(true).optional(),
     })
     .optional(),
 });
@@ -1109,6 +1163,10 @@ export const BeaconSchema = z.object({
   id: UuidSchema,
   creator: UserLiteSchema,
   vibe: BeaconVibeSchema,
+  // v0.7 (§1.47): non-null iff vibe='custom' — the creator's own chip
+  // (emoji + a word). defaults keep pre-v0.7 payloads parsing clean.
+  custom_vibe_emoji: z.string().max(BEACON_CUSTOM_VIBE_EMOJI_MAX_LEN).nullable().default(null),
+  custom_vibe_label: z.string().max(BEACON_CUSTOM_VIBE_LABEL_MAX_CHARS).nullable().default(null),
   note: z.string().max(BEACON_NOTE_MAX_CHARS),
   audience: BeaconAudienceSchema,
   // Creator-area SNAPSHOT for audience 'area' beacons, else null. Only ever
@@ -1124,6 +1182,12 @@ export const BeaconSchema = z.object({
   my_state: BeaconMyStateSchema,
   conversation_id: UuidSchema.nullable(),
   ritual: BeaconRitualSchema.nullable(),
+  // v0.7 (§1.52): optional place chip ("chai spot behind campus"), the ONE
+  // Location shape. Editable while open (§1.47).
+  location: LocationSchema.nullable().default(null),
+  // v0.7 (§1.47): set on every effective creator edit — the card renders the
+  // "edited" marker from it (the §1.30 edited_at pattern; no edit history).
+  edited_at: IsoDateTimeSchema.nullable().default(null),
   created_at: IsoDateTimeSchema,
 });
 export type Beacon = z.infer<typeof BeaconSchema>;
@@ -1132,8 +1196,12 @@ export type Beacon = z.infer<typeof BeaconSchema>;
 // chips (the server is timezone-blind; API.md §1.15 documents the preset
 // mapping) and server-validated against the BEACON_* window bounds.
 // audience omitted ⇒ the creator's beacon_default_audience setting.
+// v0.7 (§1.47): vibe 'custom' requires BOTH custom fields; any other vibe
+// forbids them (route-enforced → 400 bad_custom_vibe).
 export const CreateBeaconRequestSchema = z.object({
   vibe: BeaconVibeSchema,
+  custom_vibe_emoji: z.string().min(1).max(BEACON_CUSTOM_VIBE_EMOJI_MAX_LEN).optional(),
+  custom_vibe_label: z.string().min(1).max(BEACON_CUSTOM_VIBE_LABEL_MAX_CHARS).optional(),
   note: z.string().max(BEACON_NOTE_MAX_CHARS).default(''),
   audience: BeaconAudienceSchema.optional(),
   spark_threshold: z
@@ -1144,14 +1212,47 @@ export const CreateBeaconRequestSchema = z.object({
     .optional(),
   starts_at: IsoDateTimeSchema,
   expires_at: IsoDateTimeSchema,
+  location: LocationSchema.nullable().optional(), // v0.7 (§1.52)
 });
 export type CreateBeaconRequest = z.infer<typeof CreateBeaconRequestSchema>;
+
+// v0.7 (§1.47): PATCH /api/beacons/:id — creator only, status 'open' only.
+// Omitted = unchanged; location takes explicit null to clear. audience and
+// the window SHAPE rules are the §1.15 ones re-applied; a new spark_threshold
+// must also be ≥ the current joiner count (threshold == count sparks the
+// beacon inside the edit transaction — the §1.15 spark path, row-locked).
+export const PatchBeaconRequestSchema = z.object({
+  vibe: BeaconVibeSchema.optional(),
+  custom_vibe_emoji: z.string().min(1).max(BEACON_CUSTOM_VIBE_EMOJI_MAX_LEN).optional(),
+  custom_vibe_label: z.string().min(1).max(BEACON_CUSTOM_VIBE_LABEL_MAX_CHARS).optional(),
+  note: z.string().max(BEACON_NOTE_MAX_CHARS).optional(),
+  starts_at: IsoDateTimeSchema.optional(),
+  expires_at: IsoDateTimeSchema.optional(),
+  spark_threshold: z
+    .number()
+    .int()
+    .min(BEACON_SPARK_THRESHOLD_MIN)
+    .max(BEACON_SPARK_THRESHOLD_MAX)
+    .optional(),
+  location: LocationSchema.nullable().optional(),
+});
+export type PatchBeaconRequest = z.infer<typeof PatchBeaconRequestSchema>;
 
 export const BeaconResponseSchema = z.object({ beacon: BeaconSchema });
 export type BeaconResponse = z.infer<typeof BeaconResponseSchema>;
 
 export const ListBeaconsResponseSchema = z.object({ beacons: z.array(BeaconSchema) });
 export type ListBeaconsResponse = z.infer<typeof ListBeaconsResponseSchema>;
+
+// v0.7 (§1.47): GET /api/beacons/:id/joins — the "Who's in" sheet. The FULL
+// joiner list in join order (the DTO pile is capped at
+// BEACON_JOINERS_PREVIEW_MAX); audience-gated like the beacon itself and
+// filtered of users blocked w.r.t. the viewer. Faces only — join timestamps
+// are never serialized (the §1.18 no-timestamps rule).
+export const BeaconJoinsResponseSchema = z.object({
+  joiners: z.array(UserLiteSchema),
+});
+export type BeaconJoinsResponse = z.infer<typeof BeaconJoinsResponseSchema>;
 
 // Boredom radar: AGGREGATE count only — no names, no faces, no list
 // (FEATURES #26 "aggregate counts only").
@@ -1576,6 +1677,109 @@ export type StoryViewsResponse = z.infer<typeof StoryViewsResponseSchema>;
 // (PSYCHOLOGY design rule 5). No share/repost mechanic exists.
 // ---------------------------------------------------------------------------
 
+// ---- v0.7 lanes & interactive posts (§1.49/§1.50, ADR-016) ----
+
+export const PostKindSchema = z.enum(POST_KINDS);
+export type PostKind = z.infer<typeof PostKindSchema>;
+
+// 'public' posts feed the discover lane (§1.49) — visible to every
+// non-blocked, non-banned user; 'friends_of' stays the v0.5a audience.
+export const PostAudienceSchema = z.enum(POST_AUDIENCES);
+export type PostAudience = z.infer<typeof PostAudienceSchema>;
+
+export const FeedLaneSchema = z.enum(FEED_LANES);
+export type FeedLane = z.infer<typeof FeedLaneSchema>;
+
+// §1.50 poll posts. counts ARE serialized here — a vote tally on OPTIONS is a
+// decision tool, not approval attached to a person (ADR-016 argues the
+// distinction vs PSYCHOLOGY rule 3; the §1.17 chat-poll precedent). No voter
+// lists, no vote timestamps, ever. my_vote is viewer-specific.
+export const PostPollSchema = z.object({
+  question: z.string().min(1).max(POST_POLL_QUESTION_MAX_CHARS),
+  options: z
+    .array(z.string().min(1).max(POLL_OPTION_MAX_CHARS))
+    .min(POLL_OPTIONS_MIN)
+    .max(POLL_OPTIONS_MAX),
+  counts: z.array(z.number().int().nonnegative()), // same length as options
+  total_votes: z.number().int().nonnegative(),
+  my_vote: z.number().int().nonnegative().nullable(),
+});
+export type PostPoll = z.infer<typeof PostPollSchema>;
+
+// §1.50 game posts: an OPEN tic-tac-toe challenge — first claimer gets the
+// game (advisory-locked claim). players = post.author (x, moves first) vs
+// claimed_by (o); the game itself is an ordinary §1.27 game_ttt message in
+// the pair's DM — only its players see the board, the post shows the claim.
+export const PostGameSchema = z.object({
+  state: z.enum(['open', 'claimed']),
+  claimed_by: UserLiteSchema.nullable(),
+});
+export type PostGame = z.infer<typeof PostGameSchema>;
+
+// §1.50 join_card ref: what the card points at. Stored verbatim (posts.ref
+// jsonb); the LIVE state rides ref_summary, resolved per viewer at
+// serialization time (the reply_context pattern).
+export const PostRefSchema = z.object({
+  type: z.enum(POST_REF_TYPES),
+  id: UuidSchema,
+});
+export type PostRef = z.infer<typeof PostRefSchema>;
+
+// §1.50 join_card live summaries — SERVER-resolved per viewer on every read,
+// so the card always shows current truth (sparked/expired/closed states
+// included) and never widens the ref's audience: a viewer the ref is not
+// visible to (audience, blocks, ban) gets ref_summary: null and the client
+// renders the "no longer available" card. joiners carries at most
+// JOIN_CARD_SUMMARY_JOINERS_MAX faces (the pile preview).
+export const JoinCardBeaconSummarySchema = z.object({
+  type: z.literal('beacon'),
+  id: UuidSchema,
+  vibe: BeaconVibeSchema,
+  custom_vibe_emoji: z.string().nullable(),
+  custom_vibe_label: z.string().nullable(),
+  note: z.string(),
+  status: BeaconStatusSchema,
+  starts_at: IsoDateTimeSchema,
+  expires_at: IsoDateTimeSchema,
+  joiners: z.array(UserLiteSchema),
+  needs: z.number().int().nonnegative(),
+  my_state: BeaconMyStateSchema,
+  location: LocationSchema.nullable(),
+});
+export type JoinCardBeaconSummary = z.infer<typeof JoinCardBeaconSummarySchema>;
+
+export const JoinCardListingSummarySchema = z.object({
+  type: z.literal('listing'),
+  id: UuidSchema,
+  kind: ListingKindSchema,
+  title: z.string(),
+  price_text: z.string().nullable(),
+  status: ListingStatusSchema,
+  area: z.string(),
+  my_contacted: z.boolean(),
+  location: LocationSchema.nullable(),
+});
+export type JoinCardListingSummary = z.infer<typeof JoinCardListingSummarySchema>;
+
+export const JoinCardSummarySchema = z.discriminatedUnion('type', [
+  JoinCardBeaconSummarySchema,
+  JoinCardListingSummarySchema,
+]);
+export type JoinCardSummary = z.infer<typeof JoinCardSummarySchema>;
+
+// §1.51 comment reactions: one chip per (emoji, kind) — capped FACES, never a
+// numeric total (the PostReactionAggregate rule). Stamps are kind='stamp'
+// with the STAMP_REACTION_KEY sentinel as emoji (the §1.19 machinery);
+// reactors = first COMMENT_REACTORS_PREVIEW_MAX by first-reaction order.
+export const CommentReactionAggregateSchema = z.object({
+  emoji: ReactionEmojiSchema,
+  kind: ReactionKindSchema,
+  reactors: z.array(UserLiteSchema),
+  has_more: z.boolean(),
+  mine: z.boolean(),
+});
+export type CommentReactionAggregate = z.infer<typeof CommentReactionAggregateSchema>;
+
 // Named faces, never a numeric total: reactors = first
 // POST_REACTORS_PREVIEW_MAX by first-reaction order; has_more carries the
 // rest. There is deliberately NO count field (PSYCHOLOGY design rule 3).
@@ -1587,40 +1791,78 @@ export const PostReactionAggregateSchema = z.object({
 });
 export type PostReactionAggregate = z.infer<typeof PostReactionAggregateSchema>;
 
+// v0.7 (§1.51): body loses its min — an image/GIF-only comment is legal (at
+// least one of body/attachment, route-enforced at create). attachment rides
+// the EXISTING §1.6 pipeline (kind image; a GIF is just an image upload).
 export const PostCommentSchema = z.object({
   id: UuidSchema,
   post_id: UuidSchema,
   author: UserLiteSchema,
-  body: z.string().min(1).max(POST_COMMENT_MAX_CHARS),
+  body: z.string().max(POST_COMMENT_MAX_CHARS),
+  attachment: AttachmentSchema.nullable().default(null), // v0.7 (§1.51)
+  reactions: z.array(CommentReactionAggregateSchema).default([]), // v0.7 (§1.51)
   created_at: IsoDateTimeSchema,
 });
 export type PostComment = z.infer<typeof PostCommentSchema>;
 
 // comments = the latest POST_COMMENTS_PREVIEW_MAX in created_at ASC;
 // has_more_comments carries the rest (no comment COUNT is ever serialized).
+// v0.7 (§1.49/§1.50): kind + audience + the per-kind riders (poll/game/
+// ref+ref_summary) and the §1.52 location chip. Every default keeps pre-v0.7
+// payloads parsing clean; poll/game/ref are non-null iff kind matches.
 export const PostSchema = z.object({
   id: UuidSchema,
   author: UserLiteSchema,
+  kind: PostKindSchema.default('text'),
+  audience: PostAudienceSchema.default('friends_of'),
   body: z.string().max(POST_BODY_MAX_CHARS),
   attachments: z.array(AttachmentSchema).max(POST_MAX_ATTACHMENTS),
   reactions: z.array(PostReactionAggregateSchema),
   comments: z.array(PostCommentSchema),
   has_more_comments: z.boolean(),
+  poll: PostPollSchema.nullable().default(null), // iff kind='poll'; my_vote viewer-specific
+  game: PostGameSchema.nullable().default(null), // iff kind='game'
+  ref: PostRefSchema.nullable().default(null), // iff kind='join_card'
+  ref_summary: JoinCardSummarySchema.nullable().default(null), // viewer-resolved; null = gone/hidden
+  location: LocationSchema.nullable().default(null), // §1.52
   created_at: IsoDateTimeSchema,
 });
 export type Post = z.infer<typeof PostSchema>;
 
-// At least one of body / attachment_ids (route-enforced → 400 empty_post).
+// Per-kind shape rules are route-enforced (400 bad_post_shape): 'text' needs
+// at least one of body/attachment_ids (400 empty_post, the v0.5a rule);
+// 'poll' requires poll and forbids attachments; 'game' forbids poll/ref/
+// attachments (body = the trash-talk caption); 'join_card' requires ref and
+// forbids attachments. audience must nest inside the ref's audience for
+// join_cards (§1.50 audience-intersection rule, 400 ref_audience_mismatch).
 export const CreatePostRequestSchema = z.object({
+  kind: PostKindSchema.default('text'),
+  audience: PostAudienceSchema.default('friends_of'),
   body: z.string().max(POST_BODY_MAX_CHARS).default(''),
   attachment_ids: z.array(UuidSchema).max(POST_MAX_ATTACHMENTS).default([]),
+  poll: z
+    .object({
+      question: z.string().min(1).max(POST_POLL_QUESTION_MAX_CHARS),
+      options: z
+        .array(z.string().min(1).max(POLL_OPTION_MAX_CHARS))
+        .min(POLL_OPTIONS_MIN)
+        .max(POLL_OPTIONS_MAX),
+    })
+    .optional(),
+  ref: PostRefSchema.optional(),
+  location: LocationSchema.nullable().optional(),
 });
 export type CreatePostRequest = z.infer<typeof CreatePostRequestSchema>;
 
 export const PostResponseSchema = z.object({ post: PostSchema });
 export type PostResponse = z.infer<typeof PostResponseSchema>;
 
+// v0.7 (§1.49): lane picks the feed — 'friends' (the v0.5a feed: my
+// friends-of set + me, every audience) or 'discover' (audience='public'
+// posts instance-wide, minus blocks and banned authors). Both are FINITE
+// (all_caught_up), both created_at DESC, no ranking in either.
 export const FeedQuerySchema = z.object({
+  lane: FeedLaneSchema.default('friends'),
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(PAGE_SIZE_DEFAULT),
 });
@@ -1639,13 +1881,51 @@ export const AddPostReactionRequestSchema = z.object({
 });
 export type AddPostReactionRequest = z.infer<typeof AddPostReactionRequestSchema>;
 
+// v0.7 (§1.51): at least one of body / attachment_id (route-enforced →
+// 400 empty_comment). The attachment must be mine, kind 'image', unbound.
 export const CreateCommentRequestSchema = z.object({
-  body: z.string().min(1).max(POST_COMMENT_MAX_CHARS),
+  body: z.string().max(POST_COMMENT_MAX_CHARS).default(''),
+  attachment_id: UuidSchema.optional(),
 });
 export type CreateCommentRequest = z.infer<typeof CreateCommentRequestSchema>;
 
 export const CommentResponseSchema = z.object({ comment: PostCommentSchema });
 export type CommentResponse = z.infer<typeof CommentResponseSchema>;
+
+// ---- v0.7 interactive-post actions (§1.50) ----
+
+// POST /api/posts/:id/poll/vote — UPSERT on (post, me): revoting replaces
+// (the §1.17 semantics). DELETE unvotes. Both answer the fresh aggregate.
+export const PostPollVoteRequestSchema = z.object({
+  option_idx: z.number().int().nonnegative(),
+});
+export type PostPollVoteRequest = z.infer<typeof PostPollVoteRequestSchema>;
+
+export const PostPollResponseSchema = z.object({ poll: PostPollSchema });
+export type PostPollResponse = z.infer<typeof PostPollResponseSchema>;
+
+// POST /api/posts/:id/claim-game — the FIRST claimer (advisory-locked +
+// guarded UPDATE) gets the game: a DM with the author (dm_key create-or-
+// dedupe) carrying an ordinary §1.27 game_ttt message. conversation_id +
+// game_seq land the claimer straight on the board.
+export const ClaimGameResponseSchema = z.object({
+  post: PostSchema,
+  conversation_id: UuidSchema,
+  game_seq: z.number().int().positive(),
+});
+export type ClaimGameResponse = z.infer<typeof ClaimGameResponseSchema>;
+
+// ---- v0.7 comment reactions (§1.51) — the §1.19 request shape verbatim ----
+
+export const AddCommentReactionRequestSchema = z
+  .object({
+    kind: ReactionKindSchema.default('emoji'),
+    emoji: ReactionEmojiSchema.optional(),
+  })
+  .refine((r) => (r.kind === 'emoji') === (r.emoji !== undefined), {
+    message: "emoji is required for kind 'emoji' and forbidden for kind 'stamp'",
+  });
+export type AddCommentReactionRequest = z.infer<typeof AddCommentReactionRequestSchema>;
 
 export const ListCommentsQuerySchema = z.object({
   cursor: z.string().optional(),
@@ -1792,8 +2072,8 @@ export type UpdateParticipantRoleRequest = z.infer<typeof UpdateParticipantRoleR
 // #45); gig/ride/room detail views render LISTING_SAFETY_NOTE verbatim.
 // ---------------------------------------------------------------------------
 
-export const ListingStatusSchema = z.enum(['active', 'closed', 'expired']);
-export type ListingStatus = z.infer<typeof ListingStatusSchema>;
+// ListingStatusSchema moved up beside ListingKindSchema in v0.7 (the §1.50
+// join_card summary needs it ahead of the feed block).
 
 export const GigDirectionSchema = z.enum(LISTING_GIG_DIRECTIONS);
 export type GigDirection = z.infer<typeof GigDirectionSchema>;
@@ -1867,6 +2147,11 @@ const ListingDtoBase = {
   // picked members (everyone else always sees null — the beacon
   // conversation_id pattern).
   conversation_id: UuidSchema.nullable().default(null),
+  // v0.7 (§1.52): optional place chip, the ONE Location shape.
+  location: LocationSchema.nullable().default(null),
+  // v0.7 (§1.48): set on every effective author edit — the card renders the
+  // "edited" marker from it (the §1.30 pattern; no edit history).
+  edited_at: IsoDateTimeSchema.nullable().default(null),
   created_at: IsoDateTimeSchema,
   // gig/room: created_at + LISTING_TTL_S; ride: details.departs_at;
   // place_review: null (never expires).
@@ -1893,6 +2178,7 @@ const CreateListingBase = {
   price_text: z.string().min(1).max(LISTING_PRICE_TEXT_MAX_CHARS).nullable().optional(),
   area: z.string().min(1).max(AREA_MAX_CHARS).optional(),
   is_public: z.boolean().default(false),
+  location: LocationSchema.nullable().optional(), // v0.7 (§1.52)
 };
 
 export const CreateListingRequestSchema = z.discriminatedUnion('kind', [
@@ -1906,6 +2192,41 @@ export const CreateListingRequestSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 export type CreateListingRequest = z.infer<typeof CreateListingRequestSchema>;
+
+// v0.7 (§1.48): PATCH /api/listings/:id — author only, status 'active' only.
+// kind is ECHOED to pick the validation branch and must match the row (it is
+// immutable — 400 kind_immutable). Every present field full-replaces; details
+// (when present) is the COMPLETE per-kind payload, revalidated exactly like
+// create (ride departs_at re-copied to expires_at; room attachment_ids re-
+// bound/unbound). area and expiry rules never change on edit. Omitted =
+// unchanged; location takes explicit null to clear.
+const UpdateListingBase = {
+  title: z.string().min(1).max(LISTING_TITLE_MAX_CHARS).optional(),
+  body: z.string().max(LISTING_BODY_MAX_CHARS).optional(),
+  price_text: z.string().min(1).max(LISTING_PRICE_TEXT_MAX_CHARS).nullable().optional(),
+  is_public: z.boolean().optional(),
+  location: LocationSchema.nullable().optional(),
+};
+
+export const UpdateListingRequestSchema = z.discriminatedUnion('kind', [
+  z.object({ ...UpdateListingBase, kind: z.literal('gig'), details: GigDetailsSchema.optional() }),
+  z.object({
+    ...UpdateListingBase,
+    kind: z.literal('ride'),
+    details: RideDetailsSchema.optional(),
+  }),
+  z.object({
+    ...UpdateListingBase,
+    kind: z.literal('room'),
+    details: RoomDetailsSchema.optional(),
+  }),
+  z.object({
+    ...UpdateListingBase,
+    kind: z.literal('place_review'),
+    details: PlaceReviewDetailsSchema.optional(),
+  }),
+]);
+export type UpdateListingRequest = z.infer<typeof UpdateListingRequestSchema>;
 
 export const ListingResponseSchema = z.object({ listing: ListingSchema });
 export type ListingResponse = z.infer<typeof ListingResponseSchema>;

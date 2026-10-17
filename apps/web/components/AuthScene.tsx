@@ -23,7 +23,10 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react';
+import type { WORDMARK_WORDS } from '@socialchat/shared';
 import { useReducedMotion } from '@/lib/useReducedMotion';
+import type { MascotState } from './Mascot';
+import Wordmark from './Wordmark';
 import styles from './auth.module.css';
 
 export interface AuthFx {
@@ -33,6 +36,10 @@ export interface AuthFx {
   burst: () => void;
   /** Lift the card away ahead of routing (no-op under reduced motion). */
   lift: () => void;
+  /** v0.7 (§1.54): the mascot state matching the wordmark's current word —
+   * null while it reads "Bored" (ambient wins). Pages blend it in only while
+   * their mascot is otherwise idle/watching. */
+  wordMascot: MascotState | null;
 }
 
 const noop = (): void => undefined;
@@ -41,6 +48,7 @@ const AuthFxContext = createContext<AuthFx>({
   reducedMotion: false,
   burst: noop,
   lift: noop,
+  wordMascot: null,
 });
 
 export function useAuthFx(): AuthFx {
@@ -78,6 +86,18 @@ interface ConfettiPiece {
 
 const CONFETTI_COLORS = ['#6f8cff', '#4cd4a0', '#ff6b96', '#b78cff', '#ffd166', '#7ae0ff'];
 
+// §1.54: Bored = idle (null → the page's ambient state wins), Sad = droop,
+// Excited = bounce (celebrate), Happy = smile, Lonely = look around,
+// Hyped = party. State changes ride the same tick as the roll.
+const WORD_MASCOT: Record<(typeof WORDMARK_WORDS)[number], MascotState | null> = {
+  Bored: null,
+  Sad: 'droop',
+  Excited: 'celebrate',
+  Happy: 'happy',
+  Lonely: 'lookaround',
+  Hyped: 'party',
+};
+
 function FloatingFace({ className, hue }: { className: string; hue: string }) {
   return (
     <svg className={className} width="54" height="54" viewBox="0 0 54 54" fill="none" aria-hidden>
@@ -97,6 +117,7 @@ export default function AuthScene({ children }: { children: ReactNode }) {
   const [greeting, setGreeting] = useState<string | null>(null);
   const [party, setParty] = useState(false);
   const [lifted, setLifted] = useState(false);
+  const [word, setWord] = useState<(typeof WORDMARK_WORDS)[number]>('Bored');
   const [pieces, setPieces] = useState<ConfettiPiece[] | null>(null);
   const [tiltReady, setTiltReady] = useState(false);
   const [tiltOn, setTiltOn] = useState(false);
@@ -237,8 +258,8 @@ export default function AuthScene({ children }: { children: ReactNode }) {
   }, [reduced]);
 
   const fx = useMemo<AuthFx>(
-    () => ({ party, reducedMotion: reduced, burst, lift }),
-    [party, reduced, burst, lift],
+    () => ({ party, reducedMotion: reduced, burst, lift, wordMascot: WORD_MASCOT[word] ?? null }),
+    [party, reduced, burst, lift, word],
   );
 
   return (
@@ -259,8 +280,12 @@ export default function AuthScene({ children }: { children: ReactNode }) {
         <div className={styles.content}>
           <header className={styles.brand}>
             <h1 className={styles.title}>
+              {/* v0.7 (§1.54): "[Bored] Chat" — the word rolls, "Chat" never
+                  moves (fixed-width slot); static "Bored Chat" under reduced
+                  motion and in SSR output. */}
               <button type="button" className={styles.logoBtn} onClick={onLogoTap}>
-                Bored Chat
+                <Wordmark onWordChange={setWord} />
+                <span>Chat</span>
               </button>
             </h1>
             <p className={styles.pitch}>{tagline}</p>

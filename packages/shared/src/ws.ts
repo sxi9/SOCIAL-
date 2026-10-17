@@ -181,16 +181,22 @@ export const BeaconNewEventSchema = z.object({
 });
 export type BeaconNewEvent = z.infer<typeof BeaconNewEventSchema>;
 
-// Joins / leave / spark / expiry / cancellation. To the audience; on spark the
-// payload sent to NON-joiners carries status 'sparked' with conversation_id
-// null (their card simply retires) — spark details reach joiners + creator
-// only. reping = true marks the one "needs 1 more" re-notification
-// (repinged_at guard: at most once per beacon).
+// Joins / leave / spark / expiry / cancellation — and, from v0.7, creator
+// edits (API.md §1.47). To the audience; on spark the payload sent to
+// NON-joiners carries status 'sparked' with conversation_id null (their card
+// simply retires) — spark details reach joiners + creator only. reping = true
+// marks the one "needs 1 more" re-notification (repinged_at guard: at most
+// once per beacon). edited = true marks a creator edit; changed names the
+// edited fields (a subset of BEACON_EDITABLE_FIELDS) so cards can flash the
+// right chips — the DTO carries the full new state either way. Defaults keep
+// pre-v0.7 frames parsing clean.
 export const BeaconUpdatedEventSchema = z.object({
   t: z.literal('beacon.updated'),
   d: z.object({
     beacon: BeaconSchema,
     reping: z.boolean().default(false),
+    edited: z.boolean().default(false),
+    changed: z.array(z.string()).default([]),
   }),
 });
 export type BeaconUpdatedEvent = z.infer<typeof BeaconUpdatedEventSchema>;

@@ -8,6 +8,7 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
   BEACON_CREATE_RATE_PER_HOUR,
+  BEACON_EDIT_RATE_PER_HOUR,
   BEACON_KUDOS_WINDOW_S,
   BEACON_MAX_HORIZON_S,
   BEACON_MIN_WINDOW_S,
@@ -17,8 +18,10 @@ import {
   BEACON_STARTS_AT_SLACK_S,
   CreateBeaconRequestSchema,
   CreateRoleRequestSchema,
+  PatchBeaconRequestSchema,
   SendKudosRequestSchema,
   type BeaconRole,
+  type Location,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
@@ -36,6 +39,7 @@ import { authed, requireAuth } from '../auth/guard.js';
 import {
   audienceUserIds,
   beaconDtosFor,
+  editOpenBeacon,
   fanBeacon,
   hasJoin,
   isBeaconVisibleTo,
@@ -45,6 +49,7 @@ import {
   loadBeaconDtoFor,
   pushBeacon,
   radarCount,
+  sparkNow,
   type BeaconRow,
 } from './service.js';
 
@@ -77,11 +82,37 @@ function validateWindow(startsAt: Date, expiresAt: Date): void {
 interface MintOpts {
   creator: { id: string; area: string | null; beaconDefaultAudience: string };
   vibe: string;
+  customVibeEmoji?: string | null;
+  customVibeLabel?: string | null;
   note: string;
   audience?: string;
   sparkThreshold?: number;
   startsAt: Date;
   expiresAt: Date;
+  location?: Location | null;
+}
+
+/** v0.7 (§1.47): vibe 'custom' requires BOTH custom fields; any preset vibe
+ * forbids them → 400 bad_custom_vibe (a partial pair included). */
+function requireCustomVibePair(
+  vibe: string,
+  emoji: string | null | undefined,
+  label: string | null | undefined,
+): void {
+  if (vibe === 'custom') {
+    if (!emoji || !label) throw badRequest('bad_custom_vibe');
+  } else if (emoji !== undefined || label !== undefined) {
+    throw badRequest('bad_custom_vibe');
+  }
+}
+
+/** The human word for a beacon's vibe in push copy (§1.47 custom vibes). */
+function vibeWord(row: Pick<BeaconRow, 'vibe' | 'customVibeLabel'>): string {
+  return row.vibe === 'custom' ? (row.customVibeLabel ?? 'a plan') : row.vibe;
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 /** Shared by POST /api/beacons and run-it-back: mint + karma + fan + push. */
@@ -98,9 +129,12 @@ async function mintBeacon(opts: MintOpts): Promise<BeaconRow> {
       id: newId(),
       creatorId: opts.creator.id,
       vibe: opts.vibe,
+      customVibeEmoji: opts.vibe === 'custom' ? (opts.customVibeEmoji ?? null) : null,
+      customVibeLabel: opts.vibe === 'custom' ? (opts.customVibeLabel ?? null) : null,
       note: opts.note,
       audience,
       area: audience === 'area' ? opts.creator.area : null,
+      location: opts.location ?? null,
       startsAt: opts.startsAt,
       expiresAt: opts.expiresAt,
       sparkThreshold: opts.sparkThreshold ?? BEACON_SPARK_THRESHOLD_DEFAULT,
@@ -121,11 +155,41 @@ async function mintBeacon(opts: MintOpts): Promise<BeaconRow> {
     .limit(1);
   await pushBeacon(audienceIds, {
     beacon_id: row!.id,
-    title: `${creatorRow?.displayName ?? 'Someone'} is up for ${row!.vibe}`,
+    title: `${creatorRow?.displayName ?? 'Someone'} is up for ${vibeWord(row!)}`,
     body: row!.note || 'Tap to join the plan',
     url: '/beacons',
   });
   return row!;
+}
+
+/** Post-commit duties of EVERY spark path (threshold join, §1.47 edit spark,
+ * spark-now): afterglow job, conv.new to insiders, beacon.updated to the
+ * audience (non-joiners see the card retire with conversation_id null), spark
+ * push to insiders only — byte-identical whatever triggered the spark. */
+async function sparkPostCommit(
+  row: BeaconRow,
+  conversationId: string,
+  joinerIds: string[],
+  fanOpts: { edited?: boolean; changed?: string[] } = {},
+): Promise<void> {
+  await enqueueAfterglow(row.id, row.expiresAt.getTime() + 2 * 3600 * 1000 - Date.now());
+  const insiders = [row.creatorId, ...joinerIds];
+  await publishConversationToUsers(conversationId, insiders, 'conv.new');
+  await fanBeacon(row, 'beacon.updated', fanOpts);
+  await pushBeacon(insiders, {
+    beacon_id: row.id,
+    title: 'It is officially a plan',
+    body: `Your ${vibeWord(row)} beacon sparked — the group chat is open`,
+    url: `/c/${conversationId}`,
+  });
+}
+
+/** Current joiner user ids in join order (the §1.47 notification set). */
+async function joinerIdsOf(beaconId: string): Promise<string[]> {
+  const rows = (await db.execute(sql`
+    SELECT user_id FROM beacon_joins WHERE beacon_id = ${beaconId} ORDER BY created_at ASC
+  `)) as unknown as { user_id: string }[];
+  return rows.map((r) => r.user_id);
 }
 
 /** Visible-or-404 (API.md §1.14/§1.15: unknown, outside audience and blocked
@@ -227,14 +291,19 @@ export async function beaconRoutes(fastify: FastifyInstance): Promise<void> {
       const { user } = authed(req);
       const rate = await fixedWindow(`beaconcreate:${user.id}`, BEACON_CREATE_RATE_PER_HOUR, 3600);
       if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+      // v0.7 (§1.47): both-or-neither, and only on vibe 'custom'.
+      requireCustomVibePair(req.body.vibe, req.body.custom_vibe_emoji, req.body.custom_vibe_label);
       const row = await mintBeacon({
         creator: { id: user.id, area: user.area, beaconDefaultAudience: user.beaconDefaultAudience },
         vibe: req.body.vibe,
+        customVibeEmoji: req.body.custom_vibe_emoji ?? null,
+        customVibeLabel: req.body.custom_vibe_label ?? null,
         note: req.body.note,
         audience: req.body.audience,
         sparkThreshold: req.body.spark_threshold,
         startsAt: new Date(req.body.starts_at),
         expiresAt: new Date(req.body.expires_at),
+        location: req.body.location ?? null,
       });
       return reply.status(201).send({ beacon: await loadBeaconDtoFor(row, user.id) });
     },
@@ -252,6 +321,165 @@ export async function beaconRoutes(fastify: FastifyInstance): Promise<void> {
     const { user } = authed(req);
     return { active_visible_count: await radarCount({ id: user.id, area: user.area }) };
   });
+
+  // v0.7 §1.47 PATCH /api/beacons/:id — creator only, status 'open' only.
+  // Audience is IMMUTABLE (400 audience_immutable — re-aiming a live invite is
+  // a new beacon); the Zod schema has no audience field, so the raw body is
+  // checked in preValidation before Zod strips the key.
+  app.patch(
+    '/api/beacons/:id',
+    {
+      preHandler: requireAuth,
+      preValidation: (req, _reply, done) => {
+        const raw = req.body as Record<string, unknown> | null;
+        if (raw && typeof raw === 'object' && 'audience' in raw) {
+          done(badRequest('audience_immutable'));
+          return;
+        }
+        done();
+      },
+      schema: { params: IdParams, body: PatchBeaconRequestSchema },
+    },
+    async (req) => {
+      const { user } = authed(req);
+      const row = await loadBeacon(req.params.id);
+      if (!row) throw notFound('beacon_not_found');
+      if (row.creatorId !== user.id) {
+        // Non-creators: invisible beacons must stay invisible (§1.14).
+        if (!(await isBeaconVisibleTo(row, user))) throw notFound('beacon_not_found');
+        throw forbidden();
+      }
+      if (row.status !== 'open' || row.expiresAt.getTime() <= Date.now()) {
+        throw conflict('beacon_not_open');
+      }
+      const rate = await fixedWindow(`beaconedit:${user.id}`, BEACON_EDIT_RATE_PER_HOUR, 3600);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+
+      const body = req.body;
+      // Custom-vibe shape against the EFFECTIVE new vibe (§1.47): 'custom'
+      // needs both fields present or inherited; a preset vibe forbids them.
+      const effectiveVibe = body.vibe ?? row.vibe;
+      if (effectiveVibe === 'custom') {
+        const emoji = body.custom_vibe_emoji ?? row.customVibeEmoji;
+        const label = body.custom_vibe_label ?? row.customVibeLabel;
+        if (!emoji || !label) throw badRequest('bad_custom_vibe');
+      } else if (body.custom_vibe_emoji !== undefined || body.custom_vibe_label !== undefined) {
+        throw badRequest('bad_custom_vibe');
+      }
+      // Window fields revalidate under the §1.15 rules — both must be sent
+      // together when either changes.
+      if ((body.starts_at === undefined) !== (body.expires_at === undefined)) {
+        throw badRequest('bad_window');
+      }
+      if (body.starts_at !== undefined && body.expires_at !== undefined) {
+        validateWindow(new Date(body.starts_at), new Date(body.expires_at));
+      }
+
+      const outcome = await editOpenBeacon(row.id, {
+        ...(body.vibe !== undefined ? { vibe: body.vibe } : {}),
+        ...(body.custom_vibe_emoji !== undefined
+          ? { customVibeEmoji: body.custom_vibe_emoji }
+          : {}),
+        ...(body.custom_vibe_label !== undefined
+          ? { customVibeLabel: body.custom_vibe_label }
+          : {}),
+        ...(body.note !== undefined ? { note: body.note } : {}),
+        ...(body.starts_at !== undefined ? { startsAt: new Date(body.starts_at) } : {}),
+        ...(body.expires_at !== undefined ? { expiresAt: new Date(body.expires_at) } : {}),
+        ...(body.spark_threshold !== undefined ? { sparkThreshold: body.spark_threshold } : {}),
+        ...(body.location !== undefined ? { location: body.location } : {}),
+      });
+      if (outcome === null) throw conflict('beacon_not_open'); // raced close/expiry
+      if (outcome === 'threshold_below_joins') throw badRequest('threshold_below_joins');
+
+      if (outcome.changed.length > 0) {
+        if (outcome.sparked && outcome.conversationId) {
+          // threshold == count sparked inside the edit transaction: the spark
+          // fan-out/push replaces the edited push (joiners get the room).
+          await sparkPostCommit(outcome.row, outcome.conversationId, outcome.joinerIds, {
+            edited: true,
+            changed: outcome.changed,
+          });
+        } else {
+          await fanBeacon(outcome.row, 'beacon.updated', {
+            edited: true,
+            changed: outcome.changed,
+          });
+          // Push to current JOINERS ONLY — people who committed (§1.47,
+          // PSYCHOLOGY rule 2); §2.9 guards re-check at execution.
+          await pushBeacon(outcome.joinerIds, {
+            beacon_id: outcome.row.id,
+            title: capitalize(vibeWord(outcome.row)),
+            body: `${user.displayName} changed the plan`,
+            url: '/plans',
+          });
+        }
+      }
+      return { beacon: await loadBeaconDtoFor(outcome.row, user.id) };
+    },
+  );
+
+  // v0.7 §1.47 POST /api/beacons/:id/spark-now — "start with whoever's here":
+  // the §1.15 spark transaction verbatim, the threshold simply not consulted.
+  app.post(
+    '/api/beacons/:id/spark-now',
+    { preHandler: requireAuth, schema: { params: IdParams } },
+    async (req) => {
+      const { user } = authed(req);
+      const row = await loadBeacon(req.params.id);
+      if (!row) throw notFound('beacon_not_found');
+      if (row.creatorId !== user.id) {
+        if (!(await isBeaconVisibleTo(row, user))) throw notFound('beacon_not_found');
+        throw forbidden();
+      }
+      if (row.status !== 'open' || row.expiresAt.getTime() <= Date.now()) {
+        throw gone('beacon_closed');
+      }
+      const outcome = await sparkNow(row.id);
+      if (outcome === null) throw gone('beacon_closed'); // raced close/expiry
+      if (outcome === 'no_joiners') throw conflict('beacon_no_joiners');
+      // Fan-out and push byte-identical to a threshold spark (§1.47).
+      await sparkPostCommit(outcome.row, outcome.conversationId, outcome.joinerIds);
+      return { beacon: await loadBeaconDtoFor(outcome.row, user.id) };
+    },
+  );
+
+  // v0.7 §1.47 GET /api/beacons/:id/joins — the "Who's in" sheet: the FULL
+  // joiner list in join order, audience-gated like the beacon itself (404
+  // identical for unknown/invisible/blocked), joiners blocked w.r.t. the
+  // viewer omitted. Faces only — join timestamps are never serialized.
+  app.get(
+    '/api/beacons/:id/joins',
+    { preHandler: requireAuth, schema: { params: IdParams } },
+    async (req) => {
+      const { user } = authed(req);
+      const row = await requireVisibleBeacon(req.params.id, user);
+      const rows = (await db.execute(sql`
+        SELECT row_to_json(u.*) AS u
+        FROM beacon_joins j
+        JOIN users u ON u.id = j.user_id
+        WHERE j.beacon_id = ${row.id}
+          AND NOT EXISTS (
+            SELECT 1 FROM blocks bl
+            WHERE (bl.blocker_id = ${user.id} AND bl.blocked_id = j.user_id)
+               OR (bl.blocker_id = j.user_id AND bl.blocked_id = ${user.id}))
+        ORDER BY j.created_at ASC
+      `)) as unknown as { u: Record<string, unknown> }[];
+      return {
+        joiners: rows.map((r) =>
+          userLiteDto({
+            id: r.u.id as string,
+            username: r.u.username as string,
+            displayName: r.u.display_name as string,
+            avatarStatus: r.u.avatar_status as string,
+            avatarVersion: Number(r.u.avatar_version),
+            avatarStaticKey: (r.u.avatar_static_key as string | null) ?? null,
+            avatarAnimatedKey: (r.u.avatar_animated_key as string | null) ?? null,
+          } as Parameters<typeof userLiteDto>[0]),
+        ),
+      };
+    },
+  );
 
   // §1.15 POST /api/beacons/:id/join — may spark or re-ping, atomically.
   app.post(
@@ -277,20 +505,7 @@ export async function beaconRoutes(fastify: FastifyInstance): Promise<void> {
       if (!outcome) throw gone('beacon_closed');
 
       if (outcome.sparked && outcome.conversationId) {
-        // Post-commit duties: afterglow job + fan-out + push to insiders only.
-        await enqueueAfterglow(
-          row.id,
-          outcome.row.expiresAt.getTime() + 2 * 3600 * 1000 - Date.now(),
-        );
-        const insiders = [outcome.row.creatorId, ...outcome.joinerIdsAtSpark];
-        await publishConversationToUsers(outcome.conversationId, insiders, 'conv.new');
-        await fanBeacon(outcome.row, 'beacon.updated');
-        await pushBeacon(insiders, {
-          beacon_id: outcome.row.id,
-          title: 'It is officially a plan',
-          body: `Your ${outcome.row.vibe} beacon sparked — the group chat is open`,
-          url: `/c/${outcome.conversationId}`,
-        });
+        await sparkPostCommit(outcome.row, outcome.conversationId, outcome.joinerIdsAtSpark);
       } else if (outcome.inserted) {
         await fanBeacon(outcome.row, 'beacon.updated', { reping: outcome.repinged });
         if (outcome.repinged) {
@@ -351,9 +566,23 @@ export async function beaconRoutes(fastify: FastifyInstance): Promise<void> {
         throw forbidden();
       }
       if (row.status === 'sparked') throw conflict('beacon_sparked');
+      const wasOpen = row.status === 'open';
       await db.update(b).set({ status: 'cancelled' }).where(eq(b.id, row.id));
       const fresh = (await loadBeacon(row.id))!;
       await fanBeacon(fresh, 'beacon.updated');
+      // v0.7 (§1.47/FEATURES #63): joiners COMMITTED, so they get the one
+      // cancellation push ("<creator> called it off") — the non-joiner
+      // audience still sees only the silent card-retire above. §2.9 guards
+      // re-check at execution; blocks are structural (a blocked pair can
+      // never share the pile).
+      if (wasOpen) {
+        await pushBeacon(await joinerIdsOf(fresh.id), {
+          beacon_id: fresh.id,
+          title: capitalize(vibeWord(fresh)),
+          body: `${user.displayName} called it off`,
+          url: '/plans',
+        });
+      }
       return { beacon: await loadBeaconDtoFor(fresh, user.id) };
     },
   );

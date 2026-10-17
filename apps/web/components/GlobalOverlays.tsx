@@ -15,7 +15,9 @@ import CallOverlay from './CallOverlay';
 import EffectOverlay from './EffectOverlay';
 import ExpectationFeedback from './ExpectationFeedback';
 import Mascot from './Mascot';
+import Portal from './Portal';
 import styles from './discovery.module.css';
+import soc from './social.module.css';
 
 export default function GlobalOverlays() {
   const state = useAppState();
@@ -32,6 +34,7 @@ export default function GlobalOverlays() {
   return (
     <>
       <CallOverlay />
+      <ToastHost />
       {state.discoveryMatch ? <MatchOverlay /> : null}
       {state.rouletteGoodbye ? <RouletteGoodbye conversationId={state.rouletteGoodbye} /> : null}
       {!state.rouletteGoodbye && state.feedbackAsk ? (
@@ -42,6 +45,36 @@ export default function GlobalOverlays() {
         />
       ) : null}
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// v0.7 (§1.54): transient confirmation toasts ("Scheduled for today 18:30").
+// Rendered through Portal at the toast layer (z 80, globals.css scale) so no
+// sheet, tab bar or stacking context can cover them; self-expiring via
+// store.pushToast; reduced-motion drops the entrance animation (CSS).
+// ---------------------------------------------------------------------------
+
+function ToastHost() {
+  const state = useAppState();
+  if (state.toasts.length === 0) return null;
+  return (
+    <Portal>
+      <div className={soc.toastHost}>
+        {state.toasts.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            className={soc.toast}
+            role="status"
+            aria-live="polite"
+            onClick={() => store.dismissToast(t.id)}
+          >
+            {t.text}
+          </button>
+        ))}
+      </div>
+    </Portal>
   );
 }
 

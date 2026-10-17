@@ -2,25 +2,31 @@
 // patches (API.md §1.15–§1.17). WS frames (beacon.updated / plan.updated /
 // poll.updated) confirm; reconnects reconcile from REST, never frame replay.
 import {
+  BEACON_CUSTOM_VIBE_RECENTS_MAX,
   BEACON_MIN_WINDOW_S,
   BEACON_STARTS_AT_SLACK_S,
   type Beacon,
+  type BeaconJoinsResponse,
   type BeaconResponse,
   type BeaconRole,
   type BeaconVibe,
   type CreateBeaconRequest,
   type KudosKind,
   type ListBeaconsResponse,
+  type PatchBeaconRequest,
   type Poll,
   type PollResponse,
   type RadarResponse,
   type RoleResponse,
+  type UserLite,
 } from '@socialchat/shared';
 import { api, ApiError } from './api';
 import * as store from './store';
 
 // ---------------------------------------------------------------------------
-// Vibe chips — emoji + labels for the fixed BEACON_VIBES set.
+// Vibe chips — emoji + labels for the fixed BEACON_VIBES set. v0.7 (§1.47)
+// adds 'custom' to the VALUE set; its emoji/label live on the beacon row, so
+// render through vibeEmojiOf/vibeLabelOf wherever a Beacon DTO is in hand.
 // ---------------------------------------------------------------------------
 
 export const VIBE_EMOJI: Record<BeaconVibe, string> = {
@@ -32,6 +38,7 @@ export const VIBE_EMOJI: Record<BeaconVibe, string> = {
   study: '📚',
   sport: '🏸',
   chill: '🛋️',
+  custom: '✨', // fallback only — a real custom beacon carries its own emoji
 };
 
 export const VIBE_LABEL: Record<BeaconVibe, string> = {
@@ -43,7 +50,68 @@ export const VIBE_LABEL: Record<BeaconVibe, string> = {
   study: 'Study',
   sport: 'Sport',
   chill: 'Chill',
+  custom: 'Custom',
 };
+
+/** The chip emoji for anything carrying {vibe, custom_vibe_emoji}. */
+export function vibeEmojiOf(b: {
+  vibe: BeaconVibe;
+  custom_vibe_emoji: string | null;
+}): string {
+  return b.vibe === 'custom' && b.custom_vibe_emoji ? b.custom_vibe_emoji : VIBE_EMOJI[b.vibe];
+}
+
+/** The chip label for anything carrying {vibe, custom_vibe_label}. */
+export function vibeLabelOf(b: {
+  vibe: BeaconVibe;
+  custom_vibe_label: string | null;
+}): string {
+  return b.vibe === 'custom' && b.custom_vibe_label ? b.custom_vibe_label : VIBE_LABEL[b.vibe];
+}
+
+// ---------------------------------------------------------------------------
+// Custom-vibe recents (§1.47): CLIENT-SIDE ONLY, per device — localStorage,
+// never synced, never serialized (the review-nudge precedent).
+// ---------------------------------------------------------------------------
+
+export interface CustomVibeRecent {
+  emoji: string;
+  label: string;
+}
+
+const VIBE_RECENTS_KEY = 'beacon_custom_vibe_recents';
+
+export function readVibeRecents(): CustomVibeRecent[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(VIBE_RECENTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (x): x is CustomVibeRecent =>
+          typeof x === 'object' &&
+          x !== null &&
+          typeof (x as CustomVibeRecent).emoji === 'string' &&
+          typeof (x as CustomVibeRecent).label === 'string'
+      )
+      .slice(0, BEACON_CUSTOM_VIBE_RECENTS_MAX);
+  } catch {
+    return [];
+  }
+}
+
+export function rememberVibeRecent(emoji: string, label: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const rest = readVibeRecents().filter((r) => !(r.emoji === emoji && r.label === label));
+    const next = [{ emoji, label }, ...rest].slice(0, BEACON_CUSTOM_VIBE_RECENTS_MAX);
+    window.localStorage.setItem(VIBE_RECENTS_KEY, JSON.stringify(next));
+  } catch {
+    /* storage unavailable — recents are a convenience, not state */
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Window presets (API.md §1.15): starts_at/expires_at are CLIENT-computed —
@@ -176,6 +244,28 @@ export async function leaveBeacon(id: string): Promise<void> {
     if (prev) store.upsertBeacon(prev);
     throw err;
   }
+}
+
+/** v0.7 (§1.47): creator edit — any subset of the editable fields; omitted =
+ * unchanged. Threshold == current joins sparks inside the edit transaction. */
+export async function patchBeacon(id: string, req: PatchBeaconRequest): Promise<Beacon> {
+  const res = await api.patch<BeaconResponse>(`/api/beacons/${id}`, req);
+  store.upsertBeacon(res.beacon);
+  return res.beacon;
+}
+
+/** v0.7 (§1.47): "start with whoever's here" — the §1.15 spark transaction
+ * verbatim, threshold not consulted. Needs ≥1 non-creator joiner (409). */
+export async function sparkNow(id: string): Promise<Beacon> {
+  const res = await api.post<BeaconResponse>(`/api/beacons/${id}/spark-now`);
+  store.upsertBeacon(res.beacon);
+  return res.beacon;
+}
+
+/** v0.7 (§1.47): the full "Who's in" list, join order, faces only. */
+export async function fetchBeaconJoiners(id: string): Promise<UserLite[]> {
+  const res = await api.get<BeaconJoinsResponse>(`/api/beacons/${id}/joins`);
+  return res.joiners;
 }
 
 export async function cancelBeacon(id: string): Promise<void> {

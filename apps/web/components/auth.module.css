@@ -242,9 +242,14 @@
   letter-spacing: -0.02em;
 }
 
-/* The logo itself is a button (easter egg) that carries the gradient text. */
+/* The logo itself is a button (easter egg) that carries the gradient text.
+   v0.7 (§1.54): a flex row so the flipping word slot and "Chat" sit on one
+   centered line — the slot's FIXED width is what keeps "Chat" from shifting. */
 .logoBtn {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.26em;
   font: inherit;
   letter-spacing: inherit;
   border: 0;
@@ -254,6 +259,74 @@
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+}
+
+/* ---- v0.7 flipping wordmark (§1.54) ---- */
+
+/* The fixed-width window one word shows through. Width is set inline once the
+   widest word is measured; height/line-height pin the roll geometry (1.2em
+   per row — the translateY step in Wordmark.tsx must match). */
+.wordSlot {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  height: 1.2em;
+  line-height: 1.2;
+  text-align: right;
+  vertical-align: baseline;
+  /* The roll column is TRANSFORMED, which breaks out of the logoBtn's
+     background-clip:text — so the slot (static fallback) and each word item
+     carry their own gradient clip instead. */
+  background: linear-gradient(100deg, var(--accent) 10%, #b78cff 55%, var(--ok) 95%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Hidden measurer: every word rendered once, same font, zero layout. */
+.wordMeasure {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: nowrap;
+  left: 0;
+  top: 0;
+}
+
+.wordMeasure span {
+  display: inline-block;
+}
+
+/* The rolling column — transform-only (the odometer). */
+.wordCol {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.wordItem {
+  display: block;
+  height: 1.2em;
+  line-height: 1.2;
+  white-space: nowrap;
+  /* Own gradient per word: the text and its clipped background live on the
+     SAME un-transformed element, so the roll moves them together. */
+  background: linear-gradient(100deg, var(--accent) 10%, #b78cff 55%, var(--ok) 95%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .wordCol {
+    transition: transform 460ms cubic-bezier(0.3, 0.9, 0.3, 1);
+  }
+}
+
+/* The invisible wrap: the duplicated first word landed → snap back to row 0
+   with the transition off for one frame. */
+.wordColSnap {
+  transition: none !important;
 }
 
 .pitch {
