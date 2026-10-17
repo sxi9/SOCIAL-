@@ -119,7 +119,7 @@ which shapes the notifications prompt).
 - **One toast component, confirmations only** (`components/Toast.tsx`,
   API.md §1.56): Portal to `<body>` (the TROUBLESHOOTING overlay law),
   bottom-anchored above the tab bar on the globals.css z-scale,
-  `TOAST_DEFAULT_MS` auto-dismiss, `TOAST_MAX_VISIBLE=2`, fade-only under
+  `TOAST_DEFAULT_MS` auto-dismiss, `TOAST_MAX_VISIBLE=1` (lowered from 2 in v0.9.1 — two-high stacking covered sheet content), fade-only under
   reduced motion, `role="status"`. Toasts confirm the user's **own**
   actions ("posted to board", "invite copied") and never carry incoming
   events or counters — a toast channel that starts announcing other people

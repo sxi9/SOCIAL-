@@ -2168,7 +2168,7 @@ exists to carry them.
   height).
 - Auto-dismiss after `TOAST_DEFAULT_MS=3500` (per-call override allowed —
   the v0.7 scheduled-send toast keeps its `SCHEDULED_TOAST_MS=4000`); at
-  most `TOAST_MAX_VISIBLE=2` at once, oldest dropped. Dismissible by tap;
+  most `TOAST_MAX_VISIBLE=1` at once, newest replaces oldest. Dismissible by tap;
   screen-reader surfaced via `role="status"` (`aria-live="polite"`).
 - `prefers-reduced-motion`: fade only, no slide (the §1.22 replacement rule).
 - **Every action without a visible immediate result confirms itself** through
