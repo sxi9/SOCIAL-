@@ -337,6 +337,20 @@ function handleFrame(raw: string): void {
     // v0.6 calls (§1.42/§2.12): relayed signaling + the server-emitted
     // call.updated all route to the media engine (lib/webrtc.ts).
     case 'call.invite':
+      // v1.0 (owner: "see WHO called"): the invite frame carries only ids —
+      // when the conversation (or the caller among its participants) is not
+      // in the store yet (fresh session, brand-new DM), backfill it so the
+      // ring card upgrades from "Someone" to name + avatar reactively.
+      {
+        const inv = ev.d;
+        const known = store.state.conversations.get(inv.conversation_id);
+        const callerKnown =
+          known !== undefined &&
+          known.participants.some((pt) => pt.user.id === inv.from_user);
+        if (!callerKnown) void adoptConversationById(inv.conversation_id, true);
+      }
+      handleCallEvent(ev);
+      break;
     case 'call.ringing':
     case 'call.accept':
     case 'call.reject':
@@ -400,9 +414,14 @@ function handleFrame(raw: string): void {
 }
 
 /** Fetch + adopt a conversation the server just created for me (mutual wave):
- * conv.new may race or be missed; GET is the reconcile (§2.8 doctrine). */
-async function adoptConversationById(conversationId: string): Promise<void> {
-  if (store.state.conversations.has(conversationId)) return;
+ * conv.new may race or be missed; GET is the reconcile (§2.8 doctrine).
+ * Exported for v1.0 call-invite identity backfill (webrtc.ts); `force`
+ * refetches even when a (possibly stale) row is already in the store. */
+export async function adoptConversationById(
+  conversationId: string,
+  force = false,
+): Promise<void> {
+  if (!force && store.state.conversations.has(conversationId)) return;
   try {
     const res = await api.get<{ conversation: import('@socialchat/shared').Conversation }>(
       `/api/conversations/${conversationId}`

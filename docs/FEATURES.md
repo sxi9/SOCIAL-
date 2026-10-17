@@ -158,6 +158,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 107. Profile tabs (posts, gallery, groups, connections) each with public/connections/private owner toggle; ghost groups never listed
 108. Global search bar: people, public/invite-only groups, board listings, my own messages
 109. "Spotted" pins: photo + place on the local board, "interested 👀" named-faces reactions, beacon-style expiry
+78c. ✅ (shipped v1.0, with the quick-wins round) Find-people page (/people): suggestion grid with narrowing filters (mutuals/groups/area/shared public interests), refresh, honest empty state; strips link to it ("See more")
 110. Share everywhere: OG/Twitter-card unfurls for other social media, standalone profile share link, non-users can view posts and PLAY videos on share pages — login only gates interaction (never viewing public content)
 
 ## 📋 Backlog — operator & platform

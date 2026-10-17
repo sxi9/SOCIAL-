@@ -257,6 +257,9 @@ async function processCallRingPushJob(job: CallRingPushJob): Promise<void> {
   if (debounced !== 'OK') return;
 
   // Title: caller display name (DM) or the group title (the §1.42 copy rule).
+  // v1.0 (owner: "see WHO called"): the caller is ALWAYS resolved — in a
+  // group the body names them, so a rung member knows who is calling before
+  // opening the app.
   const [conv] = await db
     .select()
     .from(schema.conversations)
@@ -264,14 +267,16 @@ async function processCallRingPushJob(job: CallRingPushJob): Promise<void> {
     .limit(1);
   if (!conv) return;
   let title = conv.title ?? 'Incoming call';
-  if (!job.is_group && job.initiator_id) {
+  let callerName: string | null = null;
+  if (job.initiator_id) {
     const [caller] = await db
       .select({ displayName: schema.users.displayName })
       .from(schema.users)
       .where(eq(schema.users.id, job.initiator_id))
       .limit(1);
-    if (caller) title = caller.displayName;
+    if (caller) callerName = caller.displayName;
   }
+  if (!job.is_group && callerName !== null) title = callerName;
 
   // Record the rung user BEFORE the send: a stop racing this job then still
   // reaches this subscription. TTL is the leak belt only — stopCallRing
@@ -282,7 +287,10 @@ async function processCallRingPushJob(job: CallRingPushJob): Promise<void> {
   const payload: CallRingPushPayload = {
     kind: PUSH_KIND_CALL_RING,
     title,
-    body: `Incoming ${job.call_kind} call`,
+    body:
+      job.is_group && callerName !== null
+        ? `${callerName} — incoming ${job.call_kind} call`
+        : `Incoming ${job.call_kind} call`,
     tag: `${CALL_RING_PUSH_TAG_PREFIX}${job.call_id}`,
     data: {
       url: `/c/${job.conversation_id}?call=${job.call_id}`,

@@ -184,7 +184,7 @@ function ConnectionsView() {
           ) : null}
 
           {/* v0.8b §1.64: people-you-may-know — dismissible, silent. */}
-          <SuggestionCards />
+          <SuggestionCards moreHref="/people" />
 
           <p className="muted small" style={{ margin: '14px 2px 0' }}>
             &ldquo;Friends&rdquo; everywhere in Bored Chat means your connections plus the people you

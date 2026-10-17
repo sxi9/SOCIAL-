@@ -144,7 +144,7 @@ export default function FeedView() {
         <PostComposerCard lane={lane} />
         {/* v0.8b §1.64: people-you-may-know — Feed-Discover only, dismissible,
             pull-only. Never a login-page surface. */}
-        {lane === 'discover' ? <SuggestionCards /> : null}
+        {lane === 'discover' ? <SuggestionCards moreHref="/people" /> : null}
         {posts === null ? (
           <p className="muted small" style={{ textAlign: 'center' }}>
             <span className="spinner" style={{ display: 'inline-block', verticalAlign: 'middle', marginRight: 8 }} />

@@ -5,8 +5,20 @@
 import type { Suggestion, SuggestionsResponse } from '@socialchat/shared';
 import { api } from './api';
 
-export async function fetchSuggestions(): Promise<Suggestion[]> {
-  const res = await api.get<SuggestionsResponse>('/api/suggestions');
+// v1.0 (#78c): filters only ever NARROW (the §1.65 doctrine).
+export type SuggestionFilters = {
+  mutuals?: boolean;
+  groups?: boolean;
+  area?: boolean;
+  interests?: boolean;
+};
+
+export async function fetchSuggestions(filters: SuggestionFilters = {}): Promise<Suggestion[]> {
+  const qs = Object.entries(filters)
+    .filter(([, v]) => v)
+    .map(([k]) => `${k}=1`)
+    .join('&');
+  const res = await api.get<SuggestionsResponse>(`/api/suggestions${qs ? `?${qs}` : ''}`);
   return res.suggestions;
 }
 

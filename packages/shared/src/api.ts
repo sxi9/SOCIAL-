@@ -3504,8 +3504,23 @@ export const SuggestionSchema = z.object({
   mutuals: z.array(UserLiteSchema).max(SUGGESTION_MUTUALS_PREVIEW_MAX),
   same_area: z.boolean(),
   shared_groups: z.number().int().nonnegative(),
+  // v1.0 (#78c): overlap of the two PUBLIC §1.37 interest lists — the §1.65
+  // discovery-card rule reused; already-public data, nothing new revealed.
+  shared_interests: z.array(z.string()).max(DISCOVERY_SHARED_INTERESTS_MAX).default([]),
 });
 export type Suggestion = z.infer<typeof SuggestionSchema>;
+
+// v1.0 (#78c): ?mutuals=&groups=&area=&interests= each NARROW the pool (the
+// §1.65 filter doctrine — filters only ever narrow by what people chose to
+// share). Absent flags change nothing; area with no area of mine (or
+// interests with no public tags of mine) is an honest empty result.
+export const SuggestionsQuerySchema = z.object({
+  mutuals: z.coerce.boolean().optional(),
+  groups: z.coerce.boolean().optional(),
+  area: z.coerce.boolean().optional(),
+  interests: z.coerce.boolean().optional(),
+});
+export type SuggestionsQuery = z.infer<typeof SuggestionsQuerySchema>;
 
 export const SuggestionsResponseSchema = z.object({
   suggestions: z.array(SuggestionSchema), // best-evidence first, ≤ SUGGESTIONS_MAX

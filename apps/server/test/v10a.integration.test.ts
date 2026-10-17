@@ -203,6 +203,63 @@ describe.runIf(infra)('v1.0a board photos + undecodable images', () => {
     expect(reuse.statusCode).toBe(201);
   });
 
+  it('suggestion filters narrow (#78c): interests flag + shared_interests decoration', async () => {
+    // Three fresh users in one fresh area: two share a public interest tag.
+    const area = `sugg-${run}`;
+    const x = await register(`va_x_${run}`);
+    const y = await register(`va_y_${run}`);
+    const z = await register(`va_z_${run}`);
+    for (const [who, interests] of [
+      [x, ['chess', 'tea']],
+      [y, ['chess']],
+      [z, ['running']],
+    ] as const) {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/users/me',
+        headers: CSRF,
+        cookies: { sid: who.sid },
+        payload: { area },
+      });
+      expect(res.statusCode).toBe(200);
+      // interests live on the §1.37 profile (full-replace per present field)
+      const prof = await app.inject({
+        method: 'PATCH',
+        url: '/api/users/me/profile',
+        headers: CSRF,
+        cookies: { sid: who.sid },
+        payload: { interests: [...interests] },
+      });
+      expect(prof.statusCode).toBe(200);
+    }
+    const get = (qs: string) =>
+      app.inject({ method: 'GET', url: `/api/suggestions${qs}`, cookies: { sid: x.sid } });
+
+    const all = (await get('')).json() as { suggestions: { user: { id: string } }[] };
+    const allIds = all.suggestions.map((s2) => s2.user.id);
+    expect(allIds).toContain(y.userId); // same area
+    expect(allIds).toContain(z.userId);
+
+    const narrowed = (await get('?interests=1')).json() as {
+      suggestions: { user: { id: string }; shared_interests: string[] }[];
+    };
+    const ids = narrowed.suggestions.map((s2) => s2.user.id);
+    expect(ids).toContain(y.userId); // shares 'chess'
+    expect(ids).not.toContain(z.userId); // no overlap
+    const yCard = narrowed.suggestions.find((s2) => s2.user.id === y.userId)!;
+    expect(yCard.shared_interests).toEqual(['chess']);
+
+    // area flag with an area keeps both; a user with NO area gets honest empty
+    const areaIds = ((await get('?area=1')).json() as { suggestions: { user: { id: string } }[] })
+      .suggestions.map((s2) => s2.user.id);
+    expect(areaIds).toContain(y.userId);
+    expect(areaIds).toContain(z.userId);
+
+    const mutIds = ((await get('?mutuals=1')).json() as { suggestions: { user: { id: string } }[] })
+      .suggestions.map((s2) => s2.user.id);
+    expect(mutIds).toHaveLength(0); // x has no connections yet
+  });
+
   it('an undecodable image (HEVC HEIC) is rejected 415, never stored broken (#91)', async () => {
     // A sniff-valid HEIC header sharp cannot decode (no HEVC codec).
     const fake = Buffer.alloc(2048);

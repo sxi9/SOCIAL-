@@ -8,18 +8,38 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { Suggestion } from '@socialchat/shared';
 import { connectTo } from '@/lib/connections';
-import { dismissSuggestion, fetchSuggestions } from '@/lib/suggestions';
+import { dismissSuggestion, fetchSuggestions, type SuggestionFilters } from '@/lib/suggestions';
 import { toast } from '@/lib/toast';
 import Avatar from './Avatar';
 import cm from './community.module.css';
 
-export default function SuggestionCards({ title = 'People you may know' }: { title?: string }) {
+export default function SuggestionCards({
+  title = 'People you may know',
+  layout = 'strip',
+  filters,
+  refreshKey = 0,
+  showEmpty = false,
+  moreHref,
+}: {
+  title?: string;
+  /** v1.0 (#78c): 'grid' is the full /people page; 'strip' the inline rows. */
+  layout?: 'strip' | 'grid';
+  filters?: SuggestionFilters;
+  /** Bump to re-fetch (the /people Refresh button). */
+  refreshKey?: number;
+  /** Render guidance instead of vanishing when there is nobody to show. */
+  showEmpty?: boolean;
+  /** Optional "See more" link beside the title (strip layout). */
+  moreHref?: string;
+}) {
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
   const [requested, setRequested] = useState<Set<string>>(new Set());
+  const filterKey = JSON.stringify(filters ?? {});
 
   useEffect(() => {
     let cancelled = false;
-    void fetchSuggestions()
+    setSuggestions(null);
+    void fetchSuggestions(filters ?? {})
       .then((list) => {
         if (!cancelled) setSuggestions(list);
       })
@@ -29,9 +49,10 @@ export default function SuggestionCards({ title = 'People you may know' }: { tit
     return () => {
       cancelled = true;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterKey, refreshKey]);
 
-  if (suggestions === null || suggestions.length === 0) return null;
+  if (!showEmpty && (suggestions === null || suggestions.length === 0)) return null;
 
   async function dismiss(userId: string): Promise<void> {
     setSuggestions((prev) => (prev ? prev.filter((s) => s.user.id !== userId) : prev));
@@ -57,12 +78,34 @@ export default function SuggestionCards({ title = 'People you may know' }: { tit
     }
   }
 
+  if (suggestions === null) {
+    return (
+      <p className="muted small" role="status" style={{ margin: '10px 2px' }}>
+        Looking for your people…
+      </p>
+    );
+  }
+  if (suggestions.length === 0) {
+    // showEmpty path: honest guidance, never a fake fill (PSYCHOLOGY rule 1).
+    return (
+      <div className="card" style={{ marginTop: 10 }}>
+        <p style={{ margin: 0 }}>Nobody new to suggest right now.</p>
+        <p className="muted small" style={{ margin: '6px 0 0' }}>
+          Suggestions come from mutual friends, shared groups, your area and shared interests —{' '}
+          <Link href="/settings">set your area or add interests</Link> to widen the pool, or see
+          who is <Link href="/local">bored right now</Link>.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <section aria-label={title}>
-      <p className="muted small" style={{ margin: '10px 2px 2px' }}>
-        {title}
+      <p className="muted small" style={{ margin: '10px 2px 2px', display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <span style={{ flex: 1 }}>{title}</span>
+        {moreHref ? <Link href={moreHref}>See more →</Link> : null}
       </p>
-      <div className={cm.suggStrip}>
+      <div className={layout === 'grid' ? cm.suggGrid : cm.suggStrip}>
         {suggestions.map((s) => {
           const why: string[] = [];
           if (s.mutual_count > 0) why.push(`${s.mutual_count} mutual ${s.mutual_count === 1 ? 'friend' : 'friends'}`);

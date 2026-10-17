@@ -15,7 +15,8 @@ import {
 import { api, ApiError } from '@/lib/api';
 import { logout } from '@/lib/connection';
 import { refreshMyMood } from '@/lib/mood';
-import { disablePush, enablePush, getPushSubscription, pushSupported } from '@/lib/push';
+import { disablePush, getPushSubscription, pushSupported } from '@/lib/push';
+import { PushExplainerSheet } from '@/components/PushExplainer';
 import { toast } from '@/lib/toast';
 import { setMe } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
@@ -85,12 +86,24 @@ function ProfileSettings() {
   }, [me]);
 
   // My full mood state (fade time) for the mood card — owner-only read.
+  const [askPush, setAskPush] = useState(false); // v1.0: re-askable enable
+
   useEffect(() => {
     void refreshMyMood().catch(() => undefined);
   }, []);
 
   useEffect(() => {
     refreshPushStatus();
+    // v1.0: heal the row when the user returns from the browser's site
+    // settings (the unblock steps say "then come back here").
+    const onFocus = () => refreshPushStatus();
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function refreshPushStatus(): void {
@@ -164,15 +177,18 @@ function ProfileSettings() {
 
   async function togglePush(): Promise<void> {
     if (pushBusy || pushStatus === null || pushStatus === 'unsupported' || pushStatus === 'blocked') return;
+    if (pushStatus !== 'on') {
+      // v1.0 (owner ask): Enable re-opens the friendly explainer sheet — the
+      // ask is re-triggerable from Settings forever, not a one-time prompt.
+      setAskPush(true);
+      return;
+    }
     setPushBusy(true);
     try {
-      if (pushStatus === 'on') {
-        await disablePush();
-      } else {
-        await enablePush();
-      }
+      await disablePush();
+      toast('Notifications are off');
     } catch {
-      /* permission denied or endpoint failure; the refresh below tells the truth */
+      /* endpoint failure; the refresh below tells the truth */
     } finally {
       refreshPushStatus();
       setPushBusy(false);
@@ -436,6 +452,15 @@ function ProfileSettings() {
                   unblock steps, keyed on the UA. */}
               {unblockSteps()}
             </p>
+          ) : null}
+          {askPush ? (
+            <PushExplainerSheet
+              onClose={() => {
+                setAskPush(false);
+                refreshPushStatus();
+              }}
+              onResult={() => refreshPushStatus()}
+            />
           ) : null}
         </div>
 

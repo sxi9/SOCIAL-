@@ -13,8 +13,10 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
+  DISCOVERY_SHARED_INTERESTS_MAX,
   SUGGESTION_MUTUALS_PREVIEW_MAX,
   SUGGESTIONS_MAX,
+  SuggestionsQuerySchema,
   type Suggestion,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
@@ -36,10 +38,34 @@ export async function suggestionRoutes(fastify: FastifyInstance): Promise<void> 
   // §1.64 GET /api/suggestions — ≤ SUGGESTIONS_MAX, best evidence first
   // (mutual_count DESC, then shared_groups, then same_area, then newest
   // account). same_area is a BOOLEAN (the area TEXT stays owner-private).
-  app.get('/api/suggestions', { preHandler: requireAuth }, async (req) => {
+  // v1.0 (#78c): ?mutuals=&groups=&area=&interests= each NARROW (the §1.65
+  // doctrine); interests also decorates every card with shared_interests.
+  app.get(
+    '/api/suggestions',
+    { preHandler: requireAuth, schema: { querystring: SuggestionsQuerySchema } },
+    async (req) => {
     const { user } = authed(req);
     const me = user.id;
     const myArea = user.area;
+    const q = req.query;
+    const myInterests = user.interests ?? [];
+    const interestsCond =
+      q.interests && myInterests.length > 0
+        ? sql`AND u.interests && ARRAY[${sql.join(myInterests.map((t) => sql`${t}`), sql`, `)}]::text[]`
+        : q.interests
+          ? sql`AND FALSE` // I have no public tags — an honest empty result
+          : sql``;
+    const filterCond = sql`
+      ${q.mutuals ? sql`AND (SELECT count(*) FROM connections cm
+        WHERE cm.status = 'accepted'
+          AND ((cm.requester_id = u.id AND cm.addressee_id IN (SELECT uid FROM my_conns))
+            OR (cm.addressee_id = u.id AND cm.requester_id IN (SELECT uid FROM my_conns)))) > 0` : sql``}
+      ${q.area ? (myArea ? sql`AND u.area = ${myArea}` : sql`AND FALSE`) : sql``}
+      ${q.groups ? sql`AND EXISTS (SELECT 1 FROM conversation_participants cg
+        WHERE cg.user_id = u.id AND cg.left_at IS NULL
+          AND cg.conversation_id IN (SELECT conversation_id FROM my_groups))` : sql``}
+      ${interestsCond}
+    `;
 
     const rows = (await db.execute(sql`
       WITH my_conns AS (
@@ -102,6 +128,7 @@ export async function suggestionRoutes(fastify: FastifyInstance): Promise<void> 
         AND NOT EXISTS (
           SELECT 1 FROM suggestion_dismissals d
           WHERE d.user_id = ${me} AND d.suggested_user_id = u.id)
+        ${filterCond}
       ORDER BY mutual_count DESC, shared_groups DESC, same_area DESC, u.created_at DESC
       LIMIT ${SUGGESTIONS_MAX}
     `)) as unknown as CandidateRow[];
@@ -137,16 +164,22 @@ export async function suggestionRoutes(fastify: FastifyInstance): Promise<void> 
         ORDER BY mu.username ASC
         LIMIT ${SUGGESTION_MUTUALS_PREVIEW_MAX}
       `)) as unknown as Record<string, unknown>[];
+      const mine = new Set(myInterests.map((t) => t.toLowerCase()));
+      const sharedInterests = (u.interests ?? [])
+        .filter((t) => mine.has(t.toLowerCase()))
+        .slice(0, DISCOVERY_SHARED_INTERESTS_MAX);
       suggestions.push({
         user: userLiteDto(u),
         mutual_count: Number(r.mutual_count),
         mutuals: mutuals.map((m) => userLiteDto(rawUserRow(m))),
         same_area: Boolean(r.same_area),
         shared_groups: Number(r.shared_groups),
+        shared_interests: sharedInterests,
       });
     }
     return { suggestions };
-  });
+    },
+  );
 
   // §1.64 POST /api/suggestions/:userId/dismiss — 204, idempotent, PERMANENT.
   // The dismissed user is never told; nothing re-surfaces them. An unknown id

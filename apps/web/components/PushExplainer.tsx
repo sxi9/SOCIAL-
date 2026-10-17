@@ -34,7 +34,6 @@ function markSeen(): void {
 
 export default function PushExplainer() {
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!pushSupported() || explainerSeen()) return;
@@ -51,10 +50,24 @@ export default function PushExplainer() {
   }, []);
 
   if (!open) return null;
+  return <PushExplainerSheet onClose={() => setOpen(false)} />;
+}
+
+/** v1.0 (task: re-askable enable): the SHEET itself, controlled — Settings
+ * re-opens it any time; the auto-trigger above stays one-time per device. */
+export function PushExplainerSheet({
+  onClose,
+  onResult,
+}: {
+  onClose: () => void;
+  /** Called with the enable outcome so callers can refresh their own state. */
+  onResult?: (enabled: boolean) => void;
+}) {
+  const [busy, setBusy] = useState(false);
 
   function decline(): void {
     markSeen();
-    setOpen(false);
+    onClose();
   }
 
   async function enable(): Promise<void> {
@@ -64,11 +77,14 @@ export default function PushExplainer() {
       const ok = await enablePush();
       // Either way this device has answered — never re-nag (§1.56).
       markSeen();
-      setOpen(false);
+      onClose();
       if (ok) toast('Notifications are on');
+      else toast('Your browser said no — unblock steps are in Settings');
+      onResult?.(ok);
     } catch {
       markSeen();
-      setOpen(false);
+      onClose();
+      onResult?.(false);
     } finally {
       setBusy(false);
     }
