@@ -1764,6 +1764,134 @@
   padding: 0 4px;
 }
 
+/* ==================== feed grid view (owner fix round) ==================== */
+
+/* The lane toggle and the grid|list layout chips share one bar. */
+.laneBar {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.laneBar .laneRow {
+  flex: 1;
+}
+
+.layoutToggle {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  background: var(--panel);
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+}
+
+.layoutBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  padding: 0;
+  border: none;
+  border-radius: 9px;
+  background: none;
+  color: var(--inactive);
+  cursor: pointer;
+}
+
+.layoutBtn[aria-pressed='true'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* The 3-up square mosaic — edge-to-edge across .feedWrap's 16px gutters,
+   the same bleed trick as .postCard. Same posts, same order, same paging. */
+.feedGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+  margin: 0 -16px;
+}
+
+.gridTile {
+  position: relative;
+  aspect-ratio: 1;
+  width: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.gridTile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* A video tile that has no poster yet: a quiet play slate. */
+.gridVideoSlate {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  color: var(--muted);
+}
+
+/* Kind / video marker in the tile corner — a symbol, never a number. */
+.gridBadge {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  font-size: 13px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.65));
+}
+
+/* Text-only posts: a panel tile — clamped excerpt + the author's name. */
+.gridTileText {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  background: var(--panel);
+  padding: 10px;
+}
+
+.gridTileBody {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.35;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+  word-break: break-word;
+}
+
+.gridTileAuthor {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Inside the grid's post sheet: cancel .postCard's -16px edge bleed so the
+   full card sits flush within the sheet's own padding. */
+.sheetPostWrap {
+  padding: 0 16px;
+}
+
 /* ======================= reduced-motion guards ======================= */
 
 @media (prefers-reduced-motion: reduce) {

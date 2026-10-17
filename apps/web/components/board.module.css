@@ -338,12 +338,15 @@
   align-items: baseline;
 }
 
+/* Royal label treatment: 12px/700, letterspaced, muted. */
 .factRow dt {
   flex: none;
   width: 86px;
   margin: 0;
   color: var(--muted);
   font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
 }
 
 .factRow dd {
@@ -359,8 +362,14 @@
   margin-top: 10px;
 }
 
-.detailPhotos a {
+/* Tiles are <button class="avatarZoomTap"> since the v1.0a zoom (#93) — the
+   old anchor selector left them with the global 50% radius and no frame, so
+   cover both. Overrides avatarZoomTap's circle + borderless reset. */
+.detailPhotos a,
+.detailPhotos button {
   display: block;
+  width: 100%;
+  padding: 0;
   aspect-ratio: 1;
   border-radius: 10px;
   overflow: hidden;
@@ -382,7 +391,7 @@
   gap: 8px;
   margin-top: 12px;
   padding: 10px 12px;
-  border-radius: 12px;
+  border-radius: var(--radius);
   border: 1px solid color-mix(in srgb, #f2b24c 40%, var(--border));
   background: color-mix(in srgb, #f2b24c 9%, var(--panel));
   color: var(--text);

@@ -34,6 +34,7 @@ import StyledName from '@/components/StyledName';
 import TrustPanel from '@/components/TrustPanel';
 import bz from '@/components/beacons.module.css';
 import idm from '@/components/identity.module.css';
+import pp from '@/components/profilepage.module.css';
 import st from '@/components/social.module.css';
 
 function PublicProfile({ username }: { username: string }) {
@@ -163,7 +164,7 @@ function PublicProfile({ username }: { username: string }) {
     switch (connState.kind) {
       case 'none':
         return (
-          <button type="button" className="btn btn-primary" disabled={actionBusy} onClick={() => void connect()}>
+          <button type="button" className={pp.pillBtn} disabled={actionBusy} onClick={() => void connect()}>
             Connect
           </button>
         );
@@ -171,7 +172,7 @@ function PublicProfile({ username }: { username: string }) {
         return (
           <button
             type="button"
-            className="btn"
+            className={pp.pillBtn}
             disabled={actionBusy}
             onClick={() => {
               setActionBusy(true);
@@ -186,7 +187,7 @@ function PublicProfile({ username }: { username: string }) {
       case 'incoming':
         // Their request to me — connect() auto-accepts it server-side (§1.28).
         return (
-          <button type="button" className="btn btn-primary" disabled={actionBusy} onClick={() => void connect()}>
+          <button type="button" className={pp.pillBtn} disabled={actionBusy} onClick={() => void connect()}>
             Accept request
           </button>
         );
@@ -194,7 +195,7 @@ function PublicProfile({ username }: { username: string }) {
         return (
           <button
             type="button"
-            className="btn"
+            className={pp.pillBtn}
             disabled={actionBusy}
             onClick={() => {
               if (window.confirm(`Remove ${shown?.display_name ?? 'them'} as a friend? They won't be told.`)) {
@@ -288,19 +289,25 @@ function PublicProfile({ username }: { username: string }) {
           Loading…
         </div>
       ) : (
-        <div className="settings-section">
-          <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            {/* Profile pages render the animated WebP (motion-gated, §5.4).
-                v1.0a (#93): tap opens the full-screen pinch-zoom viewer. */}
-            <button
-              type="button"
-              className="avatarZoomTap"
-              aria-label="View profile picture full screen"
-              disabled={shown.avatar.static_url === null}
-              onClick={() => setPicZoom(true)}
-            >
-              <Avatar avatar={shown.avatar} name={shown.display_name} size={96} animated />
-            </button>
+        <div className={pp.col}>
+          {/* v1.1 Royal (owner fix round): centered hero — ringed avatar,
+              serif name, "@handle · mood" line — per the design prototype. */}
+          <section className={pp.hero}>
+            <div className={pp.avatarRing}>
+              <div className={pp.avatarGap}>
+                {/* Profile pages render the animated WebP (motion-gated, §5.4).
+                    v1.0a (#93): tap opens the full-screen pinch-zoom viewer. */}
+                <button
+                  type="button"
+                  className="avatarZoomTap"
+                  aria-label="View profile picture full screen"
+                  disabled={shown.avatar.static_url === null}
+                  onClick={() => setPicZoom(true)}
+                >
+                  <Avatar avatar={shown.avatar} name={shown.display_name} size={96} animated />
+                </button>
+              </div>
+            </div>
             {picZoom && shown.avatar.static_url !== null ? (
               <MediaLightbox
                 src={shown.avatar.animated_url ?? shown.avatar.static_url}
@@ -308,66 +315,77 @@ function PublicProfile({ username }: { username: string }) {
                 onClose={() => setPicZoom(false)}
               />
             ) : null}
-            <div style={{ flex: 1, minWidth: 0 }}>
-              {/* v0.8a §1.58: the profile page is a pinned animated-name site. */}
-              <h2 style={{ margin: 0 }}>
-                <StyledName userId={shown.id} style={shown.name_style} name={shown.display_name} />
-              </h2>
-              <p className="muted small" style={{ margin: '2px 0 0' }}>
-                @{shown.username}
-              </p>
-              {/* v0.8a §1.57: the mood chip — server-resolved for this viewer;
-                  the owner's own fade time shows subtly, never to others. */}
-              {shownMood || isMe ? (
-                <p style={{ margin: '6px 0 0', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  {shownMood ? <MoodChip mood={shownMood} /> : null}
-                  {isMe && shownMood && state.moodState?.expires_at ? (
-                    <span className={idm.moodFade}>
-                      fades by{' '}
-                      {new Date(state.moodState.expires_at).toLocaleTimeString([], {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </span>
-                  ) : null}
-                  {isMe ? (
-                    <button type="button" className="btn btn-ghost" onClick={() => setMoodOpen(true)}>
-                      {shownMood ? 'Change mood' : '+ Set a mood'}
-                    </button>
-                  ) : null}
-                </p>
+            {/* v0.8a §1.58: the profile page is a pinned animated-name site. */}
+            <h2 className={pp.heroName}>
+              <StyledName userId={shown.id} style={shown.name_style} name={shown.display_name} />
+            </h2>
+            {/* v0.8a §1.57: the mood chip — server-resolved for this viewer. */}
+            <p className={pp.handleLine}>
+              <span>@{shown.username}</span>
+              {shownMood ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className={pp.moodWord}>
+                    <MoodChip mood={shownMood} />
+                  </span>
+                </>
               ) : null}
-              <p className="muted small" style={{ margin: '4px 0 0' }}>
-                {presence?.online ? 'online' : formatLastSeen(presence?.last_seen_at ?? shown.last_seen_at)}
+            </p>
+            {isMe ? (
+              <p className={pp.moodTools}>
+                {/* The owner's own fade time shows subtly, never to others. */}
+                {shownMood && state.moodState?.expires_at ? (
+                  <span className={idm.moodFade}>
+                    fades by{' '}
+                    {new Date(state.moodState.expires_at).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </span>
+                ) : null}
+                <button type="button" className={pp.moodBtn} onClick={() => setMoodOpen(true)}>
+                  {shownMood ? 'Change mood' : '+ Set a mood'}
+                </button>
               </p>
-            </div>
-          </div>
+            ) : null}
+            <p className={pp.heroSub}>
+              <span className={presence?.online ? `${pp.subDot} ${pp.subDotOn}` : pp.subDot} aria-hidden />
+              {presence?.online ? 'online' : formatLastSeen(presence?.last_seen_at ?? shown.last_seen_at)}
+            </p>
+          </section>
           {moodOpen ? <MoodSheet onClose={() => setMoodOpen(false)} /> : null}
           {anonOpen && shown ? (
             <AnonSendSheet userId={shown.id} displayName={shown.display_name} onClose={() => setAnonOpen(false)} />
           ) : null}
 
-          {!isMe ? (
-            <div className="card" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {connectButton}
-              <button type="button" className="btn" disabled={actionBusy} onClick={() => void message()}>
-                Message
-              </button>
-              {/* v0.8b §1.62: the anonymous reveal game — words first, face later. */}
-              <button type="button" className="btn" onClick={() => setAnonOpen(true)}>
-                👻 Send anonymously
-              </button>
-              {actionError ? (
-                <p className="error-text" style={{ width: '100%', margin: 0 }}>
-                  {actionError}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
+          {/* Full-width outline pills (the reference's "Edit profile" style). */}
+          <div className={pp.actions}>
+            {isMe ? (
+              <Link href="/settings/profile" className={pp.pillBtn}>
+                Edit profile
+              </Link>
+            ) : (
+              <>
+                {connectButton}
+                <button type="button" className={pp.pillBtn} disabled={actionBusy} onClick={() => void message()}>
+                  Message
+                </button>
+                {/* v0.8b §1.62: the anonymous reveal game — words first, face later. */}
+                <button type="button" className={pp.pillBtn} onClick={() => setAnonOpen(true)}>
+                  👻 Send anonymously
+                </button>
+                {actionError ? (
+                  <p className="error-text" style={{ width: '100%', margin: 0 }}>
+                    {actionError}
+                  </p>
+                ) : null}
+              </>
+            )}
+          </div>
 
           {/* §1.37: the 3-GIF strip — animation gated by the VIEWER's settings. */}
           {profile && profile.media.length > 0 ? (
-            <div className="card">
+            <div className={pp.section}>
               <div className={st.gifStrip}>
                 {profile.media.map((m) => (
                   <ProfileGif key={m.id} media={m} />
@@ -377,14 +395,14 @@ function PublicProfile({ username }: { username: string }) {
           ) : null}
 
           {shown.bio ? (
-            <div className="card">
-              <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{shown.bio}</p>
+            <div className={pp.section}>
+              <p className={pp.bioText}>{shown.bio}</p>
             </div>
           ) : null}
 
           {profile && profile.interests.length > 0 ? (
-            <div className="card">
-              <h3 style={{ margin: '0 0 6px', fontSize: 14 }}>Into</h3>
+            <div className={pp.section}>
+              <h3 className={pp.sectionLabel}>Into</h3>
               <div className={st.interestChips}>
                 {profile.interests.map((tag) => (
                   <span key={tag} className="chip">
@@ -396,15 +414,13 @@ function PublicProfile({ username }: { username: string }) {
           ) : null}
 
           {profile && profile.entries.length > 0 ? (
-            <div className="card">
+            <div className={pp.section}>
               {(['work', 'skill'] as const).map((kind) => {
                 const list = profile.entries.filter((e) => e.kind === kind);
                 if (list.length === 0) return null;
                 return (
                   <div key={kind}>
-                    <h3 style={{ margin: '6px 0 2px', fontSize: 14 }}>
-                      {kind === 'work' ? '💼 Work' : '✨ Skills'}
-                    </h3>
+                    <h3 className={pp.sectionLabel}>{kind === 'work' ? 'Work' : 'Skills'}</h3>
                     {list.map((entry) => (
                       <div key={entry.id} className={st.entryRow}>
                         <span className={st.entryText}>
@@ -421,24 +437,31 @@ function PublicProfile({ username }: { username: string }) {
 
           {/* v0.8a §1.59: recent activity — server-resolved per viewer
               (per-kind setting ∩ the thing's own audience); invisible items
-              were silently dropped, moods never appear. */}
-          <ActivityStrip username={shown.username} isMe={isMe} />
+              were silently dropped, moods never appear. The .flat wrapper
+              melts the strip's card into the page (hairline rows). */}
+          <div className={pp.flat}>
+            <ActivityStrip username={shown.username} isMe={isMe} />
+          </div>
 
           {/* v0.5b §1.40: marketplace trust — safety information from real
               listing contacts, shown ONLY here (never ranked, never compared;
               the no-scores argument lives in ADR-012). */}
-          {trust ? <TrustPanel username={shown.username} trust={trust} /> : null}
+          {trust ? (
+            <div className={pp.flat}>
+              <TrustPanel username={shown.username} trust={trust} />
+            </div>
+          ) : null}
 
           {/* Plan karma (§1.15): a private fact about yourself, never a score
               against anyone else — shown on your OWN profile only, never
               ranked, never compared (PSYCHOLOGY design rule 3). */}
           {isMe && (shown.beacons_created > 0 || shown.beacons_sparked > 0) ? (
-            <div className="card">
-              <p style={{ margin: 0 }}>
+            <div className={pp.section}>
+              <p className={pp.privateFact}>
                 🔥 lit {shown.beacons_created} {shown.beacons_created === 1 ? 'beacon' : 'beacons'} ·{' '}
                 {shown.beacons_sparked} sparked
               </p>
-              <p className="muted small" style={{ margin: '4px 0 0' }}>
+              <p className="muted small" style={{ margin: '4px 0 0', textAlign: 'center' }}>
                 Only you see this line.
               </p>
             </div>

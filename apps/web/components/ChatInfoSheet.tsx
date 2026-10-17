@@ -6,11 +6,14 @@
 // group = admin only — the server enforces, this mirrors).
 import { useEffect, useRef, useState } from 'react';
 import type {
+  AvatarResponse,
   ChatTheme,
   ChatWallpaper,
   ConversationListItem,
   ConversationResponse,
   UploadResponse,
+  UserPublic,
+  UserSearchResponse,
 } from '@socialchat/shared';
 import {
   CHAT_BG_VIDEO_MAX_BYTES,
@@ -18,9 +21,12 @@ import {
   CHAT_THEMES,
   CHAT_WALLPAPERS,
   DISAPPEAR_TTL_OPTIONS_S,
+  MAX_AVATAR_SOURCE_BYTES,
+  MAX_GROUP_PARTICIPANTS,
   MAX_IMAGE_BYTES,
   NICKNAME_MAX_CHARS,
 } from '@socialchat/shared';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { api, ApiError } from '@/lib/api';
 import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
@@ -31,9 +37,11 @@ import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
 import ChannelMembersSheet from './ChannelMembersSheet';
 import GroupSettingsSection from './GroupSettingsSection';
-import { isSupportConversation } from '@/lib/groups';
+import ImageEditSheet from './ImageEditSheet';
+import { isGhost, isSupportConversation } from '@/lib/groups';
 import { InviteButton } from './InviteSheet';
 import sheetStyles from './beacons.module.css';
+import cm from './community.module.css';
 import exp from './expression.module.css';
 import idm from './identity.module.css';
 
@@ -210,6 +218,75 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
   const myRole = conv.participants.find((p) => p.user.id === meId)?.role;
   const canSetTtl = conv.type === 'dm' || myRole === 'admin' || myRole === 'owner';
 
+  // Owner fix round: group photo/GIF, add-people, tappable member rows.
+  const ghost = isGhost(conv);
+  const support = isSupportConversation(conv);
+  const groupAdmin = myRole === 'admin' || myRole === 'owner';
+  const plainGroup = conv.type === 'group' && !support;
+  // §1.4: the avatar endpoint is groups-only (admins); channels show theirs.
+  const canEditGroupAvatar = plainGroup && groupAdmin;
+  const showAvatarSection = plainGroup || (isChannel && channelAdmin);
+
+  const [gaBusy, setGaBusy] = useState(false);
+  const [gaPending, setGaPending] = useState(false);
+  const [gaError, setGaError] = useState<string | null>(null);
+  const [gaEdit, setGaEdit] = useState<File | null>(null);
+  const gaFileRef = useRef<HTMLInputElement | null>(null);
+  const gaVersionRef = useRef(conv.avatar.version);
+
+  // 202 answered 'processing'; the finished photo fans out as conv.updated and
+  // lands here through the conv prop — the note clears when the version moves.
+  useEffect(() => {
+    if (!gaPending) return;
+    if (conv.avatar.version !== gaVersionRef.current) {
+      setGaPending(false);
+    } else if (conv.avatar.status === 'failed') {
+      setGaPending(false);
+      setGaError('Processing failed — the previous photo is kept.');
+    }
+  }, [gaPending, conv.avatar.version, conv.avatar.status]);
+
+  async function uploadGroupAvatar(file: File): Promise<void> {
+    setGaError(null);
+    if (file.size > MAX_AVATAR_SOURCE_BYTES) {
+      setGaError(`Photos are capped at ${Math.round(MAX_AVATAR_SOURCE_BYTES / (1024 * 1024))} MB.`);
+      return;
+    }
+    setGaBusy(true);
+    try {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      gaVersionRef.current = conv.avatar.version;
+      // §1.4: 202 {avatar:{status:'processing'}} — completion via conv.updated.
+      await api.postForm<AvatarResponse>(`/api/conversations/${conv.id}/avatar`, form);
+      setGaPending(true);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 413) setGaError('That file is too large.');
+      else if (err instanceof ApiError && err.status === 415) setGaError('That file type is not supported.');
+      else if (err instanceof ApiError && err.status === 403) setGaError('Only group admins can change the photo.');
+      else setGaError('Could not update the photo — try again.');
+    } finally {
+      setGaBusy(false);
+    }
+  }
+
+  // Same flow as Settings → Profile pickAvatar (#92): HEIC converts first,
+  // static JPEG/PNG crops 1:1 in the edit sheet, animated sources (GIF/WebP/
+  // APNG/MP4) upload untouched so their motion survives.
+  async function pickGroupAvatar(file: File): Promise<void> {
+    setGaError(null);
+    try {
+      const source = await maybeConvertImage(file); // v1.0a #91: HEIC → JPEG
+      if (['image/jpeg', 'image/png'].includes(source.type)) {
+        setGaEdit(source);
+        return;
+      }
+      await uploadGroupAvatar(source);
+    } catch (err) {
+      setGaError(err instanceof HeicUnreadableError ? err.message : 'Could not read that file.');
+    }
+  }
+
   async function setTtl(ttl: number | null): Promise<void> {
     if (ttlBusy || ttl === conv.disappear_ttl_s) return;
     setTtlBusy(true);
@@ -245,12 +322,59 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
           </button>
         </div>
 
+        {/* Owner fix round: the group's face lives at the top of its own
+            sheet — admins set a photo or a GIF (same pipeline as user
+            avatars, §1.4); everyone else just sees it. */}
+        {showAvatarSection ? (
+          <section className={cm.grpAvatarRow} aria-label={isChannel ? 'Channel photo' : 'Group photo'}>
+            <Avatar avatar={conv.avatar} name={conv.title ?? 'Group'} size={56} animated />
+            <div className={cm.grpAvatarText}>
+              <strong>{conv.title ?? (isChannel ? 'Channel' : 'Group')}</strong>
+              {gaPending || conv.avatar.status === 'processing' ? (
+                <span className="muted small">Processing… the new photo pops in when ready.</span>
+              ) : canEditGroupAvatar ? (
+                <span className="muted small">
+                  GIF, WebP, APNG, PNG, JPEG or MP4 — animated files become a live photo.
+                </span>
+              ) : null}
+            </div>
+            {canEditGroupAvatar ? (
+              <>
+                <input
+                  ref={gaFileRef}
+                  type="file"
+                  hidden
+                  accept="image/gif,image/webp,image/apng,image/png,image/jpeg,video/mp4"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void pickGroupAvatar(f);
+                    e.target.value = '';
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={gaBusy || gaPending}
+                  onClick={() => gaFileRef.current?.click()}
+                >
+                  {gaBusy ? 'Uploading…' : 'Change photo or GIF'}
+                </button>
+              </>
+            ) : null}
+          </section>
+        ) : null}
+        {gaError ? <p className="error-text">{gaError}</p> : null}
+
         {/* v0.8b §1.68: visibility modes, description, join queue & masks —
             GROUPS only (DMs and channels stay private; the Support
             conversation is operator plumbing with no modes to set). */}
         {conv.type === 'group' && !isSupportConversation(conv) ? (
           <GroupSettingsSection conv={conv} meId={meId} />
         ) : null}
+
+        {/* Owner fix round: admins grow the group right from the sheet —
+            inline people search, one Add per row (§1.4 add participants). */}
+        {plainGroup && groupAdmin ? <AddPeopleSection conv={conv} /> : null}
 
         {isChannel ? (
           <>
@@ -449,8 +573,24 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
         </div>
         {members.map((p) => (
           <div key={p.user.id} className={exp.nickRow}>
-            <Avatar avatar={p.user.avatar} name={p.user.display_name} size={30} />
-            <span className={exp.nickName}>{p.user.display_name}</span>
+            {/* Owner fix round: tapping a face or name opens their profile —
+                EXCEPT in 👻 ghost groups, where identities are masks (§1.68). */}
+            {!ghost && p.user.username ? (
+              <Link
+                href={`/u/${encodeURIComponent(p.user.username)}`}
+                className={cm.memberLink}
+                aria-label={`Open ${p.user.display_name}’s profile`}
+                onClick={onClose}
+              >
+                <Avatar avatar={p.user.avatar} name={p.user.display_name} size={30} />
+                <span className={exp.nickName}>{p.user.display_name}</span>
+              </Link>
+            ) : (
+              <>
+                <Avatar avatar={p.user.avatar} name={p.user.display_name} size={30} />
+                <span className={exp.nickName}>{p.user.display_name}</span>
+              </>
+            )}
             <input
               className="input"
               aria-label={`Nickname for ${p.user.display_name} (only you see it)`}
@@ -502,6 +642,172 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
       {membersOpen ? (
         <ChannelMembersSheet conv={conv} meId={meId} onClose={() => setMembersOpen(false)} />
       ) : null}
+      {gaEdit ? (
+        // Static shots crop square first — the sheet portals to body (#92).
+        <ImageEditSheet
+          source={gaEdit}
+          fileName={gaEdit.name}
+          lockedAspect={1}
+          onCancel={() => setGaEdit(null)}
+          onDone={(file) => {
+            setGaEdit(null);
+            void uploadGroupAvatar(file);
+          }}
+        />
+      ) : null}
     </div>
+  );
+}
+
+/** Owner fix round: "Add people" for group admins — the same debounced
+ * GET /api/users?q= every people-picker uses, with a per-row Add that POSTs
+ * §1.4 add-participants one person at a time so each row can tell its own
+ * story (added / invite-only / full). */
+function AddPeopleSection({ conv }: { conv: ConversationListItem }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState<UserPublic[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [rowState, setRowState] = useState<Record<string, 'busy' | 'added' | 'invite_only'>>({});
+  const [error, setError] = useState<string | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const memberIds = new Set(
+    conv.participants.filter((p) => p.left_at === null).map((p) => p.user.id)
+  );
+
+  useEffect(() => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    const query = q.trim();
+    if (!query) {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    timerRef.current = setTimeout(() => {
+      void (async () => {
+        try {
+          const res = await api.get<UserSearchResponse>(`/api/users?q=${encodeURIComponent(query)}`);
+          setResults(res.users);
+        } catch {
+          setResults([]);
+        } finally {
+          setSearching(false);
+        }
+      })();
+    }, 300);
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [q]);
+
+  function setState(id: string, s: 'busy' | 'added' | 'invite_only' | null): void {
+    setRowState((prev) => {
+      const next = { ...prev };
+      if (s === null) delete next[id];
+      else next[id] = s;
+      return next;
+    });
+  }
+
+  async function add(user: UserPublic): Promise<void> {
+    const current = rowState[user.id];
+    if (current === 'busy' || current === 'added') return;
+    setError(null);
+    setState(user.id, 'busy');
+    try {
+      const res = await api.post<ConversationResponse>(
+        `/api/conversations/${conv.id}/participants`,
+        { user_ids: [user.id] }
+      );
+      store.upsertConversation(res.conversation);
+      setState(user.id, 'added');
+      toast(`${user.display_name} is in`);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'group_add_denied') {
+        // §1.13 group_add_policy / §1.14 — per-target, never spelled out.
+        setState(user.id, 'invite_only');
+        setError('They take group adds by invite link only — share one instead.');
+      } else {
+        setState(user.id, null);
+        if (err instanceof ApiError && err.code === 'group_too_large') {
+          setError(`Groups are capped at ${MAX_GROUP_PARTICIPANTS} people — this one is full.`);
+        } else if (err instanceof ApiError && err.status === 403) {
+          setError('Only group admins can add people.');
+        } else {
+          setError('Could not add them — try again.');
+        }
+      }
+    }
+  }
+
+  return (
+    <>
+      <div className={sheetStyles.sheetLabel}>➕ Add people</div>
+      {!open ? (
+        <button type="button" className="btn" style={{ marginBottom: 10 }} onClick={() => setOpen(true)}>
+          Add people to this group
+        </button>
+      ) : (
+        <div className={cm.addPeople}>
+          <input
+            className="input"
+            type="search"
+            placeholder="Search people by name or username"
+            aria-label="Search people to add"
+            value={q}
+            autoComplete="off"
+            onChange={(e) => setQ(e.target.value)}
+          />
+          {searching ? (
+            <p className="muted small" style={{ margin: '6px 0 0' }}>
+              Searching…
+            </p>
+          ) : null}
+          {results.length > 0 ? (
+            <div className={cm.addResults}>
+              {results.map((user) => {
+                const already = memberIds.has(user.id) && !rowState[user.id];
+                const stateFor = already ? 'added' : rowState[user.id];
+                return (
+                  <div key={user.id} className={cm.addRow}>
+                    <Avatar avatar={user.avatar} name={user.display_name} size={34} />
+                    <span className={cm.addWho}>
+                      <span className={cm.addName}>{user.display_name}</span>
+                      <span className={cm.addUser}>@{user.username}</span>
+                    </span>
+                    {stateFor === 'added' ? (
+                      <span className={cm.addState}>{already ? 'In the group' : 'Added ✓'}</span>
+                    ) : stateFor === 'invite_only' ? (
+                      <span className={cm.addState}>invite only</span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        disabled={stateFor === 'busy'}
+                        onClick={() => void add(user)}
+                      >
+                        {stateFor === 'busy' ? 'Adding…' : 'Add'}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+          {!searching && q.trim() && results.length === 0 ? (
+            <p className="muted small" style={{ margin: '6px 0 0' }}>
+              No one found.
+            </p>
+          ) : null}
+          <p className="muted small" style={{ margin: '6px 0 10px' }}>
+            New people join from this moment — earlier messages stay where they were. A system
+            line tells the group.
+          </p>
+        </div>
+      )}
+      {error ? <p className="error-text">{error}</p> : null}
+    </>
   );
 }

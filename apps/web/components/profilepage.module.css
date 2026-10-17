@@ -1,0 +1,270 @@
+/* Public profile page (/u/username) — v1.1 Royal restyle (owner fix round).
+   The reference (design prototype "Profile"): a centered column — ringed
+   avatar, serif name, "@handle · mood" line — then full-width outline pills,
+   a 3-across photo grid and flat, hairline-separated sections ON the page
+   bg. No stacked bordered cards. Tokens only; module is page-scoped. */
+
+/* ---- the column ---- */
+
+.col {
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 0 16px calc(28px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- hero: ringed avatar + centered identity ---- */
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 18px 0 4px;
+}
+
+/* Silver conic ring, 3px, with a bg "gap ring" inside (story-ring look). */
+.avatarRing {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 50%;
+  background: var(--ring-live);
+  flex: none;
+}
+
+.avatarGap {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 50%;
+  background: var(--bg);
+  line-height: 0;
+}
+
+.heroName {
+  margin: 12px 0 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 22px;
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* "@username · <mood>" — one centered line; the mood word reads white/600. */
+.handleLine {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  min-width: 0;
+}
+
+.moodWord {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Owner-only mood tools: fade time + the set/change affordance, centered. */
+.moodTools {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+.moodBtn {
+  appearance: none;
+  border: none;
+  background: var(--accent-soft);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 120ms ease;
+}
+
+.moodBtn:hover {
+  filter: brightness(1.15);
+}
+
+/* Presence line: a small bullet + the coarse last-seen text, centered. */
+.heroSub {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.subDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--faint);
+  flex: none;
+}
+
+.subDotOn {
+  background: var(--ok);
+}
+
+/* ---- actions: full-width outline-white pills (reference "Edit profile") ---- */
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 0 18px;
+}
+
+.pillBtn {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 12px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.pillBtn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.pillBtn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.pillBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pillBtn {
+    transition: none;
+  }
+  .pillBtn:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* Light scheme (not in the Royal drop): ink outline instead of white. */
+@media (prefers-color-scheme: light) {
+  .pillBtn {
+    border-color: rgba(18, 20, 28, 0.55);
+  }
+  .pillBtn:hover:not(:disabled) {
+    background: rgba(18, 20, 28, 0.05);
+  }
+}
+
+/* ---- flat sections on the page bg, hairline-separated ---- */
+
+.section {
+  border-top: 1px solid var(--border);
+  padding: 16px 0;
+}
+
+/* "RECENTLY"-style labels: 12px/700, letterspaced uppercase, muted. */
+.sectionLabel {
+  margin: 0 0 8px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.sectionLabel:not(:first-child) {
+  margin-top: 14px;
+}
+
+/* Bio: plain centered text, no card chrome. */
+.bioText {
+  margin: 0;
+  white-space: pre-wrap;
+  text-align: center;
+  font-size: 14.5px;
+  overflow-wrap: anywhere;
+}
+
+/* Owner-only plan-karma note (never a score): quiet, centered, flat. */
+.privateFact {
+  margin: 0;
+  text-align: center;
+  font-size: 14px;
+}
+
+/* ---- de-card wrappers for child components we don't own ----
+   ActivityStrip and TrustPanel render their own global `.card`; inside this
+   wrapper the card melts into the page (hairline top instead of a border box)
+   and its h3 takes the section-label look. Scoped: only under .flat. */
+
+.flat > :global(.card) {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  border-top: 1px solid var(--border);
+  padding: 16px 0;
+}
+
+.flat :global(.card) > h3 {
+  font-family: var(--font-body);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Activity rows: clean hairline-separated rows — text left, time right.
+   (Element selectors on purpose: the strip's own classes are module-hashed.) */
+.flat li {
+  border-bottom: 1px solid var(--border);
+}
+
+.flat li:last-child {
+  border-bottom: none;
+}
+
+.flat li > a,
+.flat li > span {
+  padding: 10px 2px;
+  border-radius: 0;
+}
+
+/* The decorative emoji bullet — the reference rows are plain text. */
+.flat li > a > span[aria-hidden]:first-child,
+.flat li > span > span[aria-hidden]:first-child {
+  display: none;
+}
+
+/* Trailing timestamp: 12px muted, pinned right by the row's flex. */
+.flat li > a > span:last-child,
+.flat li > span > span:last-child {
+  font-size: 12px;
+  color: var(--muted);
+}

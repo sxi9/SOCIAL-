@@ -77,11 +77,23 @@ import st from './social.module.css';
 
 const LONG_PRESS_MS = 420;
 
+// Owner fix round: the feed's grid|list layout choice — a per-device
+// convenience only (localStorage), never server state.
+const FEED_LAYOUT_KEY = 'feed.layout';
+type FeedLayout = 'grid' | 'list';
+
 export default function FeedView() {
   const state = useAppState();
   const [lane, setLane] = useState<FeedLane>('friends');
   const [loading, setLoading] = useState(false);
   const [moreBusy, setMoreBusy] = useState(false);
+  // Owner ask: the feed renders as a 3-up tile mosaic by DEFAULT; list stays
+  // one tap away. Initialized to grid and read from storage after mount so
+  // the server and first client render always agree (no hydration drift).
+  const [layout, setLayout] = useState<FeedLayout>('grid');
+  // Which post is open in the grid's bottom sheet — tracked BY ID so store
+  // updates (reactions, votes, new comments) flow straight into the open card.
+  const [openPostId, setOpenPostId] = useState<string | null>(null);
 
   const laneState = state.feed[lane];
   const posts = laneState.posts;
@@ -111,6 +123,41 @@ export default function FeedView() {
       .finally(() => setMoreBusy(false));
   }, [lane]);
 
+  // Pick up the device's remembered layout; grid stays the default whenever
+  // storage is blocked or empty (private windows, cleared site data).
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(FEED_LAYOUT_KEY);
+      if (saved === 'list' || saved === 'grid') setLayout(saved);
+    } catch {
+      /* storage blocked — stay on the grid default */
+    }
+  }, []);
+
+  const pickLayout = useCallback((next: FeedLayout) => {
+    setLayout(next);
+    try {
+      window.localStorage.setItem(FEED_LAYOUT_KEY, next);
+    } catch {
+      /* storage blocked — the choice just doesn't persist */
+    }
+  }, []);
+
+  // Escape closes the grid's post sheet (the ✕ and a backdrop tap do too).
+  useEffect(() => {
+    if (openPostId === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenPostId(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [openPostId]);
+
+  // The sheet renders the LIVE store post; a post that leaves the lane
+  // (deleted, lane switch) simply unmounts the sheet.
+  const openedPost =
+    openPostId === null ? null : ((posts ?? []).find((p) => p.id === openPostId) ?? null);
+
   return (
     <div className="page">
       <header className="topbar">
@@ -120,26 +167,58 @@ export default function FeedView() {
         </button>
       </header>
       <div className={st.feedWrap}>
-        {/* v0.7 (§1.49): the lane toggle — two finite windows, no ranking. */}
-        <div className={st.laneRow} role="radiogroup" aria-label="Feed lane">
-          <button
-            type="button"
-            role="radio"
-            aria-checked={lane === 'friends'}
-            className={`${st.laneBtn}${lane === 'friends' ? ` ${st.laneOn}` : ''}`}
-            onClick={() => setLane('friends')}
-          >
-            Friends
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={lane === 'discover'}
-            className={`${st.laneBtn}${lane === 'discover' ? ` ${st.laneOn}` : ''}`}
-            onClick={() => setLane('discover')}
-          >
-            Discover
-          </button>
+        {/* v0.7 (§1.49): the lane toggle — two finite windows, no ranking.
+            Owner fix round: the grid|list layout chips ride the same bar. */}
+        <div className={st.laneBar}>
+          <div className={st.laneRow} role="radiogroup" aria-label="Feed lane">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={lane === 'friends'}
+              className={`${st.laneBtn}${lane === 'friends' ? ` ${st.laneOn}` : ''}`}
+              onClick={() => setLane('friends')}
+            >
+              Friends
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={lane === 'discover'}
+              className={`${st.laneBtn}${lane === 'discover' ? ` ${st.laneOn}` : ''}`}
+              onClick={() => setLane('discover')}
+            >
+              Discover
+            </button>
+          </div>
+          <div className={st.layoutToggle} role="group" aria-label="Feed layout">
+            <button
+              type="button"
+              className={st.layoutBtn}
+              aria-pressed={layout === 'grid'}
+              aria-label="Grid view"
+              onClick={() => pickLayout('grid')}
+            >
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+                <rect x="1" y="1" width="6" height="6" rx="1.4" fill="currentColor" />
+                <rect x="9" y="1" width="6" height="6" rx="1.4" fill="currentColor" />
+                <rect x="1" y="9" width="6" height="6" rx="1.4" fill="currentColor" />
+                <rect x="9" y="9" width="6" height="6" rx="1.4" fill="currentColor" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className={st.layoutBtn}
+              aria-pressed={layout === 'list'}
+              aria-label="List view"
+              onClick={() => pickLayout('list')}
+            >
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+                <rect x="1" y="2.2" width="14" height="3" rx="1.2" fill="currentColor" />
+                <rect x="1" y="6.5" width="14" height="3" rx="1.2" fill="currentColor" />
+                <rect x="1" y="10.8" width="14" height="3" rx="1.2" fill="currentColor" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         <PostComposerCard lane={lane} />
@@ -173,9 +252,18 @@ export default function FeedView() {
           </div>
         ) : (
           <>
-            {posts.map((post) => (
-              <PostCard key={post.id} post={post} meId={state.me?.id ?? ''} />
-            ))}
+            {layout === 'grid' ? (
+              // Owner ask: the 3-up tile mosaic — same posts, same order,
+              // same pagination; only the rendering changes. A tile opens
+              // the full existing card in a sheet.
+              <div className={st.feedGrid}>
+                {posts.map((post) => (
+                  <FeedGridTile key={post.id} post={post} onOpen={() => setOpenPostId(post.id)} />
+                ))}
+              </div>
+            ) : (
+              posts.map((post) => <PostCard key={post.id} post={post} meId={state.me?.id ?? ''} />)
+            )}
             {laneState.cursor !== null ? (
               <button type="button" className={st.refreshPill} onClick={more} disabled={moreBusy}>
                 {moreBusy ? 'Loading…' : 'Show older posts'}
@@ -206,8 +294,100 @@ export default function FeedView() {
             ) : null}
           </>
         )}
+        {openedPost ? (
+          // Grid tile → the FULL existing post card in a bottom sheet: the
+          // beacons sheet pattern, portaled to body, unmounted when closed.
+          // Reactions, comments, polls, claims all work unchanged inside.
+          <Portal>
+            <div
+              className={bz.sheetBackdrop}
+              role="presentation"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setOpenPostId(null);
+              }}
+            >
+              <div
+                className={bz.sheet}
+                role="dialog"
+                aria-modal="true"
+                aria-label={`Post by ${openedPost.author.display_name}`}
+              >
+                <div className={bz.sheetHead}>
+                  <h2>Post</h2>
+                  <button
+                    type="button"
+                    className={bz.sheetClose}
+                    aria-label="Close"
+                    onClick={() => setOpenPostId(null)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className={st.sheetPostWrap}>
+                  <PostCard post={openedPost} meId={state.me?.id ?? ''} />
+                </div>
+              </div>
+            </div>
+          </Portal>
+        ) : null}
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Grid tiles (owner fix round): the 3-up mosaic. A media post shows its first
+// image / video poster; a text post shows a clamped excerpt. Tiles carry a
+// kind symbol at most — never a number (PSYCHOLOGY rule 3 holds here too).
+// ---------------------------------------------------------------------------
+
+function tileExcerpt(post: Post): string {
+  if (post.body) return post.body;
+  if (post.kind === 'poll' && post.poll) return post.poll.question;
+  if (post.kind === 'game') return 'Open tic-tac-toe challenge — first tap plays them.';
+  if (post.kind === 'join_card') {
+    const s = post.ref_summary;
+    if (!s) return 'This one is no longer available.';
+    return s.type === 'beacon'
+      ? `${vibeEmojiOf(s)} ${vibeLabelOf(s)}${s.note ? ` — ${s.note}` : ''}`
+      : s.title;
+  }
+  return '';
+}
+
+function FeedGridTile({ post, onOpen }: { post: Post; onOpen: () => void }) {
+  const media = post.attachments[0] ?? null;
+  const badge =
+    post.kind === 'poll' ? '🗳' : post.kind === 'game' ? '🎮' : media?.kind === 'video' ? '▶' : null;
+  return (
+    <button
+      type="button"
+      className={`${st.gridTile}${media ? '' : ` ${st.gridTileText}`}`}
+      aria-label={`Open post by ${post.author.display_name}`}
+      onClick={onOpen}
+    >
+      {media ? (
+        media.kind === 'video' && !media.thumb_url ? (
+          // A video with no poster yet (still processing): a quiet play slate.
+          <span className={st.gridVideoSlate} aria-hidden>
+            ▶
+          </span>
+        ) : (
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img src={media.thumb_url ?? media.url} alt="" loading="lazy" />
+        )
+      ) : (
+        <>
+          <span className={st.gridTileBody}>{tileExcerpt(post)}</span>
+          <span className={st.gridTileAuthor}>{post.author.display_name}</span>
+        </>
+      )}
+      {badge ? (
+        <span className={st.gridBadge} aria-hidden>
+          {badge}
+        </span>
+      ) : null}
+    </button>
   );
 }
 
@@ -1498,7 +1678,9 @@ function CommentReactionOverlay({
     <Portal>
       <div
         ref={layoutBox}
-        style={{ position: 'fixed', zIndex: 31, left: rect.left, top: rect.top, width: rect.width, height: rect.height }}
+        // z 41: one above the sheet layer (z 40) so the picker also works for
+        // a card opened from the GRID's post sheet; both portal to <body>.
+        style={{ position: 'fixed', zIndex: 41, left: rect.left, top: rect.top, width: rect.width, height: rect.height }}
       >
         {children}
       </div>

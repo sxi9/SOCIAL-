@@ -33,6 +33,9 @@ import TeamUpSheet from './TeamUpSheet';
 import bz from './beacons.module.css';
 import st from './board.module.css';
 
+/** Originals every mainstream browser decodes (pre-HEIC-fix uploads aren't). */
+const BROWSER_SAFE_IMAGE = /^image\/(jpeg|png|webp|gif)$/i;
+
 export default function ListingDetailSheet({
   listing: initial,
   onClose,
@@ -56,6 +59,16 @@ export default function ListingDetailSheet({
   const [report, setReport] = useState(false);
   const [teamUpOpen, setTeamUpOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  // Photos uploaded before the HEIC fix have thumb_url null and an original
+  // most browsers can't decode. Render a tile only when we have a worker thumb
+  // or a browser-safe original, and onError-hide any that still fail to load —
+  // a broken "?" glyph never ships. All filtered out → no photo strip at all.
+  const [badPhotos, setBadPhotos] = useState<Set<string>>(new Set());
+  const photos = listing.photos.filter(
+    (p) =>
+      !badPhotos.has(p.id) &&
+      (p.thumb_url !== null || BROWSER_SAFE_IMAGE.test(p.mime))
+  );
 
   const mine = state.me?.id === listing.author.id;
   const expired =
@@ -344,19 +357,27 @@ export default function ListingDetailSheet({
           ) : null}
         </dl>
 
-        {listing.photos.length > 0 ? (
+        {photos.length > 0 ? (
           <div className={st.detailPhotos}>
-            {listing.photos.map((p) => (
-              /* v1.0a (#93): tap opens the pinch-zoom viewer. */
+            {photos.map((p) => (
+              /* v1.0a (#93): tap opens the pinch-zoom viewer — on the best
+                 source the browser can actually decode. */
               <button
                 key={p.id}
                 type="button"
                 className="avatarZoomTap"
                 aria-label="View photo full screen"
-                onClick={() => setZoomPhoto(p.url)}
+                onClick={() =>
+                  setZoomPhoto(BROWSER_SAFE_IMAGE.test(p.mime) ? p.url : (p.thumb_url ?? p.url))
+                }
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={p.thumb_url ?? p.url} alt="" loading="lazy" />
+                <img
+                  src={p.thumb_url ?? p.url}
+                  alt=""
+                  loading="lazy"
+                  onError={() => setBadPhotos((prev) => new Set(prev).add(p.id))}
+                />
               </button>
             ))}
           </div>
@@ -365,7 +386,11 @@ export default function ListingDetailSheet({
           <MediaLightbox src={zoomPhoto} alt="Listing photo" onClose={() => setZoomPhoto(null)} />
         ) : null}
 
-        {listing.body ? <p className={st.detailBody}>{listing.body}</p> : null}
+        {/* Gated on real content — a whitespace-only body never renders a
+            stray empty block above the safety note. */}
+        {listing.body && listing.body.trim() !== '' ? (
+          <p className={st.detailBody}>{listing.body}</p>
+        ) : null}
 
         {showSafetyNote ? (
           <div className={st.safetyNote} role="note">
