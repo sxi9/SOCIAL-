@@ -8,6 +8,7 @@ import type { StoryAuthorGroup, StoryCanvasMode, UploadResponse, UserLite } from
 import { STORY_CANVAS_MODES, STORY_CAPTION_MAX_CHARS } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
 import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
+import ImageEditSheet from './ImageEditSheet';
 import { createStory, refreshStories } from '@/lib/stories';
 import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
@@ -126,6 +127,7 @@ export function StoryComposerSheet({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const [editFile, setEditFile] = useState<File | null>(null); // v1.0a #92
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -198,10 +200,28 @@ export function StoryComposerSheet({ onClose }: { onClose: () => void }) {
           accept="image/*,video/mp4,video/webm"
           onChange={(e) => {
             const f = e.target.files?.[0];
-            if (f) void pick(f);
+            // v1.0a (#92): a static photo opens the crop editor first;
+            // GIFs/videos go straight through (canvas would flatten them).
+            if (f && ['image/jpeg', 'image/png'].includes(f.type)) setEditFile(f);
+            else if (f) void pick(f);
             e.target.value = '';
           }}
         />
+        {editFile ? (
+          <ImageEditSheet
+            source={editFile}
+            fileName={editFile.name}
+            onCancel={() => {
+              const f = editFile;
+              setEditFile(null);
+              void pick(f); // skip editing ≠ skip the story — upload as-is
+            }}
+            onDone={(file) => {
+              setEditFile(null);
+              void pick(file);
+            }}
+          />
+        ) : null}
         {attachment ? (
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
             {attachment.thumb_url ? (

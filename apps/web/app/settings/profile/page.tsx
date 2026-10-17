@@ -17,6 +17,7 @@ import { logout } from '@/lib/connection';
 import { refreshMyMood } from '@/lib/mood';
 import { disablePush, getPushSubscription, pushSupported } from '@/lib/push';
 import { PushExplainerSheet } from '@/components/PushExplainer';
+import ImageEditSheet from '@/components/ImageEditSheet';
 import { toast } from '@/lib/toast';
 import { setMe } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
@@ -87,6 +88,9 @@ function ProfileSettings() {
 
   // My full mood state (fade time) for the mood card — owner-only read.
   const [askPush, setAskPush] = useState(false); // v1.0: re-askable enable
+  // v1.0a (#92): a picked STATIC avatar opens the crop editor first (1:1).
+  // Animated sources (gif/webp/apng/mp4) skip it — canvas would flatten them.
+  const [avatarEdit, setAvatarEdit] = useState<File | null>(null);
 
   useEffect(() => {
     void refreshMyMood().catch(() => undefined);
@@ -144,6 +148,14 @@ function ProfileSettings() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function pickAvatar(file: File): void {
+    if (['image/jpeg', 'image/png'].includes(file.type)) {
+      setAvatarEdit(file); // v1.0a #92 — crop first, upload from the sheet
+      return;
+    }
+    void uploadAvatar(file);
   }
 
   async function uploadAvatar(file: File): Promise<void> {
@@ -233,7 +245,7 @@ function ProfileSettings() {
                 accept="image/gif,image/webp,image/apng,image/png,image/jpeg,video/mp4"
                 onChange={(e) => {
                   const f = e.target.files?.[0];
-                  if (f) void uploadAvatar(f);
+                  if (f) pickAvatar(f);
                   e.target.value = '';
                 }}
               />
@@ -452,6 +464,18 @@ function ProfileSettings() {
                   unblock steps, keyed on the UA. */}
               {unblockSteps()}
             </p>
+          ) : null}
+          {avatarEdit ? (
+            <ImageEditSheet
+              source={avatarEdit}
+              fileName={avatarEdit.name}
+              lockedAspect={1}
+              onCancel={() => setAvatarEdit(null)}
+              onDone={(file) => {
+                setAvatarEdit(null);
+                void uploadAvatar(file);
+              }}
+            />
           ) : null}
           {askPush ? (
             <PushExplainerSheet

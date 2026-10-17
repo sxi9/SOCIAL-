@@ -41,6 +41,7 @@ import {
 } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
 import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
+import ImageEditSheet from './ImageEditSheet';
 import { vibeEmojiOf, vibeLabelOf } from '@/lib/beacons';
 import { QUICK_REACTIONS } from '@/lib/emoji';
 import {
@@ -239,6 +240,8 @@ function PostComposerCard({ lane }: { lane: FeedLane }) {
   }, [lane]);
   const [body, setBody] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // v1.0a (#92): which attachment is open in the edit sheet (crop/rotate).
+  const [editing, setEditing] = useState<Attachment | null>(null);
   const [uploading, setUploading] = useState(0);
   const [location, setLocation] = useState<Location | null>(null);
   // poll
@@ -521,9 +524,46 @@ function PostComposerCard({ lane }: { lane: FeedLane }) {
               >
                 ×
               </button>
+              {/* v1.0a (#92): crop/rotate before posting (static images). */}
+              {a.kind === 'image' ? (
+                <button
+                  type="button"
+                  className={st.gifToolBtn}
+                  style={{ position: 'absolute', bottom: 4, right: 4 }}
+                  aria-label="Edit image"
+                  onClick={() => setEditing(a)}
+                >
+                  ✏️
+                </button>
+              ) : null}
             </span>
           ))}
         </div>
+      ) : null}
+      {editing ? (
+        <ImageEditSheet
+          source={editing.url}
+          fileName={editing.file_name ?? 'photo.jpg'}
+          onCancel={() => setEditing(null)}
+          onDone={(file) => {
+            const target = editing;
+            setEditing(null);
+            void (async () => {
+              setUploading((n) => n + 1);
+              try {
+                const form = new FormData();
+                form.append('file', file, file.name);
+                const res = await api.postForm<UploadResponse>('/api/uploads', form);
+                // Swap in place; the replaced upload is unbound → orphan GC.
+                setAttachments((prev) => prev.map((x) => (x.id === target.id ? res.attachment : x)));
+              } catch {
+                setError('Could not save the edited image.');
+              } finally {
+                setUploading((n) => n - 1);
+              }
+            })();
+          }}
+        />
       ) : null}
 
       <div style={{ marginTop: 8 }}>

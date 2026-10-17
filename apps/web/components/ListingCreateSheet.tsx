@@ -22,6 +22,7 @@ import {
 } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
 import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
+import ImageEditSheet from './ImageEditSheet';
 import { createListing, KIND_EMOJI } from '@/lib/listings';
 import { isSelfDrunk } from '@/lib/mood';
 import { setMe } from '@/lib/store';
@@ -70,6 +71,7 @@ export default function ListingCreateSheet({
   // room
   const [availableFrom, setAvailableFrom] = useState('');
   const [photos, setPhotos] = useState<Attachment[]>([]);
+  const [editingPhoto, setEditingPhoto] = useState<Attachment | null>(null); // v1.0a #92
   const [uploading, setUploading] = useState(0);
   // place review
   const [placeName, setPlaceName] = useState('');
@@ -411,6 +413,15 @@ export default function ListingCreateSheet({
                   >
                     ×
                   </button>
+                  {/* v1.0a (#92): crop/rotate before it goes on the board. */}
+                  <button
+                    type="button"
+                    className={st.photoEdit}
+                    aria-label="Edit photo"
+                    onClick={() => setEditingPhoto(p)}
+                  >
+                    ✏️
+                  </button>
                 </span>
               ))}
               {photos.length < LISTING_PHOTOS_MAX ? (
@@ -436,6 +447,30 @@ export default function ListingCreateSheet({
                 e.target.value = '';
               }}
             />
+            {editingPhoto ? (
+              <ImageEditSheet
+                source={editingPhoto.url}
+                fileName={editingPhoto.file_name ?? 'photo.jpg'}
+                onCancel={() => setEditingPhoto(null)}
+                onDone={(file) => {
+                  const target = editingPhoto;
+                  setEditingPhoto(null);
+                  void (async () => {
+                    setUploading((n) => n + 1);
+                    try {
+                      const form = new FormData();
+                      form.append('file', file, file.name);
+                      const res = await api.postForm<UploadResponse>('/api/uploads', form);
+                      setPhotos((prev) => prev.map((x) => (x.id === target.id ? res.attachment : x)));
+                    } catch {
+                      setError('Could not save the edited photo.');
+                    } finally {
+                      setUploading((n) => n - 1);
+                    }
+                  })();
+                }}
+              />
+            ) : null}
 
             {kind === 'place_review' ? (
               <>

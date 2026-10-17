@@ -13,6 +13,7 @@ import type {
 import { MAX_AUDIO_DURATION_S } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
 import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
+import ImageEditSheet from './ImageEditSheet';
 import { EFFECT_EMOJI, EFFECT_LABEL, suggestEffect } from '@/lib/effects';
 import { EMOJI_GRID } from '@/lib/emoji';
 import { firstUrl, formatDuration } from '@/lib/format';
@@ -209,6 +210,7 @@ export default function Composer({
 
   // attachment.ready hydrates pending (video/audio) attachments still here.
   const hydrated = attachments.map((a) => state.readyAttachments.get(a.id) ?? a);
+  const [editingAtt, setEditingAtt] = useState<Attachment | null>(null); // v1.0a #92
 
   // preview.ready resolves a pending unfurl requested below
   useEffect(() => {
@@ -618,6 +620,17 @@ export default function Composer({
                       : att.file_name ?? 'File'}
                 </span>
               )}
+              {att.kind === 'image' ? (
+                /* v1.0a (#92): crop/rotate before sending. */
+                <button
+                  type="button"
+                  className={styles.attachmentRemove}
+                  aria-label="Edit image"
+                  onClick={() => setEditingAtt(att)}
+                >
+                  ✏️
+                </button>
+              ) : null}
               <button
                 type="button"
                 className={styles.attachmentRemove}
@@ -628,6 +641,30 @@ export default function Composer({
               </button>
             </span>
           ))}
+          {editingAtt ? (
+            <ImageEditSheet
+              source={editingAtt.url}
+              fileName={editingAtt.file_name ?? 'photo.jpg'}
+              onCancel={() => setEditingAtt(null)}
+              onDone={(file) => {
+                const target = editingAtt;
+                setEditingAtt(null);
+                void (async () => {
+                  setUploading((n) => n + 1);
+                  try {
+                    const form = new FormData();
+                    form.append('file', file, file.name);
+                    const res = await api.postForm<UploadResponse>('/api/uploads', form);
+                    setAttachments((prev) => prev.map((a) => (a.id === target.id ? res.attachment : a)));
+                  } catch {
+                    setError('Could not save the edited image.');
+                  } finally {
+                    setUploading((n) => n - 1);
+                  }
+                })();
+              }}
+            />
+          ) : null}
           {uploading > 0 ? (
             <span className={styles.attachmentChip}>
               <span className="spinner" />

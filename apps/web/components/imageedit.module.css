@@ -1,0 +1,109 @@
+/* v1.0a (#92): edit-before-upload sheet. */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(8, 8, 16, 0.95);
+  display: flex;
+  flex-direction: column;
+  padding: calc(8px + env(safe-area-inset-top)) 12px calc(12px + env(safe-area-inset-bottom));
+}
+
+.topRow,
+.aspectRow,
+.bottomRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 2px;
+}
+
+.aspectRow {
+  justify-content: center;
+}
+
+.frame {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.stage {
+  position: relative;
+  touch-action: none;
+  overflow: hidden;
+}
+
+.photo {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  max-width: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.cropBox {
+  position: absolute;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  cursor: move;
+  touch-action: none;
+}
+
+.handle {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  background: #fff;
+  border-radius: 50%;
+  touch-action: none;
+}
+
+.h_nw {
+  left: -11px;
+  top: -11px;
+  cursor: nwse-resize;
+}
+.h_ne {
+  right: -11px;
+  top: -11px;
+  cursor: nesw-resize;
+}
+.h_sw {
+  left: -11px;
+  bottom: -11px;
+  cursor: nesw-resize;
+}
+.h_se {
+  right: -11px;
+  bottom: -11px;
+  cursor: nwse-resize;
+}
+
+.ghostBtn {
+  appearance: none;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 14px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+  min-height: 40px;
+}
+
+.ghostOn {
+  background: rgba(255, 255, 255, 0.34);
+  font-weight: 600;
+}
+
+.err {
+  color: #fff;
+  opacity: 0.8;
+}

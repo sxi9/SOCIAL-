@@ -716,3 +716,23 @@
     transform: none;
   }
 }
+
+/* v1.0a (#92): edit affordance on composer photo thumbs. */
+.photoEdit {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  appearance: none;
+  border: none;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+  line-height: 1;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
