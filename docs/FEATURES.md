@@ -94,6 +94,13 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 70. OG banner image for invite links (composed 1200×630: avatar + "X invited you" + mascot; good card even with no avatar)
 71. Login flipping wordmark ("[Bored|Sad|Excited|Happy] Chat") with mascot reacting per word
 
+## 📋 v0.7.1 — Calls that just work
+
+87. Floating minimized call: in-call screen collapses to a draggable floating pill (avatar, timer, mute, hang-up) so the app stays usable mid-call; tap to expand; browser PiP for video where supported
+88. Incoming-call push notification (ring + Answer/Decline actions) when the app is closed, not just the live overlay; respects mute/blocks like all push
+89. Call connectivity UX: live connection states in the UI (connecting / connected / reconnecting / failed with the REASON), automatic ICE restart on drop, and a Settings → Call self-test page (mic/cam permission, secure context, TURN reachability, candidate types found)
+90. TURN honesty: when TURN_SECRET is unset or the relay is unreachable, the CALLER sees "this server has no call relay — calls only work on the same network" instead of silent failure; ./bored status and the admin panel surface TURN state; docs explain laptop-behind-NAT vs VPS reality
+
 ## 📋 v0.8 — Identity, moods & community care
 
 72. Moods: 😴🎉💤 + custom emoji+word, auto-expiring, visibility everyone/connections/nobody; 🎢 swing mode (auto-cycling chip)
