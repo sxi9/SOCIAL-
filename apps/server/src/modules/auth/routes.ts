@@ -1,7 +1,6 @@
-import { isIP } from 'node:net';
 import argon2 from 'argon2';
 import { eq, or } from 'drizzle-orm';
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
@@ -10,7 +9,6 @@ import {
   RegisterRequestSchema,
   type SessionInfo,
 } from '@socialchat/shared';
-import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { userPrivateDto } from '../../lib/dto.js';
@@ -19,30 +17,9 @@ import { fixedWindow } from '../../lib/ratelimit.js';
 import { acceptInvite, findInviteByToken } from '../invites/service.js';
 import { newestReleaseVersion } from '../releases/routes.js';
 import { authed, requireAuth } from './guard.js';
-import {
-  ARGON2_OPTS,
-  createSession,
-  revokeSession,
-  SESSION_COOKIE,
-  SESSION_TTL_MS,
-} from './service.js';
-
-/** Fixer r1: never let a non-IP X-Forwarded-For value reach an `inet` column
- *  (a direct connection past Caddy could put garbage in req.ip and 500 the
- *  insert) — store NULL instead. */
-function storableIp(ip: string | undefined): string | null {
-  return ip && isIP(ip) !== 0 ? ip : null;
-}
-
-function setSessionCookie(reply: FastifyReply, token: string): void {
-  reply.setCookie(SESSION_COOKIE, token, {
-    httpOnly: true,
-    secure: config.isProd,
-    sameSite: 'lax',
-    path: '/',
-    maxAge: Math.floor(SESSION_TTL_MS / 1000),
-  });
-}
+import { loginOutcome, setSessionCookie, storableIp } from './minting.js';
+import { generateRecoveryCodes } from './recovery.js';
+import { ARGON2_OPTS, createSession, revokeSession, SESSION_COOKIE } from './service.js';
 
 export async function authRoutes(fastify: FastifyInstance): Promise<void> {
   const app = fastify.withTypeProvider<ZodTypeProvider>();
@@ -111,7 +88,11 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         invite = null;
       }
     }
-    return reply.status(201).send({ user: userPrivateDto(user), invite });
+    // v0.9 (§1.72): the SIX one-time recovery codes, shown exactly ONCE in
+    // this response (only sha256 rows persist — ADR-021's scorched-earth
+    // recovery design starts at signup).
+    const recovery_codes = await generateRecoveryCodes(user.id);
+    return reply.status(201).send({ user: userPrivateDto(user), invite, recovery_codes });
   });
 
   app.post('/api/auth/login', { schema: { body: LoginRequestSchema } }, async (req, reply) => {
@@ -136,9 +117,10 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
     if (user.bannedAt !== null) throw new ApiError(403, 'account_banned');
     if (user.suspendedAt !== null) throw new ApiError(403, 'account_suspended');
 
-    const { token } = await createSession(user.id, req.headers['user-agent'] ?? null, storableIp(req.ip));
-    setSessionCookie(reply, token);
-    return reply.status(200).send({ user: userPrivateDto(user) });
+    // v0.9 (§1.73): LoginOutcome — a TOTP-armed account answers
+    // {totp_required, totp_token} (no session, no cookie) and finishes at
+    // POST /api/auth/totp; everyone else gets the standard session here.
+    return loginOutcome(user, req, reply);
   });
 
   app.post('/api/auth/logout', { preHandler: requireAuth }, async (req, reply) => {

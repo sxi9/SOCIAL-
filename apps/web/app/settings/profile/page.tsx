@@ -454,6 +454,20 @@ function ProfileSettings() {
         </div>
 
         <h2>Privacy &amp; safety</h2>
+        {/* v0.9 (§1.70–§1.73): passkeys, two-factor, recovery codes, QR
+            phone-approvals and the device list, one page. */}
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <strong>🔑 Security</strong>
+            <p className="muted small" style={{ margin: '4px 0 0' }}>
+              Passkeys, two-factor codes, recovery codes, signing a laptop in from your phone —
+              and every device you&rsquo;re signed in on.
+            </p>
+          </div>
+          <Link href="/settings/security" className="btn">
+            Open
+          </Link>
+        </div>
         <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
             <strong>Privacy settings</strong>

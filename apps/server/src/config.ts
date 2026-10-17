@@ -50,6 +50,19 @@ const EnvSchema = z.object({
     z.string().url().optional(),
   ),
 
+  // v0.9 (API.md §1.70, ADR-021): the instance's canonical public origin
+  // (e.g. https://chat.example.com). Feeds WebAuthn's expected origin and the
+  // rpID derivation below. Optional — DOMAIN remains the fallback.
+  PUBLIC_ORIGIN: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
+  // v0.9 (§1.70): explicit WebAuthn rpID override. Unset → hostname of
+  // PUBLIC_ORIGIN → DOMAIN. Passkeys BIND to this domain (ADR-021's quick-
+  // tunnel caveat: a per-run tunnel domain orphans every credential).
+  WEBAUTHN_RP_ID: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).optional()),
+  // v0.9 (§1.74): when set, takes precedence over the encrypted stored SMTP
+  // password (the env-reference option in SPECS #86). Config-only in v0.9 —
+  // no mailer ships (golden rule 10; ADR-021).
+  SMTP_PASSWORD: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).optional()),
+
   // v0.6 calls (API.md §1.42, ADR-014): the shared secret between the api
   // (mints time-limited HMAC credentials) and the coturn service (verifies
   // them, static-auth-secret mode). '' (a blank `TURN_SECRET=` .env line)
@@ -86,6 +99,30 @@ export const config = {
   // v0.8b (§1.69): build identity + update-check remote; both null-safe.
   gitCommit: env.GIT_COMMIT ?? null,
   updateCheckRemote: env.UPDATE_CHECK_REMOTE ?? null,
+  // v0.9 (§1.70/§1.74, ADR-021): WebAuthn identity + the env SMTP password.
+  // rpID = WEBAUTHN_RP_ID → hostname of PUBLIC_ORIGIN → DOMAIN; expected
+  // origins = PUBLIC_ORIGIN → https://<DOMAIN>, plus localhost dev origins
+  // outside production (the web dev server ports used across this repo).
+  publicOrigin: env.PUBLIC_ORIGIN ?? null,
+  smtpPasswordEnv: env.SMTP_PASSWORD ?? null,
+  webauthn: {
+    rpId:
+      env.WEBAUTHN_RP_ID ??
+      (env.PUBLIC_ORIGIN ? new URL(env.PUBLIC_ORIGIN).hostname : env.DOMAIN),
+    origins: [
+      ...(env.PUBLIC_ORIGIN
+        ? [env.PUBLIC_ORIGIN.replace(/\/+$/, '')]
+        : [`https://${env.DOMAIN}`]),
+      ...(env.NODE_ENV === 'production'
+        ? []
+        : [
+            `http://${env.DOMAIN}`,
+            'http://localhost:3000',
+            'http://localhost:3100',
+            'http://localhost:3310',
+          ]),
+    ],
+  },
   // null = no TURN relay configured (ADR-014): calls still work on host
   // candidates between same-network peers; the §1.42 responses carry turn:null.
   turnSecret: env.TURN_SECRET ?? null,

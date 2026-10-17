@@ -20,6 +20,8 @@ const NAV: { href: string; label: string }[] = [
   { href: '/admin/support', label: 'Support' },
   { href: '/admin/logs', label: 'Logs' },
   { href: '/admin/settings', label: 'Settings' },
+  // v0.9 §1.74: OTP-ready authentication settings (SMTP + inert toggles).
+  { href: '/admin/auth', label: 'Authentication' },
 ];
 
 export default function AdminLayout({ children }: { children: ReactNode }) {

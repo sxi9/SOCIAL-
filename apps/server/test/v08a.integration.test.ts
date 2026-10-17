@@ -631,8 +631,9 @@ describe.runIf(infra)('v0.8a identity & moods', () => {
         last_seen_release: string | null;
       };
       expect(body.releases.length).toBeGreaterThan(0);
-      // v0.8b (migration 0010) prepends its own marker — newest first.
-      expect(body.releases[0]!.version).toBe('v0.8b'); // seeded by migration 0009
+      // Each release migration prepends its own marker — newest first
+      // (v0.8b via 0010, v0.9 via 0011).
+      expect(body.releases[0]!.version).toBe('v0.9');
       // Day-one users never get a card storm.
       expect(u.lastSeenRelease).toBe(body.releases[0]!.version);
       expect(body.last_seen_release).toBe(body.releases[0]!.version);

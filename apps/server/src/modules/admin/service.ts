@@ -10,14 +10,18 @@ import {
   ReleaseNoteSchema,
   type AdminReport,
   type AdminUserRow,
+  type AuthSettings,
+  type AuthSettingsPatch,
   type InstanceSettings,
   type LastSeenBucket,
   type MessageType,
   type UserLite,
 } from '@socialchat/shared';
+import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { avatarDto } from '../../lib/dto.js';
 import { notFound } from '../../lib/errors.js';
+import { sealSecret } from '../../lib/secretbox.js';
 import { requireAuth, authed } from '../auth/guard.js';
 
 // ---------------------------------------------------------------------------
@@ -40,20 +44,110 @@ export async function requireAdmin(req: FastifyRequest, reply: FastifyReply): Pr
 
 const ReleaseNotesListSchema = z.array(ReleaseNoteSchema);
 
+// v0.9 (§1.74): the STORED auth blob — smtp WITHOUT password/password_set
+// (the password lives in its own encrypted key below), features as persisted
+// booleans. Malformed values degrade to the 0011-seeded defaults instead of
+// refusing the whole settings read.
+const STORED_SMTP_DEFAULT = {
+  host: null as string | null,
+  port: 587,
+  secure: true,
+  username: null as string | null,
+  from: null as string | null,
+};
+const STORED_FEATURES_DEFAULT = {
+  email_verification: false,
+  email_otp: false,
+  magic_links: false,
+  password_reset: false,
+};
+const StoredAuthSchema = z
+  .object({
+    smtp: z
+      .object({
+        host: z.string().nullable().catch(null),
+        port: z.number().int().min(1).max(65535).catch(587),
+        secure: z.boolean().catch(true),
+        username: z.string().nullable().catch(null),
+        from: z.string().nullable().catch(null),
+      })
+      .catch({ ...STORED_SMTP_DEFAULT }),
+    features: z
+      .object({
+        email_verification: z.boolean().catch(false),
+        email_otp: z.boolean().catch(false),
+        magic_links: z.boolean().catch(false),
+        password_reset: z.boolean().catch(false),
+      })
+      .catch({ ...STORED_FEATURES_DEFAULT }),
+  })
+  .catch({ smtp: { ...STORED_SMTP_DEFAULT }, features: { ...STORED_FEATURES_DEFAULT } });
+type StoredAuth = z.infer<typeof StoredAuthSchema>;
+
+/** §1.74: serialize the auth settings — password_set only (the password
+ *  never reads back; SMTP_PASSWORD env takes precedence over the stored
+ *  value), mailer_available server-computed: false in v0.9, always (no
+ *  mailer ships — golden rule 10, ADR-021). */
+function authSettingsDto(stored: StoredAuth, passwordStored: boolean): AuthSettings {
+  return {
+    smtp: {
+      ...stored.smtp,
+      password_set: config.smtpPasswordEnv !== null || passwordStored,
+    },
+    features: stored.features,
+    mailer_available: false,
+  };
+}
+
 export async function getInstanceSettings(): Promise<InstanceSettings> {
   const rows = await db
     .select()
     .from(schema.instanceSettings)
-    .where(inArray(schema.instanceSettings.key, ['invites_enabled', 'release_notes']));
+    .where(
+      inArray(schema.instanceSettings.key, [
+        'invites_enabled',
+        'release_notes',
+        'auth',
+        'auth_smtp_password',
+      ]),
+    );
   const byKey = new Map(rows.map((r) => [r.key, r.value]));
   const invites = byKey.get('invites_enabled');
   // v0.8a (§1.61): the what's-new list rides the settings DTO; a malformed
   // blob degrades to [] instead of refusing the whole admin read.
   const notes = ReleaseNotesListSchema.safeParse(byKey.get('release_notes') ?? []);
+  const storedAuth = StoredAuthSchema.parse(byKey.get('auth') ?? {});
   return {
     invites_enabled: invites === undefined ? true : invites === true,
     release_notes: notes.success ? notes.data : [],
+    auth: authSettingsDto(storedAuth, typeof byKey.get('auth_smtp_password') === 'string'),
   };
+}
+
+/**
+ * v0.9 (§1.74): apply the deep-partial auth PATCH. smtp.password is
+ * WRITE-ONLY: a string stores it AES-256-GCM-encrypted (HKDF info 'smtp:')
+ * under its own instance_settings key, null clears it — it never rides the
+ * admin-readable 'auth' blob. Feature toggles persist even while inert.
+ */
+export async function applyAuthSettingsPatch(patch: AuthSettingsPatch): Promise<void> {
+  const rows = await db
+    .select()
+    .from(schema.instanceSettings)
+    .where(inArray(schema.instanceSettings.key, ['auth']));
+  const stored = StoredAuthSchema.parse(rows[0]?.value ?? {});
+  const { password, ...smtpPatch } = patch.smtp ?? {};
+  const merged: StoredAuth = {
+    smtp: { ...stored.smtp, ...smtpPatch },
+    features: { ...stored.features, ...(patch.features ?? {}) },
+  };
+  await setInstanceSetting('auth', merged);
+  if (password !== undefined) {
+    await setInstanceSetting(
+      'auth_smtp_password',
+      password === null ? null : sealSecret('smtp:', password),
+    );
+  }
 }
 
 /** §1.41: invites_enabled is enforced at invite MINT and ACCEPT. */

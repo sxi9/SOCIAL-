@@ -75,11 +75,11 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 52. Bored Together & Bored Roulette (opt-in discovery, mutual waves, 5-min keep-or-vanish chats, private expectation feedback — gated on the v0.3 safety bundle)
 53. Rescue me (ping up to 3 connections, daily-capped)
 
-## 🔜 v0.6.1 — UI correctness (in progress)
+## ✅ v0.6.1 — UI correctness (shipped)
 
 59. Overlay/placement fixes from real-device testing: rescue sheet positioning, click-blocking backdrop, beacon-sheet submit clipped on phones, SOS header overflow, roulette tap target — plus a five-viewport sweep of every sheet/button (containment, clickability, triple dismissability)
 
-## 📋 v0.7 — Interactivity pack
+## ✅ v0.7 — Interactivity pack (shipped)
 
 60. Clickable beacon joiners → "Who's in" sheet; every avatar anywhere → profile with Connect/Message
 61. Edit live beacons (vibe/note/time/threshold, joiners see a change note) + edit board listings; custom vibe chips (emoji + word, recents remembered)
@@ -94,7 +94,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 70. OG banner image for invite links (composed 1200×630: avatar + "X invited you" + mascot; good card even with no avatar)
 71. Login flipping wordmark ("[Bored|Sad|Excited|Happy] Chat") with mascot reacting per word
 
-## 📋 v0.7.1 — Calls that just work
+## ✅ v0.7.1 — Calls that just work (shipped)
 
 87. Floating minimized call: in-call screen collapses to a draggable floating pill (avatar, timer, mute, hang-up) so the app stays usable mid-call; tap to expand; browser PiP for video where supported
 88. Incoming-call push notification (ring + Answer/Decline actions) when the app is closed, not just the live overlay; respects mute/blocks like all push
@@ -103,7 +103,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 90b. Notifications-on assurance: on login/first-run, detect push permission state; a friendly one-time prompt explains what notifications are for (messages, calls, sparked plans, wave nudges) with Enable now; a persistent but quiet settings row shows ON/OFF/blocked-by-browser with per-browser unblock help; incoming-call ring push depends on this and surfaces it when disabled
 90. TURN honesty: when TURN_SECRET is unset or the relay is unreachable, the CALLER sees "this server has no call relay — calls only work on the same network" instead of silent failure; ./bored status and the admin panel surface TURN state; docs explain laptop-behind-NAT vs VPS reality
 
-## 📋 v0.8 — Identity, moods & community care
+## ✅ v0.8 — Identity, moods & community care (shipped: v0.8a identity, v0.8b community & sharing)
 
 72. Moods: 😴🎉💤 + custom emoji+word, auto-expiring, visibility everyone/connections/nobody; 🎢 swing mode (auto-cycling chip)
 73. 🍻 Drunk mode: wobbly chip (connections-only default), 10s send-undo, "you sure?" checks for cold contacts/public posts, chat banner for others ("take tonight's messages lightly" + "Check on them 💙" button), auto-expiry with no trace
@@ -121,7 +121,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 80. Discoverability: first-run tour, "✨ Things you can do" feature directory with Try-it buttons, "new since last visit" update cards
 81. Admin: public-content moderation tab (public posts/beacons/listings, remove with reason, logged); support inbox (in-app Help & feedback → categorized tickets → admin replies land as a Support conversation); report-context viewer (reported message + surrounding context, reporter-consented)
 
-## 📋 v0.9 — Auth pack
+## ✅ v0.9 — Auth pack (shipped)
 
 82. Passkeys (WebAuthn): fingerprint/face login, password fallback
 83. QR cross-device login (scan with logged-in phone, WhatsApp-Web style)

@@ -15,18 +15,20 @@ import {
   AdminReportsQuerySchema,
   AdminUsersQuerySchema,
   CloseReportRequestSchema,
+  SmtpTestSendRequestSchema,
   UpdateInstanceSettingsRequestSchema,
   type AdminMetrics,
   type DayCount,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
-import { badRequest, conflict, notFound } from '../../lib/errors.js';
+import { ApiError, badRequest, conflict, notFound } from '../../lib/errors.js';
 import { adminLog, readLogRing } from '../../lib/logring.js';
 import { authed } from '../auth/guard.js';
 import { revokeAllSessions } from '../auth/service.js';
 import {
   ADMIN_REPORT_SELECT,
   adminReportFromRaw,
+  applyAuthSettingsPatch,
   getInstanceSettings,
   loadAdminUserRow,
   pageAdminUsers,
@@ -310,7 +312,40 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
           release_notes: req.body.release_notes.map((n) => n.version),
         });
       }
+      // v0.9 (§1.74): the Authentication block — deep-partial merge; the SMTP
+      // password is write-only and NEVER reaches the ring (redacted to
+      // set/cleared below).
+      if (req.body.auth !== undefined) {
+        await applyAuthSettingsPatch(req.body.auth);
+        const { smtp, features } = req.body.auth;
+        adminLog({ id: user.id, username: user.username }, 'admin.settings_update', {
+          auth: {
+            ...(smtp
+              ? {
+                  smtp: {
+                    ...smtp,
+                    ...(smtp.password !== undefined
+                      ? { password: smtp.password === null ? 'cleared' : 'set' }
+                      : {}),
+                  },
+                }
+              : {}),
+            ...(features ? { features } : {}),
+          },
+        });
+      }
       return { settings: await getInstanceSettings() };
+    },
+  );
+
+  // v0.9 §1.74 POST /api/admin/settings/auth/test-send — the endpoint exists
+  // so the UI contract is stable, and answers honestly until a mailer ships
+  // (none in v0.9 — golden rule 10, ADR-021): always 503 mailer_unavailable.
+  app.post(
+    '/api/admin/settings/auth/test-send',
+    { preHandler: requireAdmin, schema: { body: SmtpTestSendRequestSchema } },
+    async () => {
+      throw new ApiError(503, 'mailer_unavailable');
     },
   );
 
@@ -328,7 +363,15 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
         SELECT row_to_json(u.*) AS u FROM users u WHERE u.id = ${req.params.id} LIMIT 1
       `)) as unknown as { u: Record<string, unknown> }[];
       if (userRows.length === 0) throw notFound();
-      const { password_hash: _ph, ...userRow } = userRows[0]!.u;
+      // v0.9 (§1.73): the TOTP secret NEVER serializes — not even encrypted;
+      // the export carries the boolean only (the UserPrivate posture).
+      const {
+        password_hash: _ph,
+        totp_secret: _ts,
+        totp_enabled_at: totpEnabledAt,
+        ...userRowRest
+      } = userRows[0]!.u;
+      const userRow = { ...userRowRest, totp_enabled: totpEnabledAt != null };
 
       const sessions = (await db.execute(sql`
         SELECT id, user_id, user_agent, ip, created_at, last_seen_at, expires_at

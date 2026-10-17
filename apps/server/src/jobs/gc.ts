@@ -70,6 +70,17 @@ export async function runActivityRetention(now = Date.now()): Promise<void> {
   await db.delete(schema.activities).where(lt(schema.activities.createdAt, cutoff));
 }
 
+/**
+ * v0.9 login-link GC (API.md §1.71): hard-DELETE rows an hour past
+ * expires_at. Every live read already refuses an expired row (410 link_gone);
+ * this is purely row hygiene — and it bounds how long the recorded laptop
+ * user_agent/ip live. Exported separately so tests can run it without the
+ * MinIO-dependent object sweeps.
+ */
+export async function runLoginLinkGc(now = Date.now()): Promise<void> {
+  await db.delete(schema.loginLinks).where(lt(schema.loginLinks.expiresAt, new Date(now - 3600 * 1000)));
+}
+
 export async function runGc(): Promise<void> {
   const now = Date.now();
 
@@ -163,6 +174,12 @@ export async function runGc(): Promise<void> {
 
   // 4. Sessions past expires_at.
   await db.delete(schema.sessions).where(lt(schema.sessions.expiresAt, new Date(now)));
+
+  // 4b. v0.9 (§1.71): login links an hour past expiry — reads already answer
+  //     410 the second expires_at passes; this sweep just drops the rows (and
+  //     with them the laptop UA/IP, which therefore never outlive the
+  //     IP-retention posture). Exported below for tests.
+  await runLoginLinkGc(now);
 
   // 5. Stash objects whose Redis TTL (30 min) is long gone.
   const stashCutoff = new Date(now - 24 * 3600 * 1000);

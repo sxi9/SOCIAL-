@@ -1255,3 +1255,67 @@ export const REPORT_CONTEXT_CONSENT_COPY =
 // (./bored update) — the container never gets docker.sock.
 export const UPDATE_CHECK_INTERVAL_S = 6 * 3600;
 export const UPDATE_CHECK_TIMEOUT_MS = 5000;
+
+// ---- Auth pack (v0.9 — API.md §1.70–§1.74, FEATURES #82–#86, ADR-021) ----
+
+// Passkeys (§1.70). The WebAuthn JSON shapes themselves are owned by the
+// W3C spec via @simplewebauthn (pinned in ADR-021) — the contract pins only
+// our own fields and knobs around them.
+export const PASSKEYS_MAX = 10;
+export const PASSKEY_NICKNAME_MAX_CHARS = 32;
+export const PASSKEY_DEVICE_TYPES = ['singleDevice', 'multiDevice'] as const;
+// Registration AND login challenges live in Redis under this TTL — never rows.
+export const WEBAUTHN_CHALLENGE_TTL_S = 300;
+export const PASSKEY_LOGIN_RATE_PER_MIN = 10; // per IP, options + verify each
+
+// QR / cross-device login (§1.71). The QR encodes <origin>/link/<code>; the
+// human fallback is a LOGIN_LINK_DISPLAY_CODE_LEN-char code from the
+// ambiguity-free alphabet below (no 0/O/1/I/L), typed into the phone's
+// approve page. The full code (LOGIN_LINK_CODE_BYTES random bytes, base64url)
+// is the laptop's poll/redeem capability; the display code can only approve.
+export const LOGIN_LINK_TTL_S = 120;
+export const LOGIN_LINK_POLL_INTERVAL_MS = 2000;
+export const LOGIN_LINK_CODE_BYTES = 32; // base64url → 43 chars
+export const LOGIN_LINK_CODE_REGEX = /^[A-Za-z0-9_-]{43}$/;
+export const LOGIN_LINK_DISPLAY_CODE_LEN = 6;
+export const LOGIN_LINK_DISPLAY_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+export const LOGIN_LINK_CREATE_RATE_PER_HOUR = 30; // per IP (the logged-out laptop)
+export const LOGIN_LINK_APPROVE_RATE_PER_MIN = 5; // per user (the phone) — lookup + approve each
+
+// Recovery codes (§1.72). Shown ONCE (register / regenerate responses),
+// stored sha256 of the normalized form (lowercased, '-'/' ' stripped). The
+// display form groups RECOVERY_CODE_LEN chars as xxxxx-xxxxx. Inputs are
+// accepted LOOSELY (≤ 64 chars at the schema, normalized route-side — the
+// §1.1 invite_token doctrine: a mangled paste fails verification, never
+// validation).
+export const RECOVERY_CODES_COUNT = 6;
+export const RECOVERY_CODE_LEN = 10;
+export const RECOVERY_CODE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+export const RECOVERY_LOGIN_RATE_PER_HOUR = 5; // per IP — scorched-earth path, keep it slow
+export const RESET_TOKEN_TTL_S = 15 * 60; // Redis one-shot, minted by a consumed recovery code
+
+// TOTP (§1.73) — RFC 6238 by hand (HMAC-SHA1 via node:crypto; ADR-021), no
+// dependency. Verification accepts ±TOTP_DRIFT_STEPS steps and burns the
+// matched step in Redis so one code never authenticates twice.
+export const TOTP_DIGITS = 6;
+export const TOTP_PERIOD_S = 30;
+export const TOTP_DRIFT_STEPS = 1;
+export const TOTP_SECRET_BYTES = 20; // 160-bit, the RFC 4226 recommendation; base32 manual key
+export const TOTP_CODE_REGEX = /^\d{6}$/;
+export const TOTP_SETUP_TTL_S = 600; // pending (unconfirmed) secret, Redis
+export const TOTP_TOKEN_TTL_S = 300; // half-login token between password/passkey ok and code ok
+export const TOTP_VERIFY_RATE_PER_MIN = 5; // per totp_token AND per IP
+export const TOTP_ISSUER = 'Bored Chat'; // otpauth:// issuer label
+
+// Admin Authentication settings (§1.74). Toggles persist TODAY and every
+// email-dependent flow flags off them at runtime, but they stay inert until
+// a mailer ships (none in v0.9 — golden rule 10; ADR-021 documents the
+// honesty: the UI disables them with a "needs SMTP support" note while the
+// CONFIG itself is fully storable).
+export const AUTH_FEATURE_TOGGLES = [
+  'email_verification',
+  'email_otp',
+  'magic_links',
+  'password_reset',
+] as const;
+export const SMTP_FIELD_MAX_CHARS = 255; // host/username/from/password each
