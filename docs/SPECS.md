@@ -114,6 +114,16 @@ approve-first / off, one-tap remove any overlay, ban user from my canvases.
 Blocks respected both ways; per-user overlay cap per story; overlays
 reportable with author attached; everything expires with the story.
 
+**Public share pages (79c):** every PUBLIC-audience post/beacon/listing gets
+an unauthenticated SSR page (like /join/<token>): content, author chip,
+brand, full OG/twitter tags so links unfurl. Viewing free; ANY interaction
+(react, comment, join, profile, more) -> signup/login gate with ?next deep
+link back to complete the action. Friends-only content NEVER gets a public
+URL. Stories: author-initiated "Create share link" only — revocable, expires
+with the story. Media served via share-token-gated endpoints (invite-avatar
+pattern): no open media routes, no enumeration, rate-limited. Pages
+reportable by non-users (feeds admin queue). PUBLIC_ORIGIN governs the URLs.
+
 **GIF/video chat backgrounds (79):** per-user per-chat upload through the
 existing pipeline; auto-dimmed behind bubbles; muted+looped; paused when
 off-screen / battery saver; static poster for reduced-motion; size caps.
