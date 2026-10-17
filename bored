@@ -89,6 +89,67 @@ cmd_tunnel_stop() {
 }
 
 cmd_admin()  { [ -n "${1:-}" ] || fail "Usage: ./bored admin <username>"; docker compose exec api node dist/cli.js grant-admin "$1"; }
+
+# ---------------------------------------------------------------------------
+# Full-service migration: everything needed to stand the SAME service up on
+# another machine — database (users/chats/everything), media objects, and
+# .env (secrets: SESSION_SECRET keeps logins/invites valid, VAPID keys keep
+# push subscriptions alive). Redis is deliberately skipped (queues/presence
+# are transient) and TLS certs are skipped (the new box mints its own).
+# ---------------------------------------------------------------------------
+PROJECT="$(basename "$(pwd)" | tr '[:upper:]' '[:lower:]')"
+vol() { docker volume inspect "socialchat_$1" >/dev/null 2>&1 && echo "socialchat_$1" || echo "${PROJECT}_$1"; }
+
+cmd_export() {
+  [ -f .env ] || fail "No .env here — run from the live install."
+  local stamp out tmp
+  stamp="$(date +%Y%m%d-%H%M%S)"; out="boredchat-migration-$stamp.tar.gz"; tmp=".bored-export-$stamp"
+  mkdir -p "$tmp"
+  say "Quiescing writers (api/worker paused — users see a blip)…"
+  docker compose stop api worker >/dev/null
+  say "Dumping database…"
+  docker compose exec -T postgres pg_dump -U "$(env_get POSTGRES_USER)" -d "$(env_get POSTGRES_DB)" --no-owner | gzip > "$tmp/db.sql.gz"
+  say "Archiving media volume…"
+  docker run --rm -v "$(vol minio_data):/data:ro" -v "$(pwd)/$tmp:/out" alpine tar -C /data -czf /out/media.tar.gz .
+  cp .env "$tmp/env"
+  { echo "created=$stamp"; echo "commit=$(git rev-parse HEAD)"; } > "$tmp/MANIFEST"
+  tar -czf "$out" -C "$tmp" .
+  rm -rf "$tmp"
+  docker compose up -d api worker >/dev/null
+  say "✓ Migration archive: $out  ($(du -h "$out" | cut -f1))"
+  echo "  Contains your SECRETS — move it safely (scp), then delete it."
+  echo "  On the new server:  git clone <repo> && cd <repo> && ./bored import $out"
+}
+
+cmd_import() {
+  local archive="${1:-}"; [ -f "$archive" ] || fail "Usage: ./bored import <boredchat-migration-*.tar.gz>"
+  # refuse to clobber an existing install unless forced
+  if docker volume inspect "$(vol postgres_data)" >/dev/null 2>&1 && [ "${2:-}" != "--force" ]; then
+    fail "A database volume already exists here. This command is for a FRESH server.
+To overwrite it anyway (DESTROYS this machine's data): ./bored import $archive --force"
+  fi
+  local tmp=".bored-import-$$"; mkdir -p "$tmp"; tar -xzf "$archive" -C "$tmp"
+  [ -f "$tmp/db.sql.gz" ] && [ -f "$tmp/env" ] || { rm -rf "$tmp"; fail "Archive is missing db.sql.gz or env — not a bored export."; }
+  [ -f .env ] && cp .env ".env.pre-import-backup.$$"
+  cp "$tmp/env" .env
+  say "Imported .env (old one saved as .env.pre-import-backup.$$)."
+  echo "  >>> Edit .env NOW if the address changes on this server (DOMAIN, PUBLIC_ORIGIN, ports). <<<"
+  say "Resetting data volumes…"
+  docker compose down >/dev/null 2>&1 || true
+  docker volume rm -f "$(vol postgres_data)" "$(vol minio_data)" >/dev/null 2>&1 || true
+  say "Starting database + storage…"
+  docker compose up -d postgres minio
+  until docker compose exec -T postgres pg_isready -U "$(env_get POSTGRES_USER)" >/dev/null 2>&1; do sleep 2; done
+  say "Restoring database…"
+  gunzip -c "$tmp/db.sql.gz" | docker compose exec -T postgres psql -q -U "$(env_get POSTGRES_USER)" -d "$(env_get POSTGRES_DB)"
+  say "Restoring media…"
+  docker run --rm -v "$(vol minio_data):/data" -v "$(pwd)/$tmp:/in:ro" alpine tar -C /data -xzf /in/media.tar.gz
+  rm -rf "$tmp"
+  say "Building and starting the full stack…"
+  docker compose up -d --build
+  docker compose ps --format "table {{.Name}}\t{{.Status}}"
+  say "✓ Migration complete — same users, chats, media, logins and push subscriptions."
+}
 cmd_backup() {
   mkdir -p backups
   local f="backups/boredchat-$(date +%Y%m%d-%H%M%S).sql.gz"
@@ -106,6 +167,8 @@ case "${1:-help}" in
   tunnel-stop) cmd_tunnel_stop ;;
   admin)       cmd_admin "${2:-}" ;;
   backup)      cmd_backup ;;
+  export)      cmd_export ;;
+  import)      cmd_import "${2:-}" "${3:-}" ;;
   *) cat <<'HELP'
 bored — Bored Chat control panel
 
@@ -119,6 +182,10 @@ bored — Bored Chat control panel
   ./bored logs [svc]   follow logs (api, worker, web, caddy, …)
   ./bored admin USER   grant admin to a user
   ./bored backup       gzip database dump into ./backups/
+  ./bored export       pack the WHOLE service (users, chats, media, secrets)
+                       into one migration archive for moving to a new server
+  ./bored import FILE  restore that archive on a fresh server (same users,
+                       logins, media and push subscriptions survive)
 HELP
   ;;
 esac
