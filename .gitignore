@@ -35,3 +35,5 @@ dump.rdb
 .bored-tunnel.log
 .bored-tunnel.pid
 backups/
+
+.bored-autoupdate.log

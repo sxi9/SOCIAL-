@@ -41,6 +41,12 @@ cmd_status() {
 }
 
 cmd_update() {
+  # --if-behind: used by autoupdate — exit quietly when already current.
+  if [ "${1:-}" = "--if-behind" ]; then
+    git fetch origin main -q || exit 0
+    [ "$(git rev-list --count HEAD..origin/main)" = "0" ] && exit 0
+    echo "[$(date '+%F %T')] update available: $(git log --oneline HEAD..origin/main | head -3 | tr '\n' '; ')"
+  fi
   say "Pulling latest…"
   git stash push -m "bored-update-autostash" >/dev/null 2>&1 || true
   git pull --ff-only || fail "Pull failed — paste this output to Claude."
@@ -48,6 +54,39 @@ cmd_update() {
   docker compose up -d --build
   docker compose ps --format "table {{.Name}}\t{{.Status}}"
   say "✓ Updated to: $(git log --oneline -1)"
+}
+
+cmd_check() {
+  git fetch origin main -q || fail "Could not reach GitHub."
+  local behind; behind=$(git rev-list --count HEAD..origin/main)
+  if [ "$behind" = "0" ]; then say "✓ Up to date: $(git log --oneline -1)"; else
+    say "⬆ $behind update(s) available:"
+    git log --oneline HEAD..origin/main | head -10
+    echo "Run: ./bored update   (or turn on auto-updates: ./bored autoupdate on)"
+  fi
+}
+
+CRON_TAG="# bored-autoupdate"
+cmd_autoupdate() {
+  local here; here="$(pwd)"
+  case "${1:-status}" in
+    on)
+      ( crontab -l 2>/dev/null | grep -v "$CRON_TAG" ;
+        echo "*/10 * * * * cd $here && ./bored update --if-behind >> $here/.bored-autoupdate.log 2>&1 $CRON_TAG" ) | crontab -
+      say "✓ Auto-update ON — checks GitHub every 10 minutes and pulls+rebuilds"
+      echo "  automatically when a new version is pushed. Log: .bored-autoupdate.log"
+      echo "  Note: the app restarts briefly (~30-60s) during each auto-update." ;;
+    off)
+      crontab -l 2>/dev/null | grep -v "$CRON_TAG" | crontab - || true
+      say "Auto-update OFF." ;;
+    status|*)
+      if crontab -l 2>/dev/null | grep -q "$CRON_TAG"; then
+        say "Auto-update: ON (every 10 min). Recent activity:"
+        tail -5 .bored-autoupdate.log 2>/dev/null || echo "  (no updates pulled yet)"
+      else
+        say "Auto-update: OFF — turn on with: ./bored autoupdate on"
+      fi ;;
+  esac
 }
 
 cmd_up()   { docker compose up -d; cmd_status; }
@@ -159,7 +198,9 @@ cmd_backup() {
 
 case "${1:-help}" in
   status)      cmd_status ;;
-  update)      cmd_update ;;
+  update)      cmd_update "${2:-}" ;;
+  check)       cmd_check ;;
+  autoupdate)  cmd_autoupdate "${2:-}" ;;
   up)          cmd_up ;;
   down)        cmd_down ;;
   logs)        cmd_logs "${2:-}" ;;
@@ -174,6 +215,10 @@ bored — Bored Chat control panel
 
   ./bored status       what version, what's running, your public link
   ./bored update       git pull + rebuild + restart (safe: data kept)
+  ./bored check        is a new version available? shows what changed
+  ./bored autoupdate on|off|status
+                       self-updating system: checks GitHub every 10 min and
+                       pulls+rebuilds automatically when updates are pushed
   ./bored up / down    start / stop the stack
   ./bored tunnel       go public: starts cloudflared, auto-writes the new
                        URL into .env (PUBLIC_ORIGIN) and restarts web —
