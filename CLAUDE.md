@@ -14,6 +14,7 @@ for any AI agent or developer: read it first, then the doc it points you to.
 | The database schema | `apps/server/src/db/schema.ts` + `src/db/migrations/` (append-only) |
 | Product rules that BIND all UX decisions | `docs/PSYCHOLOGY.md` (incl. the never-build list) |
 | What is shipped vs planned | `docs/FEATURES.md` |
+| A bug/symptom to fix — where to look, cause, fix pattern | `docs/TROUBLESHOOTING.md` (symptom-indexed; check here BEFORE searching code) |
 | Why a decision was made | `docs/adr/ADR-001 … ADR-015` |
 | Capacity numbers + scaling runbook | `docs/SCALING.md` |
 

@@ -1,0 +1,173 @@
+# Bored Chat — Troubleshooting Knowledge Base
+
+Symptom-indexed. Every entry: SYMPTOM → LOOK AT (exact files) → CAUSE → FIX
+(the pattern we applied — repeat it, don't reinvent it). Entries marked
+[hit] actually happened in this project and were fixed; [known] are failure
+modes the design guards against. Read `CLAUDE.md` first; map: `docs/SYSTEM-MAP.md`.
+
+## Deploy & ops
+
+**"pull access denied for minio/minio"** [hit]
+→ `docker-compose.yml` minio service. MinIO left Docker Hub (2025); image is
+`bitnamilegacy/minio` with `MINIO_DATA_DIR=/data`, run.sh command, `user: "0"`.
+
+**"failed to bind host port ... address already in use" on 80/443/8443** [hit]
+→ `.env` (`HTTP_PORT`/`HTTPS_PORT`), `docker-compose.yml` caddy ports.
+Something on the host owns the port. Set the env ports (compose interpolates
+them) — never edit the Caddyfile for this; find free ports with `ss -ltn`.
+
+**"I updated but see no changes"** [hit — twice]
+→ Checks in order: `git log --oneline -1` (did the pull land? local edits
+block merges — `git stash`, or `./bored update` which auto-stashes);
+`docker compose ps` ("Up N hours" + "Built 0.0s" = containers were NOT
+recreated — an interrupted build keeps old ones; rerun `up -d --build` and
+DON'T Ctrl+C); `curl -s localhost:PORT/login | grep -c "Bored Chat"`
+(0 = server old, ≥1 = server new → browser cache: hard refresh; installed
+PWA: close fully and reopen twice).
+
+**Web image build fails: TS5083 / "Cannot find name 'Map'" storms** [hit]
+→ `apps/web/Dockerfile`, `apps/server/Dockerfile`. A tsconfig that extends
+`../../tsconfig.base.json` compiled in an image that didn't COPY it — tsc
+falls back to ES5 defaults. Every Dockerfile build stage must COPY
+`tsconfig.base.json`. CI builds both images to catch this class.
+
+**`migrate` exits non-zero but tables exist** [known/expected]
+→ `apps/server/src/db/migrate.ts`. The MinIO bucket-init step fails when
+MinIO is absent (local dev/tests). Migrations are already applied by then.
+In compose (MinIO present) it exits 0. Not a bug — do not "fix".
+
+**argon2/sharp "could not load native module" at runtime** [hit]
+→ root `package.json` → `pnpm.onlyBuiltDependencies`. pnpm 10 skips
+postinstall scripts by default; native deps must be listed there.
+
+**`docker` → "permission denied ... docker.sock"** [hit]
+→ host setup, not the repo: `sudo usermod -aG docker $USER && newgrp docker`.
+
+**Link pasted in Telegram/WhatsApp shows NO preview card** [hit]
+→ `apps/web/app/join/[token]/page.tsx` (`publicOrigin()`), `.env`
+`PUBLIC_ORIGIN`, `Caddyfile` (`header_up X-Forwarded-Host`). Tags rendered
+`http://localhost/...` because tunnels (cloudflared/ngrok) rewrite Host.
+Fix: set `PUBLIC_ORIGIN` (./bored tunnel does it automatically). Verify:
+`curl -A TelegramBot <url> | grep og:` — og:image must be an absolute PUBLIC
+url. Telegram caches previews per-URL: always test with a FRESH link.
+
+## Server correctness patterns (each was a real audit finding)
+
+**Any counter/cap that can race (reactions cap, spark threshold, invite
+use_count, mutual wave)** [hit ×4]
+→ `modules/reactions/routes.ts`, `modules/beacons/service.ts`,
+`modules/invites/service.ts`, `modules/discovery/routes.ts`. Pattern:
+serialize with `pg_advisory_xact_lock(hashtextextended(key, n))` inside the
+transaction, or atomic `UPDATE ... WHERE <precondition> RETURNING`. Never
+check-then-insert under READ COMMITTED.
+
+**Date objects into raw SQL → postgres-js cannot serialize** [hit]
+→ anywhere using `db.execute(sql\`...\`)`. Bind ISO strings with
+`::timestamptz` casts, never `new Date()` instances.
+
+**Drizzle column refs interpolated into aliased raw SQL render
+fully-qualified and miss the alias** [hit]
+→ e.g. `modules/discovery/routes.ts` visibleCards. In raw SQL with table
+aliases write raw `o.user_id`-style identifiers.
+
+**Rate limit shared by all users behind the web container** [hit ×2]
+→ `apps/web/app/share/route.ts`, `app/join/[token]/page.tsx`. EVERY
+server-side web→api fetch must re-send the incoming `x-forwarded-for`
+(api has trustProxy). New SSR/route-handler hops: copy that pattern.
+
+**Status-gate ordering on idempotent accepts** [hit]
+→ `modules/invites/service.ts` acceptInvite. Membership/dedupe check FIRST
+(already-in → 200, no use consumed), then status-gate genuinely-new joins
+(revoked/expired → 410). A departed DM party re-joining is a NEW join and
+must be status-gated; re-join resets `left_at` exactly like the group path.
+
+**Push delivered to someone who was reading / never delivered at all** [hit]
+→ `modules/messages/service.ts` fanOutNewMessage + `lib/pushGuard.ts` +
+`jobs/push.ts`. "Offline" is decided by the in-process WS registry (truth),
+not the Redis presence key (grace-period lag); just-dropped users get the
+job delayed past OFFLINE_GRACE_S. Worker guards re-check: offline, unread
+(`last_read_seq`), not muted (mention overrides mute, NEVER blocks),
+debounce.
+
+**One semantic event emitted N times (system messages, fan-out)** [hit]
+→ `modules/conversations/routes.ts` add-participants. One operation = ONE
+system message / seq bump, payload carries the list.
+
+**Unfurl/budget bypass via alternate entry points** [hit]
+→ `modules/previews/service.ts`. `requestUnfurl()` is the ONLY path that
+enqueues (previews POST, message-send URL extraction, share imports). A new
+URL-bearing feature must call it, never `enqueueUnfurl` directly. Over
+budget on a message send: send succeeds, unfurl silently skipped.
+
+**Public endpoint leaks existence/data** [known — audited each release]
+→ `modules/invites` public lookup (status enum only, token-gated avatar,
+rate-limited), `modules/discovery` (single waves invisible; unknown/blocked/
+friends-of all return byte-identical 404). New public endpoints: identical
+responses for "doesn't exist" vs "you may not see it".
+
+**Blocked pair reaches each other through a NEW surface** [known — the #1
+audit check every release]
+→ `lib/blocks.ts` has the SQL conditions; `lib/friends.ts` the audience
+helper. Every new feature must consult them: visibility, join/contact,
+notifications, profile 404 (blocked viewer), kudos/stamps/waves/reviews.
+
+**WS event reaches someone outside the audience** [known]
+→ `ws/events.ts` fan-out is per-user-targeted (beacon.new to audience only,
+spark details to joiners only, call signaling participants-only with
+per-frame membership validation + size/rate caps in `ws/gateway.ts`).
+
+## Web/UI patterns (the v0.6.1 class)
+
+**A sheet/overlay renders top-left / clipped / wrong place on desktop** [hit]
+→ the sheet component + `components/GlobalOverlays.tsx`. `position: fixed`
+inside ANY transformed/filtered ancestor behaves as absolute. Overlays
+portal to body (or live outside transformed containers).
+
+**Whole app "unclickable", buttons dead** [hit]
+→ whichever overlay/backdrop is mounted invisible. `opacity: 0` still
+intercepts clicks — closed overlays need `display:none` / `visibility:hidden`
+/ `pointer-events:none`. Debug in DevTools: `document.elementFromPoint(x,y)`.
+
+**Bottom sheet's submit button off-screen on phones** [hit]
+→ sheet CSS. Sheets: `max-height` (prefer `100dvh`-based) + internal
+`overflow-y:auto` + `padding-bottom: calc(env(safe-area-inset-bottom) +
+tab-bar height)`.
+
+**Page pans/jumps when focusing an input on mobile** [hit]
+→ `components/auth.module.css` pattern: a clipped (`overflow:hidden`)
+container with scrollable overflow scrolls on focus. Use `overflow:clip`,
+and keep decorative absolutes from creating overflow.
+
+**iOS zooms in on input focus and sticks** [hit]
+→ `app/globals.css`: every input/textarea ≥ 16px font. Never fix via
+maximum-scale (breaks accessibility pinch-zoom).
+
+**Header action (SOS etc.) pushed off-screen** [hit]
+→ header flex rows need `min-width: 0` on the growing child so trailing
+actions never overflow.
+
+**Hydration mismatch warnings on auth pages** [known]
+→ time-of-day greetings/taglines compute client-side after mount
+(`components/AuthScene.tsx` pattern) — never render clock-dependent text in
+SSR output.
+
+**Store desync after reconnect / missed events** [known]
+→ `apps/web/lib/connection.ts`: EVERY (re)connect runs the `/api/sync`
+reconcile; new WS event types must be handled there AND in `lib/store.ts`,
+and anything seq-less reconciles via the refresh path. presence.sub frames
+chunk at PRESENCE_SUB_MAX; close code 1008 = reconnect once then surface the
+error state.
+
+**Delivered receipts from the service worker** [known — forbidden]
+→ `public/sw.js` only shows notifications. Only a running client that
+committed the message to IndexedDB sends `delivered` (receipt-honesty rule).
+
+## Tests & verification
+
+- Integration tests expect local Postgres (`/var/tmp/socialchat-pg`, port
+  5432, user/db `socialchat`) + Redis 6379 and SKIP cleanly when absent.
+  Suites: `apps/server/test/*.integration.test.ts` per release.
+- Playwright: preinstalled Chromium via `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`;
+  install the npm pkg OUTSIDE the repo; WebRTC tests need
+  `--use-fake-device-for-media-stream --use-fake-ui-for-media-stream`.
+- The verification bar for any change is in `CLAUDE.md` ("Verification bar").
