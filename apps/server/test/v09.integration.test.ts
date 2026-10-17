@@ -31,6 +31,7 @@ import {
   PASSKEYS_MAX,
   RECOVERY_CODES_COUNT,
   SUPPORT_CONVERSATION_TITLE,
+  TOTP_VERIFY_RATE_PER_MIN,
   type UserPrivate,
 } from '@socialchat/shared';
 
@@ -680,6 +681,28 @@ describe.runIf(infra)('v0.9 auth pack', () => {
       });
       expect(login.statusCode).toBe(200);
       expect(login.cookies.find((c) => c.name === 'sid')).toBeDefined();
+    });
+
+    it('enable and disable are throttled per user (no free online guessing)', async () => {
+      // The audit fix: an authed session gets TOTP_VERIFY_RATE_PER_MIN swings
+      // per minute at each surface, then a 429 — failed guesses are NOT free
+      // (verifyAndBurn only burns matches). TOTP is off for `me` here, so every
+      // in-budget guess answers 400; the window turns the oracle off after it.
+      let sawDisable429 = false;
+      for (let i = 0; i < TOTP_VERIFY_RATE_PER_MIN + 1 && !sawDisable429; i++) {
+        const res = await post(me, '/api/auth/totp/disable', { code: '000000' });
+        expect([400, 429]).toContain(res.statusCode);
+        sawDisable429 = res.statusCode === 429;
+      }
+      expect(sawDisable429).toBe(true);
+
+      let sawEnable429 = false;
+      for (let i = 0; i < TOTP_VERIFY_RATE_PER_MIN + 1 && !sawEnable429; i++) {
+        const res = await post(me, '/api/auth/totp/enable', { code: '000000' });
+        expect([400, 429]).toContain(res.statusCode);
+        sawEnable429 = res.statusCode === 429;
+      }
+      expect(sawEnable429).toBe(true);
     });
   });
 

@@ -86,6 +86,11 @@ export async function totpRoutes(fastify: FastifyInstance): Promise<void> {
     { preHandler: requireAuth, schema: { body: TotpEnableRequestSchema } },
     async (req) => {
       const { user } = authed(req);
+      // Online-guess throttle (security audit): same per-minute budget as the
+      // login verify — an authed session gets no free swings at the 6-digit
+      // keyspace (verifyAndBurn only burns on a MATCH, so misses are retries).
+      const rate = await fixedWindow(`totpenable:${user.id}`, TOTP_VERIFY_RATE_PER_MIN, 60);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
       if (user.totpSecret !== null) throw conflict('totp_enabled');
       const b32 = await redis.get(pendingKey(user.id));
       const secret = b32 ? base32Decode(b32) : null;
@@ -151,6 +156,12 @@ export async function totpRoutes(fastify: FastifyInstance): Promise<void> {
     { preHandler: requireAuth, schema: { body: TotpDisableRequestSchema } },
     async (req) => {
       const { user } = authed(req);
+      // Online-guess throttle (security audit): disable is the surface a
+      // hijacked/borrowed session would brute-force to STRIP 2FA, so both
+      // proof branches (code and recovery_code) share one per-user budget,
+      // checked BEFORE any verification oracle answers.
+      const rate = await fixedWindow(`totpdisable:${user.id}`, TOTP_VERIFY_RATE_PER_MIN, 60);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
       if (req.body.code !== undefined) {
         const b32 = user.totpSecret ? openSecret('totp:', user.totpSecret) : null;
         const secret = b32 ? base32Decode(b32) : null;

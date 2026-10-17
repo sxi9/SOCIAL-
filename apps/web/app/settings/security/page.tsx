@@ -101,6 +101,8 @@ function TotpSetupSheet({ onClose }: { onClose: () => void }) {
     } catch (err) {
       if (err instanceof ApiError && err.code === 'bad_totp_code') {
         setError('That code did not match — mind the 30-second rotation.');
+      } else if (err instanceof ApiError && err.status === 429) {
+        setError('Too many tries — wait a minute, then enter the current code.');
       } else {
         setError('Could not verify — try again.');
       }
@@ -250,6 +252,8 @@ function TotpDisableSheet({ onClose }: { onClose: () => void }) {
         setError('That code did not match.');
       } else if (err instanceof ApiError && err.code === 'bad_recovery') {
         setError('That recovery code did not match (each works once).');
+      } else if (err instanceof ApiError && err.status === 429) {
+        setError('Too many tries — wait a minute, then enter the current code.');
       } else {
         setError('Could not turn it off — try again.');
       }
@@ -622,10 +626,16 @@ function SecuritySettings() {
                             </span>
                           ) : null}
                         </div>
+                        {/* Each phrase is nowrap so a tight 390px row breaks
+                            at the · separator, never mid-phrase. */}
                         <p className="muted small" style={{ margin: '3px 0 0' }}>
-                          added {formatTime(pk.created_at)}
+                          <span className={ap.metaPhrase}>added {formatTime(pk.created_at)}</span>
                           {' · '}
-                          {pk.last_used_at ? `last used ${formatTime(pk.last_used_at)}` : 'never used'}
+                          <span className={ap.metaPhrase}>
+                            {pk.last_used_at
+                              ? `last used ${formatTime(pk.last_used_at)}`
+                              : 'never used'}
+                          </span>
                         </p>
                       </>
                     )}

@@ -831,8 +831,10 @@ export const CALL_SELFTEST_GATHER_TIMEOUT_MS = 8000;
 // SCHEDULED_TOAST_MS=4000 scheduled-send toast now rides this component).
 export const TOAST_DEFAULT_MS = 3500;
 // Oldest toast drops when a new one would exceed this (never a stack of
-// nags; confirmations are glanceable, not a log).
-export const TOAST_MAX_VISIBLE = 2;
+// nags; confirmations are glanceable, not a log). v0.9: SINGLE-slot — the
+// newest confirmation replaces the previous one; a two-high stack covered
+// sheet content (the shown-once recovery codes) at phone widths.
+export const TOAST_MAX_VISIBLE = 1;
 
 // ---- Notifications-on assurance (v0.7.1 — API.md §1.56, FEATURES #90b) ----
 // localStorage key for the one-time post-login push explainer. DEVICE-local
