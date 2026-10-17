@@ -55,17 +55,15 @@ export function useAuthFx(): AuthFx {
   return useContext(AuthFxContext);
 }
 
-// One per mount; index 0 doubles as the SSR text so hydration always matches.
-const TAGLINES = [
-  'for when the group chat is dead',
-  'your thumb is tired of scrolling',
-  'professionally unproductive since day one',
-  'where lurkers become legends',
-  'doomscrolling, but make it mutual',
-  'your notifications called — they miss you',
-  'big yawn energy, great conversations',
-  'the fun is mandatory (it is not)',
-];
+// v1.1 Royal: taglines are MOOD-SYNCED — one per wordmark word, flipped on
+// the same clock (index 0 = Bored doubles as the SSR text, so hydration
+// always matches).
+const WORD_TAGLINE: Record<(typeof WORDMARK_WORDS)[number], string> = {
+  Bored: 'chat for when the group chat is dead',
+  Happy: 'good vibes travel fast',
+  Sad: 'rain check? we got you',
+  Drunk: 'maybe text the group first',
+};
 
 function greetingFor(hour: number): string {
   if (hour >= 5 && hour < 11) return 'good morning — the blob woke up before you did';
@@ -91,11 +89,18 @@ const CONFETTI_COLORS = ['#6f8cff', '#4cd4a0', '#ff6b96', '#b78cff', '#ffd166', 
 // Hyped = party. State changes ride the same tick as the roll.
 const WORD_MASCOT: Record<(typeof WORDMARK_WORDS)[number], MascotState | null> = {
   Bored: null,
-  Sad: 'droop',
-  Excited: 'celebrate',
   Happy: 'happy',
-  Lonely: 'lookaround',
-  Hyped: 'party',
+  Sad: 'droop',
+  Drunk: 'drunk',
+};
+
+// v1.1 Royal: per-mood ambient background layer (none / star twinkle / rain
+// streaks / drifting blurred blobs). Reduced motion renders NONE of these.
+const WORD_BG: Record<(typeof WORDMARK_WORDS)[number], 'none' | 'stars' | 'rain' | 'blobs'> = {
+  Bored: 'none',
+  Happy: 'stars',
+  Sad: 'rain',
+  Drunk: 'blobs',
 };
 
 function FloatingFace({ className, hue }: { className: string; hue: string }) {
@@ -113,7 +118,7 @@ function FloatingFace({ className, hue }: { className: string; hue: string }) {
 export default function AuthScene({ children }: { children: ReactNode }) {
   const reduced = useReducedMotion();
   const sceneRef = useRef<HTMLDivElement | null>(null);
-  const [tagline, setTagline] = useState(TAGLINES[0]);
+  const [tagline, setTagline] = useState(WORD_TAGLINE.Bored);
   const [greeting, setGreeting] = useState<string | null>(null);
   const [party, setParty] = useState(false);
   const [lifted, setLifted] = useState(false);
@@ -127,9 +132,13 @@ export default function AuthScene({ children }: { children: ReactNode }) {
   // Tagline + time-aware greeting: client-side after mount (no hydration
   // mismatch — the server always renders TAGLINES[0] and a blank greeting).
   useEffect(() => {
-    setTagline(TAGLINES[Math.floor(Math.random() * TAGLINES.length)]);
     setGreeting(greetingFor(new Date().getHours()));
   }, []);
+
+  // v1.1 Royal: the tagline rides the mood clock (same tick as the word).
+  useEffect(() => {
+    setTagline(WORD_TAGLINE[word]);
+  }, [word]);
 
   // Pointer-reactive mesh + card tilt: one passive pointermove listener feeds
   // a normalized target; a self-stopping rAF loop eases --mx/--my on the
@@ -277,15 +286,17 @@ export default function AuthScene({ children }: { children: ReactNode }) {
           <FloatingFace className={`${styles.face} ${styles.f2}`} hue="#4cd4a0" />
           <FloatingFace className={`${styles.face} ${styles.f3}`} hue="#ff6b96" />
         </div>
+        {/* v1.1 Royal: per-mood ambient layer — none under reduced motion. */}
+        {!reduced ? <MoodBackdrop kind={WORD_BG[word]} /> : null}
         <div className={styles.content}>
           <header className={styles.brand}>
             <h1 className={styles.title}>
-              {/* v0.7 (§1.54): "[Bored] Chat" — the word rolls, "Chat" never
-                  moves (fixed-width slot); static "Bored Chat" under reduced
-                  motion and in SSR output. */}
+              {/* v1.1 Royal (§1.54 machinery kept): "{mood}." — the word
+                  rolls on the mood clock, the dot never moves (fixed-width
+                  slot); static "Bored." under reduced motion and in SSR. */}
               <button type="button" className={styles.logoBtn} onClick={onLogoTap}>
                 <Wordmark onWordChange={setWord} />
-                <span>Chat</span>
+                <span className={styles.logoDot}>.</span>
               </button>
             </h1>
             <p className={styles.pitch}>{tagline}</p>
@@ -323,5 +334,62 @@ export default function AuthScene({ children }: { children: ReactNode }) {
         ) : null}
       </div>
     </AuthFxContext.Provider>
+  );
+}
+
+
+/* v1.1 Royal: the mood backdrop — absolutely positioned, pointer-events
+ * none; stars twinkle, rain falls, drunk blobs drift. Deterministic layout
+ * (no Math.random at render — fixed tables keep SSR/hydration content-free
+ * since this renders client-side only anyway, but determinism keeps renders
+ * stable). */
+const STAR_SPOTS = [
+  [8, 12], [22, 30], [37, 8], [52, 22], [66, 14], [80, 28], [90, 10], [14, 46], [72, 42], [45, 38],
+] as const;
+const RAIN_SPOTS = [
+  [6, 0.0, 1.1], [18, 0.3, 1.3], [29, 0.6, 1.2], [41, 0.15, 1.45], [53, 0.45, 1.15],
+  [64, 0.75, 1.3], [75, 0.2, 1.25], [86, 0.55, 1.4], [94, 0.9, 1.2],
+] as const;
+
+function MoodBackdrop({ kind }: { kind: 'none' | 'stars' | 'rain' | 'blobs' }) {
+  if (kind === 'none') return null;
+  return (
+    <div className={styles.moodLayer} aria-hidden>
+      {kind === 'stars'
+        ? STAR_SPOTS.map(([x, y], i) => (
+            <i
+              key={i}
+              className={styles.star}
+              style={{
+                left: `${x}%`,
+                top: `${y}%`,
+                animationDuration: `${1.6 + (i % 5) * 0.2}s`,
+                animationDelay: `${(i % 4) * 0.35}s`,
+              }}
+            />
+          ))
+        : null}
+      {kind === 'rain'
+        ? RAIN_SPOTS.map(([x, delay, dur], i) => (
+            <i
+              key={i}
+              className={styles.rain}
+              style={{
+                left: `${x}%`,
+                height: `${12 + (i % 3) * 1.5}px`,
+                animationDuration: `${dur}s`,
+                animationDelay: `-${delay}s`,
+              }}
+            />
+          ))
+        : null}
+      {kind === 'blobs' ? (
+        <>
+          <i className={`${styles.blob} ${styles.blobA}`} />
+          <i className={`${styles.blob} ${styles.blobB}`} />
+          <i className={`${styles.blob} ${styles.blobC}`} />
+        </>
+      ) : null}
+    </div>
   );
 }

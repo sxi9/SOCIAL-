@@ -536,3 +536,85 @@
     transform: none;
   }
 }
+
+/* ---- v1.1 Royal: mood login ---- */
+
+/* Display serif wordmark "{mood}." — white, lowercase presentation. */
+.title {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+
+.logoDot {
+  color: var(--accent);
+}
+
+.moodLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.star {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #fff;
+  animation: twinkle 2s ease-in-out infinite;
+}
+
+.rain {
+  position: absolute;
+  top: -20px;
+  width: 2px;
+  border-radius: 2px;
+  background: rgba(150, 185, 235, 0.5);
+  animation: rainFall 1.2s linear infinite;
+}
+
+.blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(30px);
+  animation: drift 5s ease-in-out infinite alternate;
+}
+
+.blobA {
+  width: 220px;
+  height: 220px;
+  left: 6%;
+  top: 14%;
+  background: rgba(216, 130, 188, 0.22);
+  animation-duration: 5.4s;
+}
+
+.blobB {
+  width: 160px;
+  height: 160px;
+  right: 8%;
+  top: 38%;
+  background: rgba(130, 150, 235, 0.2);
+  animation-duration: 4.2s;
+}
+
+.blobC {
+  width: 140px;
+  height: 140px;
+  left: 34%;
+  bottom: 10%;
+  background: rgba(235, 180, 120, 0.14);
+  animation-duration: 6s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .star,
+  .rain,
+  .blob {
+    animation: none;
+    opacity: 0; /* layer is not rendered under reduced motion anyway — belt+braces */
+  }
+}

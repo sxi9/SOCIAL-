@@ -768,8 +768,10 @@ export const SCHEDULED_TOAST_MS = 4000;
 // The auth headline "[Bored] Chat" cycles these on a fixed-width slot with a
 // vertical roll; pauses while the tab is hidden; settles on 'Bored';
 // prefers-reduced-motion renders static 'Bored'. The mascot reacts per word.
-export const WORDMARK_WORDS = ['Bored', 'Sad', 'Excited', 'Happy', 'Lonely', 'Hyped'] as const;
-export const WORDMARK_FLIP_INTERVAL_MS = 2500;
+// v1.1 Royal login: the four MOODS — word, tagline, mascot face and
+// background layer all flip together on one clock (design drop 2026-10-17).
+export const WORDMARK_WORDS = ['Bored', 'Happy', 'Sad', 'Drunk'] as const;
+export const WORDMARK_FLIP_INTERVAL_MS = 2600;
 
 // =========================== v0.7.1 additions ================================
 // Call reliability (FEATURES #87–#90b; API.md §1.55–§1.56 + §2.9 + §2.12;

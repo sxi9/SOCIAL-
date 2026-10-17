@@ -6,17 +6,18 @@
 .root {
   display: block;
   overflow: visible;
-  --m-limb: #4b66e0;
-  --m-lid: #5d77ea;
-  --m-ink: #182142;
-  --m-blush: rgba(255, 107, 150, 0.4);
+  /* v1.1 Royal: ivory blob, silver limbs, ink features. */
+  --m-limb: #c3c9d8;
+  --m-lid: #e2e6f0;
+  --m-ink: #12141c;
+  --m-blush: rgba(242, 166, 176, 0.55);
 }
 
 @media (prefers-color-scheme: light) {
   .root {
-    --m-limb: #3d55d6;
-    --m-lid: #5b74e8;
-    --m-ink: #15204a;
+    --m-limb: #b4bac9;
+    --m-lid: #dde1ec;
+    --m-ink: #12141c;
   }
 }
 
@@ -446,5 +447,38 @@
   }
   50% {
     transform: rotate(-124deg);
+  }
+}
+
+
+/* ---- v1.1 Royal: drunk mood + sad tear ---- */
+.tear {
+  fill: #8fb7e8;
+  opacity: 0.9;
+}
+
+.drunk .blush {
+  fill: rgba(242, 166, 176, 0.85);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .drunk .inner {
+    animation: wobble 1.5s ease-in-out infinite;
+    transform-box: fill-box;
+    transform-origin: 50% 60%;
+  }
+  .droop .tear,
+  .tear {
+    animation: tearDrip 2.6s ease-in infinite;
+  }
+  @keyframes tearDrip {
+    0% { transform: translateY(0); opacity: 0; }
+    25% { opacity: 0.9; }
+    80% { transform: translateY(10px); opacity: 0.9; }
+    100% { transform: translateY(14px); opacity: 0; }
+  }
+  @keyframes wobble {
+    0%, 100% { transform: rotate(-4deg); }
+    50% { transform: rotate(4deg) translateY(-3px); }
   }
 }

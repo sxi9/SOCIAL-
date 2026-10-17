@@ -49,7 +49,9 @@ export type MascotState =
   // look around (Excited reuses 'celebrate', Hyped reuses 'party').
   | 'droop'
   | 'happy'
-  | 'lookaround';
+  | 'lookaround'
+  // v1.1 Royal login mood: squiggle mouth + blush + wobble (reduced: static).
+  | 'drunk';
 
 export interface MascotHandle {
   /** Aim the eyes at a viewport point (input caret); null resumes pointer tracking. */
@@ -308,7 +310,7 @@ const Mascot = forwardRef<MascotHandle, MascotProps>(function Mascot(
         ? 'flat'
         : expr === 'shake' || expr === 'droop'
           ? 'frown'
-          : expr === 'wince'
+          : expr === 'wince' || expr === 'drunk'
             ? 'wobble'
             : expr === 'celebrate' || expr === 'party' || expr === 'wave' || expr === 'happy'
               ? 'grin'
@@ -330,9 +332,10 @@ const Mascot = forwardRef<MascotHandle, MascotProps>(function Mascot(
     >
       <defs>
         <radialGradient id={`${gid}bg`} cx="38%" cy="28%" r="80%">
-          <stop offset="0%" stopColor="#97aaff" />
-          <stop offset="55%" stopColor="#6f8cff" />
-          <stop offset="100%" stopColor="#5367ef" />
+          {/* v1.1 Royal: ivory/silver blob (was blue). */}
+          <stop offset="0%" stopColor="#ffffff" />
+          <stop offset="55%" stopColor="#f3f5f9" />
+          <stop offset="100%" stopColor="#d9deea" />
         </radialGradient>
         <clipPath id={`${gid}el`}>
           <ellipse cx="44" cy="52" rx="8" ry="9" />
@@ -349,7 +352,7 @@ const Mascot = forwardRef<MascotHandle, MascotProps>(function Mascot(
         />
         <path
           d="M38 30 Q50 20 66 24"
-          stroke="rgba(255,255,255,0.35)"
+          stroke="rgba(255,255,255,0.8)"
           strokeWidth="5"
           strokeLinecap="round"
           fill="none"
@@ -392,6 +395,10 @@ const Mascot = forwardRef<MascotHandle, MascotProps>(function Mascot(
           )}
           <ellipse className={styles.blush} cx="34" cy="63" rx="5" ry="3" />
           <ellipse className={styles.blush} cx="86" cy="63" rx="5" ry="3" />
+          {expr === 'droop' ? (
+            /* v1.1 Royal: the sad tear (#8fb7e8), slow drip under reduced-motion-safe CSS. */
+            <ellipse className={styles.tear} cx="82" cy="66" rx="3" ry="5" />
+          ) : null}
           <g className={styles.mouth} key={mouth}>
             {mouth === 'smile' ? (
               <path className={styles.mouthStroke} d="M49 75 Q60 84 71 75" />
@@ -414,7 +421,7 @@ const Mascot = forwardRef<MascotHandle, MascotProps>(function Mascot(
             <rect x="65" y="44" width="22" height="14" rx="6" fill="#131726" stroke="rgba(255,255,255,0.3)" strokeWidth="1.4" />
             <path d="M55 49 Q60 45 65 49" stroke="#131726" strokeWidth="3" fill="none" />
             <path d="M33 49 L25 46 M87 49 L95 46" stroke="#131726" strokeWidth="3" strokeLinecap="round" fill="none" />
-            <path d="M37 48 L43 48 M69 48 L75 48" stroke="rgba(255,255,255,0.35)" strokeWidth="2" strokeLinecap="round" />
+            <path d="M37 48 L43 48 M69 48 L75 48" stroke="rgba(255,255,255,0.8)" strokeWidth="2" strokeLinecap="round" />
           </g>
         </g>
         <g transform="translate(32 80)">
