@@ -11,6 +11,7 @@ import { processUnfurlJob } from './jobs/unfurl.js';
 import {
   DISAPPEAR_SWEEP_INTERVAL_S,
   LISTING_SWEEP_INTERVAL_S,
+  MOOD_SWEEP_INTERVAL_S,
   ROULETTE_PAIR_INTERVAL_S,
   ROULETTE_SWEEP_INTERVAL_S,
   STORY_SWEEP_INTERVAL_S,
@@ -161,6 +162,25 @@ async function main(): Promise<void> {
     'call-ring-sweep',
     {},
     { repeat: { every: 60_000 }, jobId: 'call-ring-sweep', removeOnComplete: 10, removeOnFail: 10 },
+  );
+
+  // v0.8a (API.md §1.57): mood expiry bookkeeping (reads already filter
+  // mood_expires_at live — never a stale chip) + the 🎢 swing rotation walk
+  // over users_mood_swing_idx. Moods never push; fan-out is user.updated only.
+  await timersQueue.add(
+    'mood-sweep',
+    {},
+    {
+      repeat: { every: MOOD_SWEEP_INTERVAL_S * 1000 },
+      jobId: 'mood-sweep',
+      removeOnComplete: 10,
+      removeOnFail: 10,
+    },
+  );
+  await timersQueue.add(
+    'mood-swing-sweep',
+    {},
+    { repeat: { every: 60_000 }, jobId: 'mood-swing-sweep', removeOnComplete: 10, removeOnFail: 10 },
   );
 
   // v0.6 (API.md §1.44/§1.45): discovery bookkeeping + the roulette loop.

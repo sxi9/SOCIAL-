@@ -60,9 +60,11 @@ import {
 } from '@/lib/feed';
 import { formatTime } from '@/lib/format';
 import { KIND_EMOJI, KIND_LABEL, listMine } from '@/lib/listings';
+import { isSelfDrunk } from '@/lib/mood';
 import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
+import DrunkConfirmSheet from './DrunkConfirmSheet';
 import { LocationChip, LocationField } from './LocationPicker';
 import Portal from './Portal';
 import ReactionPicker from './ReactionPicker';
@@ -219,6 +221,8 @@ function PostComposerCard({ lane }: { lane: FeedLane }) {
   const state = useAppState();
   const [kind, setKind] = useState<PostKind>('text');
   const [audience, setAudience] = useState<PostAudience>('friends_of');
+  // v0.8a §1.57: pending drunk-mode "you sure?" before a PUBLIC post.
+  const [drunkAsk, setDrunkAsk] = useState(false);
 
   // Fixer r1: the composer FOLLOWS the active lane — writing from Discover
   // defaults the audience chip to Public (and the placeholder with it), so the
@@ -315,8 +319,15 @@ function PostComposerCard({ lane }: { lane: FeedLane }) {
     return refSel !== null;
   })();
 
-  async function post(): Promise<void> {
+  async function post(force = false): Promise<void> {
     if (!canPost) return;
+    // v0.8a §1.57 drunk guardrail (client-side, binding): a PUBLIC post while
+    // drunk gets a "you sure?" first. Never a server rejection — nothing is
+    // recorded about the hesitation.
+    if (!force && audience === 'public' && isSelfDrunk()) {
+      setDrunkAsk(true);
+      return;
+    }
     setBusy(true);
     setError(null);
     const req: CreatePostRequest = {
@@ -553,6 +564,17 @@ function PostComposerCard({ lane }: { lane: FeedLane }) {
           {busy ? 'Posting…' : 'Post'}
         </button>
       </div>
+      {drunkAsk ? (
+        <DrunkConfirmSheet
+          text="You're in drunk mode and this would go out to EVERYONE on this server. Tonight-you is sure?"
+          confirmLabel="Post it 🍻"
+          onConfirm={() => {
+            setDrunkAsk(false);
+            void post(true);
+          }}
+          onCancel={() => setDrunkAsk(false)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1045,6 +1067,8 @@ function PostComments({ post, meId }: { post: Post; meId: string }) {
         username: state.me.username,
         display_name: state.me.display_name,
         avatar: state.me.avatar,
+        mood: state.me.mood,
+        name_style: state.me.name_style,
       }
     : null;
 

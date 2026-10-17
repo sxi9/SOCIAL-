@@ -28,6 +28,9 @@ import { settingsRoutes } from './modules/settings/routes.js';
 import { shareRoutes } from './modules/share/routes.js';
 import { uploadRoutes } from './modules/uploads/routes.js';
 import { userRoutes } from './modules/users/routes.js';
+import { moodRoutes } from './modules/users/mood.js';
+import { activityRoutes } from './modules/activity/routes.js';
+import { releaseRoutes } from './modules/releases/routes.js';
 import { listingRoutes } from './modules/listings/routes.js';
 import { personReviewRoutes } from './modules/listings/reviews.js';
 import { adminRoutes } from './modules/admin/routes.js';
@@ -97,6 +100,9 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
 
   await app.register(authRoutes);
   await app.register(profileRoutes); // v0.5a §1.37 (/users/me/profile before userRoutes' :username is path-distinct)
+  await app.register(moodRoutes); // v0.8a §1.57 (/users/me/mood — path-distinct from :username)
+  await app.register(activityRoutes); // v0.8a §1.59 (/users/:username/activity)
+  await app.register(releaseRoutes); // v0.8a §1.61 (/api/releases)
   await app.register(userRoutes);
   await app.register(settingsRoutes); // v0.3 §1.13 (before userRoutes' :username catch is fine — paths are distinct)
   await app.register(blockRoutes); // v0.3 §1.14

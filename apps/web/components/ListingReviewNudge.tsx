@@ -67,8 +67,8 @@ export default function ListingReviewNudge({
   const peer: UserLite | null = (() => {
     const p = conv.participants.find((x) => x.user.id !== meId && x.left_at === null);
     if (!p) return null;
-    const { id, username, display_name, avatar } = p.user;
-    return { id, username, display_name, avatar };
+    const { id, username, display_name, avatar, mood, name_style } = p.user;
+    return { id, username, display_name, avatar, mood, name_style };
   })();
   if (!peer) return null;
 

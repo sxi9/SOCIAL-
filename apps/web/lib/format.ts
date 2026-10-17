@@ -88,6 +88,9 @@ export function dmPeer(conv: Conversation, meId: string | undefined): UserPublic
 export function messageSnippet(msg: Message | null): string {
   if (!msg) return 'No messages yet';
   if (msg.type === 'system') return msg.body ?? 'Update';
+  // v0.8a §1.57: a drunk-mode undone message renders NOTHING anywhere — not
+  // even a stub in the list snippet (no trace, by contract).
+  if (msg.metadata.undone) return '';
   // v0.4 §1.25: tombstoned by the disappearing-messages sweep.
   if (msg.deleted_at) return 'Message expired';
   if (msg.metadata.capsule) return '💌 Time capsule';

@@ -25,6 +25,7 @@ import {
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
+import { recordActivity } from '../../lib/activity.js';
 import { blockPairsAmong, isBlockedPair } from '../../lib/blocks.js';
 import {
   activeParticipantUserIds,
@@ -123,26 +124,37 @@ async function mintBeacon(opts: MintOpts): Promise<BeaconRow> {
   validateWindow(opts.startsAt, opts.expiresAt);
   if ((await openBeaconCount(opts.creator.id)) >= BEACON_OPEN_MAX) throw conflict('beacon_limit');
 
-  const [row] = await db
-    .insert(b)
-    .values({
-      id: newId(),
-      creatorId: opts.creator.id,
-      vibe: opts.vibe,
-      customVibeEmoji: opts.vibe === 'custom' ? (opts.customVibeEmoji ?? null) : null,
-      customVibeLabel: opts.vibe === 'custom' ? (opts.customVibeLabel ?? null) : null,
-      note: opts.note,
-      audience,
-      area: audience === 'area' ? opts.creator.area : null,
-      location: opts.location ?? null,
-      startsAt: opts.startsAt,
-      expiresAt: opts.expiresAt,
-      sparkThreshold: opts.sparkThreshold ?? BEACON_SPARK_THRESHOLD_DEFAULT,
-    })
-    .returning();
-  await db.execute(sql`
-    UPDATE users SET beacons_created = beacons_created + 1 WHERE id = ${opts.creator.id}
-  `);
+  const row = await db.transaction(async (tx) => {
+    const [inserted] = await tx
+      .insert(b)
+      .values({
+        id: newId(),
+        creatorId: opts.creator.id,
+        vibe: opts.vibe,
+        customVibeEmoji: opts.vibe === 'custom' ? (opts.customVibeEmoji ?? null) : null,
+        customVibeLabel: opts.vibe === 'custom' ? (opts.customVibeLabel ?? null) : null,
+        note: opts.note,
+        audience,
+        area: audience === 'area' ? opts.creator.area : null,
+        location: opts.location ?? null,
+        startsAt: opts.startsAt,
+        expiresAt: opts.expiresAt,
+        sparkThreshold: opts.sparkThreshold ?? BEACON_SPARK_THRESHOLD_DEFAULT,
+      })
+      .returning();
+    await tx.execute(sql`
+      UPDATE users SET beacons_created = beacons_created + 1 WHERE id = ${opts.creator.id}
+    `);
+    // v0.8a (§1.59): beacon create → beacon_lit, inside the mint transaction
+    // through THE one helper. Pointer only — the strip read re-checks the
+    // beacon's stored audience live, so visibility never goes stale.
+    await recordActivity(tx, {
+      user_id: opts.creator.id,
+      kind: 'beacon_lit',
+      ref: { beacon_id: inserted!.id },
+    });
+    return inserted!;
+  });
   // beacon.new ONLY to the audience (never to anyone who cannot join —
   // PSYCHOLOGY rule 2); push to the offline audience (§2.9-style guards
   // re-check at execution).

@@ -30,6 +30,7 @@ import {
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
+import { recordActivity } from '../../lib/activity.js';
 import { blockedSetOf, isBlockedPair } from '../../lib/blocks.js';
 import { friendsOfIds } from '../../lib/friends.js';
 import { publishConversationToUsers, rawToMsgRow, type MsgRow } from '../../lib/dto.js';
@@ -176,6 +177,10 @@ export async function feedRoutes(fastify: FastifyInstance): Promise<void> {
             options: req.body.poll!.options,
           });
         }
+        // v0.8a (§1.59): POST /api/posts → post_created, inside the create
+        // transaction through THE one helper. Pointer only — the strip read
+        // re-checks §1.36/§1.49 post visibility live.
+        await recordActivity(tx, { user_id: user.id, kind: 'post_created', ref: { post_id: postId } });
         if (attachmentIds.length > 0) {
           // Mine, unbound, any kind but 'file' → else 400 bad_attachment
           // (rolls the post back). post_id is the binding/GC shield. Unbound

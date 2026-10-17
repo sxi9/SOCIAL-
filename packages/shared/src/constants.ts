@@ -839,3 +839,226 @@ export const TOAST_MAX_VISIBLE = 2;
 // by design: push permission is a per-browser fact, so the prompt state
 // lives beside it — never synced, never re-nagged after a decline.
 export const PUSH_EXPLAINER_SEEN_KEY = 'bc.push-explainer-seen';
+
+// ============================ v0.8a additions =================================
+// Identity & moods slice of v0.8 (FEATURES #72–#76, #79, #80; API.md
+// §1.57–§1.61; ADR-018). HARD RULES carried here: moods NEVER appear in any
+// activity/history surface and leave NO trace after expiry (PSYCHOLOGY: no
+// seen-at archaeology, no guilt); a mood change never generates push — the
+// drunk banner is a passive in-chat surface, never a blast; activity items
+// never leak past the underlying object's audience (viewer must be able to
+// see the thing itself); every motion effect in this release (mood bubbles,
+// animated names, GIF/video backgrounds, the tour) dies completely under
+// prefers-reduced-motion; no public numeric counters anywhere, as always.
+
+// ---- Moods (v0.8a — API.md §1.57, FEATURES #72, ADR-018) ----
+export const MOOD_KINDS = ['preset', 'custom', 'swing', 'drunk'] as const;
+// Who may see my mood chip. Resolved SERVER-side at serialization (§1.13
+// machinery): 'connections' = my ACCEPTED connections (§1.28 — literally
+// connections, NOT friends-of; a DM alone does not qualify); blocks hide the
+// mood both directions regardless. 'nobody' leaves it owner-only.
+export const MOOD_VISIBILITIES = ['everyone', 'connections', 'nobody'] as const;
+// The preset chips. label is the stable key (mood-reactive effects and the
+// swing picker key on it); emoji is the default glyph. Appending is
+// contract-safe; renaming/removing is not (stored rows reference labels).
+export const MOOD_PRESETS = [
+  { emoji: '😴', label: 'bored' },
+  { emoji: '🎉', label: 'hyped' },
+  { emoji: '💤', label: 'lazy' },
+  { emoji: '🌧️', label: 'sad' },
+  { emoji: '😊', label: 'happy' },
+  { emoji: '☕', label: 'cozy' },
+  { emoji: '😾', label: 'grumpy' },
+  { emoji: '🍜', label: 'hungry' },
+] as const;
+// Custom mood bounds. Zod counts UTF-16 units for the emoji, like
+// REACTION_EMOJI_MAX_LEN (astral emoji fit); the label is one word-ish.
+export const MOOD_EMOJI_MAX_LEN = 16;
+export const MOOD_LABEL_MAX_CHARS = 24;
+// Every mood auto-expires: users.mood_expires_at = now() + MOOD_TTL_S on
+// every set ("always-current, never stale"). Reads filter
+// mood_expires_at > now() LIVE (the discovery-optin pattern), so sweep
+// precision never shows a stale chip; the sweep only clears columns + fans
+// the user.updated goodbye.
+export const MOOD_TTL_S = 4 * 3600;
+export const MOOD_SWEEP_INTERVAL_S = 60;
+export const MOOD_SET_RATE_PER_HOUR = 30;
+// 🎢 Swing mode: the chip cycles through a chosen set. The worker rotates
+// each swinging user every MOOD_SWING_INTERVAL_S ± uniform jitter (random,
+// per rotation) and fans out user.updated; clients morph-animate the chip.
+export const MOOD_SWING_SET_MIN = 2;
+export const MOOD_SWING_SET_MAX = 6;
+export const MOOD_SWING_INTERVAL_S = 30 * 60;
+export const MOOD_SWING_JITTER_S = 10 * 60;
+
+// ---- 🍻 Drunk mode (v0.8a — API.md §1.57, FEATURES #73, ADR-018) ----
+// A mood kind with guardrails. The chip itself is pinned:
+export const MOOD_DRUNK_EMOJI = '🍻';
+export const MOOD_DRUNK_LABEL = 'drunk';
+// Drunk visibility DEFAULTS to 'connections' even when the user's other
+// moods were public — overridable per set, but the default is the guardrail.
+export const MOOD_DRUNK_DEFAULT_VISIBILITY = 'connections' as const;
+// Send-undo: while drunk mode is active, every send gets an undo window.
+// DELETE …/messages/:seq?undo=1 within this window of created_at (plus the
+// skew slack, server-side) VANISHES the message: tombstone row (seq survives,
+// golden rule 2) with metadata {"undone": true} — clients render NOTHING, not
+// a "message deleted" stub. Works on every own message type, editable or not.
+export const MOOD_DRUNK_UNDO_WINDOW_S = 10;
+export const MOOD_DRUNK_UNDO_SLACK_S = 2;
+// Cold-contact confirm (CLIENT-side): before sending into a DM whose
+// conversation.last_message_at is older than this (or into a brand-new DM),
+// and before any public post/listing/beacon, the composer asks "you sure?".
+// The >1-month fact needs no new endpoint — Conversation.last_message_at IS
+// the DTO flag (§1.57 spells the rule out).
+export const COLD_CONTACT_THRESHOLD_S = 30 * 24 * 3600;
+// "Check on them 💙" preset DM body (the banner's caring one-tap; the other
+// button starts an ordinary §1.42 call). A PASSIVE banner — never a push.
+export const DRUNK_CHECK_IN_BODY = 'hey, checking in 💙 all good tonight?';
+
+// ---- Mood-reactive messages (v0.8a — API.md §1.58, FEATURES #74, web-only) ----
+// Pure CLIENT rendering driven by the sender's mood already visible in the
+// DTOs — the server ships no effect field and stores no trace. label → bubble
+// effect, for kinds preset/swing/drunk ONLY (custom labels never trigger an
+// effect, even if they collide with these keys).
+export const MOOD_BUBBLE_EFFECTS = ['wobble', 'rain', 'bounce'] as const;
+export const MOOD_MESSAGE_EFFECTS = {
+  drunk: 'wobble', // tipsy wobble-in, settle slightly crooked, straighten on tap
+  sad: 'rain', // soft rain overlay in the chat scroll + text falls into place
+  hyped: 'bounce', // bounce-in
+} as const satisfies Record<string, (typeof MOOD_BUBBLE_EFFECTS)[number]>;
+// Max crooked settle for the drunk wobble (legibility always wins).
+export const MOOD_WOBBLE_MAX_DEG = 2;
+
+// ---- Animated names (v0.8a — API.md §1.58, FEATURES #75) ----
+// users.name_style, CHECK-pinned. Pure CSS text effects on profile, chat
+// headers and group sender names; reduced-motion viewers get a static tint;
+// 'surprise' rotates daily and DETERMINISTICALLY on the client —
+// NAME_STYLE_SURPRISE_POOL[hash(user_id + UTC date) % 3] — so every viewer
+// agrees without server state.
+export const NAME_STYLES = ['none', 'glow', 'shimmer', 'rainbow', 'surprise'] as const;
+export const NAME_STYLE_SURPRISE_POOL = ['glow', 'shimmer', 'rainbow'] as const;
+
+// ---- Activity strip + privacy (v0.8a — API.md §1.59, FEATURES #76) ----
+// activities rows, written by the OWNING module's transaction through the one
+// helper (lib/activity.ts recordActivity). Moods are NEVER recorded here —
+// no mood kind exists, by contract.
+export const ACTIVITY_KINDS = [
+  'beacon_lit',
+  'beacon_sparked',
+  'post_created',
+  'listing_posted',
+  'puzzle_played',
+  'game_won',
+] as const;
+// Per-kind privacy settings are grouped (the Settings → Privacy → Activity
+// toggles): kind → which users.activity_* column governs it.
+export const ACTIVITY_SETTING_GROUPS = ['beacons', 'posts', 'listings', 'games'] as const;
+export const ACTIVITY_KIND_GROUP = {
+  beacon_lit: 'beacons',
+  beacon_sparked: 'beacons',
+  post_created: 'posts',
+  listing_posted: 'listings',
+  puzzle_played: 'games',
+  game_won: 'games',
+} as const satisfies Record<
+  (typeof ACTIVITY_KINDS)[number],
+  (typeof ACTIVITY_SETTING_GROUPS)[number]
+>;
+// 'private' = owner only. Default 'connections' — the calm default: activity
+// is for people you know, not a public broadcast, until the owner says so.
+export const ACTIVITY_VISIBILITIES = ['public', 'connections', 'private'] as const;
+export const ACTIVITY_DEFAULT_VISIBILITY = 'connections' as const;
+// Strip length served per profile read (viewer-resolved; invisible items are
+// silently dropped, never placeholders — no "3 hidden items" counters).
+export const ACTIVITY_STRIP_MAX = 20;
+// Retention: the nightly gc sweep hard-deletes rows older than this. The
+// strip is "recent activity", not an archive.
+export const ACTIVITY_RETENTION_DAYS = 30;
+
+// ---- GIF/video chat backgrounds (v0.8a — API.md §1.60, FEATURES #79) ----
+// PERSONAL, like every §1.24 pref: my view only, prefs.updated to my own
+// sockets only, nobody else ever learns my background exists. OWN uploads
+// only (uploader_id = me, ownership-checked at PATCH), through the existing
+// §1.6 pipeline — kind image (incl. GIF, ≤ MAX_IMAGE_BYTES) or video with
+// the tighter caps below.
+export const CHAT_BG_VIDEO_MAX_BYTES = 25 * 1024 * 1024;
+export const CHAT_BG_VIDEO_MAX_DURATION_S = 30;
+// Render contract (§1.60): scrim over the media so bubbles stay legible.
+export const CHAT_BG_OVERLAY_OPACITY = 0.45;
+
+// ---- Discoverability (v0.8a — API.md §1.61, FEATURES #80, client-heavy) ----
+// First-run spotlight tour: shown ONCE after first login on a device,
+// skippable at every step, never repeats (TOUR_SEEN_KEY is localStorage,
+// device-local like PUSH_EXPLAINER_SEEN_KEY — the tour is a per-device
+// orientation, not synced state). Reduced-motion: no spotlight animation,
+// plain dismissible cards.
+export const TOUR_SEEN_KEY = 'bc.tour-seen';
+export const TOUR_STEPS = [
+  {
+    id: 'chats',
+    title: 'Chats',
+    body: 'Message friends, make groups, send voice notes, doodles and polls.',
+    anchor: 'tab-chats',
+  },
+  {
+    id: 'plans',
+    title: 'Bored? Light a beacon',
+    body: 'Tell your people you are free — when enough join, it becomes a real plan.',
+    anchor: 'tab-plans',
+  },
+  {
+    id: 'local',
+    title: 'Local board',
+    body: 'Gigs, rides, rooms and place reviews from people around you.',
+    anchor: 'tab-local',
+  },
+  {
+    id: 'you',
+    title: 'Make it yours',
+    body: 'Feed, stories, moods, themes and your profile live here.',
+    anchor: 'tab-profile',
+  },
+] as const;
+// "✨ Things you can do" — the typed feature directory (searchable client-
+// side; Try-it = deep link). STATIC registry in the contract so web and any
+// future client render the same directory; `since` is the release that
+// shipped it (drives the "new" badge against the §1.61 release markers).
+export const FEATURE_DIRECTORY = [
+  { id: 'beacons', title: 'Beacons', one_liner: 'Tell friends you are bored; spark a real plan.', href: '/plans', since: 'v0.3' },
+  { id: 'rituals', title: 'Rituals', one_liner: 'Turn a good hangout into a weekly thing.', href: '/plans', since: 'v0.3' },
+  { id: 'polls', title: 'Polls', one_liner: 'Settle where/when/what in any chat.', href: '/', since: 'v0.3' },
+  { id: 'voice_notes', title: 'Voice notes', one_liner: 'Hold to talk, with waveforms.', href: '/', since: 'v0.4' },
+  { id: 'doodles', title: 'Doodles', one_liner: 'Draw something instead of typing it.', href: '/', since: 'v0.4' },
+  { id: 'vibe_checks', title: 'Vibe checks', one_liner: 'One prompt, everyone answers with a photo.', href: '/', since: 'v0.4' },
+  { id: 'themes', title: 'Chat themes', one_liner: 'Restyle any chat — only you see it.', href: '/', since: 'v0.4' },
+  { id: 'disappearing', title: 'Disappearing messages', one_liner: 'Chats that clean up after themselves.', href: '/', since: 'v0.4' },
+  { id: 'scheduled', title: 'Scheduled sends & time capsules', one_liner: 'Write now, deliver later.', href: '/', since: 'v0.4' },
+  { id: 'games', title: 'Tic-tac-toe & daily puzzle', one_liner: 'Tiny games inside your chats.', href: '/puzzle', since: 'v0.4' },
+  { id: 'connections', title: 'Connections', one_liner: 'Your people, requests and suggestions.', href: '/connections', since: 'v0.5' },
+  { id: 'stories', title: 'Stories', one_liner: '24-hour moments for your people.', href: '/feed', since: 'v0.5' },
+  { id: 'feed', title: 'Feed', one_liner: 'Posts from your people, with a real end.', href: '/feed', since: 'v0.5' },
+  { id: 'local_board', title: 'Local board', one_liner: 'Gigs, rides, rooms, place reviews nearby.', href: '/local', since: 'v0.5' },
+  { id: 'calls', title: 'Calls', one_liner: 'Audio and video, up to 8 people.', href: '/', since: 'v0.6' },
+  { id: 'watch_together', title: 'Watch together', one_liner: 'Synced videos in any chat.', href: '/', since: 'v0.6' },
+  { id: 'discovery', title: 'Bored Together', one_liner: 'Find people who are bored right now.', href: '/feed', since: 'v0.6' },
+  { id: 'rescue', title: 'Rescue me', one_liner: 'One tap asks a friend to call you out of anywhere.', href: '/', since: 'v0.6' },
+  { id: 'locations', title: 'Location drops', one_liner: '"Join me here" pins with map links.', href: '/', since: 'v0.7' },
+  { id: 'moods', title: 'Moods', one_liner: 'Set a chip that says how you are — it fades on its own.', href: '/settings', since: 'v0.8' },
+  { id: 'animated_names', title: 'Animated names', one_liner: 'Glow, shimmer or rainbow your display name.', href: '/settings', since: 'v0.8' },
+  { id: 'chat_backgrounds', title: 'Chat backgrounds', one_liner: 'Your own GIF or clip behind any chat — only you see it.', href: '/', since: 'v0.8' },
+  { id: 'activity_strip', title: 'Profile activity', one_liner: 'Your recent plans, posts and wins — you choose who sees each kind.', href: '/settings', since: 'v0.8' },
+] as const satisfies ReadonlyArray<{
+  id: string;
+  title: string;
+  one_liner: string;
+  href: string;
+  since: string;
+}>;
+// Release markers for "new since your last visit": the list of shipped
+// releases lives in instance_settings key 'release_notes' (seeded/appended by
+// migrations — the instance knows what IT runs, not what the repo HEAD says);
+// the per-user cursor is users.last_seen_release. Register stamps the newest
+// version so day-one users never get a card storm.
+export const RELEASE_VERSION_MAX_CHARS = 20;
+export const RELEASE_NOTE_ITEM_MAX_CHARS = 200;
+export const RELEASE_NOTE_ITEMS_MAX = 12;

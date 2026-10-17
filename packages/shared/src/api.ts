@@ -94,6 +94,19 @@ import {
   // ---- v0.7.1 (API.md §1.55–§1.56 + §2.9 + §2.12; ADR-017) ----
   CALL_CONN_STATES,
   CALL_RING_PUSH_TAG_PREFIX,
+  // ---- v0.8a (API.md §1.57–§1.61; ADR-018) ----
+  ACTIVITY_KINDS,
+  ACTIVITY_VISIBILITIES,
+  MOOD_EMOJI_MAX_LEN,
+  MOOD_KINDS,
+  MOOD_LABEL_MAX_CHARS,
+  MOOD_SWING_SET_MAX,
+  MOOD_SWING_SET_MIN,
+  MOOD_VISIBILITIES,
+  NAME_STYLES,
+  RELEASE_NOTE_ITEM_MAX_CHARS,
+  RELEASE_NOTE_ITEMS_MAX,
+  RELEASE_VERSION_MAX_CHARS,
 } from './constants.js';
 
 // ---------------------------------------------------------------------------
@@ -130,6 +143,29 @@ export type Avatar = z.infer<typeof AvatarSchema>;
 export const AvatarMotionSchema = z.enum(['auto', 'reduced', 'off']);
 export type AvatarMotion = z.infer<typeof AvatarMotionSchema>;
 
+// ---- v0.8a moods & animated names (API.md §1.57–§1.58, ADR-018) ----
+
+export const MoodKindSchema = z.enum(MOOD_KINDS);
+export type MoodKind = z.infer<typeof MoodKindSchema>;
+
+export const MoodVisibilitySchema = z.enum(MOOD_VISIBILITIES);
+export type MoodVisibility = z.infer<typeof MoodVisibilitySchema>;
+
+// What OTHERS see of a mood, when the §1.57 visibility + blocks allow it:
+// the current chip only. No expires_at (a countdown on someone's feelings is
+// a seen-at timestamp in disguise), no swing_set (the set is the owner's);
+// for kind='swing' this is the CURRENT entry — kind lets clients morph.
+export const MoodSchema = z.object({
+  emoji: z.string().min(1).max(MOOD_EMOJI_MAX_LEN),
+  label: z.string().min(1).max(MOOD_LABEL_MAX_CHARS),
+  kind: MoodKindSchema,
+});
+export type Mood = z.infer<typeof MoodSchema>;
+
+// users.name_style (API.md §1.58): pure CSS text effect on the display name.
+export const NameStyleSchema = z.enum(NAME_STYLES);
+export type NameStyle = z.infer<typeof NameStyleSchema>;
+
 // v0.3 (API.md §0): the minimal embeddable identity — beacon joiner piles,
 // seen-by lists, blocked lists, role assignees. Deliberately carries NO
 // last_seen_at and NO area (privacy surfaces never ride list DTOs).
@@ -138,6 +174,14 @@ export const UserLiteSchema = z.object({
   username: z.string(),
   display_name: z.string(),
   avatar: AvatarSchema,
+  // v0.8a (§1.57): the mood chip, resolved PER-VIEWER at serialization time
+  // (visibility everyone/connections/nobody + §1.14 blocks; expired = null —
+  // reads filter mood_expires_at > now() live). default(null) keeps pre-v0.8
+  // payloads (IndexedDB rows, old fixtures) parsing clean.
+  mood: MoodSchema.nullable().default(null),
+  // v0.8a (§1.58): animated-name style — viewer-independent, rides every
+  // identity the name renders from (headers, sender names, piles).
+  name_style: NameStyleSchema.default('none'),
 });
 export type UserLite = z.infer<typeof UserLiteSchema>;
 
@@ -156,6 +200,10 @@ export const UserPublicSchema = z.object({
   // payloads parsing clean.
   beacons_created: z.number().int().nonnegative().default(0),
   beacons_sparked: z.number().int().nonnegative().default(0),
+  // v0.8a (§1.57/§1.58): same per-viewer mood resolution and name style as
+  // UserLite — profile pages and user.updated frames carry them too.
+  mood: MoodSchema.nullable().default(null),
+  name_style: NameStyleSchema.default('none'),
 });
 export type UserPublic = z.infer<typeof UserPublicSchema>;
 
@@ -450,6 +498,12 @@ export const MessageMetadataSchema = z.object({
   // "📍 Join me here": renders the join-me variant with the ON_MY_WAY_BODY
   // quick reply. Valid only on type='location' (route-enforced).
   join_me: z.literal(true).optional(),
+  // ---- v0.8a (§1.57) ----
+  // Drunk-mode send-undo: SERVER-written on the tombstone when the author
+  // undoes within MOOD_DRUNK_UNDO_WINDOW_S. An undone message renders as
+  // NOTHING — the bubble vanishes entirely, unlike an ordinary §1.30
+  // tombstone's "message deleted" stub. The seq survives (golden rule 2).
+  undone: z.literal(true).optional(),
 });
 export type MessageMetadata = z.infer<typeof MessageMetadataSchema>;
 
@@ -707,6 +761,9 @@ export const UpdateMeRequestSchema = z.object({
   // v0.3 (§1.13): self-declared coarse area; null clears it (and with it all
   // 'area' beacon visibility, both directions). Never shown to other users.
   area: z.string().min(1).max(AREA_MAX_CHARS).nullable().optional(),
+  // v0.8a (§1.58): animated-name style. Identity, not privacy — it rides
+  // PATCH /users/me like display_name and fans out the same user.updated.
+  name_style: NameStyleSchema.optional(),
 });
 export type UpdateMeRequest = z.infer<typeof UpdateMeRequestSchema>;
 
@@ -1090,6 +1147,19 @@ export const UserSettingsSchema = z.object({
   invites_paused: z.boolean(),
   beacon_default_audience: BeaconAudienceSchema,
   group_add_policy: GroupAddPolicySchema,
+  // ---- v0.8a (§1.58/§1.59). Defaults keep pre-v0.8 payloads parsing clean. ----
+  // PER-VIEWER mood-effects toggle: whether MY client performs other people's
+  // mood-reactive bubble effects (§1.58). Stored server-side purely for
+  // cross-device sync — rendering is entirely client-side.
+  mood_effects: z.boolean().default(true),
+  // Per-kind activity-strip visibility (§1.59): which viewers may see each
+  // GROUP of my activity items (ACTIVITY_KIND_GROUP maps kinds to these).
+  // 'private' = owner only. The underlying object's audience ALWAYS also
+  // binds — these toggles can only narrow further, never widen.
+  activity_beacons: z.enum(ACTIVITY_VISIBILITIES).default('connections'),
+  activity_posts: z.enum(ACTIVITY_VISIBILITIES).default('connections'),
+  activity_listings: z.enum(ACTIVITY_VISIBILITIES).default('connections'),
+  activity_games: z.enum(ACTIVITY_VISIBILITIES).default('connections'),
 });
 export type UserSettings = z.infer<typeof UserSettingsSchema>;
 
@@ -1366,6 +1436,12 @@ export const ConversationPrefsSchema = z.object({
   theme: ChatThemeSchema.nullable(),
   wallpaper: ChatWallpaperSchema.nullable(),
   nicknames: z.record(UuidSchema, z.string().min(1).max(NICKNAME_MAX_CHARS)),
+  // v0.8a (§1.60): my GIF/video chat background — the OWNER's own upload,
+  // resolved to a full Attachment (poster thumb included, for the reduced-
+  // motion fallback). PERSONAL like theme/wallpaper: my view only, never
+  // serialized to anyone else. null = the §1.24 wallpaper/theme (or default).
+  // default(null) keeps pre-v0.8 payloads parsing clean.
+  background: AttachmentSchema.nullable().default(null),
 });
 export type ConversationPrefs = z.infer<typeof ConversationPrefsSchema>;
 
@@ -1381,6 +1457,10 @@ export const UpdatePrefsRequestSchema = z.object({
   nicknames: z
     .record(UuidSchema, z.string().min(1).max(NICKNAME_MAX_CHARS).nullable())
     .optional(),
+  // v0.8a (§1.60): set (an attachment id) or clear (null) my background for
+  // this chat. Must be MY OWN upload (uploader_id = me), kind image|video,
+  // status 'ready', within the §1.60 caps → else 400 bad_background.
+  background_attachment_id: UuidSchema.nullable().optional(),
 });
 export type UpdatePrefsRequest = z.infer<typeof UpdatePrefsRequestSchema>;
 
@@ -2472,12 +2552,29 @@ export const AdminLogsResponseSchema = z.object({
 });
 export type AdminLogsResponse = z.infer<typeof AdminLogsResponseSchema>;
 
+// v0.8a (§1.61): one shipped release, as the "new since your last visit"
+// cards render it. The list lives in instance_settings key 'release_notes',
+// seeded/appended by migrations — the instance describes what IT runs.
+export const ReleaseNoteSchema = z.object({
+  version: z.string().min(1).max(RELEASE_VERSION_MAX_CHARS),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  title: z.string().min(1).max(80),
+  items: z
+    .array(z.string().min(1).max(RELEASE_NOTE_ITEM_MAX_CHARS))
+    .min(1)
+    .max(RELEASE_NOTE_ITEMS_MAX),
+});
+export type ReleaseNote = z.infer<typeof ReleaseNoteSchema>;
+
 // §1.41 instance settings (instance_settings key/value jsonb; one key today).
 // invites_enabled=false is enforced at invite MINT (403 invites_disabled) and
 // ACCEPT (403 invites_disabled, no use_count claim); register-with-token
 // degrades to invite: null per §1.1.
+// v0.8a (§1.61) adds release_notes (newest first; default [] keeps pre-v0.8
+// payloads parsing clean) — migrations seed it, admin PATCH may curate it.
 export const InstanceSettingsSchema = z.object({
   invites_enabled: z.boolean(),
+  release_notes: z.array(ReleaseNoteSchema).default([]),
 });
 export type InstanceSettings = z.infer<typeof InstanceSettingsSchema>;
 
@@ -2773,3 +2870,152 @@ export const CallSelftestResponseSchema = z.object({
   turn: TurnCredentialsSchema.nullable(),
 });
 export type CallSelftestResponse = z.infer<typeof CallSelftestResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Moods & drunk mode (v0.8a — API.md §1.57, FEATURES #72–#73, ADR-018)
+// ---------------------------------------------------------------------------
+
+// One entry of a 🎢 swing set: a preset's {emoji, label} or a custom pair.
+export const MoodSwingEntrySchema = z.object({
+  emoji: z.string().min(1).max(MOOD_EMOJI_MAX_LEN),
+  label: z.string().min(1).max(MOOD_LABEL_MAX_CHARS),
+});
+export type MoodSwingEntry = z.infer<typeof MoodSwingEntrySchema>;
+
+// The OWNER's full mood state (GET/PUT /api/users/me/mood) — the only payload
+// that ever carries visibility, expires_at or the swing set. Others get the
+// bare Mood chip on UserLite/UserPublic, per-viewer filtered (§1.57).
+export const MoodStateSchema = z.object({
+  mood: MoodSchema.nullable(),
+  visibility: MoodVisibilitySchema,
+  expires_at: IsoDateTimeSchema.nullable(), // null iff mood is null
+  swing_set: z
+    .array(MoodSwingEntrySchema)
+    .min(MOOD_SWING_SET_MIN)
+    .max(MOOD_SWING_SET_MAX)
+    .nullable(), // non-null iff mood.kind === 'swing'
+});
+export type MoodState = z.infer<typeof MoodStateSchema>;
+
+// PUT /api/users/me/mood. Discriminated on kind: 'preset' names a
+// MOOD_PRESETS label (server fills the emoji); 'custom' carries both;
+// 'swing' carries the set (the server picks the first entry as the current
+// chip and rotates from there); 'drunk' is bare — emoji/label are pinned
+// (MOOD_DRUNK_EMOJI/LABEL). visibility omitted = 'everyone', EXCEPT drunk,
+// which defaults 'connections' (the §1.57 guardrail; still overridable).
+export const SetMoodRequestSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('preset'),
+    label: z.string().min(1).max(MOOD_LABEL_MAX_CHARS),
+    visibility: MoodVisibilitySchema.optional(),
+  }),
+  z.object({
+    kind: z.literal('custom'),
+    emoji: z.string().min(1).max(MOOD_EMOJI_MAX_LEN),
+    label: z.string().min(1).max(MOOD_LABEL_MAX_CHARS),
+    visibility: MoodVisibilitySchema.optional(),
+  }),
+  z.object({
+    kind: z.literal('swing'),
+    swing_set: z.array(MoodSwingEntrySchema).min(MOOD_SWING_SET_MIN).max(MOOD_SWING_SET_MAX),
+    visibility: MoodVisibilitySchema.optional(),
+  }),
+  z.object({
+    kind: z.literal('drunk'),
+    visibility: MoodVisibilitySchema.optional(),
+  }),
+]);
+export type SetMoodRequest = z.infer<typeof SetMoodRequestSchema>;
+
+export const MoodResponseSchema = z.object({ mood_state: MoodStateSchema });
+export type MoodResponse = z.infer<typeof MoodResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Activity strip (v0.8a — API.md §1.59, FEATURES #76)
+// ---------------------------------------------------------------------------
+
+export const ActivityKindSchema = z.enum(ACTIVITY_KINDS);
+export type ActivityKind = z.infer<typeof ActivityKindSchema>;
+
+export const ActivityVisibilitySchema = z.enum(ACTIVITY_VISIBILITIES);
+export type ActivityVisibility = z.infer<typeof ActivityVisibilitySchema>;
+
+// SERVER-resolved per viewer at serialization time (the ref_summary/
+// reply_context pattern): live state, never audience-widening — items whose
+// underlying object the viewer may not see are silently DROPPED from the
+// strip (no placeholders, no hidden-item counts). Deliberately summary-only:
+// no joiner piles, no bodies, no counters — the strip links, the target
+// surface shows. Moods NEVER appear here (no mood kind exists).
+export const ActivitySummarySchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('beacon'), // beacon_lit / beacon_sparked
+    beacon_id: UuidSchema,
+    vibe: z.enum(BEACON_VIBE_VALUES),
+    custom_vibe_emoji: z.string().nullable(),
+    custom_vibe_label: z.string().nullable(),
+    note: z.string(),
+    status: z.enum(['open', 'sparked', 'expired', 'cancelled']),
+  }),
+  z.object({
+    type: z.literal('post'), // post_created
+    post_id: UuidSchema,
+    kind: z.enum(POST_KINDS),
+    excerpt: z.string().max(REPLY_EXCERPT_MAX_CHARS).nullable(), // first 80 chars of the CURRENT body
+  }),
+  z.object({
+    type: z.literal('listing'), // listing_posted
+    listing_id: UuidSchema,
+    kind: z.enum(LISTING_KINDS),
+    title: z.string(),
+    status: z.enum(['active', 'closed', 'expired']),
+  }),
+  z.object({
+    type: z.literal('puzzle'), // puzzle_played — the no-spoiler share facts
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    solved: z.boolean(),
+    attempts_used: z.number().int().min(1).max(PUZZLE_MAX_GUESSES),
+  }),
+  z.object({
+    type: z.literal('game'), // game_won — visible only where the game was
+    conversation_id: UuidSchema,
+    seq: SeqSchema,
+    opponent: UserLiteSchema.nullable(), // null = deleted account
+  }),
+]);
+export type ActivitySummary = z.infer<typeof ActivitySummarySchema>;
+
+export const ActivitySchema = z.object({
+  id: UuidSchema,
+  kind: ActivityKindSchema,
+  created_at: IsoDateTimeSchema,
+  summary: ActivitySummarySchema,
+});
+export type Activity = z.infer<typeof ActivitySchema>;
+
+// GET /api/users/:username/activity — newest first, ≤ ACTIVITY_STRIP_MAX
+// after per-viewer filtering. 404-shaped exactly like the profile (§1.14).
+export const ActivityResponseSchema = z.object({
+  activities: z.array(ActivitySchema),
+});
+export type ActivityResponse = z.infer<typeof ActivityResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Releases / what's-new (v0.8a — API.md §1.61, FEATURES #80)
+// ---------------------------------------------------------------------------
+
+// GET /api/releases (authed): the instance's shipped releases (newest first,
+// from instance_settings 'release_notes') + MY cursor. The client renders
+// "new since your last visit" cards for releases after last_seen_release and
+// the "new" badges in the Things-you-can-do directory (FEATURE_DIRECTORY
+// `since` vs the releases list).
+export const ReleasesResponseSchema = z.object({
+  releases: z.array(ReleaseNoteSchema),
+  last_seen_release: z.string().max(RELEASE_VERSION_MAX_CHARS).nullable(),
+});
+export type ReleasesResponse = z.infer<typeof ReleasesResponseSchema>;
+
+// POST /api/releases/seen — moves my cursor (users.last_seen_release).
+export const ReleaseSeenRequestSchema = z.object({
+  version: z.string().min(1).max(RELEASE_VERSION_MAX_CHARS),
+});
+export type ReleaseSeenRequest = z.infer<typeof ReleaseSeenRequestSchema>;

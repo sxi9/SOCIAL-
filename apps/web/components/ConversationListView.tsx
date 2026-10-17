@@ -12,6 +12,7 @@ import ConnectionRequestsSheet from './ConnectionRequestsSheet';
 import { InviteButton } from './InviteSheet';
 import { RescueButton } from './RescueSheet';
 import StoriesStrip from './StoriesStrip';
+import WhatsNewCard from './WhatsNewCard';
 import styles from './list.module.css';
 import soc from './social.module.css';
 
@@ -92,6 +93,10 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
 
       {/* v0.5a story tray — unviewed rings first, by username (§1.34). */}
       <StoriesStrip />
+
+      {/* v0.8a (§1.61): releases newer than my marker — one dismissible card,
+          no badges anywhere else, gone for good once dismissed. */}
+      <WhatsNewCard />
 
       {!state.booted ? (
         <div className={styles.empty}>Loading conversations…</div>

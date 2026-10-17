@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type {
+  ActivityVisibility,
   BeaconAudience,
   GroupAddPolicy,
   SettingsResponse,
@@ -144,6 +145,59 @@ function PrivacySettings() {
             </p>
           </div>
 
+          {/* v0.8a §1.58: a per-VIEWER render toggle — whether MY client
+              performs other people's mood-reactive bubble effects. Stored
+              server-side purely for cross-device sync. */}
+          <h2>Moods &amp; effects</h2>
+          <div className="card">
+            <ToggleRow
+              title="Mood effects"
+              hint="When someone's visible mood is drunk, sad or hyped, their bubbles perform a little (wobble, rain, bounce). Off keeps every chat still. Reduced-motion devices never see them either way."
+              value={settings.mood_effects}
+              onChange={(v) => void patch({ mood_effects: v })}
+            />
+          </div>
+
+          {/* v0.8a §1.59: per-kind activity-strip visibility. The toggle can
+              only NARROW — an item never shows wider than the thing itself
+              (a friends-only beacon never appears in public activity). */}
+          <h2>Activity on your profile</h2>
+          <div className="card">
+            <SelectRow
+              id="pv-act-beacons"
+              title="Beacons you lit & plans you sparked"
+              value={settings.activity_beacons}
+              options={ACTIVITY_OPTIONS}
+              onChange={(v) => void patch({ activity_beacons: v as ActivityVisibility })}
+            />
+            <SelectRow
+              id="pv-act-posts"
+              title="Posts"
+              value={settings.activity_posts}
+              options={ACTIVITY_OPTIONS}
+              onChange={(v) => void patch({ activity_posts: v as ActivityVisibility })}
+            />
+            <SelectRow
+              id="pv-act-listings"
+              title="Board listings"
+              value={settings.activity_listings}
+              options={ACTIVITY_OPTIONS}
+              onChange={(v) => void patch({ activity_listings: v as ActivityVisibility })}
+            />
+            <SelectRow
+              id="pv-act-games"
+              title="Puzzles & games"
+              value={settings.activity_games}
+              options={ACTIVITY_OPTIONS}
+              onChange={(v) => void patch({ activity_games: v as ActivityVisibility })}
+            />
+            <p className="muted small" style={{ margin: '4px 0 0' }}>
+              Applies instantly, and never widens anything: people only ever see activity about
+              things they could already see themselves. Moods never show up here — they leave no
+              trace at all.
+            </p>
+          </div>
+
           <h2>Safety</h2>
           <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{ flex: 1 }}>
@@ -163,6 +217,13 @@ function PrivacySettings() {
     </div>
   );
 }
+
+// v0.8a §1.59: 'private' = only me (ACTIVITY_VISIBILITIES).
+const ACTIVITY_OPTIONS = [
+  { value: 'public', label: 'Anyone who can see my profile' },
+  { value: 'connections', label: 'Connections' },
+  { value: 'private', label: 'Only me' },
+];
 
 function ToggleRow({
   title,

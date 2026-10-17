@@ -16,6 +16,7 @@ import {
   type UserLite,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
+import { recordActivity } from '../../lib/activity.js';
 import { blockedSetOf } from '../../lib/blocks.js';
 import { dmPartnerIdsOf, userLiteDto } from '../../lib/dto.js';
 import { conflict } from '../../lib/errors.js';
@@ -87,6 +88,19 @@ export async function puzzleRoutes(fastify: FastifyInstance): Promise<void> {
           SET guesses = ${JSON.stringify(next)}::jsonb, solved = ${correct}, updated_at = now()
           WHERE user_id = ${user.id} AND puzzle_date = ${today}
         `);
+        // v0.8a (§1.59): a FINISHED attempt (solved or out of guesses) →
+        // puzzle_played, once per user per UTC day by construction (the row
+        // locks above; a finished attempt 409s every later guess). The ref is
+        // the player's own NO-SPOILER facts — no letters, no word (the §1.27
+        // PuzzleResult floor). Written inside the guess transaction through
+        // THE one helper.
+        if (correct || next.length >= PUZZLE_MAX_GUESSES) {
+          await recordActivity(tx, {
+            user_id: user.id,
+            kind: 'puzzle_played',
+            ref: { date: today, solved: correct, attempts_used: next.length },
+          });
+        }
         return { ...stateOf(today, next, correct), correct };
       });
     },
@@ -131,6 +145,7 @@ export async function puzzleRoutes(fastify: FastifyInstance): Promise<void> {
         avatarVersion: Number(r.avatar_version),
         avatarStaticKey: (r.avatar_static_key as string | null) ?? null,
         avatarAnimatedKey: (r.avatar_animated_key as string | null) ?? null,
+        nameStyle: ((r.name_style as string | undefined) ?? 'none'), // v0.8a §1.58
       } as Parameters<typeof userLiteDto>[0]);
       return { user: lite, result: r.puzzle, username: lite.username };
     });

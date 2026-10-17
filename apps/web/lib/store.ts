@@ -23,8 +23,11 @@ import type {
   ListConnectionsResponse,
   ListStoriesResponse,
   Message,
+  Mood,
+  MoodState,
   Poll,
   Post,
+  ReleasesResponse,
   ScheduledMessage,
   Story,
   StoryAuthorGroup,
@@ -231,6 +234,12 @@ export interface AppState {
   rouletteGoodbye: string | null;
   /** Pending one-tap expectation-feedback sheet (§1.45 prompt rule). */
   feedbackAsk: FeedbackAsk | null;
+  // ---- v0.8a (§1.57/§1.61) ----
+  /** MY full mood state (owner-only payload: visibility/expires_at/swing_set).
+   * Others' moods ride their UserLite/UserPublic, never here. */
+  moodState: MoodState | null;
+  /** §1.61 releases + my last-seen marker (null = not fetched yet). */
+  releases: ReleasesResponse | null;
 }
 
 const state: AppState = {
@@ -275,6 +284,8 @@ const state: AppState = {
   rouletteMatchNav: null,
   rouletteGoodbye: null,
   feedbackAsk: null,
+  moodState: null,
+  releases: null,
 };
 
 let version = 0;
@@ -573,14 +584,14 @@ export function applyReactionLocal(conversationId: string, seq: number, emoji: s
 
 function userLiteFor(conversationId: string, userId: string): UserLite | null {
   if (state.me && state.me.id === userId) {
-    const { id, username, display_name, avatar } = state.me;
-    return { id, username, display_name, avatar };
+    const { id, username, display_name, avatar, mood, name_style } = state.me;
+    return { id, username, display_name, avatar, mood, name_style };
   }
   const conv = state.conversations.get(conversationId);
   const p = conv?.participants.find((x) => x.user.id === userId);
   if (!p) return null;
-  const { id, username, display_name, avatar } = p.user;
-  return { id, username, display_name, avatar };
+  const { id, username, display_name, avatar, mood, name_style } = p.user;
+  return { id, username, display_name, avatar, mood, name_style };
 }
 
 function patchStamps(msg: Message, userId: string, user: UserLite | null, removed: boolean): Message {
@@ -1044,6 +1055,42 @@ export function resetOnLogout(): void {
   state.rouletteMatchNav = null;
   state.rouletteGoodbye = null;
   state.feedbackAsk = null;
+  state.moodState = null;
+  state.releases = null;
+  emit();
+}
+
+// ---------------------------------------------------------------------------
+// Moods (v0.8a — API.md §1.57). moodState is MY owner-only read; me.mood is
+// the chip every surface renders (kept live by user.updated — the expiry
+// sweep's frame nulls it with zero trace). lib/mood.ts is the writer.
+// ---------------------------------------------------------------------------
+
+export function setMoodState(ms: MoodState): void {
+  state.moodState = ms;
+  if (state.me) state.me = { ...state.me, mood: ms.mood };
+  emit();
+}
+
+export function patchMeMood(mood: Mood | null): void {
+  if (!state.me) return;
+  state.me = { ...state.me, mood };
+  emit();
+}
+
+// ---------------------------------------------------------------------------
+// Releases / what's-new (v0.8a — API.md §1.61). Pull-based; dismissing cards
+// POSTs /api/releases/seen and patches the marker here.
+// ---------------------------------------------------------------------------
+
+export function setReleases(res: ReleasesResponse): void {
+  state.releases = res;
+  emit();
+}
+
+export function setLastSeenRelease(version: string): void {
+  if (!state.releases) return;
+  state.releases = { ...state.releases, last_seen_release: version };
   emit();
 }
 

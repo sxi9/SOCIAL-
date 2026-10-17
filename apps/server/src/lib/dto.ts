@@ -8,6 +8,8 @@ import type {
   ConversationPin,
   Message,
   MessageMetadata,
+  Mood,
+  NameStyle,
   Participant,
   Poll,
   ReactionAggregate,
@@ -22,6 +24,7 @@ import { REPLY_EXCERPT_MAX_CHARS, VIBE_REPLIES_PREVIEW_MAX } from '@socialchat/s
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { blockedSetOf, blockPairsAmong } from './blocks.js';
+import { acceptedPairsBetween, connectionIdsOf } from './connections.js';
 import { mediaUrl } from './media.js';
 import { publishToUsers } from '../ws/events.js';
 
@@ -63,6 +66,10 @@ export interface ViewCtx {
   dmPartnerIds: Set<string>;
   /** Users blocked w.r.t. the viewer, either direction (API.md §1.14). */
   blockedIds: Set<string>;
+  /** v0.8a (§1.57/§1.59): the viewer's ACCEPTED §1.28 connections —
+   * 'connections' mood visibility resolves against this, literally
+   * connections, never friends-of (a DM alone does not qualify). */
+  connectionIds: Set<string>;
 }
 
 /** Users sharing an active DM conversation with `userId` (self excluded). */
@@ -84,6 +91,7 @@ export async function viewCtxFor(viewer: UserRow): Promise<ViewCtx> {
     viewerReadReceipts: viewer.readReceipts,
     dmPartnerIds: await dmPartnerIdsOf(viewer.id),
     blockedIds: await blockedSetOf(viewer.id),
+    connectionIds: await connectionIdsOf(viewer.id),
   };
 }
 
@@ -112,13 +120,76 @@ function lastSeenVisible(owner: UserRow, view?: ViewCtx | null): boolean {
   }
 }
 
-export function userLiteDto(u: UserRow): UserLite {
+// ---------------------------------------------------------------------------
+// v0.8a moods (API.md §1.57, ADR-018). The chip rides EVERY UserLite /
+// UserPublic serialization, resolved PER VIEWER at serialization time:
+// live (`mood_expires_at > now()` — the §1.44 live-filter pattern, so a
+// lagging sweep can never show a stale chip) AND the owner's visibility
+// admits the viewer (everyone / accepted-§1.28-connections / nobody) AND the
+// pair is not §1.14-blocked — else null, byte-identical to no-mood. With NO
+// view (broadcast hydration, cross-conversation lists) the resolution cannot
+// check blocks, so it serializes null — a conservative over-filter (the
+// §2.11 doctrine); per-recipient paths (publishUserUpdated, conversation
+// fan-out) stamp the chip themselves and REST reads pass their ViewCtx.
+// ---------------------------------------------------------------------------
+
+type MoodCols = Pick<
+  UserRow,
+  'id' | 'moodEmoji' | 'moodLabel' | 'moodKind' | 'moodVisibility' | 'moodExpiresAt'
+>;
+
+/** Is the mood live right now (set + unexpired)? Expiry filters LIVE.
+ * Loose `!= null` deliberately: raw-SQL partial UserRow casts (piles,
+ * reactor lists) carry no mood columns and must read as "no mood". */
+export function moodLive(u: Partial<MoodCols>, now = Date.now()): boolean {
+  return (
+    u.moodKind != null &&
+    u.moodEmoji != null &&
+    u.moodLabel != null &&
+    u.moodExpiresAt != null &&
+    u.moodExpiresAt.getTime() > now
+  );
+}
+
+/** The bare chip, ignoring visibility — OWNER surfaces only (§1.57: the
+ * owner always sees their own chip; others never see expires_at/swing_set). */
+export function moodSelfDto(u: MoodCols): Mood | null {
+  if (!moodLive(u)) return null;
+  return { emoji: u.moodEmoji!, label: u.moodLabel!, kind: u.moodKind as Mood['kind'] };
+}
+
+/** The §1.57 per-viewer resolution. null is byte-identical to "no mood", so
+ * a visibility setting is never confirmable from outside. */
+export function moodDto(u: MoodCols, view?: ViewCtx | null): Mood | null {
+  if (!moodLive(u)) return null;
+  if (view && view.viewerId === u.id) return moodSelfDto(u);
+  if (!view) return null; // no single viewer → conservative null (§2.11)
+  if (view.blockedIds.has(u.id)) return null;
+  switch (u.moodVisibility) {
+    case 'everyone':
+      return moodSelfDto(u);
+    case 'connections':
+      return view.connectionIds.has(u.id) ? moodSelfDto(u) : null;
+    default:
+      return null; // 'nobody' — owner-only, handled above
+  }
+}
+
+/** v0.8a (§1.58): name_style is viewer-independent identity. The fallback
+ * guards the few raw-SQL partial casts that predate the column. */
+function nameStyleOf(u: { nameStyle?: string | null }): NameStyle {
+  return (u.nameStyle ?? 'none') as NameStyle;
+}
+
+export function userLiteDto(u: UserRow, view?: ViewCtx | null): UserLite {
   // Deliberately NO last_seen_at and NO area (API.md §0, FEATURES #30).
   return {
     id: u.id,
     username: u.username,
     display_name: u.displayName,
     avatar: avatarDto(u),
+    mood: moodDto(u, view),
+    name_style: nameStyleOf(u),
   };
 }
 
@@ -133,14 +204,18 @@ export function userPublicDto(u: UserRow, view?: ViewCtx | null): UserPublic {
     // v0.3 plan karma: profile facts, never ranked (PSYCHOLOGY rule 3).
     beacons_created: u.beaconsCreated,
     beacons_sparked: u.beaconsSparked,
+    // v0.8a (§1.57/§1.58): per-viewer mood + viewer-independent name style.
+    mood: moodDto(u, view),
+    name_style: nameStyleOf(u),
   };
 }
 
 export function userPrivateDto(u: UserRow): UserPrivate {
   return {
     ...userPublicDto(u),
-    // The owner always sees their own last_seen_at and area.
+    // The owner always sees their own last_seen_at, area — and mood chip.
     last_seen_at: isoOrNull(u.lastSeenAt),
+    mood: moodSelfDto(u),
     email: u.email,
     email_verified: u.emailVerifiedAt !== null,
     avatar_motion: u.avatarMotion as UserPrivate['avatar_motion'],
@@ -472,7 +547,7 @@ export async function loadVibesFor(
       (r.metadata ? 'doodle') AS is_doodle,
       (r.metadata ? 'stamp') AS is_stamp,
       a.thumb_key,
-      u.id AS user_id, u.username, u.display_name,
+      u.id AS user_id, u.username, u.display_name, u.name_style,
       u.avatar_status, u.avatar_version, u.avatar_static_key, u.avatar_animated_key
     FROM messages r
     JOIN users u ON u.id = r.sender_id
@@ -494,6 +569,7 @@ export async function loadVibesFor(
     user_id: string;
     username: string;
     display_name: string;
+    name_style: string;
     avatar_status: string;
     avatar_version: number;
     avatar_static_key: string | null;
@@ -520,6 +596,10 @@ export async function loadVibesFor(
             avatarStaticKey: r.avatar_static_key,
             avatarAnimatedKey: r.avatar_animated_key,
           }),
+          // Broadcast-shaped ref: mood is per-viewer and reconciles from
+          // viewer-scoped reads (§1.57 conservative null); style is identity.
+          mood: null,
+          name_style: (r.name_style ?? 'none') as NameStyle,
         },
         kind,
         // Stamps tile with user.avatar — thumb_url is null by construction.
@@ -565,7 +645,7 @@ export async function loadReplyContextsFor(rows: MsgRow[]): Promise<Map<string, 
   );
   const targets = (await db.execute(sql`
     SELECT m.conversation_id, m.seq, m.type, m.body, m.deleted_at,
-           u.id AS user_id, u.username, u.display_name,
+           u.id AS user_id, u.username, u.display_name, u.name_style,
            u.avatar_status, u.avatar_version, u.avatar_static_key, u.avatar_animated_key
     FROM messages m
     LEFT JOIN users u ON u.id = m.sender_id
@@ -579,6 +659,7 @@ export async function loadReplyContextsFor(rows: MsgRow[]): Promise<Map<string, 
     user_id: string | null;
     username: string | null;
     display_name: string | null;
+    name_style: string | null;
     avatar_status: string | null;
     avatar_version: number | null;
     avatar_static_key: string | null;
@@ -599,6 +680,8 @@ export async function loadReplyContextsFor(rows: MsgRow[]): Promise<Map<string, 
               avatarStaticKey: t.avatar_static_key,
               avatarAnimatedKey: t.avatar_animated_key,
             }),
+            mood: null, // §1.57 conservative null (no single viewer here)
+            name_style: (t.name_style ?? 'none') as NameStyle,
           }
         : null,
       type: t.type as ReplyContext['type'],
@@ -749,6 +832,13 @@ export async function publishConversationToUsers(
     for (const u of rows) userById.set(u.id, u);
   }
   const pairs = await blockPairsAmong([...new Set([...participantIds, ...uniqueRecipients])]);
+  // v0.8a (§1.57): participants with a LIVE 'connections'-visibility mood
+  // need one accepted-connection lookup, batched like the dm_partners one —
+  // the per-recipient mood stamp below resolves against it.
+  const moodConnOwners = parts
+    .filter(({ u }) => moodLive(u) && u.moodVisibility === 'connections')
+    .map(({ u }) => u.id);
+  const connPairs = await acceptedPairsBetween(moodConnOwners, uniqueRecipients);
   // 'dm_partners' last-seen owners need one shared-DM lookup, batched.
   const dmOwners = parts
     .filter(({ u }) => u.showLastSeen === 'dm_partners' && u.lastSeenAt !== null)
@@ -776,6 +866,7 @@ export async function publishConversationToUsers(
     const rr = userById.get(r)?.readReceipts ?? true;
     const blockedIds = new Set(participantIds.filter((pid) => pairs.has(`${r}:${pid}`)));
     const dmPartnerIds = new Set(dmOwners.filter((o) => dmPairs.has(`${o}:${r}`)));
+    const connectionIds = new Set(moodConnOwners.filter((o) => connPairs.has(`${o}:${r}`)));
     let sig = '';
     for (const { u } of parts) {
       const readVisible = u.id === r || (u.readReceipts && rr);
@@ -784,7 +875,16 @@ export async function publishConversationToUsers(
         (!blockedIds.has(u.id) &&
           (u.showLastSeen === 'everyone' ||
             (u.showLastSeen === 'dm_partners' && dmPartnerIds.has(u.id))));
-      sig += (readVisible ? 'r' : '.') + (lastSeenVisible ? 'l' : '.');
+      // v0.8a (§1.57): the mood bit is part of the serialization signature —
+      // recipients with a different view of any participant's chip must not
+      // share an envelope.
+      const moodVisible =
+        moodLive(u) &&
+        (u.id === r ||
+          (!blockedIds.has(u.id) &&
+            (u.moodVisibility === 'everyone' ||
+              (u.moodVisibility === 'connections' && connectionIds.has(u.id)))));
+      sig += (readVisible ? 'r' : '.') + (lastSeenVisible ? 'l' : '.') + (moodVisible ? 'm' : '.');
     }
     // v0.5a (§1.35): a channel DTO embeds the VIEWER'S OWN row (plus owner +
     // admins), so each plain member's serialization is unique — key the group
@@ -797,7 +897,7 @@ export async function publishConversationToUsers(
     if (g) g.userIds.push(r);
     else {
       groups.set(sig, {
-        ctx: { viewerId: r, viewerReadReceipts: rr, dmPartnerIds, blockedIds },
+        ctx: { viewerId: r, viewerReadReceipts: rr, dmPartnerIds, blockedIds, connectionIds },
         userIds: [r],
       });
     }
@@ -810,23 +910,55 @@ export async function publishConversationToUsers(
 /**
  * user.updated fan-out: blocked co-members keep receiving profile/avatar
  * updates (shared groups keep functioning, §1.14) but never the owner's
- * last_seen_at — it is clamped to null on their copy of the frame.
+ * last_seen_at — it is clamped to null on their copy of the frame — and
+ * never the owner's mood (v0.8a §1.57: blocks hide the chip both directions).
+ * The mood is stamped PER RECIPIENT here (the §2.11 gateway-edge resolution):
+ * owner always, 'everyone' to non-blocked recipients, 'connections' only to
+ * accepted §1.28 connections, 'nobody' to the owner alone — a hidden chip is
+ * null, byte-identical to no mood.
  */
 export async function publishUserUpdated(row: UserRow, recipients: string[]): Promise<void> {
   if (recipients.length === 0) return;
   const blocked = await blockedSetOf(row.id);
-  const dto = userPublicDto(row); // conservative broadcast view ('everyone' only)
-  const clear = recipients.filter((id) => id === row.id || !blocked.has(id));
-  const clamped = recipients.filter((id) => id !== row.id && blocked.has(id));
-  if (clear.length > 0) {
-    await publishToUsers(clear, { t: 'user.updated', d: { user: dto } });
+  const dto = userPublicDto(row); // conservative broadcast view ('everyone' only; mood null)
+  const chip = moodSelfDto(row); // live chip, visibility applied per recipient below
+  const connections =
+    chip && row.moodVisibility === 'connections' ? await connectionIdsOf(row.id) : null;
+
+  // Up to four distinct serializations: (blocked?) × (mood visible?).
+  const groups = new Map<string, { userIds: string[]; isBlocked: boolean; mood: Mood | null }>();
+  for (const id of recipients) {
+    const isBlocked = id !== row.id && blocked.has(id);
+    const mood =
+      chip && !isBlocked
+        ? id === row.id
+          ? chip
+          : row.moodVisibility === 'everyone'
+            ? chip
+            : row.moodVisibility === 'connections' && connections?.has(id)
+              ? chip
+              : null
+        : null;
+    const key = `${isBlocked ? 'b' : '.'}|${mood ? 'm' : '.'}`;
+    const g = groups.get(key);
+    if (g) g.userIds.push(id);
+    else groups.set(key, { userIds: [id], isBlocked, mood });
   }
-  if (clamped.length > 0) {
-    await publishToUsers(clamped, {
+  for (const { userIds, isBlocked, mood } of groups.values()) {
+    await publishToUsers(userIds, {
       t: 'user.updated',
-      d: { user: { ...dto, last_seen_at: null } },
+      d: { user: { ...dto, mood, ...(isBlocked ? { last_seen_at: null } : {}) } },
     });
   }
+}
+
+/** Load `userId`'s fresh row and fan user.updated to the standard recipient
+ * set (own sockets + everyone sharing a conversation), per-recipient clamped. */
+export async function broadcastUserUpdatedOf(userId: string): Promise<void> {
+  const [row] = await db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1);
+  if (!row) return;
+  const peers = await coParticipantUserIds(userId);
+  await publishUserUpdated(row, peers);
 }
 
 export async function activeParticipantUserIds(convId: string): Promise<string[]> {

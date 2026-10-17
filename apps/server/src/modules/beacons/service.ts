@@ -23,6 +23,7 @@ import {
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
+import { recordActivity } from '../../lib/activity.js';
 import { blockPairsAmong, blockedSetOf, isBlockedPair } from '../../lib/blocks.js';
 import { friendsOfIds, friendsOfPairCond, isFriendOf } from '../../lib/friends.js';
 import { userLiteDto, type UserRow } from '../../lib/dto.js';
@@ -527,6 +528,14 @@ export async function sparkUnderLock(
   await tx.execute(sql`
     UPDATE users SET beacons_sparked = beacons_sparked + 1 WHERE id = ${beacon.creatorId}
   `);
+  // v0.8a (§1.59): spark → beacon_sparked, CREATOR ONLY (a joiner's
+  // attendance is the plan group's business, not a strip item) — inside the
+  // spark transaction through THE one helper. Pointer only.
+  await recordActivity(tx, {
+    user_id: beacon.creatorId,
+    kind: 'beacon_sparked',
+    ref: { beacon_id: beacon.id },
+  });
   return conversationId;
 }
 

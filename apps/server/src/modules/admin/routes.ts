@@ -302,6 +302,14 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
           invites_enabled: req.body.invites_enabled,
         });
       }
+      // v0.8a (§1.61): curation of the what's-new list — migrations remain
+      // the normal writer; ring-logged like every admin write.
+      if (req.body.release_notes !== undefined) {
+        await setInstanceSetting('release_notes', req.body.release_notes);
+        adminLog({ id: user.id, username: user.username }, 'admin.settings_update', {
+          release_notes: req.body.release_notes.map((n) => n.version),
+        });
+      }
       return { settings: await getInstanceSettings() };
     },
   );

@@ -9,6 +9,8 @@ import {
   FORWARDABLE_MESSAGE_TYPES,
   ForwardMessageRequestSchema,
   ListMessagesQuerySchema,
+  MOOD_DRUNK_UNDO_SLACK_S,
+  MOOD_DRUNK_UNDO_WINDOW_S,
   PUZZLE_MAX_GUESSES,
   SendMessageRequestSchema,
   VIBE_CHECK_PROMPT_MAX_CHARS,
@@ -491,12 +493,32 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
   // deleted_at set, body nulled, metadata emptied, attachments deleted (rows +
   // MinIO objects, refcount-guarded §1.31), dependent reaction/poll rows
   // removed, any §1.32 pin removed (+ conv.updated). Idempotent re-delete 204.
+  //
+  // v0.8a (§1.57, ADR-018): `?undo=1` is the 🍻 drunk-mode send-undo — the
+  // SAME tombstone (seq survives, attachments/dependents removed identically)
+  // with ONE difference: metadata becomes {"undone": true} and clients render
+  // NOTHING (no "message deleted" stub — the stub is itself a trace). Undo
+  // needs authorship only, never edit permission: it works on every own
+  // message type, EDITABLE or not, channel messages included (system messages
+  // have no author and fail the authorship check). Preconditions, in order:
+  // author (403 forbidden), the sender's drunk mood live AT UNDO TIME
+  // (409 not_drunk — nothing about the mood is ever stamped on the message),
+  // within MOOD_DRUNK_UNDO_WINDOW_S of created_at with MOOD_DRUNK_UNDO_SLACK_S
+  // skew allowance (409 undo_window_closed). The frozen-DM 404 applies as in
+  // §1.30; an undone message never pushes: while the sender's drunk mood is
+  // live the send path holds the push job for MOOD_DRUNK_UNDO_WINDOW_S +
+  // MOOD_DRUNK_UNDO_SLACK_S, so the §2.9 worker's fresh deleted_at re-check
+  // runs after the undo window has closed.
   app.delete(
     '/api/conversations/:id/messages/:seq',
-    { preHandler: requireAuth, schema: { params: SeqParams } },
+    {
+      preHandler: requireAuth,
+      schema: { params: SeqParams, querystring: z.object({ undo: z.string().optional() }) },
+    },
     async (req, reply) => {
       const { user } = authed(req);
       const { id: convId, seq } = req.params;
+      const isUndo = req.query.undo === '1' || req.query.undo === 'true';
       const { part } = await requireUnfrozenParticipant(convId, user.id);
       const [row] = await db
         .select()
@@ -507,6 +529,18 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       // System messages have no author and are undeletable; only the author
       // tombstones their own words (channels included).
       if (row.senderId !== user.id) throw forbidden();
+      if (isUndo) {
+        // Drunk live AT UNDO TIME (live-expiry filter; the auth read is fresh).
+        const drunkLive =
+          user.moodKind === 'drunk' &&
+          user.moodExpiresAt !== null &&
+          user.moodExpiresAt.getTime() > Date.now();
+        if (!drunkLive) throw conflict('not_drunk');
+        const windowMs = (MOOD_DRUNK_UNDO_WINDOW_S + MOOD_DRUNK_UNDO_SLACK_S) * 1000;
+        if (Date.now() - row.createdAt.getTime() > windowMs) {
+          throw conflict('undo_window_closed');
+        }
+      }
       if (row.deletedAt !== null) return reply.status(204).send(); // idempotent
 
       const atts = await db
@@ -531,7 +565,8 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
         pinRemoved = pins.length > 0;
         await tx.execute(sql`DELETE FROM attachments WHERE message_id = ${row.id}`);
         await tx.execute(sql`
-          UPDATE messages SET deleted_at = now(), body = NULL, metadata = '{}'::jsonb
+          UPDATE messages SET deleted_at = now(), body = NULL,
+            metadata = ${isUndo ? sql`'{"undone": true}'::jsonb` : sql`'{}'::jsonb`}
           WHERE id = ${row.id} AND deleted_at IS NULL
         `);
       });

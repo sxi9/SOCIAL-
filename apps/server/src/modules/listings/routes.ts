@@ -27,6 +27,7 @@ import {
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
+import { recordActivity } from '../../lib/activity.js';
 import { isBlockedPair } from '../../lib/blocks.js';
 import {
   loadConversationDto,
@@ -158,6 +159,14 @@ export async function listingRoutes(fastify: FastifyInstance): Promise<void> {
           status: 'active',
           location: body.location ?? null, // v0.7 (§1.52)
           expiresAt,
+        });
+        // v0.8a (§1.59): POST /api/listings → listing_posted, inside the
+        // create transaction through THE one helper. Pointer only — the strip
+        // read re-checks §1.38 visibility live.
+        await recordActivity(tx, {
+          user_id: user.id,
+          kind: 'listing_posted',
+          ref: { listing_id: id },
         });
         // Room photos bind via attachments.listing_id (the post_id GC-shield
         // pattern): mine, kind image, unbound anywhere → else 400
@@ -566,6 +575,7 @@ export async function listingRoutes(fastify: FastifyInstance): Promise<void> {
             avatarVersion: Number(r.u.avatar_version),
             avatarStaticKey: (r.u.avatar_static_key as string | null) ?? null,
             avatarAnimatedKey: (r.u.avatar_animated_key as string | null) ?? null,
+            nameStyle: ((r.u.name_style as string | undefined) ?? 'none'), // v0.8a §1.58
           } as UserRow),
         ),
       };

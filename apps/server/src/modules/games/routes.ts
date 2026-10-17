@@ -16,6 +16,7 @@ import {
   type TttSymbol,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
+import { recordActivity } from '../../lib/activity.js';
 import { isBlockedPair } from '../../lib/blocks.js';
 import { activeParticipantUserIds, messageDtos, rawToMsgRow, type MsgRow } from '../../lib/dto.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
@@ -193,6 +194,20 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
           .set({ metadata, editedAt: new Date() })
           .where(eq(m.id, row.id))
           .returning();
+        // v0.8a (§1.59): a server-validated win → game_won, the WINNER's row
+        // only (a draw records nothing — no loser rows, no tallies), inside
+        // the move transaction through THE one helper. §1.27 and §1.50 boards
+        // alike land here (the claim-game challenge is moved via this route).
+        // The strip read re-checks the §1.5 conversation-participant floor.
+        if (next.winner === 'x' || next.winner === 'o') {
+          const winnerId = next.winner === 'x' ? game.players.x : game.players.o;
+          const loserId = next.winner === 'x' ? game.players.o : game.players.x;
+          await recordActivity(tx, {
+            user_id: winnerId,
+            kind: 'game_won',
+            ref: { conversation_id: row.conversationId, seq: row.seq, opponent_id: loserId },
+          });
+        }
         return after!;
       });
 

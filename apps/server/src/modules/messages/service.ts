@@ -4,6 +4,8 @@
 import { and, eq, sql } from 'drizzle-orm';
 import {
   MENTIONS_PER_MESSAGE_MAX,
+  MOOD_DRUNK_UNDO_SLACK_S,
+  MOOD_DRUNK_UNDO_WINDOW_S,
   OFFLINE_GRACE_S,
   type Message,
   type MessageMetadata,
@@ -142,6 +144,30 @@ export async function fanOutNewMessage(msg: MsgRow): Promise<Message> {
       const pipeline = redis.pipeline();
       for (const id of offline) pipeline.exists(presenceKey(id));
       const results = (await pipeline.exec()) ?? [];
+      // v0.8a (§1.57): while the sender's 🍻 drunk mood is live, EVERY send is
+      // undoable for MOOD_DRUNK_UNDO_WINDOW_S (+ the same slack the undo
+      // route honors) — hold the push past that window so the worker's fresh
+      // deleted_at read runs AFTER any undo could land. The 5 s debounce
+      // alone under-covers the 10 s window: without this hold, a push fired
+      // at ~5 s would leave the preview on an offline recipient's lock screen
+      // even though the message was undone at 6–10 s ("removes it for
+      // everyone" would be a lie). Nothing about the mood is stamped on the
+      // job — it is only a delay.
+      const [sender] = await db
+        .select({
+          moodKind: schema.users.moodKind,
+          moodExpiresAt: schema.users.moodExpiresAt,
+        })
+        .from(schema.users)
+        .where(eq(schema.users.id, msg.senderId))
+        .limit(1);
+      const drunkLive =
+        sender?.moodKind === 'drunk' &&
+        sender.moodExpiresAt !== null &&
+        sender.moodExpiresAt.getTime() > Date.now();
+      const undoHoldMs = drunkLive
+        ? (MOOD_DRUNK_UNDO_WINDOW_S + MOOD_DRUNK_UNDO_SLACK_S) * 1000
+        : 0;
       // Hotspot H2: one addBulk round trip for the whole offline set instead
       // of one queue.add per participant.
       await enqueuePushBulk(
@@ -152,7 +178,10 @@ export async function fanOutNewMessage(msg: MsgRow): Promise<Message> {
             message_id: msg.id,
             seq: msg.seq,
           },
-          delayMs: results[i]?.[1] === 1 ? (OFFLINE_GRACE_S + 2) * 1000 : 0,
+          delayMs: Math.max(
+            undoHoldMs,
+            results[i]?.[1] === 1 ? (OFFLINE_GRACE_S + 2) * 1000 : 0,
+          ),
         })),
       );
     }

@@ -22,10 +22,12 @@ import {
 } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
 import { createListing, KIND_EMOJI } from '@/lib/listings';
+import { isSelfDrunk } from '@/lib/mood';
 import { setMe } from '@/lib/store';
 import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
 import type { UpdateMeResponse } from '@socialchat/shared';
+import DrunkConfirmSheet from './DrunkConfirmSheet';
 import { LocationField } from './LocationPicker';
 import Portal from './Portal';
 import { StarPicker } from './Stars';
@@ -75,6 +77,8 @@ export default function ListingCreateSheet({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  // v0.8a §1.57: pending drunk-mode "you sure?" — a listing is a public write.
+  const [drunkAsk, setDrunkAsk] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -173,9 +177,15 @@ export default function ListingCreateSheet({
     return true;
   })();
 
-  async function post(): Promise<void> {
+  async function post(force = false): Promise<void> {
     const req = buildRequest();
     if (!req || busy) return;
+    // v0.8a §1.57 drunk guardrail: the board is a public write — ask first
+    // while drunk (client-side only; nothing recorded about hesitation).
+    if (!force && isSelfDrunk()) {
+      setDrunkAsk(true);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -485,6 +495,17 @@ export default function ListingCreateSheet({
           </>
         )}
       </div>
+      {drunkAsk ? (
+        <DrunkConfirmSheet
+          text="You're in drunk mode and this goes on the board for people around you (or everyone, if public). Tonight-you is sure?"
+          confirmLabel="Post it 🍻"
+          onConfirm={() => {
+            setDrunkAsk(false);
+            void post(true);
+          }}
+          onCancel={() => setDrunkAsk(false)}
+        />
+      ) : null}
     </div>
     </Portal>
   );

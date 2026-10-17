@@ -3,15 +3,17 @@
 // module reads or serializes private message bodies — a reported message is
 // who/where/when/what-kind, and the export is the user's own rows minus
 // secrets, minus messages.
-import { eq, sql, type SQL } from 'drizzle-orm';
+import { inArray, sql, type SQL } from 'drizzle-orm';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import type {
-  AdminReport,
-  AdminUserRow,
-  InstanceSettings,
-  LastSeenBucket,
-  MessageType,
-  UserLite,
+import { z } from 'zod';
+import {
+  ReleaseNoteSchema,
+  type AdminReport,
+  type AdminUserRow,
+  type InstanceSettings,
+  type LastSeenBucket,
+  type MessageType,
+  type UserLite,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { avatarDto } from '../../lib/dto.js';
@@ -33,16 +35,25 @@ export async function requireAdmin(req: FastifyRequest, reply: FastifyReply): Pr
 }
 
 // ---------------------------------------------------------------------------
-// Instance settings (key PK + jsonb value; seeded by migration 0006).
+// Instance settings (key PK + jsonb value; seeded by migrations 0006/0009).
 // ---------------------------------------------------------------------------
+
+const ReleaseNotesListSchema = z.array(ReleaseNoteSchema);
 
 export async function getInstanceSettings(): Promise<InstanceSettings> {
   const rows = await db
     .select()
     .from(schema.instanceSettings)
-    .where(eq(schema.instanceSettings.key, 'invites_enabled'))
-    .limit(1);
-  return { invites_enabled: rows.length === 0 ? true : rows[0]!.value === true };
+    .where(inArray(schema.instanceSettings.key, ['invites_enabled', 'release_notes']));
+  const byKey = new Map(rows.map((r) => [r.key, r.value]));
+  const invites = byKey.get('invites_enabled');
+  // v0.8a (§1.61): the what's-new list rides the settings DTO; a malformed
+  // blob degrades to [] instead of refusing the whole admin read.
+  const notes = ReleaseNotesListSchema.safeParse(byKey.get('release_notes') ?? []);
+  return {
+    invites_enabled: invites === undefined ? true : invites === true,
+    release_notes: notes.success ? notes.data : [],
+  };
 }
 
 /** §1.41: invites_enabled is enforced at invite MINT and ACCEPT. */
@@ -179,6 +190,10 @@ function rawUserLite(o: Record<string, unknown> | null): UserLite | null {
       avatarStaticKey: (o.avatar_static_key as string | null) ?? null,
       avatarAnimatedKey: (o.avatar_animated_key as string | null) ?? null,
     }),
+    // v0.8a: moods never serialize into the operator surface (§1.57 — the
+    // admin is not in anyone's visibility set); name_style is identity.
+    mood: null,
+    name_style: (((o.name_style as string | undefined) ?? 'none') as UserLite['name_style']),
   };
 }
 

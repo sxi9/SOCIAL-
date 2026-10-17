@@ -206,7 +206,14 @@ export async function joinBeacon(id: string): Promise<Beacon> {
       needs: Math.max(0, prev.needs - 1),
       joiners: [
         ...prev.joiners,
-        { id: me.id, username: me.username, display_name: me.display_name, avatar: me.avatar },
+        {
+          id: me.id,
+          username: me.username,
+          display_name: me.display_name,
+          avatar: me.avatar,
+          mood: me.mood,
+          name_style: me.name_style,
+        },
       ],
     });
   }

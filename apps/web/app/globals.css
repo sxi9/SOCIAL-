@@ -387,6 +387,9 @@ select.input {
   color: var(--text);
   border-radius: 10px;
   padding: 10px 12px;
+  /* Textareas don't inherit the body font by default (Chromium falls back to
+     monospace) — pin every .input control to the app font. */
+  font-family: inherit;
   /* 16px minimum on form controls: iOS Safari auto-zooms (and stays zoomed)
      when focusing any control whose font-size is below 16px. */
   font-size: 16px;

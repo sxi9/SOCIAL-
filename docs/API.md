@@ -424,6 +424,58 @@ JoinCardSummary =
 // COMMENT_REACTORS_PREVIEW_MAX (6) by first-reaction order.
 CommentReactionAggregate = { emoji, kind: 'emoji'|'stamp',
   reactors: UserLite[], has_more: boolean, mine: boolean }
+
+// ---- v0.8a (§1.57–§1.61; ADR-018) ----
+
+// v0.8a changes to existing DTOs (every new field has a Zod default, so
+// pre-v0.8 payloads — IndexedDB rows, old fixtures — parse clean):
+//  UserLite += { mood: Mood|null,          // §1.57 — resolved PER-VIEWER at
+//                                          // serialization time (visibility +
+//                                          // §1.14 blocks; expired ⇒ null)
+//                name_style: NameStyle }   // §1.58 — viewer-independent
+//  UserPublic += the same two fields (profiles, user.updated frames).
+//  UserSettings += { mood_effects: boolean,            // §1.58, default true
+//    activity_beacons / activity_posts / activity_listings / activity_games:
+//      'public'|'connections'|'private' }              // §1.59, default 'connections'
+//  Message.metadata += { undone?: true }   // §1.57 drunk send-undo tombstone:
+//                                          // render NOTHING, not a stub
+//  ConversationPrefs += { background: Attachment|null }  // §1.60, owner-only
+//  InstanceSettings += { release_notes: ReleaseNote[] }  // §1.61
+//  Conversation.last_message_at doubles as the §1.57 cold-contact DTO flag
+//    (client compares against COLD_CONTACT_THRESHOLD_S — no new endpoint).
+
+// §1.57 — what OTHERS see of a mood (iff visibility + blocks allow): the
+// current chip only. Deliberately NO expires_at (a countdown on someone's
+// feelings is a seen-at timestamp in disguise) and NO swing_set; for
+// kind='swing' this is the CURRENT entry (kind lets clients morph-animate).
+Mood = { emoji: string(≤16), label: string(≤24),
+  kind: 'preset'|'custom'|'swing'|'drunk' }
+
+// §1.57 — the OWNER's full state (GET/PUT /api/users/me/mood only).
+MoodState = { mood: Mood|null, visibility: 'everyone'|'connections'|'nobody',
+  expires_at: string|null,                  // null iff mood is null
+  swing_set: {emoji, label}[2..6]|null }    // non-null iff kind='swing'
+
+NameStyle = 'none'|'glow'|'shimmer'|'rainbow'|'surprise'   // §1.58, CHECK-pinned
+
+// §1.59 — one strip item, SERVER-resolved per viewer at serialization time
+// (the ref_summary/reply_context pattern): live state, never audience-
+// widening; invisible items are silently DROPPED (no placeholders, no
+// hidden-item counts). Summary-only by design: no joiner piles, no bodies.
+Activity = { id, kind: 'beacon_lit'|'beacon_sparked'|'post_created'|
+  'listing_posted'|'puzzle_played'|'game_won', created_at,
+  summary:
+    | { type: 'beacon', beacon_id, vibe, custom_vibe_emoji, custom_vibe_label,
+        note, status }
+    | { type: 'post', post_id, kind: PostKind, excerpt: string(≤80)|null }
+    | { type: 'listing', listing_id, kind: ListingKind, title, status }
+    | { type: 'puzzle', date: 'YYYY-MM-DD', solved: boolean, attempts_used }
+    | { type: 'game', conversation_id, seq, opponent: UserLite|null } }
+
+// §1.61 — one shipped release (instance_settings key 'release_notes',
+// newest first; seeded/appended by migrations).
+ReleaseNote = { version: string(≤20), date: 'YYYY-MM-DD', title: string(≤80),
+  items: string[1..12](each ≤200) }
 ```
 
 Avatar URLs are content-hashed media-proxy URLs (`/api/media/:key`), immutable-cacheable;
@@ -616,6 +668,8 @@ setting: `PATCH /api/users/me {area}` (`≤ 64` chars, `null` clears). It is
 | `invites_paused` (default `false`) | `POST /api/invites` → `403 invites_paused`. `POST /api/invites/:token/accept` on any invite whose **inviter** is paused → `403 invites_paused` (no `use_count` claim). Register-with-token degrades to `invite: null` per §1.1. `GET /:token/public` still renders (the join page shows the paused state on accept failure). |
 | `beacon_default_audience` (default `friends`) | Used by `POST /api/beacons` when `audience` is omitted (§1.15). Pure default — no other enforcement. |
 | `group_add_policy` (default `everyone`) | Checked per **target** user T on `POST /api/conversations {type:'group'}` and `POST /api/conversations/:id/participants`: `nobody` denies; `dm_partners` denies unless the adder shares an active DM with T. Any denied target fails the whole request: `403 {error:'group_add_denied', user_ids:[denied]}`. Blocks produce the **same** response (§1.14) so a 403 never confirms a block. Joining via a group invite (§1.11) is the joiner's own action — the policy governs being *added*, not joining. |
+| `mood_effects` (v0.8a, default `true`) | None server-side — a per-VIEWER render toggle (§1.58): whether MY client performs other people's mood-reactive bubble effects. Stored here purely for cross-device sync. |
+| `activity_beacons` / `activity_posts` / `activity_listings` / `activity_games` (v0.8a, default `connections`) | Per-group visibility of my §1.59 activity strip, enforced at strip serialization and ALWAYS intersected with the underlying object's own audience (§1.59 table) — the toggle narrows, never widens. |
 
 ### 1.14 Blocks & reports (v0.3 — ADR-009)
 
@@ -1138,6 +1192,10 @@ use. The v0.1 `reply_to_id` column is retired (always `null` from v0.5a on).
   `404 not_found` (they are write surfaces).
 - In channels (§1.35) the same rules apply to the owner/admins' own messages;
   nobody edits or deletes anyone else's words in v0.5a.
+- v0.8a (§1.57): `DELETE …/messages/:seq?undo=1` is the drunk-mode send-undo
+  variant — same tombstone machinery, but `metadata` becomes
+  `{"undone": true}` and clients render nothing (no "message deleted" stub).
+  §1.57 has the window, preconditions and error codes.
 
 ### 1.31 Forwarding (v0.5a)
 
@@ -1462,7 +1520,7 @@ excludes message bodies for the same reason (see below; ADR-013).
 | `GET /api/admin/metrics` | — | `200 {metrics: AdminMetrics}` — 30-day series (`ADMIN_METRICS_WINDOW_DAYS`): registrations/day, **DAU proxy** (distinct users whose sessions were seen that day — sliding sessions make this approximate; documented honesty, not precision), messages/day; plus totals: users, open beacons, active listings, open reports, storage bytes. |
 | `GET /api/admin/logs?offset=&limit=` | — | `200 {entries: AdminLogEntry[], next_offset}` — the **log ring**: pino `warn`+`error` entries from api and worker, plus every admin action (`level: 'admin'`, always written), LPUSHed to a capped Redis list (`LPUSH` + `LTRIM`, `LOG_RING_MAX` = 1000). Newest first, offset-paged (a ring has no stable cursors); `next_offset: null` = whole ring read. Telemetry, not product data: it lives in Redis on purpose (ADR-013). |
 | `GET /api/admin/settings` | — | `200 {settings: InstanceSettings}` |
-| `PATCH /api/admin/settings` | `{invites_enabled?}` | `200 {settings}`. `invites_enabled: false` → `POST /api/invites` and `POST /api/invites/:token/accept` answer `403 invites_disabled` (no `use_count` claim); register-with-token degrades to `invite: null` (§1.1); `GET /:token/public` still renders (the join page explains on accept). Ring-logged. |
+| `PATCH /api/admin/settings` | `{invites_enabled?, release_notes?}` (v0.8a §1.61 adds `release_notes` — curation of the what's-new list; migrations remain the normal writer) | `200 {settings}`. `invites_enabled: false` → `POST /api/invites` and `POST /api/invites/:token/accept` answer `403 invites_disabled` (no `use_count` claim); register-with-token degrades to `invite: null` (§1.1); `GET /:token/public` still renders (the join page explains on accept). Ring-logged. |
 | `GET /api/admin/users/:id/export` | — | `200 {export: AdminUserExport}` — JSON of the user's **own rows**: the users row (profile + settings columns), sessions **metadata**, listings, posts, reviews received. Secrets stripped (`password_hash`, session `token_hash`, push keys). **NOT their messages**: a member's conversations contain their counterparties' words, and bulk operator access to those is exactly what this product promises not to build — the export is operator tooling (backups, disputes, deletion requests), not a wiretap (ADR-013 documents the line; a user-initiated takeout of their own message history is future user-facing scope, not an admin surface). |
 
 **Sessions & IP capture.** `sessions.ip` + `sessions.user_agent` (columns
@@ -2023,6 +2081,245 @@ exists to carry them.
   closed" (linking the settings row) when permission isn't granted. The note
   is dismissible context, never a gate — calls still work in-app.
 
+### 1.57 Moods & 🍻 drunk mode (v0.8a — ADR-018, FEATURES #72–#73)
+
+A mood is a chip on your identity — `users.mood_*` columns (the ADR-009
+one-row-read pattern; migration 0009), **not** a table and **not** history:
+when it expires or is cleared, every trace is gone. **Binding product rules:**
+moods NEVER appear in any activity/history surface (§1.59's table has no mood
+kind, by contract); a mood change NEVER generates push (the drunk banner is a
+passive render of an already-visible chip); reads filter
+`mood_expires_at > now()` **live** (the §1.44 opt-in pattern) so a stale chip
+is impossible regardless of sweep lag.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/users/me/mood` | — | `200 {mood_state: MoodState}` — my full state (`{mood: null, visibility, expires_at: null, swing_set: null}` when unset). The ONLY payloads carrying `visibility`/`expires_at`/`swing_set` are these owner reads. |
+| `PUT /api/users/me/mood` | `{kind:'preset', label, visibility?}` \| `{kind:'custom', emoji, label, visibility?}` \| `{kind:'swing', swing_set: {emoji,label}[2..6], visibility?}` \| `{kind:'drunk', visibility?}` | `200 {mood_state}`. `preset`: `label` must name a `MOOD_PRESETS` entry (server fills the emoji) → else `400 bad_mood_preset`. `swing`: the server materializes the FIRST entry as the current chip and stamps `mood_swing_rotated_at`. `drunk`: emoji/label pinned to `MOOD_DRUNK_EMOJI`/`MOOD_DRUNK_LABEL`. `visibility` omitted = `'everyone'` — **except `drunk`, which defaults `'connections'`** even when the user's other moods were public (the guardrail; still overridable by sending it explicitly). Every PUT (re)sets `mood_expires_at = now() + MOOD_TTL_S` (4 h) — re-setting extends. Rate `MOOD_SET_RATE_PER_HOUR` (30) → `429`. Fans out `user.updated` (below). |
+| `DELETE /api/users/me/mood` | — | `204` — clears all `mood_*` columns (idempotent) + `user.updated` fan-out. No trace survives anywhere. |
+
+**Per-viewer resolution (binding, the §1.13 serialization-time machinery).**
+`UserLite.mood` / `UserPublic.mood` serialized to viewer V for owner O is the
+chip iff ALL of: the mood is live (`mood_expires_at > now()`), AND O's
+`mood_visibility` admits V (`everyone`; `connections` = V holds an **accepted
+§1.28 connection** with O — literally connections, NOT friends-of: a DM alone
+does not qualify; `nobody` = only O), AND O⊥V are not a §1.14 blocked pair —
+else `null`, byte-identical to no-mood (visibility is never confirmable).
+The owner always sees their own chip. This resolution runs on **every**
+surface UserLite rides — participants, joiner piles, seen-by lists, feed
+authors, comment authors — there is no unfiltered path.
+
+**Fan-out.** Set/clear/expiry/rotation publishes one `user.updated` envelope;
+the gateway resolves recipients (the existing user.updated set: the owner's
+own sockets + sockets sharing a conversation with the owner) and stamps
+`mood` **per recipient** under the resolution rule above (§2.11) — a
+`nobody`-visibility change still reaches others as a frame whose `mood` is
+`null` only when something else changed; the api skips the fan-out entirely
+for `nobody` mood-only changes. No push, ever.
+
+**🎢 Swing mode (worker, queue `timers`).** Each swinging user rotates to a
+random DIFFERENT entry of their `swing_set` every `MOOD_SWING_INTERVAL_S`
+(30 min) ± uniform `MOOD_SWING_JITTER_S` (10 min), walked via
+`users_mood_swing_idx` on `mood_swing_rotated_at`; each rotation materializes
+`mood_emoji`/`mood_label` (kind stays `'swing'` — clients morph-animate the
+chip on `user.updated`) and re-stamps `mood_swing_rotated_at`. Rotation never
+extends `mood_expires_at`.
+
+**Expiry sweep (worker, queue `timers`, every `MOOD_SWEEP_INTERVAL_S`).**
+Clears all `mood_*` columns where `mood_expires_at <= now()` (walked via
+`users_mood_expiry_idx`) and fans `user.updated` per user — auto-sober
+included: the drunk chip vanishes with the same zero-trace rule (the client's
+mascot may look briefly concerned; the server stores nothing).
+
+**🍻 Drunk mode guardrails (FEATURES #73):**
+
+- **Send-undo (server-side).** While the sender's drunk mood is live, every
+  §1.5 send is undoable: `DELETE /api/conversations/:id/messages/:seq?undo=1`
+  within `MOOD_DRUNK_UNDO_WINDOW_S` (10 s) of the message's `created_at`
+  (server allows `MOOD_DRUNK_UNDO_SLACK_S` = 2 s skew) → `204`. It is a §1.30
+  tombstone (seq survives forever — golden rule 2; attachments/dependents
+  removed identically) with ONE difference: `metadata` is set to
+  `{"undone": true}` instead of `{}`, and clients render **nothing at all** —
+  the bubble vanishes; no "message deleted" stub exists for an undone
+  message (history refetch and §1.3 sync deliver the same vanishing DTO).
+  Undo works on **every own message type**, including kinds outside
+  `EDITABLE_MESSAGE_TYPES` and §1.35 channel messages — it needs no edit
+  permission, only authorship (`system` messages have no author and cannot
+  be undone). Preconditions, checked in order: author (`403 forbidden`),
+  sender's drunk mood live **at undo time** (`409 not_drunk` — nothing about
+  the mood is stamped on the message; no trace), within the window
+  (`409 undo_window_closed`). A frozen-DM `404` applies as in §1.30. An undone
+  message **never pushes**: while the sender's drunk mood is live, the send
+  path enqueues every §2.9 message-push job with a delay of
+  `MOOD_DRUNK_UNDO_WINDOW_S + MOOD_DRUNK_UNDO_SLACK_S`, so the worker's fresh
+  `deleted_at` re-check runs only **after** the undo window has closed (the
+  5 s debounce alone does not cover the 10 s window). Nothing about the mood
+  is stamped on the job — it is only a delay.
+  Fan-out: `msg.updated` with the vanishing DTO.
+- **Cold-contact confirm (CLIENT-side, binding UX contract).** While drunk,
+  the composer interposes a "you sure?" confirm before sending into a DM
+  whose `Conversation.last_message_at` is older than
+  `COLD_CONTACT_THRESHOLD_S` (30 d) or into a brand-new DM, and before every
+  public write (public post, public beacon, listing). The >1-month fact needs
+  no new endpoint: **`Conversation.last_message_at` IS the DTO flag.** Never
+  a server rejection — the server neither knows nor records who hesitated.
+- **The soft banner (CLIENT-side, binding UX contract).** A participant whose
+  view of the drunk user resolves `mood.kind === 'drunk'` (i.e. exactly those
+  the visibility already admits) renders a passive banner in that chat —
+  "🍻 ‹name› is in drunk mode — take tonight's messages lightly" — with a
+  **Check on them 💙** action: one tap sends `DRUNK_CHECK_IN_BODY` as an
+  ordinary §1.5 message, or starts an ordinary §1.42 call. A banner, NEVER a
+  push blast, never a system message, never stored. It disappears the moment
+  the mood does.
+
+### 1.58 Mood-reactive messages & animated names (v0.8a — ADR-018, FEATURES #74–#75)
+
+**Mood-reactive messages (#74) — pure CLIENT rendering** (the §1.54/§1.56
+web-contract precedent: binding for any client). The server ships **no**
+effect field and stores **no** trace: the driver is the sender's `mood`
+already visible on their UserLite in the viewer's participants/DTOs.
+
+- Mapping (`MOOD_MESSAGE_EFFECTS`, keyed on `mood.label`, for kinds
+  `preset`/`swing`/`drunk` ONLY — a `custom` label never triggers an effect,
+  even on collision): `drunk` → **wobble** (tipsy wobble-in, settle ≤
+  `MOOD_WOBBLE_MAX_DEG` = 2° crooked, straighten on tap), `sad` → **rain**
+  (soft rain overlay in the chat scroll + text falls into place), `hyped` →
+  **bounce** (bounce-in).
+- Subtle-first: effects run on ENTRY only, reading is never blocked, no
+  sound, no looping overlays except the rain (which sits behind bubbles at
+  low opacity and respects the §1.24 theme).
+- Applies only while the mood is live and visible to THIS viewer — the §1.57
+  resolution decides, so a `nobody`/blocked/expired mood performs nothing.
+- Per-viewer toggle: `UserSettings.mood_effects` (§1.13 PATCH; default
+  `true`) — a settings column purely for cross-device sync of MY choice to
+  not watch others' effects.
+- `prefers-reduced-motion` **disables all of it unconditionally** — no
+  wobble, no rain, no bounce, no mood-chip morph (the §1.22 replacement
+  rule: the chip renders static).
+
+**Animated names (#75).** `users.name_style` (`NAME_STYLES`, CHECK-pinned:
+`none`/`glow`/`shimmer`/`rainbow`/`surprise`), set via the existing
+`PATCH /api/users/me {name_style}` (identity, not privacy — fans the usual
+`user.updated`), serialized on `UserLite`/`UserPublic` so every name render
+site has it. Render contract (binding): applies on the **profile page, chat
+headers, and group/channel sender names** — never inside message bodies,
+never on buttons; pure CSS text effects (no canvas, no timers beyond CSS
+animation); `surprise` resolves **client-side and deterministically** to
+`NAME_STYLE_SURPRISE_POOL[hash(user_id + UTC date) % 3]` so it rotates daily
+and every viewer sees the same style with zero server state; reduced-motion
+viewers get a **static tint** (the glow/shimmer/rainbow gradient frozen at
+its first frame); legibility always wins — contrast floors per theme are the
+client's responsibility and effects never change font size or spacing.
+
+### 1.59 Profile activity strip & per-kind privacy (v0.8a — ADR-018, FEATURES #76)
+
+`activities` rows (migration 0009), written **inside the owning module's
+transaction** through the ONE helper (`src/lib/activity.ts
+recordActivity(tx, {user_id, kind, ref})` — the `requestUnfurl()` chokepoint
+rule: no module inserts directly): beacon create → `beacon_lit`; spark →
+`beacon_sparked` (creator only — a joiner's attendance is the plan group's
+business, not a strip item); `POST /api/posts` → `post_created`;
+`POST /api/listings` → `listing_posted`; a FINISHED puzzle attempt (solved
+or out of guesses, once per user per UTC day) → `puzzle_played`; a
+server-validated tic-tac-toe win → `game_won` (winner's row, §1.27 and §1.50
+boards alike). `ref` stores the minimal pointer only (`{beacon_id}`,
+`{post_id}`, `{listing_id}`, `{date, solved, attempts_used}`,
+`{conversation_id, seq, opponent_id}`) — **never a denormalized audience**,
+so visibility can never go stale. **Moods are NEVER recorded** (no mood kind
+exists in the CHECK — PSYCHOLOGY: no trace).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/users/:username/activity` | — | `200 {activities: Activity[]}` — newest first, ≤ `ACTIVITY_STRIP_MAX` (20) **after** per-viewer filtering (invisible items are silently dropped; no placeholders, no "N hidden" counts — PSYCHOLOGY rule 3). Unknown/blocked/banned owner → `404 not_found`, byte-identical to the §1.14 profile shape. The owner sees all their own items. |
+| `PATCH /api/users/me/settings` | `{activity_beacons?, activity_posts?, activity_listings?, activity_games?}` — each `'public'`\|`'connections'`\|`'private'` (default `'connections'`) | `200 {settings}` — the §1.13 route, four new keys. Applies at the next read (serialization-time; nothing stored is rewritten). |
+
+**Per-viewer resolution (the HARD RULE, binding).** An item is serialized to
+viewer V iff **(a)** O's per-group setting admits V (`ACTIVITY_KIND_GROUP`
+maps kinds → the four settings; `public` = anyone who can read the profile,
+`connections` = accepted §1.28 connections of O, `private` = O only), **AND
+(b)** V can see the underlying thing itself — the setting can only narrow,
+never widen past the object's audience:
+
+| Kind | Underlying-audience check (resolved live at read) |
+|---|---|
+| `beacon_lit` / `beacon_sparked` | The beacon row exists and V passes its §1.15 audience **as stored**: `friends` → V ∈ friends-of(O); `area` → V's `users.area` equals the beacon's area snapshot (citext); `public` → anyone. A friends-only beacon therefore NEVER shows in public activity regardless of the toggle. The summary carries vibe/note/status only — **no joiner faces** (the pile stays on `GET /api/beacons/:id`, which re-checks §1.14 pile blocks). |
+| `post_created` | V can read the post per §1.36/§1.49: `public` → anyone; `friends_of` → V ∈ friends-of(O). Deleted post or banned author → dropped. `excerpt` is the CURRENT body's first 80 chars (the §1.29 rule — edits reflected, never a stale snapshot). |
+| `listing_posted` | The listing row exists and V passes §1.38 visibility: `is_public` → anyone; else V's area equals the listing's area snapshot. Closed/expired listings still show, with their status. |
+| `puzzle_played` | No underlying object audience — the ref is the player's own no-spoiler facts (date/solved/attempts, the §1.27 `PuzzleResult` floor: no letters, no word). The per-group setting alone governs. |
+| `game_won` | V was a participant of the game's conversation at that seq (the §1.5 visibility floor) — in practice the opponent. A win in a DM is visible only to who watched it happen; the opponent's UserLite rides only where V already knows them. `opponent: null` = deleted account. |
+
+Plus always: §1.14 blocks (the profile is already 404 both directions) and
+§1.41 bans (banned owners' strips are hidden with their profiles; a banned
+*opponent/author* inside a summary resolves like every banned serialization).
+Resolution is serialization-time — changing a setting or an object's audience
+re-filters instantly; nothing stored is rewritten.
+
+**Retention (worker, queue `gc`, nightly):** hard-DELETE rows with
+`created_at < now() − ACTIVITY_RETENTION_DAYS` (30 d, via
+`activities_sweep_idx`). The strip is recent activity, not an archive; no
+fan-out (pull-based, the §1.38 doctrine — no WS event exists for activity).
+
+### 1.60 GIF/video chat backgrounds (v0.8a — ADR-018, FEATURES #79)
+
+`conversation_prefs.background_attachment_id` (migration 0009) — a §1.24
+pref, so everything personal about prefs binds: **my view only**, never
+serialized to any other participant, no event about it ever reaches anyone
+else, synced across my devices via `prefs.updated` (own sockets only).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `PATCH /api/conversations/:id/prefs` | `{background_attachment_id?: uuid\|null}` (alongside the §1.24 fields; omitted = unchanged, `null` clears) | `200 {prefs}` — `prefs.background` resolves to the full `Attachment` (poster `thumb_url` included). Checks, in order, else `400 bad_background`: the attachment is **MINE** (`uploader_id = me` — own uploads only, ownership-checked), kind `image` (GIFs included, ≤ `MAX_IMAGE_BYTES`) or `video`, `status 'ready'` (a pending video has no probed duration yet — re-PATCH after `attachment.ready`), and for video: `size_bytes ≤ CHAT_BG_VIDEO_MAX_BYTES` (25 MB) **and** `duration_ms ≤ CHAT_BG_VIDEO_MAX_DURATION_S` (30 s). The upload itself rides the existing §1.6 pipeline unchanged (sniffed MIME, EXIF strip, worker poster). One attachment may back several of my chats. |
+
+- **GC shield:** a referenced attachment cannot use the binding-column
+  pattern (`attachments_orphan_idx`) — the reference points the other way
+  and is shared across chats — so the orphan sweep **anti-joins**
+  `conversation_prefs_background_idx`: `WHERE NOT EXISTS (SELECT 1 FROM
+  conversation_prefs p WHERE p.background_attachment_id = a.id)`. Clearing
+  the last reference re-orphans the attachment for the normal 24 h GC.
+- **Media ACL:** unchanged — the background is mine and personal, and
+  `GET /api/media/:key` already serves an uploader their own object. No
+  other user ever has a reason (or a URL) to fetch it.
+- **Render contract (binding):** the media paints the chat scroll background
+  **behind** the §1.24 wallpaper layer slot (setting a background overrides
+  the wallpaper visually; both survive in prefs), auto-dimmed under a scrim
+  (`CHAT_BG_OVERLAY_OPACITY` = 0.45, theme-aware) so bubbles stay legible —
+  bubbles keep their own opaque surfaces. Video/GIF: **muted**, looped,
+  `playsInline`, never audible; **paused when off-screen** (IntersectionObserver
+  on the scroll container / document hidden) and when the Battery Status API
+  reports saver mode where available. `prefers-reduced-motion`: the **static
+  poster** (`thumb_url`) renders instead — no playback, no first loop, ever.
+
+### 1.61 Discoverability: tour, directory & what's-new (v0.8a — ADR-018, FEATURES #80)
+
+Client-heavy (the §1.54/§1.56 binding-web-contract precedent) with one small
+server surface for the release markers.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/releases` | — | `200 {releases: ReleaseNote[], last_seen_release: string\|null}` — the instance's shipped releases, newest first, from `instance_settings` key `'release_notes'` (seeded by migration 0009, appended by future release migrations, curable via the §1.41 admin `PATCH {release_notes}` — ring-logged like every admin write); plus MY cursor (`users.last_seen_release`). |
+| `POST /api/releases/seen` | `{version ≤ 20}` | `204` — sets `users.last_seen_release` (idempotent; the client sends the newest version it just showed cards for). **Register stamps the newest version at signup** so day-one users never see a card storm. |
+
+- **First-run spotlight tour:** `TOUR_STEPS` (4 steps, ids
+  `chats`/`plans`/`local`/`you`, each anchored to a shell tab), shown once
+  after first login on a device, **skippable at every step, never repeats** —
+  `TOUR_SEEN_KEY` (`bc.tour-seen`) is localStorage, device-local by design
+  (the `PUSH_EXPLAINER_SEEN_KEY` rule: orientation is per-device, and a
+  declined tour never re-nags). Reduced-motion: no spotlight travel
+  animation — plain dismissible cards.
+- **"✨ Things you can do" directory:** `FEATURE_DIRECTORY` in
+  `packages/shared` — the STATIC typed registry (`{id, title, one_liner,
+  href, since}`) every client renders identically: one card per feature, the
+  one-liner, a **Try it** deep link (`href`), client-side substring search
+  over title + one-liner. `since` drives a "new" badge for entries newer
+  than my `last_seen_release`. Adding a feature = appending an entry — a
+  contract change like any constant.
+- **New-since-last-visit cards:** after login/sync, releases newer than
+  `last_seen_release` render as dismissible cards (title + items, linking
+  into the directory); dismissing POSTs `/api/releases/seen`. Cards are
+  **informational, never engagement bait**: no badges elsewhere, no unread
+  dots on tabs, no re-surfacing after dismissal (PSYCHOLOGY rules 4/5 —
+  the user pulls, the app never guilts).
+
 ### 2.1 Connection & handshake
 
 - `GET wss://<host>/ws` — same-origin, the `sid` cookie rides the upgrade. No tickets, no
@@ -2057,7 +2354,7 @@ close `1008`.
 | `presence` | `{user_id, online: boolean, last_seen_at?: string}` | only for users the socket subscribed to |
 | `conv.new` | `{conversation: Conversation}` | you were added / created it on another device |
 | `conv.updated` | `{conversation: Conversation}` | title, membership, group-avatar flip |
-| `user.updated` | `{user: UserPublic}` | profile/avatar change of any conversation peer — fires when the avatar transcode lands (`avatar.version` bumped → swap the image) |
+| `user.updated` | `{user: UserPublic}` | profile/avatar change of any conversation peer — fires when the avatar transcode lands (`avatar.version` bumped → swap the image). v0.8a (§1.57/§1.58): also fired on mood set/clear/expiry/swing-rotation and `name_style` changes; the `mood` field is stamped **per recipient** at the gateway under the §1.57 visibility+blocks resolution (§2.11), so one envelope never ships one viewer's view to another. Zod defaults (`mood: null`, `name_style: 'none'`) keep pre-v0.8 frames parsing clean. |
 | `reaction.updated` | `{conversation_id, seq, kind, emoji, count, user_id, removed}` | v0.2 (§1.12): one frame per effective reaction add/remove, to all active participants. `count` is the NEW total for that `(message, emoji)`; `count: 0` removes the chip; `mine` is derived client-side (`user_id === me`). Reconnect truth is the DTO aggregate, not frame replay. v0.4 (§1.19): `kind` (`'emoji'`\|`'stamp'`, default `'emoji'` so v0.2 frames parse clean); stamp frames carry the `:stamp:` sentinel as `emoji`, recipients resolve the stamper's avatar from participants they hold, and reconnect truth is `Message.stamps`. |
 | `preview.ready` | `{url_hash, status: 'ok'\|'failed', preview?: LinkPreview}` | to the user who requested the unfurl (composer card) |
 | `beacon.new` | `{beacon: Beacon}` | v0.3 (§1.15): **only to sockets of users in the beacon's audience** (minus blocks) — never to anyone who cannot join (PSYCHOLOGY rule 2). The DTO is viewer-specific: the gateway stamps `my_state`/`conversation_id` per recipient (§2.11). |
@@ -2065,7 +2362,7 @@ close `1008`.
 | `beacon.kudos` | `{beacon_id, kind, from: UserLite}` | v0.3 (§1.15): **to the recipient's sockets only.** Private by construction — never fanned to the group, never counted publicly. |
 | `plan.updated` | `{beacon_id, conversation_id, roles: BeaconRole[]}` | v0.3 (§1.16): full roles list on every role mutation, to the plan conversation's active participants. Idempotent replace; reconcile from `GET /api/beacons/:id/roles`, never frame replay. |
 | `poll.updated` | `{poll_id, conversation_id, seq, counts: number[], total_votes, user_id?, option_idx?: number\|null}` | v0.3 (§1.17): one delta per effective vote/unvote (`option_idx: null` = unvoted), to active participants — the `reaction.updated` pattern. `user_id`/`option_idx` ride **only the voter's own frame** (their other devices reconcile `my_vote`); frames to everyone else carry aggregates only (no per-voter lists, §1.17). Reconnect truth is `message.poll`. |
-| `prefs.updated` | `{conversation_id, prefs: ConversationPrefs}` | v0.4 (§1.24): **to the owner's own sockets ONLY** — prefs are personal, my-view-only state; no other participant ever receives a frame about them. Full-prefs replace (idempotent, reorder-safe); reconnects reconcile from `GET /api/conversations/:id/prefs`. |
+| `prefs.updated` | `{conversation_id, prefs: ConversationPrefs}` | v0.4 (§1.24): **to the owner's own sockets ONLY** — prefs are personal, my-view-only state; no other participant ever receives a frame about them. Full-prefs replace (idempotent, reorder-safe); reconnects reconcile from `GET /api/conversations/:id/prefs`. v0.8a (§1.60): `prefs.background` rides along, same owner-only rule — nobody else ever learns a background exists. |
 | `scheduled.updated` | `{scheduled: ScheduledMessage}` | v0.4 (§1.26): **to the author's own sockets ONLY** (a pending schedule is private until delivery), on every create/cancel/send — cross-device sync of the scheduled list. The delivery itself reaches everyone as an ordinary `msg.new`. |
 | `connection.updated` | `{connection: Connection, removed: boolean}` | v0.5a (§1.28): **to the two parties only** — and not even both for every transition: request → addressee + requester's own sockets; accept → both; decline → addressee's own sockets only (the requester is never pinged about a rejection); remove → the actor's own sockets only. The DTO is viewer-specific (`user`/`direction` stamped per recipient at the gateway, the `beacon.*` pattern). `removed: true` means the row is gone (decline/remove) and the DTO is its last state. |
 | `story.new` | `{story: Story}` | v0.5a (§1.34): **only to sockets of the author's friends-of audience minus blocks** — never to anyone who cannot view it. `viewed` stamped `false` per recipient. No push. Expiry fans nothing — expired stories drop out of the next `GET`. |
@@ -2245,6 +2542,13 @@ gateway and REST serializers), where the recipient is known. Binding rules:
   via common peers' presence in the member list, exactly as they can see each
   other's messages in a shared group, §1.14). `discovery.matched` /
   `roulette.*` recipients are the two parties only.
+- v0.8a (§1.57): `user.updated` envelopes name the owner; the gateway stamps
+  `mood` per recipient under the §1.57 resolution (visibility
+  everyone/connections/nobody ∩ not-blocked; expired ⇒ `null`) before
+  sending — the same per-socket stamping as `beacon.*`/`post.new`. A hidden
+  mood serializes exactly like no mood, so visibility settings are never
+  confirmable from frames. The same resolution runs in every REST serializer
+  that emits a UserLite/UserPublic — there is no unfiltered path.
 
 ### 2.12 Ephemeral call & watch signaling (v0.6 — ADR-014, §1.42/§1.43)
 

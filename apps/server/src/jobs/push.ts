@@ -364,6 +364,13 @@ async function processMessagePushJob(job: MessagePushJob): Promise<void> {
     .where(eq(schema.messages.id, job.message_id))
     .limit(1);
   if (!msg) return;
+  // v0.8a (§1.57): a tombstoned message never pushes. While the sender's
+  // drunk mood is live, the send path enqueues this job with a delay of
+  // MOOD_DRUNK_UNDO_WINDOW_S + MOOD_DRUNK_UNDO_SLACK_S, so this fresh
+  // deleted_at read always runs AFTER the undo window has closed — an undone
+  // message is guaranteed silent (the 5 s debounce alone would not cover the
+  // 10 s undo window).
+  if (msg.deletedAt !== null) return;
 
   // Guards (b2)+(c) + the v0.5a §1.33 mention override, as one pure verdict:
   // a mention skips the mute guard for the mentioned user — and NEVER a block

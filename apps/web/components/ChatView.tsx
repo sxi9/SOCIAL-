@@ -9,6 +9,7 @@ import {
   extractYoutubeVideoId,
   FORWARDABLE_MESSAGE_TYPES,
   MAX_MESSAGE_BODY_CHARS,
+  MOOD_DRUNK_UNDO_WINDOW_S,
   ON_MY_WAY_BODY,
   PAGE_SIZE_DEFAULT,
   PAGE_SIZE_MAX,
@@ -49,19 +50,27 @@ import {
 } from '@/lib/format';
 import { uuidv7 } from '@/lib/ids';
 import { KIND_EMOJI } from '@/lib/listings';
+import { bubbleEffectFor, isColdContact, isSelfDrunk } from '@/lib/mood';
 import { displayNameFor, loadPrefs, themeClassName, wallpaperClassName } from '@/lib/prefs';
 import { toggleReaction, toggleStamp } from '@/lib/reactions';
 import { pendingFor, refreshScheduled } from '@/lib/scheduled';
 import * as store from '@/lib/store';
+import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
+import { useReducedMotion } from '@/lib/useReducedMotion';
 import AfterglowCard from './AfterglowCard';
 import AttachmentView from './AttachmentView';
 import Avatar from './Avatar';
 import { PhoneIcon, VideoIcon } from './CallOverlay';
+import ChatBackground from './ChatBackground';
 import ChatInfoSheet from './ChatInfoSheet';
 import Composer, { type ComposerPayload, type PlusAction } from './Composer';
 import DoodleSheet from './DoodleSheet';
+import DrunkBanner from './DrunkBanner';
+import DrunkConfirmSheet from './DrunkConfirmSheet';
+import MoodChip from './MoodChip';
+import StyledName from './StyledName';
 import EffectOverlay from './EffectOverlay';
 import ForwardSheet from './ForwardSheet';
 import GameTttView from './GameTttView';
@@ -88,6 +97,7 @@ import WatchTogetherSheet from './WatchTogetherSheet';
 import brd from './board.module.css';
 import cls from './calls.module.css';
 import styles from './chat.module.css';
+import idm from './identity.module.css';
 import exp from './expression.module.css';
 import soc from './social.module.css';
 import wtc from './watch.module.css';
@@ -135,6 +145,12 @@ export default function ChatView({ conversationId }: { conversationId: string })
   replyToRef.current = replyTo;
   const [forwarding, setForwarding] = useState<Message | null>(null);
   const [flashSeq, setFlashSeq] = useState<number | null>(null);
+
+  // v0.8a §1.57 drunk guardrails: the live 10 s undo pills on my own sends,
+  // and the pending cold-contact "you sure?" (its resolver, promise-style).
+  const [undoables, setUndoables] = useState<UndoableSend[]>([]);
+  const [drunkAsk, setDrunkAsk] = useState<{ resolve: (ok: boolean) => void } | null>(null);
+  const reducedMotion = useReducedMotion();
 
   // v0.6 watch together (§1.43): sheet open + session liveness (coarse tick —
   // a session is stale once syncs stop for WATCH_SESSION_TTL_S).
@@ -275,22 +291,79 @@ export default function ChatView({ conversationId }: { conversationId: string })
     }
   }, [messages, loadingOlder, conversationId]);
 
+  // v0.8a §1.57: while drunk, every successful send gets a 10 s undo pill.
+  // CLIENT-side gate only — the server re-checks drunk + window at undo time.
+  const registerUndoable = useCallback((msg: Message | null) => {
+    if (!msg || !isSelfDrunk()) return;
+    const snippet = messageSnippet(msg);
+    setUndoables((prev) => [
+      ...prev.filter((u) => u.until > Date.now() && u.seq !== msg.seq),
+      { seq: msg.seq, until: Date.now() + MOOD_DRUNK_UNDO_WINDOW_S * 1000, snippet },
+    ]);
+  }, []);
+
+  // v0.8a §1.57 cold-contact confirm (binding UX contract): while drunk, a DM
+  // not talked to in >30 d — or a brand-new one — gets a "you sure?" first.
+  // Conversation.last_message_at IS the DTO flag; never a server rejection,
+  // and the server never learns who hesitated.
+  const confirmColdIfNeeded = useCallback(async (): Promise<boolean> => {
+    const conv2 = store.state.conversations.get(conversationId);
+    if (!conv2 || !isSelfDrunk() || !isColdContact(conv2)) return true;
+    return new Promise<boolean>((resolve) => setDrunkAsk({ resolve }));
+  }, [conversationId]);
+
+  const undoSend = useCallback(
+    async (seq: number) => {
+      setUndoables((prev) => prev.filter((u) => u.seq !== seq));
+      try {
+        await api.del(`/api/conversations/${conversationId}/messages/${seq}?undo=1`);
+        // Optimistic vanish — the msg.updated frame confirms with the same
+        // vanishing DTO (metadata {"undone": true}; seq survives, rule 2).
+        const msg = store.state.messages.get(conversationId)?.find((m) => m.seq === seq);
+        if (msg) {
+          store.replaceMessage({
+            ...msg,
+            deleted_at: new Date().toISOString(),
+            body: null,
+            metadata: { undone: true },
+            attachments: [],
+            reactions: [],
+            stamps: [],
+            poll: null,
+            vibe: null,
+          });
+        }
+      } catch (err) {
+        if (err instanceof ApiError && err.code === 'undo_window_closed') {
+          toast('Too late — that one is out there now');
+        } else if (err instanceof ApiError && err.code === 'not_drunk') {
+          toast('Drunk mode already wore off — plain delete still works');
+        } else {
+          toast('Could not unsend it');
+        }
+      }
+    },
+    [conversationId]
+  );
+
   const submit = useCallback(
     async (payload: ComposerPayload): Promise<boolean> => {
+      if (!(await confirmColdIfNeeded())) return false; // draft stays put
       stickRef.current = true;
       // Durable sends are REST-only and idempotent by client_msg_id (§1.5);
       // a network failure parks the send in the outbox. A reply rides the
       // same send as reply_to_seq (§1.29).
       const reply = replyToRef.current;
-      await sendMessage(conversationId, {
+      const msg = await sendMessage(conversationId, {
         client_msg_id: uuidv7(),
         ...payload,
         ...(reply ? { reply_to_seq: reply.seq } : {}),
       });
+      registerUndoable(msg);
       setReplyTo(null);
       return true;
     },
-    [conversationId]
+    [conversationId, confirmColdIfNeeded, registerUndoable]
   );
 
   // §1.29 "tap the context to jump": page history by before_seq until the
@@ -362,10 +435,13 @@ export default function ChatView({ conversationId }: { conversationId: string })
 
   const sendRaw = useCallback(
     async (req: Omit<SendMessageRequest, 'client_msg_id'>): Promise<void> => {
+      // §1.57: EVERY send while drunk is guarded — doodles and pins included.
+      if (!(await confirmColdIfNeeded())) return;
       stickRef.current = true;
-      await sendMessage(conversationId, { client_msg_id: uuidv7(), ...req });
+      const msg = await sendMessage(conversationId, { client_msg_id: uuidv7(), ...req });
+      registerUndoable(msg);
     },
-    [conversationId]
+    [conversationId, confirmColdIfNeeded, registerUndoable]
   );
 
   // §1.27 tic-tac-toe challenge: DM = opponent implied; group = picker sheet.
@@ -455,6 +531,8 @@ export default function ChatView({ conversationId }: { conversationId: string })
           username: p.user.username,
           display_name: p.user.display_name,
           avatar: p.user.avatar,
+          mood: p.user.mood,
+          name_style: p.user.name_style,
         }));
   const searchMentions = isChannel
     ? async (q: string): Promise<UserLite[]> => {
@@ -468,6 +546,8 @@ export default function ChatView({ conversationId }: { conversationId: string })
             username: p.user.username,
             display_name: p.user.display_name,
             avatar: p.user.avatar,
+            mood: p.user.mood,
+            name_style: p.user.name_style,
           }));
         } catch {
           return [];
@@ -491,6 +571,22 @@ export default function ChatView({ conversationId }: { conversationId: string })
   const hasOlder = !noMoreHistory && oldestLoaded > myJoinSeq + 1;
   const pendingOutbox = state.outbox.filter((o) => o.conversation_id === conversationId);
   const pendingScheduled = pendingFor(conversationId);
+  // v0.8a: the §1.60 background (mine alone) + the §1.58 ambient rain, both
+  // layered UNDER the scroll content. Rain shows while someone in the round
+  // has a visible 'sad' chip (per-viewer resolution already happened
+  // server-side), gated by my mood_effects toggle and reduced motion.
+  const background = prefs?.background ?? null;
+  const moodEffectsOn = (state.settings?.mood_effects ?? true) && !reducedMotion;
+  const rainActive =
+    moodEffectsOn &&
+    conv.participants.some((p) => p.left_at === null && bubbleEffectFor(p.user.mood) === 'rain');
+  const scrollClass = [
+    styles.scroll,
+    background ? '' : wallpaperClassName(exp, prefs?.wallpaper),
+    background || rainActive ? idm.scrollOverBg : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   return (
     <div className={`${styles.chatPage} ${themeClassName(exp, prefs?.theme)}`.trim()}>
@@ -504,12 +600,21 @@ export default function ChatView({ conversationId }: { conversationId: string })
           <h1>
             {peer ? (
               // DM header links to the peer's public profile page (/u/:username).
+              // v0.8a §1.58: the chat header is a pinned animated-name site.
               <Link href={`/u/${encodeURIComponent(peer.username)}`} style={{ color: 'inherit', textDecoration: 'none' }}>
-                {title}
+                <StyledName userId={peer.id} style={peer.name_style} name={title} />
               </Link>
             ) : (
               title
             )}
+            {/* v0.8a §1.57: the peer's mood chip — already per-viewer resolved
+                server-side (visibility ∩ blocks ∩ live expiry). */}
+            {peer?.mood ? (
+              <>
+                {' '}
+                <MoodChip mood={peer.mood} small />
+              </>
+            ) : null}
           </h1>
           <div className={`${styles.headerSub}${conv.type === 'dm' && presence?.online ? ` ${styles.online}` : ''}`}>
             {state.conn === 'error' ? 'connection error' : state.conn !== 'online' ? 'connecting…' : subline}
@@ -542,6 +647,10 @@ export default function ChatView({ conversationId }: { conversationId: string })
       {/* §1.32: the stable pin board — tap cycles pins and jumps. */}
       <PinnedBar conv={conv} canPin={canPin} onJump={(seq) => void jumpToSeq(seq)} />
 
+      {/* v0.8a §1.57: the passive 🍻 banner — a render of an already-visible
+          chip, never a push, gone the moment the mood is. */}
+      {meId ? <DrunkBanner conv={conv} meId={meId} nameFor={nameFor} /> : null}
+
       {/* v0.6 (§1.43): a live watch-together session — one tap locks on. */}
       {watchLive && !watchOpen ? (
         <div className={wtc.banner} role="status">
@@ -553,9 +662,14 @@ export default function ChatView({ conversationId }: { conversationId: string })
         </div>
       ) : null}
 
+      <div className={idm.bgWrap}>
+      {/* §1.60: the media + scrim paint behind the scroll (my view only). */}
+      {background ? <ChatBackground attachment={background} /> : null}
+      {/* §1.58: the one allowed looping overlay — behind bubbles, low opacity. */}
+      {rainActive ? <div className={idm.rain} aria-hidden /> : null}
       <div
         ref={scrollRef}
-        className={`${styles.scroll} ${wallpaperClassName(exp, prefs?.wallpaper)}`.trim()}
+        className={scrollClass}
         onScroll={(e) => {
           const el = e.currentTarget;
           stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -613,6 +727,7 @@ export default function ChatView({ conversationId }: { conversationId: string })
           </div>
         ))}
       </div>
+      </div>
 
       {/* v0.5b §1.40: ONE gentle review prompt after a listing DM wraps up. */}
       {meId && conv.type === 'dm' ? (
@@ -621,6 +736,16 @@ export default function ChatView({ conversationId }: { conversationId: string })
 
       {/* Typing is gateway-dropped in channels (§2.11) — don't render the slot. */}
       {!isChannel ? <TypingIndicator conversation={conv} /> : null}
+
+      {/* v0.8a §1.57: live 10 s undo pills on my drunk-mode sends — tap and
+          the message vanishes (no "deleted" stub, no trace). */}
+      {undoables.length > 0 ? (
+        <UndoPillRow
+          items={undoables}
+          onUndo={(seq) => void undoSend(seq)}
+          onPrune={() => setUndoables((prev) => prev.filter((u) => u.until > Date.now()))}
+        />
+      ) : null}
 
       {replyTo ? (
         <div className={soc.replyBar}>
@@ -711,6 +836,22 @@ export default function ChatView({ conversationId }: { conversationId: string })
           }}
         />
       ) : null}
+      {drunkAsk ? (
+        // §1.57 cold-contact "you sure?" — client-side, judgement-free; the
+        // draft survives a "hold off".
+        <DrunkConfirmSheet
+          text={`You're in drunk mode, and you haven't talked ${peer ? `to ${title}` : 'in here'} in a while (or ever). Tonight-you is sure?`}
+          confirmLabel="Send it 🍻"
+          onConfirm={() => {
+            drunkAsk.resolve(true);
+            setDrunkAsk(null);
+          }}
+          onCancel={() => {
+            drunkAsk.resolve(false);
+            setDrunkAsk(null);
+          }}
+        />
+      ) : null}
       {tttPickOpen && meId ? (
         <TttChallengeSheet
           conv={conv}
@@ -720,6 +861,51 @@ export default function ChatView({ conversationId }: { conversationId: string })
           onPick={(opponentId) => startTtt(opponentId)}
         />
       ) : null}
+    </div>
+  );
+}
+
+/** One undoable drunk-mode send (v0.8a §1.57). */
+interface UndoableSend {
+  seq: number;
+  until: number;
+  snippet: string;
+}
+
+/**
+ * v0.8a §1.57: the undo pill row — its own component so the 1 s countdown
+ * tick only runs while pills exist (ChatView itself stays on coarse clocks).
+ */
+function UndoPillRow({
+  items,
+  onUndo,
+  onPrune,
+}: {
+  items: UndoableSend[];
+  onUndo: (seq: number) => void;
+  onPrune: () => void;
+}) {
+  const now = useNow(500);
+  useEffect(() => {
+    if (items.some((u) => u.until <= now)) onPrune();
+  }, [items, now, onPrune]);
+  const live = items.filter((u) => u.until > now);
+  if (live.length === 0) return null;
+  return (
+    <div className={idm.undoRow}>
+      {live.map((u) => (
+        <button
+          key={u.seq}
+          type="button"
+          className={idm.undoPill}
+          aria-label={`Unsend the last message (${Math.max(0, Math.ceil((u.until - now) / 1000))} seconds left)`}
+          onClick={() => onUndo(u.seq)}
+        >
+          <strong>↩ Undo</strong>
+          {u.snippet ? <span className={idm.undoSnippet}>{u.snippet}</span> : null}
+          <span>{Math.max(0, Math.ceil((u.until - now) / 1000))}s</span>
+        </button>
+      ))}
     </div>
   );
 }
@@ -851,6 +1037,10 @@ function MessageRow({
   const swipeRef = useRef<{ x: number; y: number; fired: boolean } | null>(null);
   const bubbleWrapRef = useRef<HTMLDivElement | null>(null);
   const own = message.sender_id === meId;
+  // v0.8a §1.58 mood-reactive bubbles: tap a drunk sender's crooked bubble to
+  // straighten it; reduced motion kills every effect unconditionally.
+  const [straightened, setStraightened] = useState(false);
+  const reducedMotion = useReducedMotion();
 
   const cancelPress = useCallback(() => {
     if (pressTimer.current !== null) {
@@ -980,6 +1170,11 @@ function MessageRow({
     );
   }
 
+  // v0.8a §1.57: an UNDONE drunk-mode send renders NOTHING AT ALL — no
+  // "message deleted" stub, no row, no trace. The seq survives server-side
+  // (golden rule 2); this client simply never paints it.
+  if (deleted && message.metadata.undone) return null;
+
   // §1.25/§1.30 tombstone: body/metadata nulled, attachments dropped; the row
   // (and its seq) survives so the bubble keeps its position. The DTO does not
   // say WHICH path tombstoned it, so the copy follows the conversation's TTL.
@@ -1069,6 +1264,28 @@ function MessageRow({
           })()
       : null;
 
+  // v0.8a: the sender's identity row (their UserPublic rides participants) —
+  // drives the §1.58 animated sender name AND the mood-reactive effect.
+  const senderUser = own
+    ? state.me
+    : conv.participants.find((x) => x.user.id === message.sender_id)?.user ?? null;
+  // §1.58 mood-reactive bubbles: driven by the sender's mood ALREADY visible
+  // to this viewer in the DTOs (per-viewer resolution happened server-side);
+  // kinds preset/swing/drunk only (bubbleEffectFor), my mood_effects toggle
+  // and reduced motion both kill it. Entry-only, except the drunk settle.
+  const moodFx =
+    state.settings?.mood_effects !== false && !reducedMotion
+      ? bubbleEffectFor(senderUser?.mood ?? null)
+      : null;
+  const fxClass =
+    moodFx === 'wobble'
+      ? `${fresh ? ` ${idm.fxWobbleIn}` : ''}${!straightened ? ` ${own ? idm.fxCrookedOwn : idm.fxCrooked}` : ''}`
+      : moodFx === 'bounce' && fresh
+        ? ` ${idm.fxBounceIn}`
+        : moodFx === 'rain' && fresh
+          ? ` ${idm.fxFallIn}`
+          : '';
+
   const toggle = (emoji: string, mine: boolean) =>
     void toggleReaction(message.conversation_id, message.seq, emoji, mine);
 
@@ -1123,13 +1340,24 @@ function MessageRow({
     </button>
   ) : (
     <div
-      className={`${styles.bubble}${justOpened ? ` ${exp.capsuleOpened}` : ''}`}
+      className={`${styles.bubble}${justOpened ? ` ${exp.capsuleOpened}` : ''}${fxClass}`}
       onTouchStart={startPress}
       onTouchEnd={cancelPress}
       onTouchMove={cancelPress}
       onTouchCancel={cancelPress}
+      // §1.58: the tipsy bubble settles ≤2° crooked — a tap straightens it.
+      onClick={moodFx === 'wobble' && !straightened ? () => setStraightened(true) : undefined}
     >
-      {sender ? <div className={styles.sender}>{sender}</div> : null}
+      {sender ? (
+        <div className={styles.sender}>
+          {/* §1.58: group sender names are a pinned animated-name site. */}
+          {senderUser && message.sender_id ? (
+            <StyledName userId={senderUser.id} style={senderUser.name_style} name={sender} />
+          ) : (
+            sender
+          )}
+        </div>
+      ) : null}
       {message.metadata.forwarded_from ? (
         // §1.31: original-author snapshot — the forwarder stays the sender.
         <span className={soc.fwdTag}>↪ forwarded from {message.metadata.forwarded_from.display_name}</span>
@@ -1521,6 +1749,8 @@ function LocationDrop({
             username: p.user.username,
             display_name: p.user.display_name,
             avatar: p.user.avatar,
+            mood: p.user.mood,
+            name_style: p.user.name_style,
           });
         }
       }

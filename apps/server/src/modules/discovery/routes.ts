@@ -48,6 +48,7 @@ interface CardRow {
   expires_at: Date | string;
   username: string;
   display_name: string;
+  name_style: string;
   avatar_status: string;
   avatar_version: number;
   avatar_static_key: string | null;
@@ -76,7 +77,7 @@ async function visibleCards(
     myOptin.scope === 'public' ? sql`TRUE` : myArea ? sql`u.area = ${myArea}` : sql`FALSE`;
   const rows = (await db.execute(sql`
     SELECT o.user_id, o.scope, o.note, o.expires_at,
-           u.username, u.display_name,
+           u.username, u.display_name, u.name_style,
            u.avatar_status, u.avatar_version, u.avatar_static_key, u.avatar_animated_key,
            EXISTS (SELECT 1 FROM discovery_waves w
                    WHERE w.from_user_id = ${meId} AND w.to_user_id = o.user_id) AS waved
@@ -110,6 +111,10 @@ function cardDto(row: CardRow): DiscoveryCard {
       avatarStaticKey: row.avatar_static_key,
       avatarAnimatedKey: row.avatar_animated_key,
     }),
+    // v0.8a: a discovery card is for strangers — mood serializes null here
+    // (§1.57 conservative rule; no per-viewer ctx on this surface).
+    mood: null,
+    name_style: ((row.name_style ?? 'none') as UserLite['name_style']),
   };
   return {
     user,

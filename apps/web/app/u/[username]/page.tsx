@@ -18,14 +18,20 @@ import type {
 import { api, ApiError } from '@/lib/api';
 import { connectionStateFor, connectTo, refreshConnections, removeConnection } from '@/lib/connections';
 import { formatLastSeen } from '@/lib/format';
+import { refreshMyMood } from '@/lib/mood';
 import { upsertConversation } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import { useReducedMotion } from '@/lib/useReducedMotion';
+import ActivityStrip from '@/components/ActivityStrip';
 import AppShell from '@/components/AppShell';
 import Avatar from '@/components/Avatar';
+import MoodChip from '@/components/MoodChip';
+import MoodSheet from '@/components/MoodSheet';
 import ReportSheet from '@/components/ReportSheet';
+import StyledName from '@/components/StyledName';
 import TrustPanel from '@/components/TrustPanel';
 import bz from '@/components/beacons.module.css';
+import idm from '@/components/identity.module.css';
 import st from '@/components/social.module.css';
 
 function PublicProfile({ username }: { username: string }) {
@@ -41,6 +47,8 @@ function PublicProfile({ username }: { username: string }) {
   const [blocked, setBlocked] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // v0.8a §1.57: the mood picker lives on MY OWN profile.
+  const [moodOpen, setMoodOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,6 +93,15 @@ function PublicProfile({ username }: { username: string }) {
   const presence = shown ? state.presence.get(shown.id) : undefined;
   const isMe = shown !== null && shown.id === state.me?.id;
   const connState = shown && !isMe && state.connections ? connectionStateFor(shown.id) : null;
+
+  // My own full mood state (fade time, owner-only) for the picker card.
+  useEffect(() => {
+    if (isMe) void refreshMyMood().catch(() => undefined);
+  }, [isMe]);
+
+  // v0.8a §1.57: the chip to render — mine stays live via me.mood/moodState;
+  // someone else's rides their (per-viewer resolved) UserPublic.
+  const shownMood = isMe ? state.me?.mood ?? null : shown?.mood ?? null;
 
   async function block(): Promise<void> {
     if (!shown || blockBusy) return;
@@ -269,15 +286,40 @@ function PublicProfile({ username }: { username: string }) {
             {/* Profile pages render the animated WebP (motion-gated, §5.4). */}
             <Avatar avatar={shown.avatar} name={shown.display_name} size={96} animated />
             <div style={{ flex: 1, minWidth: 0 }}>
-              <h2 style={{ margin: 0 }}>{shown.display_name}</h2>
+              {/* v0.8a §1.58: the profile page is a pinned animated-name site. */}
+              <h2 style={{ margin: 0 }}>
+                <StyledName userId={shown.id} style={shown.name_style} name={shown.display_name} />
+              </h2>
               <p className="muted small" style={{ margin: '2px 0 0' }}>
                 @{shown.username}
               </p>
+              {/* v0.8a §1.57: the mood chip — server-resolved for this viewer;
+                  the owner's own fade time shows subtly, never to others. */}
+              {shownMood || isMe ? (
+                <p style={{ margin: '6px 0 0', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  {shownMood ? <MoodChip mood={shownMood} /> : null}
+                  {isMe && shownMood && state.moodState?.expires_at ? (
+                    <span className={idm.moodFade}>
+                      fades by{' '}
+                      {new Date(state.moodState.expires_at).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </span>
+                  ) : null}
+                  {isMe ? (
+                    <button type="button" className="btn btn-ghost" onClick={() => setMoodOpen(true)}>
+                      {shownMood ? 'Change mood' : '+ Set a mood'}
+                    </button>
+                  ) : null}
+                </p>
+              ) : null}
               <p className="muted small" style={{ margin: '4px 0 0' }}>
                 {presence?.online ? 'online' : formatLastSeen(presence?.last_seen_at ?? shown.last_seen_at)}
               </p>
             </div>
           </div>
+          {moodOpen ? <MoodSheet onClose={() => setMoodOpen(false)} /> : null}
 
           {!isMe ? (
             <div className="card" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -346,6 +388,11 @@ function PublicProfile({ username }: { username: string }) {
               })}
             </div>
           ) : null}
+
+          {/* v0.8a §1.59: recent activity — server-resolved per viewer
+              (per-kind setting ∩ the thing's own audience); invisible items
+              were silently dropped, moods never appear. */}
+          <ActivityStrip username={shown.username} isMe={isMe} />
 
           {/* v0.5b §1.40: marketplace trust — safety information from real
               listing contacts, shown ONLY here (never ranked, never compared;

@@ -17,6 +17,7 @@ import { userPrivateDto } from '../../lib/dto.js';
 import { ApiError, conflict, notFound, rateLimited } from '../../lib/errors.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
 import { acceptInvite, findInviteByToken } from '../invites/service.js';
+import { newestReleaseVersion } from '../releases/routes.js';
 import { authed, requireAuth } from './guard.js';
 import {
   ARGON2_OPTS,
@@ -76,6 +77,9 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
           // nulled by the nightly retention GC after IP_RETENTION_DAYS, like
           // sessions.ip.
           registrationIp: storableIp(req.ip),
+          // v0.8a (§1.61): stamp the newest shipped release at signup so
+          // day-one users never get a what's-new card storm.
+          lastSeenRelease: await newestReleaseVersion(),
         })
         .returning();
       user = inserted[0]!;

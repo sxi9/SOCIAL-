@@ -84,6 +84,41 @@ export const users = pgTable(
     // Captured at register; NULLED by the nightly retention GC after
     // IP_RETENTION_DAYS (90) — sessions.ip ages out on the same sweep.
     registrationIp: inet('registration_ip'),
+    // v0.8a moods (migration 0009, API.md §1.57, ADR-018) — columns, not a
+    // table: the mood rides EVERY UserLite serialization, so it must be the
+    // same one-row read as the privacy settings (the ADR-009 pattern). All
+    // NULL = no mood. Reads filter mood_expires_at > now() LIVE (never
+    // stale); the sweep clears columns + fans user.updated. kind 'swing'
+    // keeps the chosen set in mood_swing_set ([{emoji,label}…], Zod shape
+    // authority) and the worker rotates the current chip every
+    // MOOD_SWING_INTERVAL_S ± jitter from mood_swing_rotated_at. Moods are
+    // NEVER written to activities and never pushed (ADR-018).
+    moodEmoji: text('mood_emoji'),
+    moodLabel: text('mood_label'),
+    moodKind: text('mood_kind'),
+    moodVisibility: text('mood_visibility').notNull().default('everyone'),
+    moodSwingSet: jsonb('mood_swing_set'),
+    moodExpiresAt: timestamptz('mood_expires_at'),
+    moodSwingRotatedAt: timestamptz('mood_swing_rotated_at'),
+    // v0.8a animated names (migration 0009, API.md §1.58): pure CSS text
+    // effect, serialized on UserLite/UserPublic; 'surprise' rotation is
+    // client-deterministic (no server state).
+    nameStyle: text('name_style').notNull().default('none'),
+    // v0.8a (§1.58): per-VIEWER toggle — do I render other people's
+    // mood-reactive bubble effects. Settings column for cross-device sync.
+    moodEffects: boolean('mood_effects').notNull().default(true),
+    // v0.8a activity privacy (migration 0009, API.md §1.59): per-GROUP
+    // visibility of my activity strip (ACTIVITY_KIND_GROUP maps kinds here).
+    // Always INTERSECTED with the underlying object's audience at read time —
+    // these can only narrow, never widen.
+    activityBeacons: text('activity_beacons').notNull().default('connections'),
+    activityPosts: text('activity_posts').notNull().default('connections'),
+    activityListings: text('activity_listings').notNull().default('connections'),
+    activityGames: text('activity_games').notNull().default('connections'),
+    // v0.8a (§1.61): "new since your last visit" cursor — the newest release
+    // version the user dismissed/saw. Register stamps the current newest so
+    // new accounts never get a card storm.
+    lastSeenRelease: text('last_seen_release'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },
@@ -112,6 +147,62 @@ export const users = pgTable(
       'users_group_add_policy_check',
       sql`${t.groupAddPolicy} IN ('everyone','dm_partners','nobody')`,
     ),
+    // ---- v0.8a (migration 0009) ----
+    moodKindCheck: check(
+      'users_mood_kind_check',
+      sql`${t.moodKind} IN ('preset','custom','swing','drunk')`,
+    ),
+    moodVisibilityCheck: check(
+      'users_mood_visibility_check',
+      sql`${t.moodVisibility} IN ('everyone','connections','nobody')`,
+    ),
+    // All-or-nothing mood shape: a mood has emoji+label+kind+expiry together.
+    moodShapeCheck: check(
+      'users_mood_shape_check',
+      sql`((${t.moodKind} IS NULL) = (${t.moodEmoji} IS NULL))
+          AND ((${t.moodKind} IS NULL) = (${t.moodLabel} IS NULL))
+          AND ((${t.moodKind} IS NULL) = (${t.moodExpiresAt} IS NULL))`,
+    ),
+    // The swing set exists exactly for kind='swing' (Zod pins entry shape).
+    moodSwingShapeCheck: check(
+      'users_mood_swing_shape_check',
+      sql`(${t.moodKind} = 'swing') = (${t.moodSwingSet} IS NOT NULL)`,
+    ),
+    moodEmojiCheck: check(
+      'users_mood_emoji_check',
+      sql`char_length(${t.moodEmoji}) BETWEEN 1 AND 16`,
+    ),
+    moodLabelCheck: check(
+      'users_mood_label_check',
+      sql`char_length(${t.moodLabel}) BETWEEN 1 AND 24`,
+    ),
+    nameStyleCheck: check(
+      'users_name_style_check',
+      sql`${t.nameStyle} IN ('none','glow','shimmer','rainbow','surprise')`,
+    ),
+    activityBeaconsCheck: check(
+      'users_activity_beacons_check',
+      sql`${t.activityBeacons} IN ('public','connections','private')`,
+    ),
+    activityPostsCheck: check(
+      'users_activity_posts_check',
+      sql`${t.activityPosts} IN ('public','connections','private')`,
+    ),
+    activityListingsCheck: check(
+      'users_activity_listings_check',
+      sql`${t.activityListings} IN ('public','connections','private')`,
+    ),
+    activityGamesCheck: check(
+      'users_activity_games_check',
+      sql`${t.activityGames} IN ('public','connections','private')`,
+    ),
+    // Expiry sweep + swing-rotation walks (partial: most users have no mood).
+    moodExpiryIdx: index('users_mood_expiry_idx')
+      .on(t.moodExpiresAt)
+      .where(sql`${t.moodExpiresAt} IS NOT NULL`),
+    moodSwingIdx: index('users_mood_swing_idx')
+      .on(t.moodSwingRotatedAt)
+      .where(sql`${t.moodKind} = 'swing'`),
   }),
 );
 
@@ -918,10 +1009,23 @@ export const conversationPrefs = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     theme: text('theme'),
     wallpaper: text('wallpaper'),
+    // v0.8a (migration 0009, API.md §1.60): my GIF/video chat background —
+    // MY OWN upload (uploader ownership checked at PATCH), kind image|video,
+    // §1.60 caps. SET NULL keeps the prefs row when the attachment goes; the
+    // orphan GC anti-joins conversation_prefs_background_idx so a referenced
+    // attachment is never collected (it cannot ride the attachments_orphan_idx
+    // partial-index pattern — the reference points the other way).
+    backgroundAttachmentId: uuid('background_attachment_id').references(
+      (): AnyPgColumn => attachments.id,
+      { onDelete: 'set null' },
+    ),
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.conversationId, t.userId] }),
+    backgroundIdx: index('conversation_prefs_background_idx')
+      .on(t.backgroundAttachmentId)
+      .where(sql`${t.backgroundAttachmentId} IS NOT NULL`),
     themeCheck: check(
       'conversation_prefs_theme_check',
       sql`${t.theme} IN ('classic','sunset','ocean','forest','grape','bubblegum','mono','midnight')`,
@@ -1670,5 +1774,44 @@ export const expectationFeedback = pgTable(
     ),
     onceIdx: uniqueIndex('expectation_feedback_once').on(t.userId, t.conversationId),
     aggregateIdx: index('expectation_feedback_aggregate_idx').on(t.context, t.verdict),
+  }),
+);
+
+// ================================ activities =================================
+// v0.8a (migration 0009, API.md §1.59, FEATURES #76). The profile activity
+// strip's source rows, written by the OWNING module's transaction through the
+// ONE helper (src/lib/activity.ts recordActivity): beacon create → beacon_lit,
+// spark → beacon_sparked (creator only), POST /api/posts → post_created,
+// POST /api/listings → listing_posted, a finished puzzle attempt →
+// puzzle_played, a server-validated tic-tac-toe win → game_won. ref is the
+// minimal pointer/facts jsonb (shape authority: shared ActivitySummary
+// resolution, §1.59) — NEVER a denormalized audience: visibility is resolved
+// per viewer at read time as (per-group users.activity_* setting) ∩ (the
+// underlying object's own audience), so an item can never leak past what the
+// viewer could already see. Rows older than ACTIVITY_RETENTION_DAYS (30) are
+// hard-deleted by the nightly gc sweep. MOODS ARE NEVER RECORDED HERE — no
+// mood kind exists in the CHECK, by contract (PSYCHOLOGY: no trace).
+
+export const activities = pgTable(
+  'activities',
+  {
+    id: uuid('id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    ref: jsonb('ref').notNull(),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    kindCheck: check(
+      'activities_kind_check',
+      sql`${t.kind} IN ('beacon_lit','beacon_sparked','post_created','listing_posted','puzzle_played','game_won')`,
+    ),
+    refCheck: check('activities_ref_check', sql`jsonb_typeof(${t.ref}) = 'object'`),
+    // The strip read: newest-first per user.
+    byUserIdx: index('activities_by_user_idx').on(t.userId, sql`${t.createdAt} DESC`),
+    // The 30-day retention sweep.
+    sweepIdx: index('activities_sweep_idx').on(t.createdAt),
   }),
 );

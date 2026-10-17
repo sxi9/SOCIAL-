@@ -19,10 +19,12 @@ import {
 } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
 import { createBeacon, fmtCountdown, presetWindow, rememberVibeRecent, type WhenPreset } from '@/lib/beacons';
+import { isSelfDrunk } from '@/lib/mood';
 import { setMe, setSettings } from '@/lib/store';
 import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
+import DrunkConfirmSheet from './DrunkConfirmSheet';
 import { LocationField } from './LocationPicker';
 import Portal from './Portal';
 import VibePicker, { vibeDraftValid, type VibeDraft } from './VibePicker';
@@ -58,6 +60,8 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
   const [areaBusy, setAreaBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // v0.8a §1.57: pending drunk-mode "you sure?" before a PUBLIC beacon.
+  const [drunkAsk, setDrunkAsk] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -124,8 +128,14 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
     }
   }
 
-  async function light(): Promise<void> {
+  async function light(force = false): Promise<void> {
     if (!vibeDraftValid(vibeDraft) || vibeDraft.vibe === null || busy) return;
+    // v0.8a §1.57 drunk guardrail: a PUBLIC beacon while drunk asks first
+    // (client-side only; the server records nothing about hesitation).
+    if (!force && audience === 'public' && isSelfDrunk()) {
+      setDrunkAsk(true);
+      return;
+    }
     const w = presetWindow(when);
     if (!w.valid) {
       setError('That window already closed — pick another time.');
@@ -313,6 +323,17 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
           {busy ? 'Lighting…' : 'Light it 🔥'}
         </button>
       </div>
+      {drunkAsk ? (
+        <DrunkConfirmSheet
+          text="You're in drunk mode and this beacon would be PUBLIC — anyone on this server could join. Tonight-you is sure?"
+          confirmLabel="Light it 🍻"
+          onConfirm={() => {
+            setDrunkAsk(false);
+            void light(true);
+          }}
+          onCancel={() => setDrunkAsk(false)}
+        />
+      ) : null}
     </div>
     </Portal>
   );

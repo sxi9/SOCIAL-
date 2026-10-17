@@ -6,20 +6,27 @@ import { useRouter } from 'next/navigation';
 import {
   AREA_MAX_CHARS,
   MAX_AVATAR_SOURCE_BYTES,
+  NAME_STYLES,
   type AvatarMotion,
   type AvatarResponse,
+  type NameStyle,
   type UpdateMeResponse,
 } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
 import { logout } from '@/lib/connection';
+import { refreshMyMood } from '@/lib/mood';
 import { disablePush, enablePush, getPushSubscription, pushSupported } from '@/lib/push';
 import { toast } from '@/lib/toast';
 import { setMe } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import Avatar from '@/components/Avatar';
+import MoodChip from '@/components/MoodChip';
+import MoodSheet from '@/components/MoodSheet';
 import ProfileEditor from '@/components/ProfileEditor';
 import { RescueCard } from '@/components/RescueSheet';
+import StyledName from '@/components/StyledName';
 import TabPage from '@/components/TabPage';
+import idm from '@/components/identity.module.css';
 
 /** v0.7.1 (§1.56): per-browser unblock steps for the 'denied' state — the
  * page cannot re-ask, so the row says exactly where the switch lives. */
@@ -49,6 +56,9 @@ function ProfileSettings() {
   const [bio, setBio] = useState('');
   const [area, setArea] = useState('');
   const [motion, setMotion] = useState<AvatarMotion>('auto');
+  // v0.8a §1.58 animated name + §1.57 mood picker entry point.
+  const [nameStyle, setNameStyle] = useState<NameStyle>('none');
+  const [moodOpen, setMoodOpen] = useState(false);
   const seededRef = useRef(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,8 +80,14 @@ function ProfileSettings() {
       setBio(me.bio);
       setArea(me.area ?? '');
       setMotion(me.avatar_motion);
+      setNameStyle(me.name_style);
     }
   }, [me]);
+
+  // My full mood state (fade time) for the mood card — owner-only read.
+  useEffect(() => {
+    void refreshMyMood().catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     refreshPushStatus();
@@ -104,6 +120,8 @@ function ProfileSettings() {
         // Coarse self-declared area (§1.13): null clears it (and with it all
         // 'area' beacon visibility, both directions). Owner-private.
         area: area.trim() === '' ? null : area.trim(),
+        // v0.8a §1.58: the animated-name style — identity, not privacy.
+        name_style: nameStyle,
       });
       setMe(res.user);
       setSaved(true);
@@ -256,6 +274,40 @@ function ProfileSettings() {
             </p>
           </div>
           <div className="field">
+            {/* v0.8a §1.58: animated display name with a live preview.
+                'surprise' rotates daily — same style for every viewer. */}
+            <label htmlFor="pf-name-style">Name style</label>
+            <select
+              id="pf-name-style"
+              className="input"
+              value={nameStyle}
+              onChange={(e) => setNameStyle(e.target.value as NameStyle)}
+            >
+              {NAME_STYLES.map((s) => (
+                <option key={s} value={s}>
+                  {s === 'none'
+                    ? 'Off'
+                    : s === 'surprise'
+                      ? 'Surprise me (changes daily)'
+                      : s[0].toUpperCase() + s.slice(1)}
+                </option>
+              ))}
+            </select>
+            {nameStyle !== 'none' && me ? (
+              <p style={{ margin: '6px 0 0', fontSize: 16, fontWeight: 600 }}>
+                <StyledName
+                  userId={me.id}
+                  style={nameStyle}
+                  name={displayName.trim() || me.display_name}
+                />
+              </p>
+            ) : null}
+            <p className="muted small" style={{ margin: '2px 0 0' }}>
+              Shows on your profile, chat headers and group messages. Reduced-motion viewers see
+              a calm static tint instead.
+            </p>
+          </div>
+          <div className="field">
             <label htmlFor="pf-motion">Animated avatars</label>
             <select
               id="pf-motion"
@@ -280,6 +332,40 @@ function ProfileSettings() {
           </button>
         </div>
 
+        {/* v0.8a §1.57: the mood picker entry point — the chip auto-expires
+            (~4 h); the fade time shows inside the sheet, owner-only. */}
+        <h2>Mood</h2>
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {state.moodState?.mood ? (
+              <p style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <MoodChip mood={state.moodState.mood} />
+                {state.moodState.expires_at ? (
+                  <span className={idm.moodFade}>
+                    fades by{' '}
+                    {new Date(state.moodState.expires_at).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </span>
+                ) : null}
+              </p>
+            ) : (
+              <>
+                <strong>No mood set</strong>
+                <p className="muted small" style={{ margin: '4px 0 0' }}>
+                  A chip that says how you are — presets, your own word, 🎢 swing mode or 🍻
+                  drunk mode. It fades on its own, no trace.
+                </p>
+              </>
+            )}
+          </div>
+          <button type="button" className="btn" onClick={() => setMoodOpen(true)}>
+            {state.moodState?.mood ? 'Change' : 'Set a mood'}
+          </button>
+        </div>
+        {moodOpen ? <MoodSheet onClose={() => setMoodOpen(false)} /> : null}
+
         {/* v0.5a §1.37: interests, work/skills, the 3-GIF strip. */}
         <ProfileEditor />
 
@@ -299,6 +385,19 @@ function ProfileSettings() {
         {/* v0.6 §1.46: one tap pings up to 3 friends to call you out of a
             boring situation — the one push that cuts through mutes. */}
         <RescueCard />
+
+        {/* v0.8a §1.61: the feature directory — search + Try-it deep links. */}
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <strong>✨ Things you can do</strong>
+            <p className="muted small" style={{ margin: '4px 0 0' }}>
+              Every feature on this server, one line each, with a Try-it link.
+            </p>
+          </div>
+          <Link href="/things" className="btn">
+            Browse
+          </Link>
+        </div>
 
         <h2>Notifications</h2>
         <div className="card">

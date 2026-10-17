@@ -476,6 +476,11 @@ function rawUser(o: Record<string, unknown>): UserRow {
     avatarVersion: Number(o.avatar_version),
     avatarStaticKey: (o.avatar_static_key as string | null) ?? null,
     avatarAnimatedKey: (o.avatar_animated_key as string | null) ?? null,
+    // v0.8a (§1.58): name_style is viewer-independent identity and rides
+    // every author/reactor UserLite. Mood columns are deliberately NOT
+    // mapped: feed serialization is broadcast-shaped here, and §1.57's
+    // conservative rule serializes mood null without a per-viewer ctx.
+    nameStyle: ((o.name_style as string | undefined) ?? 'none'),
   } as UserRow;
 }
 

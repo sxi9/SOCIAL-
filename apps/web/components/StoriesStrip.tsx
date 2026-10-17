@@ -42,6 +42,8 @@ export default function StoriesStrip() {
     username: me.username,
     display_name: me.display_name,
     avatar: me.avatar,
+    mood: me.mood,
+    name_style: me.name_style,
   };
 
   const openViewer = (startAuthorId: string) => {

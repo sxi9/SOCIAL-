@@ -4,24 +4,35 @@
 // pattern + per-member nicknames — ALL personal, my view only, labeled as
 // such) and §1.25 disappearing messages (conversation-wide TTL; DM = anyone,
 // group = admin only — the server enforces, this mirrors).
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type {
   ChatTheme,
   ChatWallpaper,
   ConversationListItem,
   ConversationResponse,
+  UploadResponse,
 } from '@socialchat/shared';
-import { CHAT_THEMES, CHAT_WALLPAPERS, DISAPPEAR_TTL_OPTIONS_S, NICKNAME_MAX_CHARS } from '@socialchat/shared';
+import {
+  CHAT_BG_VIDEO_MAX_BYTES,
+  CHAT_BG_VIDEO_MAX_DURATION_S,
+  CHAT_THEMES,
+  CHAT_WALLPAPERS,
+  DISAPPEAR_TTL_OPTIONS_S,
+  MAX_IMAGE_BYTES,
+  NICKNAME_MAX_CHARS,
+} from '@socialchat/shared';
 import { useRouter } from 'next/navigation';
 import { api, ApiError } from '@/lib/api';
 import { THEME_INFO, WALLPAPER_INFO, updatePrefs, wallpaperClassName } from '@/lib/prefs';
 import * as store from '@/lib/store';
+import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
 import ChannelMembersSheet from './ChannelMembersSheet';
 import { InviteButton } from './InviteSheet';
 import sheetStyles from './beacons.module.css';
 import exp from './expression.module.css';
+import idm from './identity.module.css';
 
 const TTL_LABELS: Record<number, string> = {
   3600: '1 hour',
@@ -44,6 +55,76 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
   const [ttlBusy, setTtlBusy] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false);
   const [leaveBusy, setLeaveBusy] = useState(false);
+
+  // v0.8a §1.60 chat background: my own upload, image/GIF (≤ MAX_IMAGE_BYTES)
+  // or a short clip (≤ 25 MB / ≤ 30 s). A pending video has no probed
+  // duration yet, so we PATCH only once attachment.ready lands (re-PATCH
+  // rule in the contract).
+  const [bgBusy, setBgBusy] = useState(false);
+  const [bgError, setBgError] = useState<string | null>(null);
+  const [bgPendingId, setBgPendingId] = useState<string | null>(null);
+  const bgFileRef = useRef<HTMLInputElement | null>(null);
+
+  const bgLimits = `Images and GIFs up to ${Math.round(MAX_IMAGE_BYTES / (1024 * 1024))} MB, clips up to ${Math.round(
+    CHAT_BG_VIDEO_MAX_BYTES / (1024 * 1024)
+  )} MB and ${CHAT_BG_VIDEO_MAX_DURATION_S} s.`;
+
+  async function applyBackground(attachmentId: string | null): Promise<void> {
+    setBgError(null);
+    try {
+      await updatePrefs(conv.id, { background_attachment_id: attachmentId });
+      toast(attachmentId ? 'Background set' : 'Background removed');
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'bad_background') {
+        setBgError(`That file can’t be a background. ${bgLimits}`);
+      } else {
+        setBgError('Could not update the background — try again.');
+      }
+    }
+  }
+
+  // A pending upload (video poster still transcoding) resolves via the
+  // attachment.ready the store mirrors — PATCH the moment it lands.
+  const readyBg = bgPendingId ? state.readyAttachments.get(bgPendingId) : undefined;
+  useEffect(() => {
+    if (!bgPendingId || !readyBg) return;
+    setBgPendingId(null);
+    if (readyBg.status === 'ready') void applyBackground(readyBg.id);
+    else setBgError('That clip failed to process — try another one.');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bgPendingId, readyBg]);
+
+  async function uploadBackground(file: File): Promise<void> {
+    setBgError(null);
+    const isVideo = file.type.startsWith('video/');
+    // Pre-check what the server will refuse anyway (§1.60 caps).
+    if (isVideo && file.size > CHAT_BG_VIDEO_MAX_BYTES) {
+      setBgError(`That clip is too big. ${bgLimits}`);
+      return;
+    }
+    if (!isVideo && file.size > MAX_IMAGE_BYTES) {
+      setBgError(`That image is too big. ${bgLimits}`);
+      return;
+    }
+    setBgBusy(true);
+    try {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      // The ordinary §1.6 pipeline — sniffed MIME, EXIF strip, worker poster.
+      const res = await api.postForm<UploadResponse>('/api/uploads', form);
+      if (res.attachment.status === 'ready') {
+        await applyBackground(res.attachment.id);
+      } else {
+        setBgPendingId(res.attachment.id);
+      }
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 413) setBgError(`Too large. ${bgLimits}`);
+      else if (err instanceof ApiError && err.status === 415) setBgError('That file type is not supported.');
+      else setBgError('Upload failed — try again.');
+    } finally {
+      setBgBusy(false);
+    }
+  }
 
   const isChannel = conv.type === 'channel';
   const channelRole = conv.participants.find((p) => p.user.id === meId)?.role ?? 'member';
@@ -223,6 +304,63 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
             </button>
           ))}
         </div>
+
+        {/* v0.8a §1.60: GIF/video background — personal like every pref; it
+            paints behind the bubbles under a scrim, visually replacing the
+            wallpaper while set (both survive in prefs). */}
+        <div className={sheetStyles.sheetLabel}>
+          Background <span className={exp.personalTag}>👀 only you see this</span>
+        </div>
+        <div className={idm.bgRow}>
+          {prefs?.background ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              className={idm.bgPreview}
+              src={prefs.background.thumb_url ?? prefs.background.url}
+              alt="Current chat background"
+            />
+          ) : null}
+          <input
+            ref={bgFileRef}
+            type="file"
+            hidden
+            accept="image/*,video/mp4,video/webm"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void uploadBackground(f);
+              e.target.value = '';
+            }}
+          />
+          <button
+            type="button"
+            className="btn"
+            disabled={bgBusy || bgPendingId !== null}
+            onClick={() => bgFileRef.current?.click()}
+          >
+            {bgBusy
+              ? 'Uploading…'
+              : bgPendingId
+                ? 'Processing…'
+                : prefs?.background
+                  ? 'Replace'
+                  : 'Add a GIF or clip'}
+          </button>
+          {prefs?.background ? (
+            <button
+              type="button"
+              className="btn btn-danger"
+              disabled={bgBusy}
+              onClick={() => void applyBackground(null)}
+            >
+              Remove
+            </button>
+          ) : null}
+        </div>
+        <p className="muted small" style={{ margin: '0 0 10px' }}>
+          Your own upload, dimmed behind the bubbles — muted, looped, paused off-screen.{' '}
+          {bgLimits}
+        </p>
+        {bgError ? <p className="error-text">{bgError}</p> : null}
 
         <div className={sheetStyles.sheetLabel}>
           Nicknames <span className={exp.personalTag}>👀 only you see these</span>

@@ -3,6 +3,7 @@
 // v0.5b (§1.41): + the IP retention sweep (users.registration_ip, sessions.ip).
 import { and, eq, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import {
+  ACTIVITY_RETENTION_DAYS,
   IP_RETENTION_DAYS,
   ORPHAN_ATTACHMENT_TTL_H,
   SHARE_IMPORT_TTL_DAYS,
@@ -56,11 +57,26 @@ export async function runIpRetention(now = Date.now()): Promise<void> {
   `);
 }
 
+/**
+ * v0.8a activity retention (API.md §1.59): hard-DELETE strip rows older than
+ * ACTIVITY_RETENTION_DAYS (via activities_sweep_idx) — the strip is recent
+ * activity, not an archive someone can scroll a life out of (ADR-018). No
+ * fan-out: pull-based, no WS event exists for activity. Exported separately
+ * so tests can run it without the MinIO-dependent object sweeps.
+ */
+export async function runActivityRetention(now = Date.now()): Promise<void> {
+  const cutoff = new Date(now - ACTIVITY_RETENTION_DAYS * 24 * 3600 * 1000);
+  await db.delete(schema.activities).where(lt(schema.activities.createdAt, cutoff));
+}
+
 export async function runGc(): Promise<void> {
   const now = Date.now();
 
   // 0. IP retention (§1.41) — the privacy sweep runs first, unconditionally.
   await runIpRetention(now);
+
+  // 0b. v0.8a (§1.59): the 30-day activity-strip retention.
+  await runActivityRetention(now);
 
   // 1. Orphan attachments: unbound (no message / share import / scheduled row
   //    / post), older than 24 h. v0.5a (migration 0005): the partial orphan
@@ -85,6 +101,13 @@ export async function runGc(): Promise<void> {
         lt(schema.attachments.createdAt, orphanCutoff),
         sql`NOT EXISTS (SELECT 1 FROM stories s WHERE s.attachment_id = ${schema.attachments.id})`,
         sql`NOT EXISTS (SELECT 1 FROM profile_media pm WHERE pm.attachment_id = ${schema.attachments.id})`,
+        // v0.8a (§1.60): chat backgrounds cannot ride the binding-column
+        // pattern (the reference points prefs→attachment and one upload may
+        // back several of the owner's chats) — the sweep ANTI-JOINS
+        // conversation_prefs_background_idx instead; clearing the last
+        // reference re-orphans the attachment for the normal 24 h GC. The
+        // one documented exception to the binding-column rule (ADR-018).
+        sql`NOT EXISTS (SELECT 1 FROM conversation_prefs p WHERE p.background_attachment_id = ${schema.attachments.id})`,
       ),
     );
   await deleteAttachmentsFully(orphans);

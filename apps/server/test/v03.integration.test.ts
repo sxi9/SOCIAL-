@@ -507,7 +507,17 @@ describe.runIf(infra)('v0.3 beacons, privacy, trust', () => {
     expect(flat).not.toMatch(/_at"/);
     expect(flat).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
     for (const u of [...body.seen, ...body.delivered]) {
-      expect(Object.keys(u).sort()).toEqual(['avatar', 'display_name', 'id', 'username']);
+      // v0.8a (§1.57/§1.58) adds mood + name_style to UserLite; still no
+      // timestamp-shaped field anywhere (the flat checks above stay binding —
+      // others never see a mood's expires_at).
+      expect(Object.keys(u).sort()).toEqual([
+        'avatar',
+        'display_name',
+        'id',
+        'mood',
+        'name_style',
+        'username',
+      ]);
     }
 
     // The message itself must exist within my visibility floor: unknown seq

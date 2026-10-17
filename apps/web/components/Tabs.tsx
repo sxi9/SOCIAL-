@@ -10,11 +10,14 @@ import st from './social.module.css';
 
 export type TabKey = 'chats' | 'local' | 'feed' | 'profile';
 
-const TABS: { key: TabKey; href: string; label: string }[] = [
-  { key: 'chats', href: '/', label: 'Chats' },
-  { key: 'local', href: '/local', label: 'Local' },
-  { key: 'feed', href: '/feed', label: 'Feed' },
-  { key: 'profile', href: '/settings/profile', label: 'Profile' },
+// `tour` = the v0.8a §1.61 spotlight-tour anchor (TOUR_STEPS[].anchor). The
+// contract's 'tab-plans' step has no tab of its own since Plans became Local
+// (FEATURES #43) — the tour shows that step as a plain card instead.
+const TABS: { key: TabKey; href: string; label: string; tour: string }[] = [
+  { key: 'chats', href: '/', label: 'Chats', tour: 'tab-chats' },
+  { key: 'local', href: '/local', label: 'Local', tour: 'tab-local' },
+  { key: 'feed', href: '/feed', label: 'Feed', tour: 'tab-feed' },
+  { key: 'profile', href: '/settings/profile', label: 'Profile', tour: 'tab-profile' },
 ];
 
 export default function Tabs({ active, hideOnMobile = false }: { active: TabKey; hideOnMobile?: boolean }) {
@@ -35,6 +38,7 @@ export default function Tabs({ active, hideOnMobile = false }: { active: TabKey;
             href={tab.href}
             className={`${st.tab}${tab.key === active ? ` ${st.tabOn}` : ''}`}
             aria-current={tab.key === active ? 'page' : undefined}
+            data-tour={tab.tour}
           >
             <span className={st.tabIcon}>
               <TabIcon tab={tab.key} />

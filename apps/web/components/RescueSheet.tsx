@@ -98,6 +98,8 @@ export default function RescueSheet({ onClose }: { onClose: () => void }) {
           username: peer.username,
           display_name: peer.display_name,
           avatar: peer.avatar,
+          mood: peer.mood,
+          name_style: peer.name_style,
         });
       }
     }

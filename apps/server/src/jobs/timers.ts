@@ -10,12 +10,21 @@
 //   scheduled-deliver — delayed per scheduled row (jobId scheduled:<id>).
 //   scheduled-sweep   — repeatable minute safety net over scheduled_due_idx.
 import { eq, sql } from 'drizzle-orm';
-import { DISAPPEAR_SWEEP_INTERVAL_S, STORY_SWEEP_INTERVAL_S } from '@socialchat/shared';
+import {
+  DISAPPEAR_SWEEP_INTERVAL_S,
+  MOOD_SWEEP_INTERVAL_S,
+  MOOD_SWING_INTERVAL_S,
+  MOOD_SWING_JITTER_S,
+  STORY_SWEEP_INTERVAL_S,
+  type MoodSwingEntry,
+} from '@socialchat/shared';
 import { db, schema } from '../db/index.js';
 import {
   activeParticipantUserIds,
+  broadcastUserUpdatedOf,
   messageDtos,
   publishConversationToUsers,
+  publishUserUpdated,
   rawToMsgRow,
   type MsgRow,
 } from '../lib/dto.js';
@@ -28,7 +37,7 @@ import type { TimersJob } from '../queues.js';
 import { deleteAttachmentObjects } from './gc.js';
 import { publishToUsers } from '../ws/events.js';
 
-export { DISAPPEAR_SWEEP_INTERVAL_S, STORY_SWEEP_INTERVAL_S };
+export { DISAPPEAR_SWEEP_INTERVAL_S, MOOD_SWEEP_INTERVAL_S, STORY_SWEEP_INTERVAL_S };
 
 // Tombstones per conversation per run — bounds one sweep's fan-out; the next
 // run (1 min later) continues where this one stopped.
@@ -146,6 +155,90 @@ export async function runDisappearSweep(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// v0.8a moods (API.md §1.57, ADR-018): the expiry sweep and 🎢 swing rotation.
+// Reads already filter mood_expires_at > now() LIVE, so these are bookkeeping
+// plus the user.updated goodbye/morph frame — a lagging run can never show a
+// stale chip. Moods NEVER push and leave NO trace (auto-sober included: the
+// drunk chip vanishes under the same zero-trace rule).
+// ---------------------------------------------------------------------------
+
+/** Clears every mood_* column where the mood has expired (walked via
+ * users_mood_expiry_idx) and fans one user.updated per user. A mood that was
+ * 'nobody'-visible says goodbye to the owner's own sockets only — others
+ * never knew, so no frame reaches them (the §1.57 fan-out skip). */
+export async function runMoodExpirySweep(): Promise<void> {
+  const cleared = (await db.execute(sql`
+    WITH expired AS (
+      SELECT id, mood_visibility FROM users
+      WHERE mood_expires_at IS NOT NULL AND mood_expires_at <= now()
+      FOR UPDATE SKIP LOCKED
+    )
+    UPDATE users u SET
+      mood_emoji = NULL, mood_label = NULL, mood_kind = NULL,
+      mood_visibility = 'everyone', mood_swing_set = NULL,
+      mood_expires_at = NULL, mood_swing_rotated_at = NULL
+    FROM expired e WHERE u.id = e.id
+    RETURNING u.id, e.mood_visibility AS old_visibility
+  `)) as unknown as { id: string; old_visibility: string }[];
+  for (const row of cleared) {
+    if (row.old_visibility === 'nobody') {
+      const [fresh] = await db.select().from(schema.users).where(eq(schema.users.id, row.id)).limit(1);
+      if (fresh) await publishUserUpdated(fresh, [row.id]);
+    } else {
+      await broadcastUserUpdatedOf(row.id);
+    }
+  }
+}
+
+/** 🎢 Swing rotation: each swinging user rotates to a random DIFFERENT entry
+ * of their swing_set every MOOD_SWING_INTERVAL_S ± uniform jitter. Candidates
+ * come off users_mood_swing_idx once they pass the window's EARLY edge; each
+ * then draws a uniform target in [interval−jitter, interval+jitter] and
+ * rotates when its elapsed time passes it — past the LATE edge the rotation
+ * is unconditional (deterministic for tests). Rotation materializes
+ * mood_emoji/mood_label (kind stays 'swing' — clients morph the chip on
+ * user.updated), re-stamps mood_swing_rotated_at and NEVER extends
+ * mood_expires_at. */
+export async function runMoodSwingSweep(): Promise<void> {
+  const minS = MOOD_SWING_INTERVAL_S - MOOD_SWING_JITTER_S;
+  const maxS = MOOD_SWING_INTERVAL_S + MOOD_SWING_JITTER_S;
+  const due = (await db.execute(sql`
+    SELECT id FROM users
+    WHERE mood_kind = 'swing'
+      AND mood_expires_at > now()
+      AND mood_swing_rotated_at IS NOT NULL
+      AND mood_swing_rotated_at <= now() - make_interval(secs => ${minS})
+  `)) as unknown as { id: string }[];
+  for (const { id } of due) {
+    const [u] = await db.select().from(schema.users).where(eq(schema.users.id, id)).limit(1);
+    if (!u || u.moodKind !== 'swing' || !u.moodSwingRotatedAt) continue;
+    if (!u.moodExpiresAt || u.moodExpiresAt.getTime() <= Date.now()) continue;
+    const elapsedS = (Date.now() - u.moodSwingRotatedAt.getTime()) / 1000;
+    const targetS = minS + Math.random() * (maxS - minS);
+    if (elapsedS < targetS && elapsedS < maxS) continue;
+
+    const set = (u.moodSwingSet ?? []) as MoodSwingEntry[];
+    const others = set.filter((e) => !(e.emoji === u.moodEmoji && e.label === u.moodLabel));
+    const next = others[Math.floor(Math.random() * others.length)] ?? set[0];
+    if (!next) continue;
+    const updated = (await db.execute(sql`
+      UPDATE users SET mood_emoji = ${next.emoji}, mood_label = ${next.label},
+        mood_swing_rotated_at = now()
+      WHERE id = ${id} AND mood_kind = 'swing'
+      RETURNING id, mood_visibility
+    `)) as unknown as { id: string; mood_visibility: string }[];
+    if (updated.length === 0) continue;
+    // The morph frame — 'nobody' swings morph for the owner alone (§1.57).
+    if (updated[0]!.mood_visibility === 'nobody') {
+      const [fresh] = await db.select().from(schema.users).where(eq(schema.users.id, id)).limit(1);
+      if (fresh) await publishUserUpdated(fresh, [id]);
+    } else {
+      await broadcastUserUpdatedOf(id);
+    }
+  }
+}
+
 export async function runScheduledSweep(): Promise<void> {
   const due = (await db.execute(sql`
     SELECT id FROM scheduled_messages
@@ -187,6 +280,12 @@ export async function processTimersJob(name: string, job: TimersJob): Promise<vo
     }
     case 'call-ring-sweep':
       return runCallRingSweep();
+    // v0.8a (§1.57): mood expiry (bookkeeping behind the live read filter) +
+    // 🎢 swing rotation. No push, no trace — ever.
+    case 'mood-sweep':
+      return runMoodExpirySweep();
+    case 'mood-swing-sweep':
+      return runMoodSwingSweep();
     default:
       throw new Error(`timers: unknown job ${name}`);
   }

@@ -1,0 +1,693 @@
+/* v0.8a — Identity, moods & community care (API.md §1.57–§1.61, ADR-018).
+   HARD RULE carried by this whole file: EVERY motion effect here dies under
+   prefers-reduced-motion (the blanket block at the bottom), replaced by a
+   static equivalent — names get a static tint, chips stop morphing, bubbles
+   stop wobbling, rain never falls, backgrounds show their poster. */
+
+/* ---------------------------------------------------------------------------
+   Mood chips (§1.57) — the chip is a feeling, not a status bar: small, soft,
+   never a counter. Drunk wobbles gently; swing morphs on rotation.
+--------------------------------------------------------------------------- */
+
+.moodChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--text);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.moodChipSm {
+  padding: 1px 8px;
+  font-size: 12px;
+  gap: 4px;
+}
+
+/* Swing rotation / first paint: the inner span remounts on label change
+   (keyed), so this entry morph replays per rotation. */
+.moodMorphIn {
+  display: inline-flex;
+  align-items: center;
+  gap: inherit;
+  animation: mood-morph 420ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+@keyframes mood-morph {
+  0% {
+    opacity: 0;
+    transform: scale(0.6) rotate(-8deg);
+    filter: blur(2px);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+/* 🍻 the drunk chip wobbles — slow, small, never dizzying. */
+.moodDrunk {
+  animation: chip-wobble 2.6s ease-in-out infinite;
+  transform-origin: 50% 80%;
+}
+
+@keyframes chip-wobble {
+  0%,
+  100% {
+    transform: rotate(-2.5deg);
+  }
+  50% {
+    transform: rotate(2.5deg);
+  }
+}
+
+/* Subtle expiry note ("fades by 18:40") — owner-only, whisper-sized. */
+.moodFade {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* The preset grid in the mood sheet. */
+.moodGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+
+.moodPick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.moodPickOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.customRow {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+
+.customEmoji {
+  width: 72px;
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------------------
+   Animated names (§1.58) — pure CSS text effects. Legibility first: no size
+   or spacing change, contrast floored by the chosen colors per theme.
+--------------------------------------------------------------------------- */
+
+.nameGlow {
+  color: var(--accent);
+  animation: name-glow 2.4s ease-in-out infinite;
+}
+
+@keyframes name-glow {
+  0%,
+  100% {
+    text-shadow: 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  50% {
+    text-shadow:
+      0 0 6px color-mix(in srgb, var(--accent) 75%, transparent),
+      0 0 14px color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+}
+
+.nameShimmer {
+  background-image: linear-gradient(
+    100deg,
+    var(--text) 38%,
+    var(--accent) 50%,
+    var(--text) 62%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: var(--accent); /* fallback + the frozen first frame under reduce */
+  animation: name-shimmer 2.8s linear infinite;
+}
+
+@keyframes name-shimmer {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+
+.nameRainbow {
+  background-image: linear-gradient(
+    90deg,
+    #ff6b6b,
+    #f7b955,
+    #4cd4a0,
+    #6f8cff,
+    #b36bff,
+    #ff6b6b
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: #b36bff; /* fallback + static tint under reduce */
+  animation: name-rainbow 6s linear infinite;
+}
+
+@keyframes name-rainbow {
+  from {
+    background-position: 0% 0;
+  }
+  to {
+    background-position: 300% 0;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   🍻 Drunk guardrails (§1.57): the soft counterparty banner + the undo pill.
+--------------------------------------------------------------------------- */
+
+.drunkBanner {
+  display: flex;
+  /* Phone widths: the two action pills (~250px) must not squeeze the message
+     into a sliver — let the button group wrap to its own line beneath the
+     text instead of sharing the row. */
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 10px 0;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, #f7b955 10%, var(--panel));
+  font-size: 13px;
+}
+
+.drunkBannerText {
+  /* The basis keeps the text readable: when mascot + text + buttons can't
+     all fit, the buttons wrap below rather than the text column collapsing. */
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.drunkBannerBtns {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  /* Right-aligned on the shared row AND when wrapped to its own line. */
+  margin-left: auto;
+}
+
+.checkInBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.checkInBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.undoRow {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 0 12px 6px;
+}
+
+.undoPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  border-radius: 999px;
+  padding: 7px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  animation: undo-in 200ms ease-out;
+}
+
+.undoPill strong {
+  color: var(--accent);
+}
+
+.undoSnippet {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+@keyframes undo-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Mood-reactive bubbles (§1.58) — ENTRY-only (except the ambient rain and the
+   drunk bubble's crooked settle), subtle-first, reading never blocked.
+--------------------------------------------------------------------------- */
+
+/* drunk → tipsy wobble-in; settles ≤2° crooked (MOOD_WOBBLE_MAX_DEG). */
+.fxWobbleIn {
+  animation: fx-wobble-in 650ms cubic-bezier(0.3, 0.9, 0.4, 1.1);
+}
+
+@keyframes fx-wobble-in {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) rotate(-6deg);
+  }
+  45% {
+    opacity: 1;
+    transform: rotate(4deg);
+  }
+  75% {
+    transform: rotate(-3deg);
+  }
+  100% {
+    transform: rotate(2deg);
+  }
+}
+
+/* The crooked settle while the sender stays drunk — tap to straighten.
+   (fxCrookedOwn mirrors it for own bubbles; chat.module.css .own is a
+   different module, so the variant is its own class.) */
+.fxCrooked {
+  transform: rotate(2deg);
+}
+
+.fxCrookedOwn {
+  transform: rotate(-2deg);
+}
+
+/* hyped → bounce-in. */
+.fxBounceIn {
+  animation: fx-bounce-in 520ms cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+
+@keyframes fx-bounce-in {
+  0% {
+    opacity: 0;
+    transform: translateY(16px) scale(0.85);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1.03);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+/* sad → the text falls into place. */
+.fxFallIn {
+  animation: fx-fall-in 600ms cubic-bezier(0.3, 0.7, 0.4, 1);
+}
+
+@keyframes fx-fall-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-14px);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(2px);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+/* The soft rain overlay — BEHIND bubbles (the scroll content paints over it),
+   low opacity, theme-friendly (uses the text color at a whisper). The one
+   allowed looping overlay (§1.58). */
+.rain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.16;
+  background-image: repeating-linear-gradient(
+    78deg,
+    transparent 0 11px,
+    color-mix(in srgb, var(--text) 55%, transparent) 11px 12px,
+    transparent 12px 26px
+  );
+  background-size: 200% 200%;
+  animation: fx-rain 1.6s linear infinite;
+  mask-image: linear-gradient(to bottom, transparent, black 12%, black 92%, transparent);
+}
+
+@keyframes fx-rain {
+  from {
+    background-position: 0 -40%;
+  }
+  to {
+    background-position: 14% 60%;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Chat backgrounds (§1.60) — my view only. The media sits behind the scroll
+   content under a theme-aware scrim; bubbles keep their own opaque surfaces.
+--------------------------------------------------------------------------- */
+
+.bgWrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* the scroll container stacks above the bg/rain layers (a §1.60 background
+   replaces the wallpaper class visually, so no background to clear here) */
+.scrollOverBg {
+  position: relative;
+  z-index: 1;
+}
+
+.chatBg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.chatBg img,
+.chatBg video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.chatBgScrim {
+  position: absolute;
+  inset: 0;
+  background: var(--bg);
+  /* opacity set inline from CHAT_BG_OVERLAY_OPACITY (0.45) */
+}
+
+.bgPreview {
+  width: 84px;
+  height: 56px;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+.bgRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+/* ---------------------------------------------------------------------------
+   Activity strip (§1.59) — recent, summary-only, no counters, no piles.
+--------------------------------------------------------------------------- */
+
+.actList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.actRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 4px;
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 13.5px;
+  min-width: 0;
+}
+
+a.actRow:hover {
+  background: var(--panel-2);
+}
+
+.actIcon {
+  flex: none;
+  width: 24px;
+  text-align: center;
+  font-size: 16px;
+}
+
+.actText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actText em {
+  font-style: normal;
+  color: var(--muted);
+}
+
+.actTime {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------------------
+   Discoverability (§1.61): the spotlight tour, the directory, what's-new.
+--------------------------------------------------------------------------- */
+
+.tourBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+/* The spotlight hole: a fixed ring whose giant shadow dims everything else
+   (so the backdrop above stays transparent when a ring is shown). */
+.tourRing {
+  position: fixed;
+  z-index: 61;
+  border-radius: 14px;
+  box-shadow:
+    0 0 0 3px var(--accent),
+    0 0 0 9999px rgba(0, 0, 0, 0.55);
+  transition: all 260ms cubic-bezier(0.3, 0.8, 0.3, 1);
+  pointer-events: none;
+}
+
+.tourCard {
+  position: fixed;
+  left: 50%;
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 62;
+  width: min(92vw, 340px);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 14px 16px;
+  box-shadow: var(--shadow);
+}
+
+.tourCard h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.tourCard p {
+  margin: 0 0 10px;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+
+.tourDots {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.tourDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border);
+}
+
+.tourDotOn {
+  background: var(--accent);
+}
+
+.tourBtns {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* Directory (the "✨ Things you can do" page). */
+.dirCard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  margin-bottom: 8px;
+}
+
+.dirText {
+  flex: 1;
+  min-width: 0;
+}
+
+.dirText strong {
+  font-size: 14px;
+}
+
+.dirText p {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.newBadge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+/* "New since your last visit" card on the chat list. */
+.whatsNew {
+  position: relative;
+  margin: 8px 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: linear-gradient(
+    140deg,
+    color-mix(in srgb, var(--accent) 10%, var(--panel)),
+    var(--panel)
+  );
+}
+
+.whatsNew h3 {
+  margin: 0 0 2px;
+  font-size: 14px;
+}
+
+.whatsNew ul {
+  margin: 6px 0 8px;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.whatsNew li {
+  margin: 2px 0;
+}
+
+.whatsNewClose {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 6px;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+/* ---------------------------------------------------------------------------
+   Reduced motion: EVERYTHING in this release goes still (§1.58/§1.60/§1.61).
+   Names keep their static tint (the gradient/color fallback stays), chips
+   stop wobbling/morphing, bubbles render in place, rain never shows, the
+   tour ring stops travelling (the component also skips the ring entirely).
+--------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .moodDrunk,
+  .moodMorphIn,
+  .nameGlow,
+  .nameShimmer,
+  .nameRainbow,
+  .fxWobbleIn,
+  .fxBounceIn,
+  .fxFallIn,
+  .rain,
+  .undoPill {
+    animation: none !important;
+  }
+
+  .fxCrooked,
+  .fxCrookedOwn {
+    transform: none;
+  }
+
+  .rain {
+    display: none;
+  }
+
+  .tourRing {
+    transition: none;
+  }
+}

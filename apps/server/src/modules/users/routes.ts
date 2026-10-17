@@ -54,6 +54,9 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       // OWNER-PRIVATE (UserPrivate only, FEATURES #30); null clears it (and
       // with it all 'area' beacon visibility, both directions).
       if (req.body.area !== undefined) patch.area = req.body.area;
+      // v0.8a (§1.58): animated-name style — identity, not privacy; rides the
+      // same user.updated fan-out as display_name (CHECK-pinned set).
+      if (req.body.name_style !== undefined) patch.nameStyle = req.body.name_style;
       const [updated] = await db
         .update(schema.users)
         .set(patch)
