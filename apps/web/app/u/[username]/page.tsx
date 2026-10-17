@@ -1,37 +1,55 @@
 'use client';
 
-// Public profile page (ARCHITECTURE §5.4): one of the two animated-WebP
-// surfaces (with the open-chat header). Renders GET /api/users/:username.
+// Public profile page (ARCHITECTURE §5.4; v0.5a §1.37): animated avatar +
+// the rich profile — 3-GIF strip, interest chips, work/skills — plus connect
+// and message actions (§1.28). No endorsement counts, no connection counts,
+// no profile view counters: a page about a person, not a scoreboard.
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import type { UserPublic, UserResponse } from '@socialchat/shared';
+import type {
+  Attachment,
+  ConversationResponse,
+  Profile,
+  UserProfileResponse,
+  UserPublic,
+} from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { connectionStateFor, connectTo, refreshConnections, removeConnection } from '@/lib/connections';
 import { formatLastSeen } from '@/lib/format';
+import { upsertConversation } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
+import { useReducedMotion } from '@/lib/useReducedMotion';
 import AppShell from '@/components/AppShell';
 import Avatar from '@/components/Avatar';
 import ReportSheet from '@/components/ReportSheet';
 import bz from '@/components/beacons.module.css';
+import st from '@/components/social.module.css';
 
 function PublicProfile({ username }: { username: string }) {
   const state = useAppState();
   const router = useRouter();
   const [user, setUser] = useState<UserPublic | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
   const [report, setReport] = useState(false);
   const [blockBusy, setBlockBusy] = useState(false);
   const [blocked, setBlocked] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setUser(null);
+    setProfile(null);
     setError(null);
     void api
-      .get<UserResponse>(`/api/users/${encodeURIComponent(username)}`)
+      .get<UserProfileResponse>(`/api/users/${encodeURIComponent(username)}`)
       .then((res) => {
-        if (!cancelled) setUser(res.user);
+        if (cancelled) return;
+        setUser(res.user);
+        setProfile(res.profile ?? null);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -46,6 +64,11 @@ function PublicProfile({ username }: { username: string }) {
     };
   }, [username]);
 
+  // Connection state powers the Connect button (§1.28).
+  useEffect(() => {
+    void refreshConnections();
+  }, []);
+
   // user.updated keeps an open profile live (avatar transcode landing, etc.).
   const peer = user
     ? [...state.conversations.values()]
@@ -55,6 +78,7 @@ function PublicProfile({ username }: { username: string }) {
   const shown = peer ?? user;
   const presence = shown ? state.presence.get(shown.id) : undefined;
   const isMe = shown !== null && shown.id === state.me?.id;
+  const connState = shown && !isMe && state.connections ? connectionStateFor(shown.id) : null;
 
   async function block(): Promise<void> {
     if (!shown || blockBusy) return;
@@ -69,6 +93,93 @@ function PublicProfile({ username }: { username: string }) {
       setBlockBusy(false);
     }
   }
+
+  async function connect(): Promise<void> {
+    if (!shown || actionBusy) return;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await connectTo(shown.id);
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError && err.status === 429
+          ? 'Easy there — too many requests this hour.'
+          : 'Could not send the request right now.',
+      );
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function message(): Promise<void> {
+    if (!shown || actionBusy) return;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      const res = await api.post<ConversationResponse>('/api/conversations', {
+        type: 'dm',
+        user_id: shown.id,
+      });
+      upsertConversation(res.conversation);
+      router.push(`/c/${res.conversation.id}`);
+    } catch {
+      setActionError('Could not open a chat.');
+      setActionBusy(false);
+    }
+  }
+
+  const connectButton = (() => {
+    if (!connState) return null;
+    switch (connState.kind) {
+      case 'none':
+        return (
+          <button type="button" className="btn btn-primary" disabled={actionBusy} onClick={() => void connect()}>
+            Connect
+          </button>
+        );
+      case 'outgoing':
+        return (
+          <button
+            type="button"
+            className="btn"
+            disabled={actionBusy}
+            onClick={() => {
+              setActionBusy(true);
+              void removeConnection(connState.connection)
+                .catch(() => setActionError('Could not cancel.'))
+                .finally(() => setActionBusy(false));
+            }}
+          >
+            Requested · cancel
+          </button>
+        );
+      case 'incoming':
+        // Their request to me — connect() auto-accepts it server-side (§1.28).
+        return (
+          <button type="button" className="btn btn-primary" disabled={actionBusy} onClick={() => void connect()}>
+            Accept request
+          </button>
+        );
+      case 'accepted':
+        return (
+          <button
+            type="button"
+            className="btn"
+            disabled={actionBusy}
+            onClick={() => {
+              if (window.confirm(`Remove ${shown?.display_name ?? 'them'} as a friend? They won't be told.`)) {
+                setActionBusy(true);
+                void removeConnection(connState.connection)
+                  .catch(() => setActionError('Could not remove.'))
+                  .finally(() => setActionBusy(false));
+              }
+            }}
+          >
+            ✓ Friends
+          </button>
+        );
+    }
+  })();
 
   return (
     <div className="page">
@@ -113,6 +224,10 @@ function PublicProfile({ username }: { username: string }) {
               </>
             ) : null}
           </div>
+        ) : isMe ? (
+          <Link href="/settings/profile" className="btn btn-ghost">
+            Edit
+          </Link>
         ) : (
           <span />
         )}
@@ -157,11 +272,75 @@ function PublicProfile({ username }: { username: string }) {
               </p>
             </div>
           </div>
+
+          {!isMe ? (
+            <div className="card" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {connectButton}
+              <button type="button" className="btn" disabled={actionBusy} onClick={() => void message()}>
+                Message
+              </button>
+              {actionError ? (
+                <p className="error-text" style={{ width: '100%', margin: 0 }}>
+                  {actionError}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* §1.37: the 3-GIF strip — animation gated by the VIEWER's settings. */}
+          {profile && profile.media.length > 0 ? (
+            <div className="card">
+              <div className={st.gifStrip}>
+                {profile.media.map((m) => (
+                  <ProfileGif key={m.id} media={m} />
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           {shown.bio ? (
             <div className="card">
               <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{shown.bio}</p>
             </div>
           ) : null}
+
+          {profile && profile.interests.length > 0 ? (
+            <div className="card">
+              <h3 style={{ margin: '0 0 6px', fontSize: 14 }}>Into</h3>
+              <div className={st.interestChips}>
+                {profile.interests.map((tag) => (
+                  <span key={tag} className="chip">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {profile && profile.entries.length > 0 ? (
+            <div className="card">
+              {(['work', 'skill'] as const).map((kind) => {
+                const list = profile.entries.filter((e) => e.kind === kind);
+                if (list.length === 0) return null;
+                return (
+                  <div key={kind}>
+                    <h3 style={{ margin: '6px 0 2px', fontSize: 14 }}>
+                      {kind === 'work' ? '💼 Work' : '✨ Skills'}
+                    </h3>
+                    {list.map((entry) => (
+                      <div key={entry.id} className={st.entryRow}>
+                        <span className={st.entryText}>
+                          <strong>{entry.title}</strong>
+                          {entry.detail ? <span>{entry.detail}</span> : null}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+
           {/* Plan karma (§1.15): a private fact about yourself, never a score
               against anyone else — shown on your OWN profile only, never
               ranked, never compared (PSYCHOLOGY design rule 3). */}
@@ -179,6 +358,30 @@ function PublicProfile({ username }: { username: string }) {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * One tile of the 3-GIF strip. Animation is gated by the VIEWER's settings
+ * (prefers-reduced-motion + their own avatar_motion — §1.37/§5 motion rules):
+ * 'auto' plays, 'reduced' plays on hover, 'off' stays static.
+ */
+function ProfileGif({ media }: { media: Attachment }) {
+  const state = useAppState();
+  const reduced = useReducedMotion();
+  const [hovered, setHovered] = useState(false);
+  const motion = state.me?.avatar_motion ?? 'auto';
+  const animate = !reduced && motion !== 'off' && (motion === 'auto' || hovered);
+  const src = animate ? media.url : media.thumb_url ?? media.url;
+  return (
+    <span
+      className={st.gifTile}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={src} alt="" loading="lazy" />
+    </span>
   );
 }
 

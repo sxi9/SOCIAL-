@@ -6,6 +6,19 @@ import {
   AUDIO_WAVEFORM_BUCKETS,
   AUDIO_WAVEFORM_PEAK_MAX,
   BEACON_NOTE_MAX_CHARS,
+  EDITABLE_MESSAGE_TYPES,
+  FORWARD_MAX_TARGETS,
+  INTEREST_TAG_MAX_CHARS,
+  INTERESTS_MAX,
+  POST_BODY_MAX_CHARS,
+  POST_COMMENT_MAX_CHARS,
+  POST_MAX_ATTACHMENTS,
+  PROFILE_ENTRIES_MAX,
+  PROFILE_ENTRY_DETAIL_MAX_CHARS,
+  PROFILE_ENTRY_TITLE_MAX_CHARS,
+  PROFILE_MEDIA_MAX,
+  REPLY_EXCERPT_MAX_CHARS,
+  STORY_CAPTION_MAX_CHARS,
   BEACON_ROLE_LABEL_MAX_CHARS,
   BEACON_SPARK_THRESHOLD_MAX,
   BEACON_SPARK_THRESHOLD_MIN,
@@ -266,6 +279,17 @@ export const PuzzleResultMetadataSchema = z.object({
 });
 export type PuzzleResultMetadata = z.infer<typeof PuzzleResultMetadataSchema>;
 
+// v0.5a (§1.31): forwarding attribution — a SNAPSHOT of the original author's
+// identity at forward time (survives renames/deletion; deliberately not an FK
+// and not a UserLite — no avatar hotlink into conversations the original
+// author never joined). The forwarder is the message's sender_id: forwarding
+// never spoofs authorship.
+export const ForwardedFromSchema = z.object({
+  username: z.string(),
+  display_name: z.string(),
+});
+export type ForwardedFrom = z.infer<typeof ForwardedFromSchema>;
+
 export const MessageMetadataSchema = z.object({
   link_preview: LinkPreviewSchema.optional(),
   system: SystemEventMetadataSchema.optional(),
@@ -288,6 +312,15 @@ export const MessageMetadataSchema = z.object({
   game: GameTttStateSchema.optional(),
   // §1.27: puzzle share; present iff type='puzzle_result'. Server-populated.
   puzzle: PuzzleResultMetadataSchema.optional(),
+  // ---- v0.5a (§1.31, §1.33) ----
+  // §1.33: SERVER-written at send time from @username tokens matched against
+  // active participants (client-sent values are ignored). Caps at
+  // MENTIONS_PER_MESSAGE_MAX; drives the mute-override push rule — which NEVER
+  // crosses a blocked pair (§1.14 stays structural).
+  mentions: z.array(UuidSchema).optional(),
+  // §1.31: present on forwarded messages; preserved verbatim when a forward is
+  // forwarded again (attribution sticks to the original author).
+  forwarded_from: ForwardedFromSchema.optional(),
 });
 export type MessageMetadata = z.infer<typeof MessageMetadataSchema>;
 
@@ -344,6 +377,28 @@ export const VibeCheckAggregateSchema = z.object({
 });
 export type VibeCheckAggregate = z.infer<typeof VibeCheckAggregateSchema>;
 
+// ---------------------------------------------------------------------------
+// Threads / replies (v0.5a — API.md §1.29). A reply names an EARLIER message
+// in the SAME conversation by seq (the message identity everything else uses —
+// reactions, polls, reports). The context snippet is resolved SERVER-side at
+// serialization time so the reply bubble renders with zero extra fetches and
+// always reflects the referenced message's current state (edits, tombstones).
+// ---------------------------------------------------------------------------
+
+export const ReplyContextSchema = z.object({
+  seq: z.number().int().positive(),
+  author: UserLiteSchema.nullable(), // null = system message or deleted account
+  type: MessageTypeSchema,
+  // First REPLY_EXCERPT_MAX_CHARS of the referenced message's CURRENT body;
+  // null for body-less kinds (the "Photo" / "Voice note" label is client copy)
+  // and for tombstones.
+  excerpt: z.string().max(REPLY_EXCERPT_MAX_CHARS).nullable(),
+  // true = referenced message has been tombstoned since (render "message
+  // deleted"; the reply itself stays).
+  deleted: z.boolean(),
+});
+export type ReplyContext = z.infer<typeof ReplyContextSchema>;
+
 export const MessageSchema = z.object({
   id: UuidSchema,
   conversation_id: UuidSchema,
@@ -353,6 +408,12 @@ export const MessageSchema = z.object({
   body: z.string().nullable(),
   metadata: MessageMetadataSchema,
   reply_to_id: UuidSchema.nullable(),
+  // v0.5a (§1.29): seq of the replied-to message in the SAME conversation
+  // (reply_to_id predates the seq-keyed identity and is retired — always null
+  // from v0.5a on). default(null) keeps pre-v0.5a payloads parsing clean.
+  reply_to_seq: z.number().int().positive().nullable().default(null),
+  // v0.5a (§1.29): server-resolved snippet; non-null iff reply_to_seq is set.
+  reply_context: ReplyContextSchema.nullable().default(null),
   attachments: z.array(AttachmentSchema),
   // v0.2: aggregated reactions. default([]) keeps pre-v0.2 payloads (IndexedDB
   // rows, old fixtures) parsing clean; the server always emits the array.
@@ -373,7 +434,9 @@ export const MessageSchema = z.object({
 });
 export type Message = z.infer<typeof MessageSchema>;
 
-export const ParticipantRoleSchema = z.enum(['member', 'admin']);
+// v0.5a adds 'owner' (API.md §1.35): the channel creator. Exactly one per
+// channel; never appears in DMs/groups (their creator stays 'admin').
+export const ParticipantRoleSchema = z.enum(['member', 'admin', 'owner']);
 export type ParticipantRole = z.infer<typeof ParticipantRoleSchema>;
 
 export const ParticipantSchema = z.object({
@@ -388,8 +451,21 @@ export const ParticipantSchema = z.object({
 });
 export type Participant = z.infer<typeof ParticipantSchema>;
 
-export const ConversationTypeSchema = z.enum(['dm', 'group']);
+// v0.5a adds 'channel' (API.md §1.35): broadcast conversations — owner/admins
+// send, everyone reads + reacts; cap CHANNEL_MAX (watermark receipts make it
+// safe, ARCHITECTURE §1); joined via the existing invite system.
+export const ConversationTypeSchema = z.enum(['dm', 'group', 'channel']);
 export type ConversationType = z.infer<typeof ConversationTypeSchema>;
+
+// v0.5a pins (API.md §1.32): one row per pinned message, newest-pinned last
+// (created_at ASC — a stable board, not a feed). pinned_by is null when the
+// pinner's account is gone.
+export const ConversationPinSchema = z.object({
+  seq: z.number().int().positive(),
+  pinned_by: UuidSchema.nullable(),
+  created_at: IsoDateTimeSchema,
+});
+export type ConversationPin = z.infer<typeof ConversationPinSchema>;
 
 export const ConversationSchema = z.object({
   id: UuidSchema,
@@ -399,7 +475,13 @@ export const ConversationSchema = z.object({
   created_by: UuidSchema.nullable(),
   last_seq: SeqSchema,
   last_message_at: IsoDateTimeSchema.nullable(),
+  // v0.5a (§1.35): for type='channel' this carries ONLY the viewer's own row
+  // plus the owner and admins — never 10k rows, and never a member COUNT
+  // (PSYCHOLOGY design rule 3: no follower counts). DMs/groups are unchanged.
   participants: z.array(ParticipantSchema),
+  // v0.5a (§1.32): pinned messages, ≤ MAX_PINS, created_at ASC. default([])
+  // keeps pre-v0.5a payloads parsing clean.
+  pins: z.array(ConversationPinSchema).default([]),
   // v0.4 (§1.25): disappearing-messages TTL — null = off; otherwise one of
   // DISAPPEAR_TTL_OPTIONS_S (DB CHECK pins the set). Conversation-wide state
   // (NOT personal like themes): everyone sees the same TTL. default(null)
@@ -528,6 +610,12 @@ export const CreateConversationRequestSchema = z.discriminatedUnion('type', [
     // Request body size limits bound the array in practice.
     user_ids: z.array(UuidSchema).min(1),
   }),
+  // v0.5a (§1.35): a channel starts empty — members arrive through invites
+  // (§1.11 with a channel conversation_id). Creator becomes 'owner'.
+  z.object({
+    type: z.literal('channel'),
+    title: z.string().min(1).max(100),
+  }),
 ]);
 export type CreateConversationRequest = z.infer<typeof CreateConversationRequestSchema>;
 
@@ -590,6 +678,10 @@ export const SendMessageRequestSchema = z.object({
   client_msg_id: UuidSchema, // idempotency key; replay returns 200 with the original row
   type: z.enum(['text', 'image', 'video', 'file', 'audio', 'vibe_check', 'puzzle_result']),
   body: z.string().max(MAX_MESSAGE_BODY_CHARS).optional(),
+  // v0.5a (§1.29): reply — the seq of a visible message in the SAME
+  // conversation (route-enforced: within my floor, exists; tombstoned targets
+  // ARE repliable — the context renders "message deleted").
+  reply_to_seq: z.number().int().positive().optional(),
   attachment_ids: z.array(UuidSchema).max(MAX_ATTACHMENTS_PER_MESSAGE).optional(),
   metadata: z
     .object({
@@ -723,8 +815,12 @@ export const InviteStatusSchema = z.enum(['valid', 'expired', 'exhausted', 'revo
 export type InviteStatus = z.infer<typeof InviteStatusSchema>;
 
 // 'dm' = conversation_id is null (accepting creates/dedupes a DM with the
-// inviter); 'group' = scoped to that group conversation.
-export const InviteKindSchema = z.enum(['dm', 'group']);
+// inviter); 'group' = scoped to that group conversation. v0.5a adds 'channel'
+// (§1.35): scoped to a channel — joining is the existing §1.11 accept flow
+// verbatim (owner/admin mints; cap check is CHANNEL_MAX → 400 channel_full).
+// InvitePublic.group_title is non-null for BOTH group and channel kinds (the
+// field name is kept stable for old clients).
+export const InviteKindSchema = z.enum(['dm', 'group', 'channel']);
 export type InviteKind = z.infer<typeof InviteKindSchema>;
 
 export const InviteTokenSchema = z.string().regex(INVITE_TOKEN_REGEX);
@@ -1226,3 +1322,329 @@ export const PuzzleFriendsResponseSchema = z.object({
   friends: z.array(PuzzleFriendEntrySchema),
 });
 export type PuzzleFriendsResponse = z.infer<typeof PuzzleFriendsResponseSchema>;
+
+// ===========================================================================
+// v0.5a — Social layer (API.md §1.28–§1.37, ADR-011)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// §1.28 Connections. The unordered pair is unique; status is 'pending' until
+// the addressee accepts. FRIENDS-OF (the audience primitive) = accepted
+// connections UNION dm-partners, always minus §1.14 blocks. Declines DELETE
+// the row and are SILENT to the requester (no rejection ping — liking gap,
+// PSYCHOLOGY §9); removal is silent to the removed party the same way.
+// ---------------------------------------------------------------------------
+
+export const ConnectionStatusSchema = z.enum(['pending', 'accepted']);
+export type ConnectionStatus = z.infer<typeof ConnectionStatusSchema>;
+
+// Viewer-specific: `user` is the OTHER party; direction says who asked whom.
+export const ConnectionSchema = z.object({
+  id: UuidSchema,
+  user: UserLiteSchema,
+  direction: z.enum(['incoming', 'outgoing']),
+  status: ConnectionStatusSchema,
+  created_at: IsoDateTimeSchema,
+  responded_at: IsoDateTimeSchema.nullable(), // non-null iff status 'accepted'
+});
+export type Connection = z.infer<typeof ConnectionSchema>;
+
+export const ConnectionResponseSchema = z.object({ connection: ConnectionSchema });
+export type ConnectionResponse = z.infer<typeof ConnectionResponseSchema>;
+
+export const ListConnectionsResponseSchema = z.object({
+  connections: z.array(ConnectionSchema), // accepted, ordered by username
+  incoming: z.array(ConnectionSchema), // pending requests TO me, created_at ASC
+  outgoing: z.array(ConnectionSchema), // my pending requests, created_at ASC
+});
+export type ListConnectionsResponse = z.infer<typeof ListConnectionsResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.30 Edit & delete. PATCH is author-only, EDITABLE_MESSAGE_TYPES, within
+// EDIT_WINDOW_S; DELETE tombstones (§1.25 semantics — body nulled, metadata
+// emptied, attachments deleted, seq survives forever). Both fan out
+// msg.updated; the edited badge is edited_at != null on the DTO.
+// ---------------------------------------------------------------------------
+
+export const EditableMessageTypeSchema = z.enum(EDITABLE_MESSAGE_TYPES);
+export type EditableMessageType = z.infer<typeof EditableMessageTypeSchema>;
+
+export const EditMessageRequestSchema = z.object({
+  body: z.string().min(1).max(MAX_MESSAGE_BODY_CHARS),
+});
+export type EditMessageRequest = z.infer<typeof EditMessageRequestSchema>;
+
+export const EditMessageResponseSchema = z.object({ message: MessageSchema });
+export type EditMessageResponse = z.infer<typeof EditMessageResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.31 Forwarding. All-or-nothing across ≤ FORWARD_MAX_TARGETS targets; the
+// shared client_msg_id makes retries idempotent per target (the existing
+// per-conversation idempotency index). Attachments are RE-REFERENCED (new
+// rows, same content-hash objects), never re-uploaded.
+// ---------------------------------------------------------------------------
+
+export const ForwardMessageRequestSchema = z.object({
+  client_msg_id: UuidSchema, // reused across targets; per-target idempotency
+  target_conversation_ids: z.array(UuidSchema).min(1).max(FORWARD_MAX_TARGETS),
+});
+export type ForwardMessageRequest = z.infer<typeof ForwardMessageRequestSchema>;
+
+// Created messages in target order (replayed targets return existing rows).
+export const ForwardMessageResponseSchema = z.object({
+  messages: z.array(MessageSchema),
+});
+export type ForwardMessageResponse = z.infer<typeof ForwardMessageResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.32 Pins. ConversationPinSchema lives with the core DTOs (Conversation
+// embeds the list). Pin/unpin fan out conv.updated.
+// ---------------------------------------------------------------------------
+
+export const PinMessageRequestSchema = z.object({
+  seq: z.number().int().positive(),
+});
+export type PinMessageRequest = z.infer<typeof PinMessageRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.34 Stories. 24 h, audience FRIENDS-OF only (enum value 'friends_of' is
+// CHECK-pinned — one value today, stable for later options). Views are a PK
+// row (story_id, viewer_id) with NO timestamp column at all: the DB cannot
+// leak what it does not store (PSYCHOLOGY never-build list). View lists are
+// author-private faces ordered by username.
+// ---------------------------------------------------------------------------
+
+export const StoryAudienceSchema = z.enum(['friends_of']);
+export type StoryAudience = z.infer<typeof StoryAudienceSchema>;
+
+// viewed is viewer-specific. NO view counts anywhere on the DTO.
+export const StorySchema = z.object({
+  id: UuidSchema,
+  author: UserLiteSchema,
+  attachment: AttachmentSchema,
+  caption: z.string().max(STORY_CAPTION_MAX_CHARS),
+  audience: StoryAudienceSchema,
+  created_at: IsoDateTimeSchema,
+  expires_at: IsoDateTimeSchema,
+  viewed: z.boolean(),
+});
+export type Story = z.infer<typeof StorySchema>;
+
+export const CreateStoryRequestSchema = z.object({
+  attachment_id: UuidSchema, // mine, kind image|video, unbound
+  caption: z.string().max(STORY_CAPTION_MAX_CHARS).default(''),
+});
+export type CreateStoryRequest = z.infer<typeof CreateStoryRequestSchema>;
+
+// §1.34 afterglow integration: share a recap photo to my story. The seq names
+// the afterglow recap system message; attachment_id must be one of its
+// metadata.afterglow.photo_attachment_ids. The server re-references the
+// object (new attachment row) — recap photos never leave the plan group
+// except through a participant's own deliberate share (PSYCHOLOGY rule 2).
+export const CreateRecapStoryRequestSchema = z.object({
+  conversation_id: UuidSchema,
+  seq: z.number().int().positive(),
+  attachment_id: UuidSchema,
+  caption: z.string().max(STORY_CAPTION_MAX_CHARS).default(''),
+});
+export type CreateRecapStoryRequest = z.infer<typeof CreateRecapStoryRequestSchema>;
+
+export const StoryResponseSchema = z.object({ story: StorySchema });
+export type StoryResponse = z.infer<typeof StoryResponseSchema>;
+
+// Grouped by author: authors with ANY unviewed story first, then all-viewed
+// authors; each bucket ordered by username (no recency ranking — a finite
+// tray, not a feed). Within an author: created_at ASC (watch in order). My
+// own stories ride a separate `mine` list.
+export const StoryAuthorGroupSchema = z.object({
+  author: UserLiteSchema,
+  stories: z.array(StorySchema),
+});
+export type StoryAuthorGroup = z.infer<typeof StoryAuthorGroupSchema>;
+
+export const ListStoriesResponseSchema = z.object({
+  mine: z.array(StorySchema),
+  groups: z.array(StoryAuthorGroupSchema),
+});
+export type ListStoriesResponse = z.infer<typeof ListStoriesResponseSchema>;
+
+// Author-private view list: faces/names ordered by username — NO timestamps,
+// NO counts beyond the list itself (§1.18 seen-by pattern, FEATURES #27).
+export const StoryViewsResponseSchema = z.object({
+  viewers: z.array(UserLiteSchema),
+});
+export type StoryViewsResponse = z.infer<typeof StoryViewsResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.36 Feed. Posts by my FRIENDS-OF set + me, newest first, cursor-paginated,
+// FINITE: the terminal page answers all_caught_up=true and next_cursor=null —
+// a hard end, no wraparound, no recommendations, first-party only
+// (PSYCHOLOGY design rule 5). No share/repost mechanic exists.
+// ---------------------------------------------------------------------------
+
+// Named faces, never a numeric total: reactors = first
+// POST_REACTORS_PREVIEW_MAX by first-reaction order; has_more carries the
+// rest. There is deliberately NO count field (PSYCHOLOGY design rule 3).
+export const PostReactionAggregateSchema = z.object({
+  emoji: ReactionEmojiSchema,
+  reactors: z.array(UserLiteSchema),
+  has_more: z.boolean(),
+  mine: z.boolean(),
+});
+export type PostReactionAggregate = z.infer<typeof PostReactionAggregateSchema>;
+
+export const PostCommentSchema = z.object({
+  id: UuidSchema,
+  post_id: UuidSchema,
+  author: UserLiteSchema,
+  body: z.string().min(1).max(POST_COMMENT_MAX_CHARS),
+  created_at: IsoDateTimeSchema,
+});
+export type PostComment = z.infer<typeof PostCommentSchema>;
+
+// comments = the latest POST_COMMENTS_PREVIEW_MAX in created_at ASC;
+// has_more_comments carries the rest (no comment COUNT is ever serialized).
+export const PostSchema = z.object({
+  id: UuidSchema,
+  author: UserLiteSchema,
+  body: z.string().max(POST_BODY_MAX_CHARS),
+  attachments: z.array(AttachmentSchema).max(POST_MAX_ATTACHMENTS),
+  reactions: z.array(PostReactionAggregateSchema),
+  comments: z.array(PostCommentSchema),
+  has_more_comments: z.boolean(),
+  created_at: IsoDateTimeSchema,
+});
+export type Post = z.infer<typeof PostSchema>;
+
+// At least one of body / attachment_ids (route-enforced → 400 empty_post).
+export const CreatePostRequestSchema = z.object({
+  body: z.string().max(POST_BODY_MAX_CHARS).default(''),
+  attachment_ids: z.array(UuidSchema).max(POST_MAX_ATTACHMENTS).default([]),
+});
+export type CreatePostRequest = z.infer<typeof CreatePostRequestSchema>;
+
+export const PostResponseSchema = z.object({ post: PostSchema });
+export type PostResponse = z.infer<typeof PostResponseSchema>;
+
+export const FeedQuerySchema = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(PAGE_SIZE_DEFAULT),
+});
+export type FeedQuery = z.infer<typeof FeedQuerySchema>;
+
+// all_caught_up=true ⇔ next_cursor=null: the hard "you're all caught up" end.
+export const FeedResponseSchema = z.object({
+  posts: z.array(PostSchema),
+  next_cursor: z.string().nullable(),
+  all_caught_up: z.boolean(),
+});
+export type FeedResponse = z.infer<typeof FeedResponseSchema>;
+
+export const AddPostReactionRequestSchema = z.object({
+  emoji: ReactionEmojiSchema,
+});
+export type AddPostReactionRequest = z.infer<typeof AddPostReactionRequestSchema>;
+
+export const CreateCommentRequestSchema = z.object({
+  body: z.string().min(1).max(POST_COMMENT_MAX_CHARS),
+});
+export type CreateCommentRequest = z.infer<typeof CreateCommentRequestSchema>;
+
+export const CommentResponseSchema = z.object({ comment: PostCommentSchema });
+export type CommentResponse = z.infer<typeof CommentResponseSchema>;
+
+export const ListCommentsQuerySchema = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(PAGE_SIZE_DEFAULT),
+});
+export type ListCommentsQuery = z.infer<typeof ListCommentsQuerySchema>;
+
+export const ListCommentsResponseSchema = z.object({
+  comments: z.array(PostCommentSchema), // created_at ASC
+  next_cursor: z.string().nullable(),
+});
+export type ListCommentsResponse = z.infer<typeof ListCommentsResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.37 Rich profiles. Profile data rides GET /api/users/:username (and the
+// owner's PATCH /api/users/me/profile) — NOT UserPublic, which is embedded in
+// every participant list and must stay lean. Blocked viewers keep getting the
+// §1.14 404 for the whole profile page.
+// ---------------------------------------------------------------------------
+
+export const ProfileEntryKindSchema = z.enum(['work', 'skill']);
+export type ProfileEntryKind = z.infer<typeof ProfileEntryKindSchema>;
+
+export const ProfileEntrySchema = z.object({
+  id: UuidSchema,
+  kind: ProfileEntryKindSchema,
+  title: z.string().min(1).max(PROFILE_ENTRY_TITLE_MAX_CHARS),
+  detail: z.string().max(PROFILE_ENTRY_DETAIL_MAX_CHARS),
+});
+export type ProfileEntry = z.infer<typeof ProfileEntrySchema>;
+
+// media = the 3-GIF strip: ≤ PROFILE_MEDIA_MAX image attachments in order_idx
+// order (animated rendering honors §5 motion hygiene like every avatar).
+export const ProfileSchema = z.object({
+  interests: z.array(z.string().min(1).max(INTEREST_TAG_MAX_CHARS)).max(INTERESTS_MAX),
+  entries: z.array(ProfileEntrySchema).max(PROFILE_ENTRIES_MAX), // order_idx ASC
+  media: z.array(AttachmentSchema).max(PROFILE_MEDIA_MAX),
+});
+export type Profile = z.infer<typeof ProfileSchema>;
+
+export const ProfileResponseSchema = z.object({ profile: ProfileSchema });
+export type ProfileResponse = z.infer<typeof ProfileResponseSchema>;
+
+// GET /api/users/:username (v0.5a shape — additive: `profile` joins `user`).
+export const UserProfileResponseSchema = z.object({
+  user: UserPublicSchema,
+  profile: ProfileSchema,
+});
+export type UserProfileResponse = z.infer<typeof UserProfileResponseSchema>;
+
+// Full-replace per present field; omitted fields are untouched. Entry order =
+// array order; media order = array order (order_idx 0..2).
+export const UpdateProfileRequestSchema = z.object({
+  interests: z
+    .array(z.string().min(1).max(INTEREST_TAG_MAX_CHARS))
+    .max(INTERESTS_MAX)
+    .optional(),
+  entries: z
+    .array(
+      z.object({
+        kind: ProfileEntryKindSchema,
+        title: z.string().min(1).max(PROFILE_ENTRY_TITLE_MAX_CHARS),
+        detail: z.string().max(PROFILE_ENTRY_DETAIL_MAX_CHARS).default(''),
+      }),
+    )
+    .max(PROFILE_ENTRIES_MAX)
+    .optional(),
+  media_attachment_ids: z.array(UuidSchema).max(PROFILE_MEDIA_MAX).optional(),
+});
+export type UpdateProfileRequest = z.infer<typeof UpdateProfileRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.35 Channels — membership paging & role management. The Conversation DTO
+// for channels carries only owner + admins + the viewer's own row, so the
+// member list is a dedicated paged read (owner/admin only in channels; any
+// active participant in groups). `q` powers mention autocomplete (§1.33).
+// ---------------------------------------------------------------------------
+
+export const ListParticipantsQuerySchema = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(PAGE_SIZE_DEFAULT),
+  q: z.string().min(1).optional(), // username/display_name prefix filter
+});
+export type ListParticipantsQuery = z.infer<typeof ListParticipantsQuerySchema>;
+
+export const ListParticipantsResponseSchema = z.object({
+  participants: z.array(ParticipantSchema), // ordered by username
+  next_cursor: z.string().nullable(),
+});
+export type ListParticipantsResponse = z.infer<typeof ListParticipantsResponseSchema>;
+
+// Channels: owner only. Groups: any admin. 'owner' is never assignable.
+export const UpdateParticipantRoleRequestSchema = z.object({
+  role: z.enum(['member', 'admin']),
+});
+export type UpdateParticipantRoleRequest = z.infer<typeof UpdateParticipantRoleRequestSchema>;

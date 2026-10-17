@@ -18,8 +18,11 @@ import {
 } from '@socialchat/shared';
 import { api, ApiError, NetworkError } from './api';
 import { refreshBeacons } from './beacons';
+import { refreshConnections } from './connections';
 import * as db from './db';
+import { refreshFeed } from './feed';
 import * as store from './store';
+import { refreshStories } from './stories';
 
 const BACKOFF_MIN_MS = 1000;
 const BACKOFF_MAX_MS = 30000;
@@ -295,6 +298,21 @@ function handleFrame(raw: string): void {
     case 'scheduled.updated':
       store.upsertScheduled(ev.d.scheduled);
       break;
+    // v0.5a (§1.28): to the two parties only; viewer-specific DTO stamped at
+    // the gateway. removed:true = decline/remove — the row is gone.
+    case 'connection.updated':
+      store.applyConnectionUpdated(ev.d.connection, ev.d.removed);
+      break;
+    // v0.5a (§1.34): only sockets of the author's friends-of audience get this;
+    // `viewed` is stamped false per recipient. No push, ever.
+    case 'story.new':
+      store.applyStoryNew(ev.d.story);
+      break;
+    // v0.5a (§1.36): friends-of audience only. Reactions/comments deliberately
+    // fan out nothing — the feed reconciles from GET when the viewer returns.
+    case 'post.new':
+      store.prependPost(ev.d.post);
+      break;
     case 'error':
       break;
   }
@@ -460,6 +478,13 @@ async function runSync(): Promise<void> {
   // Beacon cards & radar reconcile from REST on every (re)connect — WS frames
   // missed while offline never replay (§2.8 doctrine, same as reactions).
   void refreshBeacons();
+
+  // v0.5a surfaces reconcile from REST the same way: connections and the story
+  // tray always (they power header badges and the strip); the feed only when a
+  // window is already open — its own tab fetches on first visit.
+  void refreshConnections();
+  void refreshStories();
+  if (store.state.feedPosts !== null) void refreshFeed().catch(() => undefined);
 
   let metas: Map<string, number>;
   try {

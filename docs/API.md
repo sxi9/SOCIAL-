@@ -172,6 +172,71 @@ ScheduledMessage = { id, conversation_id,
   attachments: Attachment[], metadata: { effect?, capsule?: true },
   deliver_at, status: 'pending'|'sent'|'cancelled', created_at,
   sent_at: string|null, sent_seq: number|null }
+
+// ---- v0.5a (§1.28–§1.37; ADR-011) ----
+
+// v0.5a changes to existing DTOs:
+//  Conversation.type += 'channel'                        // §1.35
+//  Participant.role += 'owner'                           // §1.35, channels only
+//  Conversation += { pins: ConversationPin[] }           // §1.32; Zod default []
+//    For type='channel', Conversation.participants carries ONLY the viewer's
+//    own row + the owner + admins — never the member body, and never a member
+//    COUNT (PSYCHOLOGY rule 3: no follower counts). §1.35 has the paged read.
+//  Message += { reply_to_seq: number|null,               // §1.29; default null
+//               reply_context: ReplyContext|null }       // §1.29; server-resolved
+//    (reply_to_id is RETIRED — always null from v0.5a on; seq is the identity)
+//  Message.metadata += { mentions?: user_id[],           // §1.33, SERVER-written
+//                        forwarded_from?: ForwardedFrom }// §1.31, snapshot
+//  InviteKind += 'channel'; InvitePublic.group_title is non-null for group AND
+//    channel kinds (field name kept stable)               // §1.35
+//  The edited badge is Message.edited_at != null          // §1.30 — no new field
+//  FRIENDS-OF (the v0.5a audience primitive) = accepted connections ∪
+//    dm-partners, minus §1.14 blocks; the beacons 'friends' audience and the
+//    beacon_default_audience setting RESOLVE to friends-of from v0.5a on while
+//    keeping the stored enum value 'friends' (§1.28). show_last_seen /
+//    group_add_policy 'dm_partners' still mean DM partners literally.
+
+Connection = { id, user: UserLite,          // the OTHER party, viewer-specific
+  direction: 'incoming'|'outgoing', status: 'pending'|'accepted',
+  created_at, responded_at: string|null }
+
+// §1.29 — resolved server-side at serialization time (edits and tombstones of
+// the referenced message are always reflected; no client-side joins).
+ReplyContext = { seq, author: UserLite|null, type: MessageType,
+  excerpt: string|null,   // first 80 chars of the CURRENT body; null for
+                          // body-less kinds and tombstones
+  deleted: boolean }      // referenced message tombstoned → render "message deleted"
+
+ForwardedFrom = { username, display_name }  // §1.31 — original-author SNAPSHOT,
+  // not an FK, not a UserLite (no avatar reach into foreign conversations);
+  // the forwarder is sender_id — forwarding never spoofs authorship
+
+ConversationPin = { seq, pinned_by: user_id|null, created_at }  // §1.32
+
+Story = { id, author: UserLite, attachment: Attachment,
+  caption: string(≤140), audience: 'friends_of', created_at, expires_at,
+  viewed: boolean }       // viewer-specific; NO view counts anywhere
+
+StoryAuthorGroup = { author: UserLite, stories: Story[] }  // §1.34 ordering rules
+
+// §1.36 — named FACES, never a numeric total: reactors = first 12 by
+// first-reaction order, has_more carries the rest. No count field exists.
+PostReactionAggregate = { emoji, reactors: UserLite[], has_more: boolean,
+  mine: boolean }
+
+PostComment = { id, post_id, author: UserLite, body: string(≤500), created_at }
+
+Post = { id, author: UserLite, body: string(≤2000), attachments: Attachment[],
+  reactions: PostReactionAggregate[],
+  comments: PostComment[],        // latest 3, created_at ASC
+  has_more_comments: boolean,     // no comment COUNT is ever serialized
+  created_at }
+
+ProfileEntry = { id, kind: 'work'|'skill', title: string(≤80), detail: string(≤160) }
+
+Profile = { interests: string[](≤10, each ≤24),
+  entries: ProfileEntry[],        // order_idx ASC, ≤ 12
+  media: Attachment[] }           // the 3-GIF strip, order_idx ASC, ≤ 3
 ```
 
 Avatar URLs are content-hashed media-proxy URLs (`/api/media/:key`), immutable-cacheable;
@@ -228,7 +293,7 @@ temporary password, revokes all sessions).
 | Method & path | Request | Response |
 |---|---|---|
 | `GET /api/conversations/:id/messages?after_seq=&before_seq=&limit=50` | exactly one of `after_seq` (ascending, catch-up) or `before_seq` (descending, history scroll) | `200 {messages: Message[]}` — index-only walk of `(conversation_id, seq)`; **visibility floor:** only rows with `seq > my join_seq` (and `seq <= seq at left_at` for departed members) |
-| `POST /api/conversations/:id/messages` | `{client_msg_id, type: 'text'\|'image'\|'video'\|'file', body?, attachment_ids?: string[], metadata?: {link_preview?: LinkPreview}}` | `201 {message}` (`200` on idempotent replay). Must be an active participant. `attachment_ids` must be yours and unbound (binds them, clears `share_import_id`). `metadata.link_preview` is validated against the `link_previews` cache row for the same URL, then **snapshotted into the message**. Server extracts the first URL from `body` when no snapshot was supplied and enqueues an unfurl → recipients get the card via `msg.updated`. Transaction: bump `last_seq` → insert → raise sender's own watermarks to the new seq → commit → fan out `msg.new` → enqueue push for offline participants. |
+| `POST /api/conversations/:id/messages` | `{client_msg_id, type: 'text'\|'image'\|'video'\|'file', body?, attachment_ids?: string[], reply_to_seq? (v0.5a §1.29), metadata?: {link_preview?: LinkPreview}}` | `201 {message}` (`200` on idempotent replay). Must be an active participant. `attachment_ids` must be yours and unbound (binds them, clears `share_import_id`). `metadata.link_preview` is validated against the `link_previews` cache row for the same URL, then **snapshotted into the message**. Server extracts the first URL from `body` when no snapshot was supplied and enqueues an unfurl → recipients get the card via `msg.updated`. Transaction: bump `last_seq` → insert → raise sender's own watermarks to the new seq → commit → fan out `msg.new` → enqueue push for offline participants. |
 
 **The send path is REST-only.** The WS never carries durable writes: retries are idempotent,
 the share composer works before a socket exists, and a dropped socket can never lose a message.
@@ -401,7 +466,9 @@ waiting state** (PSYCHOLOGY §1).
 
 **Audience** (resolved at read/fan-out time, always minus §1.14 blocks):
 `friends` = users sharing a DM conversation with the creator (both active
-participants); `area` = users whose `users.area` equals the beacon's `area`
+participants) — **upgraded in v0.5a (§1.28): `friends` resolves to FRIENDS-OF
+= accepted connections ∪ dm-partners; the stored enum value is unchanged**;
+`area` = users whose `users.area` equals the beacon's `area`
 snapshot (citext, case-insensitive); `public` = all users. The `area` value is
 snapshotted from the creator at mint so the audience cannot drift.
 
@@ -801,6 +868,286 @@ ranking, no ranked table, no points, no solve-time anywhere** (rule 3), **no
 streak counter and no "don't break it" copy ever** (never-build list), and no
 notification nudges to play. The puzzle entry point is user-pulled only.
 
+### 1.28 Connections (v0.5a — ADR-011)
+
+The social graph edge: one row per **unordered pair**, `pending` until the
+addressee accepts. **FRIENDS-OF** — the v0.5a audience primitive — is
+`accepted connections ∪ dm-partners, minus §1.14 blocks`, resolved at
+read/fan-out time, never stored. It powers stories (§1.34), the feed (§1.36),
+and **upgrades the beacons `friends` audience and the
+`beacon_default_audience` setting**: both keep the stored enum value
+`'friends'` but resolve to friends-of from v0.5a on (a pure semantic widening
+— every pre-v0.5a friend, i.e. DM partner, stays in). `show_last_seen` /
+`group_add_policy` `'dm_partners'` are untouched: they name DM partners
+literally and still mean exactly that.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/users/:id/connect` | — | `201 {connection}` (`direction:'outgoing'`, `status:'pending'`). If the target already has a pending request TO me, this **accepts** it instead → `200 {connection}` (`accepted`). Idempotent re-request of an existing pending/accepted pair → `200` with the current row. `400 connect_self`. Blocked pair or unknown id → `404 not_found` (§1.14 404-shape, identical bodies). Rate **30/hour/user** (`CONNECTION_REQUEST_RATE_PER_HOUR`). |
+| `POST /api/connections/:id/accept` | — (addressee only) | `200 {connection}` (`status:'accepted'`, `responded_at` set). `404 not_found` (not mine / not pending / requester blocked meanwhile). |
+| `POST /api/connections/:id/decline` | — (addressee only) | `204` — **deletes the row** (re-requests stay possible). **Silent to the requester**: no WS frame, no push, nothing — a decline must never become a rejection ping (PSYCHOLOGY §9, the liking gap). `404 not_found` if not mine/not pending. |
+| `DELETE /api/connections/:id` | — (either party) | `204` — removes an accepted connection, or cancels my own pending request. Idempotent. **Silent to the other party** (own-sockets `connection.updated` only; their list reflects it on next read). |
+| `GET /api/connections` | — | `200 {connections, incoming, outgoing}` — accepted (ordered by username), pending-to-me, my-pending (both `created_at ASC`). Rows involving blocked users are omitted. |
+
+**Semantics (binding):**
+
+- The unordered pair is DB-unique (`LEAST/GREATEST` index) — concurrent
+  cross-requests cannot create two rows; the loser of the race gets the
+  winner's row back (`200`).
+- **Blocks:** blocking deletes any **pending** request between the pair
+  (silently, both directions) and makes an **accepted** connection **dormant**
+  — excluded from friends-of and from `GET /api/connections` while the block
+  stands, but the row survives (§1.14 "does not delete history"); unblocking
+  restores it. Connect attempts between blocked pairs are `404 not_found`.
+- **Fan-out (`connection.updated`, §2.3) — to the two parties only, and not
+  even both for every transition:** request → addressee + requester's own
+  sockets; accept → both parties; decline → addressee's own sockets only;
+  remove/cancel → the actor's own sockets only. Push: a **new incoming
+  request** and an **accept** push to the affected user (it is an invitation /
+  an answer they asked for — §2.9 guards apply); declines and removals never
+  push anyone.
+
+### 1.29 Threads / replies (v0.5a)
+
+A reply names an **earlier message in the same conversation** by `seq` — the
+message identity reactions (§1.12), polls (§1.17) and reports (§1.14) already
+use. The v0.1 `reply_to_id` column is retired (always `null` from v0.5a on).
+
+- **Send:** `POST .../messages` (§1.5) gains `reply_to_seq`. Validation: the
+  target must exist within my §1.5 visibility floor → else `404 not_found`;
+  it must be an earlier seq (`reply_to_seq < seq` by construction — DB CHECK).
+  **Tombstoned targets ARE repliable** (the context renders "message
+  deleted"); replying never un-deletes anything. Replies to replies are just
+  replies (flat threading — tap the context to jump; no tree UI in v0.5a).
+- **DTO:** the reply message carries `reply_to_seq` plus a **server-resolved**
+  `reply_context` snippet `{seq, author: UserLite|null, type, excerpt ≤ 80
+  (REPLY_EXCERPT_MAX_CHARS), deleted}` — resolved at **serialization time**,
+  so edits and tombstones of the target are always current and clients never
+  join locally. `excerpt` is `null` for body-less kinds (the "Photo" /
+  "Voice note" label is client copy keyed on `type`).
+- **UI contract (binding):** the bubble renders the context as a tappable
+  quote card above the body — author name + excerpt (or kind label), jumping
+  to `reply_to_seq` on tap (scroll + flash; the target is in local history or
+  one §1.5 `before_seq` page away). Swipe-to-reply on any bubble; the composer
+  shows a cancellable "replying to" chip. `deleted: true` renders the italic
+  "message deleted" card, not a blank.
+
+### 1.30 Edit & delete (v0.5a)
+
+| Method & path | Request | Response |
+|---|---|---|
+| `PATCH /api/conversations/:id/messages/:seq` | `{body: 1..8192}` | `200 {message}` — author only (`403 forbidden`), type in `EDITABLE_MESSAGE_TYPES` (`text\|image\|video\|file\|audio`) else `400 not_editable`, within `EDIT_WINDOW_S` = 24 h of `created_at` else `409 edit_window_closed`, not tombstoned else `409 message_deleted`. Sets `edited_at`; fans out `msg.updated`. |
+| `DELETE /api/conversations/:id/messages/:seq` | — | `204` — author only (`403 forbidden`; system messages have no author and are undeletable). **Tombstone, never row deletion** (§1.25 semantics, ADR-003): `deleted_at` set, `body` nulled, `metadata` emptied, attachments deleted (rows + MinIO objects, **refcount-guarded** — §1.31), dependent reaction/poll rows removed, any §1.32 pin on it removed (+ `conv.updated`). The seq survives forever. Fans out `msg.updated`. Idempotent re-delete → `204`. |
+
+- The **edited badge** is `edited_at != null` on the DTO — clients render
+  "edited" beside the timestamp; no edit history is stored or served.
+- Edits **re-parse §1.33 mentions** against current participants (metadata is
+  rewritten) but **never re-push** — mention notifications fire at send time
+  only, so an edit cannot be used to re-ping anyone.
+- Edits never re-run unfurl and keep the existing `link_preview` snapshot
+  (a snapshot is send-time truth, §1.5).
+- Both routes work in frozen DMs **only as 404-shaped denials consistent with
+  §1.14 sends**: a DM frozen by a block refuses PATCH/DELETE with
+  `404 not_found` (they are write surfaces).
+- In channels (§1.35) the same rules apply to the owner/admins' own messages;
+  nobody edits or deletes anyone else's words in v0.5a.
+
+### 1.31 Forwarding (v0.5a)
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/conversations/:id/messages/:seq/forward` | `{client_msg_id, target_conversation_ids: uuid[1..5]}` (`FORWARD_MAX_TARGETS`) | `201 {messages: Message[]}` in target order (`200` when every target was an idempotent replay). **All-or-nothing**: any invalid target fails the whole request with `404 not_found` — byte-identical for unknown ids, non-membership, channels I cannot post to, and block-frozen DMs (§1.14: the 404 confirms nothing). Source must be visible (§1.5 floor), not tombstoned, and type in `FORWARDABLE_MESSAGE_TYPES` (`text\|image\|video\|file\|audio`) else `400 not_forwardable`. |
+
+**Semantics (binding):**
+
+- Each target gets a **new ordinary message**: `sender_id` = **the
+  forwarder** — forwarding never spoofs authorship — with
+  `metadata.forwarded_from = {username, display_name}`, a **snapshot of the
+  original author** at forward time (survives renames and account deletion;
+  deliberately not a UserLite — no avatar reach into conversations the
+  original author never joined). Forwarding a forward **preserves the original
+  `forwarded_from`** — attribution sticks to the source.
+- `body` and `link_preview` snapshot are copied; `metadata.doodle` is copied
+  (the frame is part of the drawing). **Not copied:** `mentions` (a forward
+  must never re-ping or newly ping anyone), `effect`, reply refs, vibe/game/
+  capsule riders.
+- **Attachments are re-referenced, never re-uploaded:** each forward creates
+  new attachment rows pointing at the **same content-hashed MinIO objects**.
+  Consequence (binding, repo-wide): every object deletion — tombstones,
+  story expiry, orphan GC — first checks no other attachment row references
+  the same `original_key`/`thumb_key` (**the refcount guard**, one indexed
+  lookup via `attachments_original_key_idx`).
+- The shared `client_msg_id` rides each created message; the existing
+  per-conversation idempotency index (`conversation_id, sender_id,
+  client_msg_id`) makes retries replay-safe **per target**, so a partially
+  delivered retry completes the remainder without duplicating.
+- Normal §1.5 transaction per target (seq bump, watermark raise, `msg.new`
+  fan-out, push with the usual §2.9 guards).
+
+### 1.32 Pins (v0.5a)
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/conversations/:id/pins` | `{seq}` | `204` — idempotent re-pin. Permission: DM → any active participant; group → admin; channel → owner/admin (`403 forbidden`). Target must be visible (§1.5 floor) and not tombstoned → `404 not_found`. The 11th pin → `409 pin_limit` (`MAX_PINS` = 10; checked under the conversation row lock). |
+| `DELETE /api/conversations/:id/pins/:seq` | — | `204` — idempotent; same permission rule. |
+
+Pins ride the Conversation DTO (`pins: [{seq, pinned_by, created_at}]`,
+`created_at ASC` — a stable board, not a feed) and every effective change fans
+out `conv.updated`. Tombstoning a pinned message (§1.30 delete or §1.25 sweep)
+removes its pin in the same transaction (+ `conv.updated`). Clients render the
+pin board from local history by seq (missing ones are one §1.5 page away).
+
+### 1.33 @Mentions (v0.5a)
+
+The **server** parses `@username` tokens in `body` at send time (and §1.30
+edit time) against the conversation's **active participants**; matches are
+stored as `metadata.mentions: user_id[]` (first `MENTIONS_PER_MESSAGE_MAX` =
+20; later tokens stay plain text — never an error). Client-sent `mentions`
+values are ignored: the server is the only writer, so a mention always names a
+real participant. Non-participants can never be mentioned — their `@token`
+stays inert text.
+
+**Push rule (binding):** a mention **overrides `muted_until`** for the
+mentioned participant — the §2.9 mute guard is skipped for them (all other
+guards hold: online, read-elsewhere, debounce). A mention **NEVER overrides a
+block**: blocked pairs are structurally excluded from push (§1.14), and a
+mention changes nothing about that. Mentions of users in a shared group across
+a block are stored (group function, §1.14) but deliver no push and no special
+rendering to the blocked party. Push copy for a mention leads with the sender
+(`"maya mentioned you"`), same payload shape otherwise.
+
+**UI autocomplete contract (binding):** typing `@` in the composer opens a
+participant picker filtered by username/display-name prefix — sourced from the
+participants the client already holds (DMs/groups); in channels (where the
+full list is not shipped, §1.35) the composer queries
+`GET .../participants?q=` — senders there are owner/admins, who may read the
+list. Selecting inserts the literal `@username` token; mention highlighting in
+bubbles is keyed on `metadata.mentions` (never re-parsed client-side).
+
+### 1.34 Stories (v0.5a — FEATURES #46, ADR-011)
+
+24-hour ephemera for the **friends-of** audience (§1.28), riding the §1.6
+upload pipeline end to end. A story is one attachment + a caption. Audience is
+CHECK-pinned to `'friends_of'` (one value today; the column exists so the enum
+can widen without a migration of meaning). Blocked pairs are invisible both
+directions on every story surface.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/stories` | `{attachment_id, caption? ≤ 140}` | `201 {story}` — attachment must be mine, kind `image\|video`, unbound → `400 bad_attachment`. `expires_at = created_at + 24 h` (`STORY_TTL_S`, fixed). Fans `story.new` **to the audience only** (friends-of minus blocks — never to anyone who cannot view it). **No push** (ambient, user-pulled; PSYCHOLOGY §6). Rate **20/hour/user** (`STORY_CREATE_RATE_PER_HOUR`). |
+| `GET /api/stories` | — | `200 {mine: Story[], groups: StoryAuthorGroup[]}` — unexpired stories of my friends-of set (minus blocks), **grouped by author: authors with any unviewed story first, then all-viewed; each bucket ordered by username** — no recency ranking, a finite tray, not a feed. Within an author: `created_at ASC` (watch in order). `viewed` is viewer-specific. **Never auto-advance between authors** (PSYCHOLOGY never-build list: no infinite/auto-advancing stories) — advancing is a tap. |
+| `POST /api/stories/:id/view` | — | `204` — idempotent; records `(story_id, me)`. Author's own views are never recorded. `404 story_not_found` (unknown, expired, not in audience, or blocked — identical). |
+| `GET /api/stories/:id/views` | — | `200 {viewers: UserLite[]}` — **author only**, else `404 story_not_found` (author-privacy is 404-shaped). Faces ordered **by username — no timestamps anywhere** (the `story_views` table stores none: the DB cannot leak what it does not store; §1.18 seen-by pattern, FEATURES #27). Viewers with me blocked are omitted. There is **no view count** — the list is the information. |
+| `DELETE /api/stories/:id` | — | `204` — own stories only (`404` otherwise). Deletes views (cascade) + the attachment (row + objects, refcount-guarded §1.31). |
+| `POST /api/stories/recap` | `{conversation_id, seq, attachment_id, caption?}` | `201 {story}` — **afterglow integration**: `seq` must be an afterglow recap system message (§1.15) in a plan conversation I am an active participant of, and `attachment_id` one of its `metadata.afterglow.photo_attachment_ids` → else `404 not_found`. The server **re-references** the photo (new attachment row, same objects — §1.31 rule). Recap photos leave the plan group only through a participant's own deliberate share (PSYCHOLOGY rule 2); the story shows to **my** friends-of like any other. |
+
+**Expiry (worker queue `timers`, repeatable every `STORY_SWEEP_INTERVAL_S`):**
+expired stories are **hard-deleted** — story + view rows, attachment rows, and
+MinIO objects (refcount-guarded). No fan-out, no "story expired" event:
+expired stories simply drop out of the next `GET` (clients also drop them at
+`expires_at` locally). Stories never touch the seq log.
+
+There are **no story replies** in v0.5a (a future reply is just a DM — seam,
+not scope), no reactions, no resharing, and no "X is watching" signals.
+
+### 1.35 Channels (v0.5a — FEATURES #46, ADR-011)
+
+`conversations.type` gains `'channel'`: broadcast conversations where **only
+the owner and admins send** and everyone reads and reacts. The creator is
+`role='owner'` (one per channel, never in DMs/groups). Cap: **`CHANNEL_MAX` =
+10 000** participants — safe because receipts are **watermark cursors**: one
+row per member, O(participants), never O(messages × participants)
+(ARCHITECTURE §1, ADR-002: "the one model that survives Phase-2 channels").
+Groups keep the 256 cap.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/conversations` | `{type:'channel', title}` | `201 {conversation}` — creator = `owner`; a channel starts with one member. No `user_ids`: **membership arrives through §1.11 invites** (an invite with a channel `conversation_id`; minting is owner/admin-only, mirroring the group rule). Invite accept at the cap → `400 channel_full`. |
+| `PUT /api/conversations/:id/participants/:userId/role` | `{role: 'admin'\|'member'}` | `200 {conversation}` + `conv.updated`. Channels: **owner only**; groups: any admin. `'owner'` is never assignable, the owner's own role never changeable → `400 bad_role_target`. |
+| `GET /api/conversations/:id/participants?cursor=&limit=&q=` | — | `200 {participants, next_cursor}` ordered by username; `q` = username/display-name prefix filter (powers §1.33 autocomplete). Channels: **owner/admin only** (`403 forbidden`); groups: any active participant. Blocked users are serialized normally here (membership is group function, §1.14) — but presence/typing/last-seen between blocked pairs stay suppressed. |
+| `DELETE /api/conversations/:id/participants/:userId` | (§1.4, extended) | self = leave (**anyone leaves freely, including admins**); owner/admins remove members; admins are removable by the owner only. The **owner cannot leave or be removed** → `403 owner_cannot_leave` (transfer/deletion is future scope — the channel must never be headless). |
+
+**Channel rules (binding):**
+
+- **Sends:** `POST .../messages` (and §1.17 polls, §1.31 forwards into the
+  channel) require `owner`/`admin` → else `403 channel_read_only`. §1.12/§1.19
+  reactions and stamps are open to **every** participant. §1.27 games are not
+  startable in channels (`400 bad_opponent` territory — challenges need peers,
+  not audiences).
+- **History floor:** joiners get the standard `join_seq = last_seq` (§1.4,
+  ARCHITECTURE §8) — a channel shows what happened since you joined; the
+  invite page carries the pitch.
+- **Receipts:** watermarks advance normally and drive `unread_count`, but
+  **there is no seen-by exposure in channels**: `GET .../receipts` (§1.18) →
+  `403 channel_no_receipts`; no sender ticks are derivable or rendered
+  (min-watermark math over 10k members is neither cheap nor wanted). `receipt`
+  WS frames for a channel go to the **reader's own sockets only** (cross-device
+  unread sync) — never fanned to 10k members per read.
+- **Typing:** suppressed entirely — inbound `typing` frames for channels are
+  dropped at the gateway (§2.11), whatever the sender's `show_typing`.
+- **No member counts, anywhere** — DTO, invite page, UI (PSYCHOLOGY rule 3:
+  no follower counts). The Conversation DTO serializes `participants` as the
+  viewer's own row + owner + admins only; the full list is the paged read
+  above.
+- **Push:** normal §2.9 guards per member (mute, read-elsewhere, debounce);
+  §1.33 mentions override mute here like anywhere. The 10k fan-out is the
+  worker's job, one debounced job per (user, conversation, message) as always.
+- **Blocks:** §1.14 group semantics apply (both stay, messages keep working);
+  a member with the owner blocked simply never sees presence/typing/§1.18
+  surfaces of them — message delivery is channel function.
+
+### 1.36 Feed (v0.5a — FEATURES #46, ADR-011)
+
+Posts by **my friends-of set + me** (§1.28), newest first, **finite**: the
+feed pages to a hard end and says so. No ranking, no recommendations, no
+resharing, no wraparound — a visit has a bottom (PSYCHOLOGY design rule 5,
+Verduyn 2015). Blocked pairs are invisible in both directions on every feed
+surface (posts, reactor faces, comments).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/posts` | `{body? ≤ 2000, attachment_ids? ≤ 4}` — at least one of the two → else `400 empty_post`; attachments mine, unbound, any kind but `file` → `400 bad_attachment` | `201 {post}`. Audience is always `friends_of` (CHECK-pinned). Fans `post.new` **to the audience only**; **no push** (the feed is pulled, never pushed). Rate **10/hour/user** (`POST_CREATE_RATE_PER_HOUR`). |
+| `DELETE /api/posts/:id` | — | `204` — author only (`404` otherwise). Reactions/comments cascade; attachments deleted (refcount-guarded §1.31). |
+| `GET /api/feed?cursor=&limit=` | — | `200 {posts, next_cursor, all_caught_up}` — `created_at DESC`, keyset cursor (opaque `(created_at, id)`). **Terminal page: `next_cursor: null`, `all_caught_up: true`** — the client renders the hard "you're all caught up" end card and STOPS (no refetch-on-scroll past the end, no pull-to-refresh loop — new content arrives via `post.new` or the next visit). |
+| `GET /api/posts/:id` | — | `200 {post}` — the single-post refetch (reaction/comment reconcile). `404 not_found` (unknown, not in audience, or blocked — identical). |
+| `POST /api/posts/:id/reactions` | `{emoji ≤ 16}` | `204` — idempotent (§1.12 semantics). 9th distinct emoji → `409 reaction_limit` (`REACTIONS_PER_USER_PER_POST_MAX` = 8). Post must be visible → `404`. |
+| `DELETE /api/posts/:id/reactions/:emoji` | `:emoji` URL-encoded | `204` — idempotent. |
+| `POST /api/posts/:id/comments` | `{body: 1..500}` | `201 {comment}` — any viewer of the post. |
+| `DELETE /api/posts/:id/comments/:commentId` | — | `204` — comment author or post author (`404` otherwise). Hard delete (comments are not on the seq log). |
+| `GET /api/posts/:id/comments?cursor=&limit=` | — | `200 {comments, next_cursor}` — `created_at ASC` (a conversation reads downward). |
+
+**Faces, never counters (binding):** `Post.reactions` carries, per emoji, the
+first `POST_REACTORS_PREVIEW_MAX` (12) reactors as `UserLite` + `has_more` —
+**no numeric total exists in any payload** (PSYCHOLOGY rule 3; Sherman 2016).
+Comments inline as the latest `POST_COMMENTS_PREVIEW_MAX` (3, ASC) +
+`has_more_comments` — **no comment count either**. Reactions and comments do
+**not** fan out live frames: viewers reconcile from `GET` when **they** return
+(no approval pings, rule 4); the author sees new reactions/comments the same
+way — by looking. Every card leads with reply/plan actions (rule 5:
+interaction-first).
+
+### 1.37 Rich profiles (v0.5a — FEATURES #47)
+
+Profile depth rides the **profile page**, not the participant DTOs:
+`UserPublic` stays lean (it is embedded in every participant list), and
+`GET /api/users/:username` grows a `profile` sibling. All §1.14 rules hold:
+blocked viewers get `404 not_found` for the whole page, both directions.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/users/:username` | — | `200 {user: UserPublic, profile: Profile}` (additive change) — `profile = {interests ≤ 10 tags ≤ 24 chars, entries ≤ 12 (order_idx ASC), media ≤ 3 Attachments (the GIF strip, order_idx ASC)}`. |
+| `GET /api/users/me/profile` | — | `200 {profile}` (the settings screen's read). |
+| `PATCH /api/users/me/profile` | `{interests?, entries?: [{kind:'work'\|'skill', title ≤ 80, detail? ≤ 160}] ≤ 12, media_attachment_ids? ≤ 3}` | `200 {profile}` — **full replace per present field** (one transaction: delete + insert, `order_idx` = array order; omitted fields untouched). Media attachments must be mine, kind `image`, `ready` → `400 bad_attachment`; replaced media unbinds (orphan GC reaps rows; objects refcount-guarded). Fans `user.updated` to conversation peers only when `display_name`-level identity changes — profile edits themselves fan nothing (profiles are pulled). |
+
+**Rendering contract:** the 3-GIF strip renders animated WebP under the §5
+motion rules (`prefers-reduced-motion` + the owner's `avatar_motion` does NOT
+apply — it is the **viewer's** settings that gate animation, as with every
+avatar surface) with static thumbs otherwise; interests are plain chips —
+tapping one is a future discovery seam, not a link in v0.5a. Work/skill
+entries render as a two-section list in `order_idx` order. No endorsement
+counts, no connection counts, no profile view counters — a profile is a page
+about a person, not a scoreboard (PSYCHOLOGY rule 3).
+
 ---
 
 ## 2. WebSocket protocol
@@ -849,6 +1196,9 @@ close `1008`.
 | `poll.updated` | `{poll_id, conversation_id, seq, counts: number[], total_votes, user_id?, option_idx?: number\|null}` | v0.3 (§1.17): one delta per effective vote/unvote (`option_idx: null` = unvoted), to active participants — the `reaction.updated` pattern. `user_id`/`option_idx` ride **only the voter's own frame** (their other devices reconcile `my_vote`); frames to everyone else carry aggregates only (no per-voter lists, §1.17). Reconnect truth is `message.poll`. |
 | `prefs.updated` | `{conversation_id, prefs: ConversationPrefs}` | v0.4 (§1.24): **to the owner's own sockets ONLY** — prefs are personal, my-view-only state; no other participant ever receives a frame about them. Full-prefs replace (idempotent, reorder-safe); reconnects reconcile from `GET /api/conversations/:id/prefs`. |
 | `scheduled.updated` | `{scheduled: ScheduledMessage}` | v0.4 (§1.26): **to the author's own sockets ONLY** (a pending schedule is private until delivery), on every create/cancel/send — cross-device sync of the scheduled list. The delivery itself reaches everyone as an ordinary `msg.new`. |
+| `connection.updated` | `{connection: Connection, removed: boolean}` | v0.5a (§1.28): **to the two parties only** — and not even both for every transition: request → addressee + requester's own sockets; accept → both; decline → addressee's own sockets only (the requester is never pinged about a rejection); remove → the actor's own sockets only. The DTO is viewer-specific (`user`/`direction` stamped per recipient at the gateway, the `beacon.*` pattern). `removed: true` means the row is gone (decline/remove) and the DTO is its last state. |
+| `story.new` | `{story: Story}` | v0.5a (§1.34): **only to sockets of the author's friends-of audience minus blocks** — never to anyone who cannot view it. `viewed` stamped `false` per recipient. No push. Expiry fans nothing — expired stories drop out of the next `GET`. |
+| `post.new` | `{post: Post}` | v0.5a (§1.36): **only to sockets of the author's friends-of audience minus blocks.** No push. Reactions/comments deliberately fan out NOTHING — viewers reconcile from `GET /api/feed` / `GET /api/posts/:id` when they return (no approval pings, PSYCHOLOGY rules 3/4). |
 | `error` | `{code, message}` | validation/permission errors on client frames |
 
 ### 2.4 Client → server events
@@ -924,6 +1274,12 @@ send time. At execution the worker **skips** when any of:
 - `muted_until > now()`;
 - a per-`(user_id, conversation_id)` debounce key (5 s) exists — bursts collapse to one push.
 
+**v0.5a mention override (§1.33):** when `metadata.mentions` names the target
+user, the `muted_until` guard is **skipped for that user** (all other guards
+hold). A mention NEVER overrides a block — blocked pairs are structurally
+excluded from push fan-out (§1.14) and stay that way. Mention pushes fire at
+send time only; §1.30 edits never (re-)push.
+
 Payload: `{title, body (snippet | "Photo" | "Video" | "File"), tag: conversation_id,
 data: {url: "/c/<conversation_id>"}}`. The service worker shows the notification and deep-links
 on click. It never sends `delivered` (§2.4). 404/410 or 5 consecutive failures prune the
@@ -958,6 +1314,15 @@ gateway and REST serializers), where the recipient is known. Binding rules:
   the gateway resolves recipients (friends/area/public minus blocks) and
   stamps the viewer-specific fields (`my_state`, `conversation_id`, filtered
   `joiners`) per socket before sending.
+- v0.5a (§1.35): `typing` frames for **channel** conversations are dropped at
+  ingest unconditionally (whatever `show_typing` says); `receipt` frames for
+  channels are delivered to the **reader's own sockets only** (cross-device
+  unread sync — never a 10k fan-out per read).
+- v0.5a (§1.28/§1.34/§1.36): `connection.updated` recipients are the
+  per-transition sets in §2.3 (declines/removals never reach the other party);
+  `story.new` / `post.new` envelopes name the author — the gateway resolves
+  the friends-of audience minus blocks and stamps viewer-specific fields
+  (`viewed`, reaction `mine`) per socket, exactly like `beacon.*`.
 - Filtering is serialization-only: no stored watermark, presence key, or
   beacon row is ever rewritten by a settings change, so toggles apply (and
   un-apply) instantly and retroactively.

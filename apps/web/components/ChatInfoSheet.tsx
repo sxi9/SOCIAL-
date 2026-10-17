@@ -12,11 +12,14 @@ import type {
   ConversationResponse,
 } from '@socialchat/shared';
 import { CHAT_THEMES, CHAT_WALLPAPERS, DISAPPEAR_TTL_OPTIONS_S, NICKNAME_MAX_CHARS } from '@socialchat/shared';
+import { useRouter } from 'next/navigation';
 import { api, ApiError } from '@/lib/api';
 import { THEME_INFO, WALLPAPER_INFO, updatePrefs, wallpaperClassName } from '@/lib/prefs';
 import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
+import ChannelMembersSheet from './ChannelMembersSheet';
+import { InviteButton } from './InviteSheet';
 import sheetStyles from './beacons.module.css';
 import exp from './expression.module.css';
 
@@ -35,9 +38,36 @@ interface ChatInfoSheetProps {
 
 export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProps) {
   const state = useAppState();
+  const router = useRouter();
   const prefs = state.prefs.get(conv.id);
   const [error, setError] = useState<string | null>(null);
   const [ttlBusy, setTtlBusy] = useState(false);
+  const [membersOpen, setMembersOpen] = useState(false);
+  const [leaveBusy, setLeaveBusy] = useState(false);
+
+  const isChannel = conv.type === 'channel';
+  const channelRole = conv.participants.find((p) => p.user.id === meId)?.role ?? 'member';
+  const channelAdmin = channelRole === 'owner' || channelRole === 'admin';
+
+  async function leaveChannel(): Promise<void> {
+    if (leaveBusy) return;
+    if (!window.confirm('Leave this channel? You can rejoin with an invite link.')) return;
+    setLeaveBusy(true);
+    setError(null);
+    try {
+      await api.del(`/api/conversations/${conv.id}/participants/${meId}`);
+      store.removeConversation(conv.id);
+      onClose();
+      router.push('/');
+    } catch (err) {
+      setError(
+        err instanceof ApiError && err.code === 'owner_cannot_leave'
+          ? 'The owner keeps the lights on — a channel can never be headless.'
+          : 'Could not leave the channel.'
+      );
+      setLeaveBusy(false);
+    }
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -69,7 +99,7 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
   }
 
   const myRole = conv.participants.find((p) => p.user.id === meId)?.role;
-  const canSetTtl = conv.type === 'dm' || myRole === 'admin';
+  const canSetTtl = conv.type === 'dm' || myRole === 'admin' || myRole === 'owner';
 
   async function setTtl(ttl: number | null): Promise<void> {
     if (ttlBusy || ttl === conv.disappear_ttl_s) return;
@@ -105,6 +135,36 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
             ×
           </button>
         </div>
+
+        {isChannel ? (
+          <>
+            <div className={sheetStyles.sheetLabel}>📣 Channel</div>
+            <p className="muted small" style={{ margin: '0 0 8px' }}>
+              Only the owner and admins post; everyone reads and reacts. People join through invite
+              links — there&rsquo;s no member counter here, just members.
+            </p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+              {channelAdmin ? (
+                <>
+                  <InviteButton className="btn" label="Share invite" conversationId={conv.id} />
+                  <button type="button" className="btn" onClick={() => setMembersOpen(true)}>
+                    Members &amp; admins
+                  </button>
+                </>
+              ) : null}
+              {channelRole !== 'owner' ? (
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  disabled={leaveBusy}
+                  onClick={() => void leaveChannel()}
+                >
+                  {leaveBusy ? 'Leaving…' : 'Leave channel'}
+                </button>
+              ) : null}
+            </div>
+          </>
+        ) : null}
 
         <div className={sheetStyles.sheetLabel}>
           Theme <span className={exp.personalTag}>👀 only you see this</span>
@@ -219,6 +279,9 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
 
         {error ? <p className="error-text">{error}</p> : null}
       </div>
+      {membersOpen ? (
+        <ChannelMembersSheet conv={conv} meId={meId} onClose={() => setMembersOpen(false)} />
+      ) : null}
     </div>
   );
 }

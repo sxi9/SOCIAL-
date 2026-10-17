@@ -38,7 +38,12 @@ export async function deleteAttachmentsFully(rows: AttRow[]): Promise<void> {
 export async function runGc(): Promise<void> {
   const now = Date.now();
 
-  // 1. Orphan attachments: unbound, un-shared, older than 24 h (+ objects).
+  // 1. Orphan attachments: unbound (no message / share import / scheduled row
+  //    / post), older than 24 h. v0.5a (migration 0005): the partial orphan
+  //    index is a CANDIDATE list only — stories and profile media bind through
+  //    their own tables, so indexed NOT EXISTS guards over
+  //    stories.attachment_id and profile_media.attachment_id are the verdict.
+  //    Object deletion stays refcount-guarded (§1.31 re-referencing).
   const orphanCutoff = new Date(now - ORPHAN_ATTACHMENT_TTL_H * 3600 * 1000);
   const orphans = await db
     .select()
@@ -47,7 +52,11 @@ export async function runGc(): Promise<void> {
       and(
         isNull(schema.attachments.messageId),
         isNull(schema.attachments.shareImportId),
+        isNull(schema.attachments.scheduledMessageId),
+        isNull(schema.attachments.postId),
         lt(schema.attachments.createdAt, orphanCutoff),
+        sql`NOT EXISTS (SELECT 1 FROM stories s WHERE s.attachment_id = ${schema.attachments.id})`,
+        sql`NOT EXISTS (SELECT 1 FROM profile_media pm WHERE pm.attachment_id = ${schema.attachments.id})`,
       ),
     );
   await deleteAttachmentsFully(orphans);

@@ -7,7 +7,12 @@ import webpush from 'web-push';
 import { PUSH_DEBOUNCE_S } from '@socialchat/shared';
 import { config } from '../config.js';
 import { db, schema } from '../db/index.js';
-import type { BeaconPushJob, MessagePushJob, PushJob } from '../queues.js';
+import { isBlockedPair } from '../lib/blocks.js';
+// The pure guard verdict lives in lib/pushGuard.ts (no infra imports — the
+// mention/mute/block rules are unit-tested there); re-exported for callers.
+import { messagePushAllowed } from '../lib/pushGuard.js';
+export { messagePushAllowed };
+import type { BeaconPushJob, MessagePushJob, PushJob, SocialPushJob } from '../queues.js';
 import { presenceKey, redis } from '../redis.js';
 
 export function initWebPush(): boolean {
@@ -88,11 +93,35 @@ async function processBeaconPushJob(job: BeaconPushJob): Promise<void> {
   await sendToSubscriptions(job.user_id, payload);
 }
 
+// v0.5a (§1.28): connection request/accept pushes — presence + per-key
+// debounce; blocked pairs can never reach this path (requests between them
+// are 404-shaped before any enqueue).
+async function processSocialPushJob(job: SocialPushJob): Promise<void> {
+  if ((await redis.exists(presenceKey(job.user_id))) === 1) return;
+  const debounced = await redis.set(
+    `pushdb:${job.user_id}:social:${job.dedupe_key}`,
+    '1',
+    'EX',
+    PUSH_DEBOUNCE_S,
+    'NX',
+  );
+  if (debounced !== 'OK') return;
+  const payload = JSON.stringify({
+    title: job.title,
+    body: job.body,
+    tag: `social:${job.dedupe_key}`,
+    data: { url: job.url },
+  });
+  await sendToSubscriptions(job.user_id, payload);
+}
+
 export async function processPushJob(job: PushJob): Promise<void> {
   if (!config.vapid) return;
   if (job.kind === 'beacon') return processBeaconPushJob(job);
+  if (job.kind === 'social') return processSocialPushJob(job);
   return processMessagePushJob(job);
 }
+
 
 async function processMessagePushJob(job: MessagePushJob): Promise<void> {
   // Guard (a): Redis presence still shows the user offline.
@@ -110,10 +139,32 @@ async function processMessagePushJob(job: MessagePushJob): Promise<void> {
     )
     .limit(1);
   if (!part || part.leftAt !== null) return;
-  if (part.lastReadSeq >= job.seq) return;
 
-  // Guard (c): muted_until not in the future.
-  if (part.mutedUntil && part.mutedUntil.getTime() > Date.now()) return;
+  const [msg] = await db
+    .select()
+    .from(schema.messages)
+    .where(eq(schema.messages.id, job.message_id))
+    .limit(1);
+  if (!msg) return;
+
+  // Guards (b2)+(c) + the v0.5a §1.33 mention override, as one pure verdict:
+  // a mention skips the mute guard for the mentioned user — and NEVER a block
+  // (§1.14; the send-path fan-out already excludes blocked pairs, this is the
+  // belt against a block created between enqueue and execution).
+  const mentions = ((msg.metadata ?? {}) as { mentions?: string[] }).mentions;
+  const mentioned = Array.isArray(mentions) && mentions.includes(job.user_id);
+  const blockedPair = msg.senderId ? await isBlockedPair(job.user_id, msg.senderId) : false;
+  if (
+    !messagePushAllowed({
+      blockedPair,
+      lastReadSeq: part.lastReadSeq,
+      seq: job.seq,
+      mutedUntil: part.mutedUntil,
+      mentioned,
+    })
+  ) {
+    return;
+  }
 
   // Guard (d): per-(user, conversation) debounce, 5 s — bursts collapse.
   const debounced = await redis.set(
@@ -125,12 +176,6 @@ async function processMessagePushJob(job: MessagePushJob): Promise<void> {
   );
   if (debounced !== 'OK') return;
 
-  const [msg] = await db
-    .select()
-    .from(schema.messages)
-    .where(eq(schema.messages.id, job.message_id))
-    .limit(1);
-  if (!msg) return;
   const [conv] = await db
     .select()
     .from(schema.conversations)
@@ -146,6 +191,15 @@ async function processMessagePushJob(job: MessagePushJob): Promise<void> {
       .where(eq(schema.users.id, msg.senderId))
       .limit(1);
     if (sender) title = sender.displayName;
+  }
+  // §1.33: mention push copy leads with the sender; payload shape unchanged.
+  if (mentioned && msg.senderId) {
+    const [sender] = await db
+      .select({ username: schema.users.username })
+      .from(schema.users)
+      .where(eq(schema.users.id, msg.senderId))
+      .limit(1);
+    if (sender) title = `${sender.username} mentioned you`;
   }
 
   const payload = JSON.stringify({

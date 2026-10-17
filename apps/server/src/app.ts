@@ -6,7 +6,13 @@ import { config } from './config.js';
 import { authRoutes } from './modules/auth/routes.js';
 import { beaconRoutes } from './modules/beacons/routes.js';
 import { blockRoutes } from './modules/blocks/routes.js';
+import { channelRoutes } from './modules/conversations/channels.js';
+import { connectionRoutes } from './modules/connections/routes.js';
 import { conversationRoutes } from './modules/conversations/routes.js';
+import { feedRoutes } from './modules/feed/routes.js';
+import { pinRoutes } from './modules/pins/routes.js';
+import { profileRoutes } from './modules/profiles/routes.js';
+import { storyRoutes } from './modules/stories/routes.js';
 import { gameRoutes } from './modules/games/routes.js';
 import { inviteRoutes } from './modules/invites/routes.js';
 import { messageRoutes } from './modules/messages/routes.js';
@@ -76,11 +82,15 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
   app.get('/healthz', async () => ({ ok: true as const }));
 
   await app.register(authRoutes);
+  await app.register(profileRoutes); // v0.5a §1.37 (/users/me/profile before userRoutes' :username is path-distinct)
   await app.register(userRoutes);
   await app.register(settingsRoutes); // v0.3 §1.13 (before userRoutes' :username catch is fine — paths are distinct)
   await app.register(blockRoutes); // v0.3 §1.14
   await app.register(reportRoutes); // v0.3 §1.14
+  await app.register(connectionRoutes); // v0.5a §1.28
   await app.register(conversationRoutes);
+  await app.register(channelRoutes); // v0.5a §1.35
+  await app.register(pinRoutes); // v0.5a §1.32
   await app.register(messageRoutes);
   await app.register(reactionRoutes);
   await app.register(pollRoutes); // v0.3 §1.17
@@ -89,6 +99,8 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
   await app.register(scheduledRoutes); // v0.4 §1.26
   await app.register(gameRoutes); // v0.4 §1.27
   await app.register(puzzleRoutes); // v0.4 §1.27
+  await app.register(storyRoutes); // v0.5a §1.34
+  await app.register(feedRoutes); // v0.5a §1.36
   await app.register(inviteRoutes);
   await app.register(uploadRoutes);
   await app.register(previewRoutes);

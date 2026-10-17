@@ -36,8 +36,46 @@ export function otherParticipants(conv: Conversation, meId: string | undefined):
 
 export function conversationTitle(conv: Conversation, meId: string | undefined): string {
   if (conv.type === 'group') return conv.title ?? 'Group';
+  if (conv.type === 'channel') return conv.title ?? 'Channel';
   const peer = otherParticipants(conv, meId)[0];
   return peer ? peer.display_name : 'Conversation';
+}
+
+/** My role in a conversation (v0.5a §1.35: 'owner' exists in channels only). */
+export function myRole(conv: Conversation, meId: string | undefined): 'member' | 'admin' | 'owner' | null {
+  const p = conv.participants.find((x) => x.user.id === meId && x.left_at === null);
+  return p ? p.role : null;
+}
+
+/** Channels are read-only for plain members (§1.35 channel_read_only). */
+export function canPostIn(conv: Conversation, meId: string | undefined): boolean {
+  if (conv.type !== 'channel') return true;
+  const role = myRole(conv, meId);
+  return role === 'owner' || role === 'admin';
+}
+
+/** Client copy for body-less kinds (reply context cards, §1.29). */
+export function kindLabel(type: Message['type']): string {
+  switch (type) {
+    case 'image':
+      return 'Photo';
+    case 'video':
+      return 'Video';
+    case 'file':
+      return 'File';
+    case 'audio':
+      return 'Voice note';
+    case 'poll':
+      return 'Poll';
+    case 'vibe_check':
+      return 'Vibe check';
+    case 'game_ttt':
+      return 'Tic-tac-toe';
+    case 'puzzle_result':
+      return 'Puzzle result';
+    default:
+      return 'Message';
+  }
 }
 
 export function dmPeer(conv: Conversation, meId: string | undefined): UserPublic | null {

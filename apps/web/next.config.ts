@@ -6,6 +6,7 @@ const API_ORIGIN = process.env.API_ORIGIN ?? 'http://localhost:3001';
 
 const nextConfig: NextConfig = {
   output: 'standalone',
+  devIndicators: false,
   async rewrites() {
     if (process.env.NODE_ENV === 'production') return [];
     return [

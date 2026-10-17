@@ -51,6 +51,18 @@ export async function requireActiveParticipant(convId: string, userId: string): 
   return row;
 }
 
+/** v0.5a §1.35: a channel's owner + admins — the recipients of membership-
+ * level conv.updated frames (the member body never sees membership). */
+export async function channelPrivilegedUserIds(convId: string): Promise<string[]> {
+  const rows = await db
+    .select({ userId: cp.userId })
+    .from(cp)
+    .where(
+      and(eq(cp.conversationId, convId), isNull(cp.leftAt), sql`${cp.role} IN ('owner','admin')`),
+    );
+  return rows.map((r) => r.userId);
+}
+
 // Broadcast conv.* frames go through the per-recipient §1.13/§1.14 clamping
 // fan-out (lib/dto.ts) — never an unclamped shared DTO.
 async function publishConvUpdated(convId: string, toUserIds?: string[]): Promise<void> {
@@ -177,6 +189,22 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
           throw err;
         }
         await publishConvNew(convId, [user.id, body.user_id]);
+        const dto = await loadConversationDto(convId, view);
+        return reply.status(201).send({ conversation: dto });
+      }
+
+      // v0.5a §1.35: a channel starts with ONE member — its owner. No
+      // user_ids: membership arrives through §1.11 invites (channel
+      // conversation_id; owner/admin-minted; CHANNEL_MAX-capped).
+      if (body.type === 'channel') {
+        const convId = newId();
+        await db.transaction(async (tx) => {
+          await tx
+            .insert(convs)
+            .values({ id: convId, type: 'channel', title: body.title, createdBy: user.id });
+          await tx.insert(cp).values({ conversationId: convId, userId: user.id, role: 'owner' });
+        });
+        await publishConvNew(convId, [user.id]);
         const dto = await loadConversationDto(convId, view);
         return reply.status(201).send({ conversation: dto });
       }
@@ -478,31 +506,65 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
       const { user } = authed(req);
       const me = await requireActiveParticipant(req.params.id, user.id);
       const isSelf = req.params.userId === user.id;
-      if (!isSelf && me.role !== 'admin') throw forbidden('not_admin');
 
       const target = await getParticipant(req.params.id, req.params.userId);
       if (!target || target.leftAt !== null) throw notFound('participant_not_found');
 
+      const [convRow] = await db
+        .select({ type: convs.type })
+        .from(convs)
+        .where(eq(convs.id, req.params.id))
+        .limit(1);
+      if (convRow?.type === 'channel') {
+        // §1.35: the owner can NEVER leave or be removed — the channel must
+        // never be headless (transfer/deletion is future scope).
+        if (target.role === 'owner') throw forbidden('owner_cannot_leave');
+        if (!isSelf) {
+          // Owner/admins remove members; admins are removable by the owner only.
+          if (me.role !== 'owner' && me.role !== 'admin') throw forbidden('not_admin');
+          if (target.role === 'admin' && me.role !== 'owner') throw forbidden('not_admin');
+        }
+        // Self-leave: anyone (but the owner) leaves freely, admins included.
+      } else if (!isSelf && me.role !== 'admin') {
+        throw forbidden('not_admin');
+      }
+
       // left_seq = last_seq at leave time: the departed-member history floor
-      // (seq <= left_seq, API.md §1.5). The leave system message below bumps
-      // seq past it, so the leaver does not see it.
+      // (seq <= left_seq, API.md §1.5). In DMs/groups the leave system message
+      // below bumps seq past it, so the leaver does not see it.
       await db.execute(sql`
         UPDATE conversation_participants SET
           left_at = now(),
           left_seq = (SELECT last_seq FROM conversations WHERE id = ${req.params.id})
         WHERE conversation_id = ${req.params.id} AND user_id = ${req.params.userId}
       `);
-      await sendSystemMessage(
-        req.params.id,
-        isSelf ? 'participant_left' : 'participant_removed',
-        isSelf ? 'left the conversation' : 'was removed from the conversation',
-        user.id,
-        req.params.userId,
-      );
+      // §1.35: membership is NEVER exposed to the channel member body (no
+      // list, no count) — so a channel leave/remove posts NO system message,
+      // mirroring the invite_joined skip on the join path. The message would
+      // land on the seq log: msg.new to all 10k members, an unread bump for
+      // every one of them, and (since members cannot resolve
+      // metadata.system.target_id) an anonymous "left the conversation" pill.
+      // Owner/admins learn of the departure through the restricted
+      // conv.updated below. DMs/groups keep the §1.4 spec'd message.
+      if (convRow?.type !== 'channel') {
+        await sendSystemMessage(
+          req.params.id,
+          isSelf ? 'participant_left' : 'participant_removed',
+          isSelf ? 'left the conversation' : 'was removed from the conversation',
+          user.id,
+          req.params.userId,
+        );
+      }
       // §1.4: the route emits conv.updated without excluding the affected
       // user — the removed/leaving member's own live clients must learn about
       // the removal too (activeParticipantUserIds no longer includes them).
-      const recipients = await activeParticipantUserIds(req.params.id);
+      // §1.35: in channels the member body never sees membership (no list, no
+      // count), so the frame goes to owner/admins + the affected user only —
+      // never a 10k fan-out per leave.
+      const recipients =
+        convRow?.type === 'channel'
+          ? await channelPrivilegedUserIds(req.params.id)
+          : await activeParticipantUserIds(req.params.id);
       if (!recipients.includes(req.params.userId)) recipients.push(req.params.userId);
       await publishConvUpdated(req.params.id, recipients);
       return reply.status(204).send();

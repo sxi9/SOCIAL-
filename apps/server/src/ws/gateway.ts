@@ -191,6 +191,27 @@ async function applyReceipt(
   const updated = await updateWatermarks(meta.userId, conversationId, seq, raiseRead);
   if (!updated) return; // no advance (or not a participant) → nothing to fan out
 
+  // v0.5a §1.35/§2.11: receipt frames for CHANNELS go to the reader's own
+  // sockets only (cross-device unread sync) — never a 10k fan-out per read.
+  const [convRow] = await db
+    .select({ type: schema.conversations.type })
+    .from(schema.conversations)
+    .where(eq(schema.conversations.id, conversationId))
+    .limit(1);
+  if (convRow?.type === 'channel') {
+    queueReceipt(
+      {
+        conversation_id: conversationId,
+        user_id: meta.userId,
+        last_delivered_seq: updated.last_delivered_seq,
+        last_read_seq: updated.last_read_seq,
+      },
+      [meta.userId],
+      'full',
+    );
+    return;
+  }
+
   // Hotspot H4: ONE query for the recipient set AND everyone's read_receipts
   // (it was three — participant ids, reader's setting, others' settings).
   const rows = await db
@@ -316,6 +337,14 @@ async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promis
       if (!result.success) return strike(ws, meta, 'bad_payload', 'invalid typing frame');
       const { conversation_id } = result.data.d;
       if (!(await isActiveParticipant(meta.userId, conversation_id))) return;
+      // v0.5a §1.35/§2.11: typing frames for CHANNEL conversations are dropped
+      // at ingest unconditionally — whatever the sender's show_typing says.
+      const [convRow] = await db
+        .select({ type: schema.conversations.type })
+        .from(schema.conversations)
+        .where(eq(schema.conversations.id, conversation_id))
+        .limit(1);
+      if (convRow?.type === 'channel') return;
       // §1.13 show_typing: suppressed AT INGEST, before rebroadcast. No error
       // frame — typing is best-effort ephemera.
       const [sender] = await db

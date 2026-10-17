@@ -14,8 +14,10 @@ import type {
 } from '@socialchat/shared';
 import { api } from '@/lib/api';
 import { runItBack, sendKudos, VIBE_EMOJI, VIBE_LABEL } from '@/lib/beacons';
+import { createRecapStory } from '@/lib/stories';
 import Avatar from './Avatar';
 import styles from './beacons.module.css';
+import soc from './social.module.css';
 
 const KUDOS_DONE_KEY = (beaconId: string) => `bc-kudos-done:${beaconId}`;
 
@@ -40,15 +42,19 @@ interface AfterglowCardProps {
   body: string | null;
   conv: Conversation;
   meId: string;
+  /** v0.5a §1.34: the recap message identity — powers "share to my story". */
+  recapSeq?: number;
 }
 
-export default function AfterglowCard({ afterglow, body, conv, meId }: AfterglowCardProps) {
+export default function AfterglowCard({ afterglow, body, conv, meId, recapSeq }: AfterglowCardProps) {
   const [photos, setPhotos] = useState<Attachment[]>([]);
   const [ranBack, setRanBack] = useState(false);
   const [runBusy, setRunBusy] = useState(false);
   const [runErr, setRunErr] = useState<string | null>(null);
   const [promptGone, setPromptGone] = useState(true);
   const [sentTo, setSentTo] = useState<Set<string>>(new Set());
+  const [storied, setStoried] = useState<Set<string>>(new Set());
+  const [storyErr, setStoryErr] = useState<string | null>(null);
   const fetchedRef = useRef(false);
 
   // The crew, resolved from the plan conversation's participants.
@@ -135,11 +141,33 @@ export default function AfterglowCard({ afterglow, body, conv, meId }: Afterglow
       {photos.length > 0 ? (
         <div className={styles.afterglowPhotos}>
           {photos.map((att) => (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img key={att.id} src={att.thumb_url ?? att.url} alt="" loading="lazy" />
+            <span key={att.id} style={{ position: 'relative', display: 'inline-block' }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={att.thumb_url ?? att.url} alt="" loading="lazy" />
+              {/* §1.34 recap → story: a participant's own deliberate share —
+                  the ONLY way a recap photo leaves the plan group. */}
+              {recapSeq !== undefined && iWasThere ? (
+                <button
+                  type="button"
+                  className={soc.gifToolBtn}
+                  style={{ position: 'absolute', bottom: 4, right: 4, width: 'auto', padding: '0 7px' }}
+                  disabled={storied.has(att.id)}
+                  aria-label={storied.has(att.id) ? 'Shared to your story' : 'Share this photo to your story'}
+                  onClick={() => {
+                    setStoryErr(null);
+                    void createRecapStory(conv.id, recapSeq, att.id)
+                      .then(() => setStoried((prev) => new Set(prev).add(att.id)))
+                      .catch(() => setStoryErr('Could not share that photo to your story.'));
+                  }}
+                >
+                  {storied.has(att.id) ? '✓ storied' : '+ story'}
+                </button>
+              ) : null}
+            </span>
           ))}
         </div>
       ) : null}
+      {storyErr ? <p className="error-text" style={{ margin: 0 }}>{storyErr}</p> : null}
 
       <button type="button" className={styles.runBackBtn} disabled={runBusy || ranBack} onClick={() => void runBack()}>
         {ranBack ? 'It’s live again 🔥' : runBusy ? 'Lighting…' : 'Run it back 🔁'}

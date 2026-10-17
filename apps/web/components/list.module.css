@@ -127,7 +127,8 @@
 .fab {
   position: fixed;
   right: 20px;
-  bottom: calc(20px + env(safe-area-inset-bottom));
+  /* Clears the v0.5a bottom tab bar on mobile. */
+  bottom: calc(76px + env(safe-area-inset-bottom));
   width: 54px;
   height: 54px;
   border-radius: 50%;

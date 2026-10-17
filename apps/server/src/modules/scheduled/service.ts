@@ -101,6 +101,11 @@ export async function deliverScheduledMessage(id: string): Promise<DeliveryOutco
       )
       .limit(1);
     let deliverable = Boolean(conv && part && part.leftAt === null);
+    // v0.5a §1.35: the author must still be able to post in a channel at
+    // delivery time (a demotion between schedule and delivery cancels).
+    if (deliverable && conv!.type === 'channel' && part!.role !== 'owner' && part!.role !== 'admin') {
+      deliverable = false;
+    }
     if (deliverable && conv!.type === 'dm') {
       const peers = await tx
         .select({ userId: schema.conversationParticipants.userId })

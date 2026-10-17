@@ -10,8 +10,10 @@ import { randomBytes } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import {
+  CHANNEL_MAX,
   INVITE_TOKEN_BYTES,
   MAX_GROUP_PARTICIPANTS,
+  type InviteKind,
   type InvitePrivate,
   type InvitePublic,
   type InviteStatus,
@@ -49,13 +51,15 @@ export function inviteStatus(row: InviteRow): InviteStatus {
   return 'valid';
 }
 
-export function invitePrivateDto(row: InviteRow): InvitePrivate {
+export function invitePrivateDto(row: InviteRow, kind?: InviteKind): InvitePrivate {
   return {
     id: row.id,
     token: row.token,
     // App-origin PATH — web prefixes window.location.origin when copying.
     url: `/join/${row.token}`,
-    kind: row.conversationId ? 'group' : 'dm',
+    // v0.5a (§1.35): 'channel' when the scoped conversation is one — callers
+    // that know the conversation type pass it; the fallback keeps v0.2 shape.
+    kind: kind ?? (row.conversationId ? 'group' : 'dm'),
     conversation_id: row.conversationId,
     status: inviteStatus(row),
     created_at: row.createdAt.toISOString(),
@@ -77,6 +81,7 @@ export function invitePublicDto(
   row: InviteRow,
   inviter: UserRow,
   groupTitle: string | null,
+  kind?: InviteKind,
 ): InvitePublic {
   const status = inviteStatus(row);
   const servable =
@@ -85,7 +90,9 @@ export function invitePublicDto(
   const ver = inviter.avatarVersion;
   return {
     status,
-    kind: row.conversationId ? 'group' : 'dm',
+    kind: kind ?? (row.conversationId ? 'group' : 'dm'),
+    // §1.35: group_title is non-null for group AND channel kinds (the field
+    // name is kept stable for old clients).
     group_title: row.conversationId ? groupTitle : null,
     inviter: {
       username: inviter.username,
@@ -279,7 +286,9 @@ export async function acceptInvite(
     return { conversation_id: convId };
   }
 
-  // Group invite.
+  // Group / channel invite (v0.5a §1.35: channels join through this exact
+  // flow — the invite page carries the pitch, join_seq = last_seq keeps the
+  // standard history floor).
   const [conv] = await db.select().from(convs).where(eq(convs.id, invite.conversationId)).limit(1);
   // The FK cascades invites away with their group; defensive all the same.
   if (!conv) throw notFound('invite_not_found');
@@ -299,13 +308,37 @@ export async function acceptInvite(
   if (status !== 'valid') throw goneByStatus(status);
 
   const existingActive = await activeParticipantUserIds(conv.id);
-  if (existingActive.length + 1 > MAX_GROUP_PARTICIPANTS) throw badRequest('group_too_large');
+  if (conv.type === 'channel') {
+    // §1.35: invite accept at the cap → 400 channel_full (watermark receipts
+    // make 10k safe — ADR-002; the cap is the route's guard, not the DB's).
+    if (existingActive.length + 1 > CHANNEL_MAX) throw badRequest('channel_full');
+  } else if (existingActive.length + 1 > MAX_GROUP_PARTICIPANTS) {
+    throw badRequest('group_too_large');
+  }
 
   if (!(await claimUse(invite.id))) await refuseClaim(invite.id);
 
   // Same upsert as the §1.4 add-participants path (see upsertParticipantJoin).
   await upsertParticipantJoin(conv.id, joinerId, conv.lastSeq);
-  await sendSystemMessage(conv.id, 'invite_joined', 'joined via invite', joinerId, invite.inviterId);
-  await fanOutJoin(conv.id, joinerId, existingActive);
+  // §1.35: membership is NEVER exposed to the channel member body (no list,
+  // no count) — so a channel join posts NO `invite_joined` system message.
+  // The message would land on the seq log: msg.new to all 10k members, an
+  // unread bump for every one of them, and a membership announcement the DTO
+  // deliberately withholds. Owner/admins learn of the join through the
+  // restricted conv.updated below (their DTO carries the participant frame).
+  if (conv.type !== 'channel') {
+    await sendSystemMessage(conv.id, 'invite_joined', 'joined via invite', joinerId, invite.inviterId);
+  }
+  // §1.35: channel membership frames never fan to the member body (no list,
+  // no count) — owner/admins + the joiner only; groups keep §1.4 fan-out.
+  if (conv.type === 'channel') {
+    const privileged = (await db.execute(sql`
+      SELECT user_id FROM conversation_participants
+      WHERE conversation_id = ${conv.id} AND left_at IS NULL AND role IN ('owner','admin')
+    `)) as unknown as { user_id: string }[];
+    await fanOutJoin(conv.id, joinerId, privileged.map((r) => r.user_id));
+  } else {
+    await fanOutJoin(conv.id, joinerId, existingActive);
+  }
   return { conversation_id: conv.id };
 }

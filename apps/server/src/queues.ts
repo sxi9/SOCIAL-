@@ -44,7 +44,19 @@ export interface BeaconPushJob {
   url: string;
 }
 
-export type PushJob = MessagePushJob | BeaconPushJob;
+// v0.5a (§1.28): connection request/accept pushes — the only social-layer
+// pushes that exist (stories and posts NEVER push; §1.34/§1.36). Guards:
+// presence + per-dedupe_key debounce, re-checked at execution.
+export interface SocialPushJob {
+  kind: 'social';
+  user_id: string;
+  dedupe_key: string;
+  title: string;
+  body: string;
+  url: string;
+}
+
+export type PushJob = MessagePushJob | BeaconPushJob | SocialPushJob;
 
 export type GcJob = Record<string, never>;
 
@@ -119,6 +131,10 @@ export function enqueuePushBulk(jobs: { job: MessagePushJob; delayMs?: number }[
 
 export function enqueueBeaconPush(job: BeaconPushJob) {
   return pushQueue.add('beacon-push', job, { ...defaultJobOpts, attempts: 2 });
+}
+
+export function enqueueSocialPush(job: SocialPushJob) {
+  return pushQueue.add('social-push', job, { ...defaultJobOpts, attempts: 2 });
 }
 
 /** Beacon fan-out can target a whole audience — same single-round-trip rule. */

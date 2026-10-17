@@ -1,7 +1,14 @@
 .chatPage {
+  /* width:100% matters: as an auto-margined flex item of .split-main the
+     page otherwise sizes to its content's max-content width (pinned-bar
+     text, composer icon row) and overflows a 390px viewport — own bubbles,
+     ticks and the header gear land past the right edge. */
+  width: 100%;
   max-width: 680px;
   margin: 0 auto;
-  height: 100dvh;
+  /* Bounded by the tab shell (globals .shell), which is itself 100dvh. */
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   /* Overflow guard: a child's intrinsic min-content width (composer icon row,
@@ -317,6 +324,10 @@
   left: 0;
   z-index: 31;
   display: flex;
+  /* v0.5a: the menu grew (reply/forward/pin/edit/delete) — stack it. */
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 150px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -339,6 +350,7 @@
   padding: 8px 14px;
   cursor: pointer;
   white-space: nowrap;
+  text-align: left;
 }
 
 .msgMenu button:hover {
@@ -612,6 +624,8 @@
 /* composer */
 
 .composer {
+  /* Anchors the v0.5a @mention autocomplete popup (social.module.css). */
+  position: relative;
   border-top: 1px solid var(--border);
   padding: 8px 10px;
   padding-bottom: calc(8px + env(safe-area-inset-bottom));

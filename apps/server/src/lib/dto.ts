@@ -5,18 +5,20 @@ import type {
   Avatar,
   Conversation,
   ConversationListItem,
+  ConversationPin,
   Message,
   MessageMetadata,
   Participant,
   Poll,
   ReactionAggregate,
+  ReplyContext,
   UserLite,
   UserPrivate,
   UserPublic,
   VibeCheckAggregate,
   VibeReplyRef,
 } from '@socialchat/shared';
-import { VIBE_REPLIES_PREVIEW_MAX } from '@socialchat/shared';
+import { REPLY_EXCERPT_MAX_CHARS, VIBE_REPLIES_PREVIEW_MAX } from '@socialchat/shared';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { blockedSetOf, blockPairsAmong } from './blocks.js';
@@ -173,6 +175,7 @@ export function messageDto(
   poll: Poll | null = null,
   stamps: UserLite[] = [],
   vibe: VibeCheckAggregate | null = null,
+  replyContext: ReplyContext | null = null,
 ): Message {
   return {
     id: m.id,
@@ -182,7 +185,12 @@ export function messageDto(
     type: m.type as Message['type'],
     body: m.body,
     metadata: (m.metadata ?? {}) as MessageMetadata,
-    reply_to_id: m.replyToId,
+    // v0.5a (§1.29): reply_to_id is RETIRED — always null; seq is the identity.
+    reply_to_id: null,
+    reply_to_seq: m.replyToSeq,
+    // Server-resolved at serialization time: edits/tombstones of the target
+    // are always current, clients never join locally (§1.29).
+    reply_context: replyContext,
     attachments: atts.map(attachmentDto),
     reactions,
     poll,
@@ -225,7 +233,15 @@ export function conversationDto(
   c: ConvRow,
   parts: { p: PartRow; u: UserRow }[],
   view?: ViewCtx | null,
+  pins: ConversationPin[] = [],
 ): Conversation {
+  // v0.5a (§1.35): a channel's Conversation DTO carries ONLY the viewer's own
+  // row + the owner + admins — never the member body, never a member COUNT
+  // (PSYCHOLOGY rule 3). The full list is the paged §1.35 read.
+  const serialized =
+    c.type === 'channel'
+      ? parts.filter(({ p, u }) => p.role !== 'member' || u.id === view?.viewerId)
+      : parts;
   return {
     id: c.id,
     type: c.type as Conversation['type'],
@@ -234,7 +250,9 @@ export function conversationDto(
     created_by: c.createdBy,
     last_seq: c.lastSeq,
     last_message_at: isoOrNull(c.lastMessageAt),
-    participants: parts.map(({ p, u }) => participantDto(p, u, view)),
+    participants: serialized.map(({ p, u }) => participantDto(p, u, view)),
+    // v0.5a (§1.32): pinned messages, created_at ASC — a stable board.
+    pins,
     // v0.4 (§1.25): conversation-wide disappearing TTL (null = off).
     disappear_ttl_s: c.disappearTtlS,
     created_at: iso(c.createdAt),
@@ -498,6 +516,90 @@ export async function loadVibesFor(
   return map;
 }
 
+// v0.5a (API.md §1.29): batch reply-context resolution for messages carrying
+// reply_to_seq. Resolved at SERIALIZATION time against the referenced
+// message's CURRENT row, so edits and tombstones are always reflected.
+// excerpt = first REPLY_EXCERPT_MAX_CHARS of the current body; null for
+// body-less kinds and tombstones. author null = system message / deleted
+// account (the reply bubble renders a neutral label).
+export async function loadReplyContextsFor(rows: MsgRow[]): Promise<Map<string, ReplyContext>> {
+  const map = new Map<string, ReplyContext>();
+  const withReply = rows.filter((r) => r.replyToSeq !== null);
+  if (withReply.length === 0) return map;
+  const keys = [
+    ...new Set(withReply.map((r) => `${r.conversationId}:${r.replyToSeq}`)),
+  ].map((k) => {
+    const idx = k.lastIndexOf(':');
+    return { conversationId: k.slice(0, idx), seq: Number(k.slice(idx + 1)) };
+  });
+  const tuples = sql.join(
+    keys.map((k) => sql`(${k.conversationId}::uuid, ${k.seq}::bigint)`),
+    sql`, `,
+  );
+  const targets = (await db.execute(sql`
+    SELECT m.conversation_id, m.seq, m.type, m.body, m.deleted_at,
+           u.id AS user_id, u.username, u.display_name,
+           u.avatar_status, u.avatar_version, u.avatar_static_key, u.avatar_animated_key
+    FROM messages m
+    LEFT JOIN users u ON u.id = m.sender_id
+    WHERE (m.conversation_id, m.seq) IN (${tuples})
+  `)) as unknown as {
+    conversation_id: string;
+    seq: string | number;
+    type: string;
+    body: string | null;
+    deleted_at: string | Date | null;
+    user_id: string | null;
+    username: string | null;
+    display_name: string | null;
+    avatar_status: string | null;
+    avatar_version: number | null;
+    avatar_static_key: string | null;
+    avatar_animated_key: string | null;
+  }[];
+  for (const t of targets) {
+    const deleted = t.deleted_at !== null;
+    map.set(`${t.conversation_id}:${Number(t.seq)}`, {
+      seq: Number(t.seq),
+      author: t.user_id
+        ? {
+            id: t.user_id,
+            username: t.username!,
+            display_name: t.display_name!,
+            avatar: avatarDto({
+              avatarStatus: t.avatar_status!,
+              avatarVersion: Number(t.avatar_version),
+              avatarStaticKey: t.avatar_static_key,
+              avatarAnimatedKey: t.avatar_animated_key,
+            }),
+          }
+        : null,
+      type: t.type as ReplyContext['type'],
+      excerpt: deleted || !t.body ? null : t.body.slice(0, REPLY_EXCERPT_MAX_CHARS),
+      deleted,
+    });
+  }
+  return map;
+}
+
+// v0.5a (API.md §1.32): batch pin loader — created_at ASC (a stable board,
+// not a feed), ≤ MAX_PINS per conversation by construction.
+export async function loadPinsFor(convIds: string[]): Promise<Map<string, ConversationPin[]>> {
+  const map = new Map<string, ConversationPin[]>();
+  if (convIds.length === 0) return map;
+  const rows = await db
+    .select()
+    .from(schema.conversationPins)
+    .where(inArray(schema.conversationPins.conversationId, convIds))
+    .orderBy(asc(schema.conversationPins.createdAt), asc(schema.conversationPins.seq));
+  for (const r of rows) {
+    const list = map.get(r.conversationId) ?? [];
+    list.push({ seq: r.seq, pinned_by: r.pinnedBy, created_at: r.createdAt.toISOString() });
+    map.set(r.conversationId, list);
+  }
+  return map;
+}
+
 /**
  * `viewerId` personalizes `reactions[].mine` and `poll.my_vote`. REST
  * responses (history, sync, send/replay) MUST pass the requesting user.
@@ -521,6 +623,7 @@ export async function messageDtos(rows: MsgRow[], viewerId?: string): Promise<Me
     rows.filter((r) => r.type === 'vibe_check'),
     viewerId,
   );
+  const replyContexts = await loadReplyContextsFor(rows);
   return rows.map((r) =>
     messageDto(
       r,
@@ -529,6 +632,9 @@ export async function messageDtos(rows: MsgRow[], viewerId?: string): Promise<Me
       polls.get(`${r.conversationId}:${r.seq}`) ?? null,
       stamps.get(`${r.conversationId}:${r.seq}`) ?? [],
       r.type === 'vibe_check' ? (vibes.get(`${r.conversationId}:${r.seq}`) ?? null) : null,
+      r.replyToSeq !== null
+        ? (replyContexts.get(`${r.conversationId}:${r.replyToSeq}`) ?? null)
+        : null,
     ),
   );
 }
@@ -575,7 +681,8 @@ export async function loadConversationDto(
     .limit(1);
   if (!c) return null;
   const parts = await loadActiveParticipantsWithUsers([convId]);
-  return conversationDto(c, parts.get(convId) ?? [], view);
+  const pins = await loadPinsFor([convId]);
+  return conversationDto(c, parts.get(convId) ?? [], view, pins.get(convId) ?? []);
 }
 
 /**
@@ -603,6 +710,8 @@ export async function publishConversationToUsers(
   if (!c) return;
   const partsMap = await loadActiveParticipantsWithUsers([convId]);
   const parts = partsMap.get(convId) ?? [];
+  const pinsMap = await loadPinsFor([convId]);
+  const pins = pinsMap.get(convId) ?? [];
   const participantIds = parts.map(({ u }) => u.id);
   const userById = new Map(parts.map(({ u }) => [u.id, u]));
   // A recipient may no longer be a participant (the just-removed member's own
@@ -650,6 +759,13 @@ export async function publishConversationToUsers(
             (u.showLastSeen === 'dm_partners' && dmPartnerIds.has(u.id))));
       sig += (readVisible ? 'r' : '.') + (lastSeenVisible ? 'l' : '.');
     }
+    // v0.5a (§1.35): a channel DTO embeds the VIEWER'S OWN row (plus owner +
+    // admins), so each plain member's serialization is unique — key the group
+    // by recipient. Owner/admins still share one envelope among themselves.
+    if (c.type === 'channel') {
+      const mine = parts.find(({ u }) => u.id === r);
+      if (mine && mine.p.role === 'member') sig += `#${r}`;
+    }
     const g = groups.get(sig);
     if (g) g.userIds.push(r);
     else {
@@ -660,7 +776,7 @@ export async function publishConversationToUsers(
     }
   }
   for (const { ctx, userIds } of groups.values()) {
-    await publishToUsers(userIds, { t, d: { conversation: conversationDto(c, parts, ctx) } });
+    await publishToUsers(userIds, { t, d: { conversation: conversationDto(c, parts, ctx, pins) } });
   }
 }
 
@@ -724,6 +840,7 @@ export function rawToMsgRow(r: Record<string, unknown>): MsgRow {
     body: (r.body as string | null) ?? null,
     metadata: r.metadata,
     replyToId: (r.reply_to_id as string | null) ?? null,
+    replyToSeq: r.reply_to_seq === null || r.reply_to_seq === undefined ? null : Number(r.reply_to_seq),
     createdAt: new Date(r.created_at as string | Date),
     editedAt: r.edited_at ? new Date(r.edited_at as string | Date) : null,
     deletedAt: r.deleted_at ? new Date(r.deleted_at as string | Date) : null,
@@ -761,6 +878,7 @@ export async function loadListItems(
   const myPartByConv = new Map(myParts.map((p) => [p.conversationId, p]));
 
   const partsByConv = await loadActiveParticipantsWithUsers(convIds);
+  const pinsByConv = await loadPinsFor(convIds);
 
   const cp = schema.conversationParticipants;
   const lastRows = await db.execute(sql`
@@ -784,7 +902,7 @@ export async function loadListItems(
     const mine = myPartByConv.get(c.id);
     if (!mine) continue;
     items.push({
-      ...conversationDto(c, partsByConv.get(c.id) ?? [], ctx),
+      ...conversationDto(c, partsByConv.get(c.id) ?? [], ctx, pinsByConv.get(c.id) ?? []),
       unread_count: Math.max(0, c.lastSeq - mine.lastReadSeq),
       last_message: lastByConv.get(c.id) ?? null,
     });

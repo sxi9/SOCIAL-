@@ -15,8 +15,9 @@ import { logout } from '@/lib/connection';
 import { disablePush, enablePush, getPushSubscription, pushSupported } from '@/lib/push';
 import { setMe } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
-import AppShell from '@/components/AppShell';
 import Avatar from '@/components/Avatar';
+import ProfileEditor from '@/components/ProfileEditor';
+import TabPage from '@/components/TabPage';
 
 function ProfileSettings() {
   const state = useAppState();
@@ -136,6 +137,9 @@ function ProfileSettings() {
           ←
         </Link>
         <h1>Profile</h1>
+        <Link href={`/u/${encodeURIComponent(me.username)}`} className="btn btn-ghost">
+          View
+        </Link>
         <Link href="/settings/sessions" className="btn btn-ghost">
           Devices
         </Link>
@@ -243,6 +247,22 @@ function ProfileSettings() {
           </button>
         </div>
 
+        {/* v0.5a §1.37: interests, work/skills, the 3-GIF strip. */}
+        <ProfileEditor />
+
+        <h2>Friends</h2>
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <strong>Connections</strong>
+            <p className="muted small" style={{ margin: '4px 0 0' }}>
+              Friend requests and your people — friends also include everyone you DM.
+            </p>
+          </div>
+          <Link href="/connections" className="btn">
+            Open
+          </Link>
+        </div>
+
         <h2>Notifications</h2>
         <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
@@ -300,8 +320,8 @@ function ProfileSettings() {
 
 export default function ProfileSettingsPage() {
   return (
-    <AppShell>
+    <TabPage active="profile">
       <ProfileSettings />
-    </AppShell>
+    </TabPage>
   );
 }

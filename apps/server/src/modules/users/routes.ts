@@ -21,6 +21,7 @@ import { badRequest, notFound } from '../../lib/errors.js';
 import { parseMultipart } from '../../lib/multipart.js';
 import { enqueueAvatar } from '../../queues.js';
 import { authed, requireAuth } from '../auth/guard.js';
+import { loadProfile } from '../profiles/routes.js';
 import { stashAvatarSource } from '../uploads/pipeline.js';
 
 async function broadcastUserUpdated(userId: string): Promise<void> {
@@ -144,7 +145,12 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       if (!row) throw notFound('user_not_found');
       // §1.14: profile 404 in BOTH directions — identical to never existing.
       if (await isBlockedPair(user.id, row.id)) throw notFound('user_not_found');
-      return { user: userPublicDto(row, await viewCtxFor(user)) };
+      // v0.5a (§1.37): the profile page grows a `profile` sibling — additive;
+      // UserPublic itself stays lean (it rides every participant list).
+      return {
+        user: userPublicDto(row, await viewCtxFor(user)),
+        profile: await loadProfile(row.id, row.interests),
+      };
     },
   );
 }

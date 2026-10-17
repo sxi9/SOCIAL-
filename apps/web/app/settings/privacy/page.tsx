@@ -138,6 +138,7 @@ function PrivacySettings() {
             />
             <p className="muted small" style={{ margin: '4px 0 0' }}>
               You can still pick per beacon — this is just the pre-selected chip.
+              &ldquo;Friends&rdquo; means your connections plus the people you DM.
             </p>
           </div>
 

@@ -8,7 +8,7 @@ import { processMediaJob } from './jobs/media.js';
 import { initWebPush, processPushJob } from './jobs/push.js';
 import { processTimersJob } from './jobs/timers.js';
 import { processUnfurlJob } from './jobs/unfurl.js';
-import { DISAPPEAR_SWEEP_INTERVAL_S } from '@socialchat/shared';
+import { DISAPPEAR_SWEEP_INTERVAL_S, STORY_SWEEP_INTERVAL_S } from '@socialchat/shared';
 import type { AvatarJob, BeaconsJob, MediaJob, PushJob, TimersJob, UnfurlJob } from './queues.js';
 import { beaconsQueue, gcQueue, timersQueue } from './queues.js';
 import { createRedis } from './redis.js';
@@ -101,6 +101,19 @@ async function main(): Promise<void> {
     'scheduled-sweep',
     {},
     { repeat: { every: 60_000 }, jobId: 'scheduled-sweep', removeOnComplete: 10, removeOnFail: 10 },
+  );
+
+  // v0.5a (API.md §1.34): expired stories hard-delete silently (rows + views +
+  // attachment + refcount-guarded MinIO objects) — no fan-out, no event.
+  await timersQueue.add(
+    'story-sweep',
+    {},
+    {
+      repeat: { every: STORY_SWEEP_INTERVAL_S * 1000 },
+      jobId: 'story-sweep',
+      removeOnComplete: 10,
+      removeOnFail: 10,
+    },
   );
 
   console.log('worker: consuming queues avatar | media | unfurl | push | gc | beacons | timers');

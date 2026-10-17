@@ -14,7 +14,7 @@ import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { isBlockedPair } from '../../lib/blocks.js';
 import { activeParticipantUserIds, loadPollsFor, messageDtos } from '../../lib/dto.js';
-import { badRequest, conflict, notFound } from '../../lib/errors.js';
+import { ApiError, badRequest, conflict, notFound } from '../../lib/errors.js';
 import { publishToUsers } from '../../ws/events.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant } from '../conversations/routes.js';
@@ -112,6 +112,10 @@ export async function pollRoutes(fastify: FastifyInstance): Promise<void> {
         const others = await activeParticipantUserIds(convId);
         const peer = others.find((id) => id !== user.id);
         if (peer && (await isBlockedPair(user.id, peer))) throw notFound('conversation_not_found');
+      }
+      // v0.5a §1.35: polls are sends — owner/admin only in channels.
+      if (conv.type === 'channel' && part.role !== 'owner' && part.role !== 'admin') {
+        throw new ApiError(403, 'channel_read_only');
       }
 
       const replay = await findPollMessageByClientMsgId(convId, user.id, req.body.client_msg_id);

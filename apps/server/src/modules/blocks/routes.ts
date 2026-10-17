@@ -36,6 +36,17 @@ export async function blockRoutes(fastify: FastifyInstance): Promise<void> {
         VALUES (${user.id}, ${req.params.id})
         ON CONFLICT DO NOTHING
       `);
+      // v0.5a (§1.28): a block DELETES any pending connection request between
+      // the pair — silently, both directions (no frame, no push). An ACCEPTED
+      // connection stays as a dormant row (§1.14 "does not delete history"):
+      // friends-of and GET /api/connections filter it while the block stands,
+      // and unblocking restores it.
+      await db.execute(sql`
+        DELETE FROM connections
+        WHERE status = 'pending'
+          AND ((requester_id = ${user.id} AND addressee_id = ${req.params.id})
+            OR (requester_id = ${req.params.id} AND addressee_id = ${user.id}))
+      `);
       return reply.status(204).send();
     },
   );

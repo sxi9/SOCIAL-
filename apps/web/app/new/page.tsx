@@ -18,11 +18,35 @@ const MAX_INVITEES = MAX_GROUP_PARTICIPANTS - 1; // + creator = cap
 
 function NewConversation() {
   const router = useRouter();
-  const [mode, setMode] = useState<'dm' | 'group'>('dm');
+  const [mode, setMode] = useState<'dm' | 'group' | 'channel'>('dm');
   const [title, setTitle] = useState('');
   const [members, setMembers] = useState<UserPublic[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // v0.5a §1.35: a channel starts with just you (role 'owner') — membership
+  // arrives through invite links, never bulk-adds.
+  async function createChannel(): Promise<void> {
+    if (busy) return;
+    const name = title.trim();
+    if (!name) {
+      setError('Give the channel a name.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.post<ConversationResponse>('/api/conversations', {
+        type: 'channel',
+        title: name,
+      });
+      upsertConversation(res.conversation);
+      router.push(`/c/${res.conversation.id}`);
+    } catch {
+      setError('Could not create the channel.');
+      setBusy(false);
+    }
+  }
 
   async function startDm(user: UserPublic): Promise<void> {
     if (busy) return;
@@ -109,6 +133,13 @@ function NewConversation() {
           >
             Group
           </button>
+          <button
+            type="button"
+            className={`btn${mode === 'channel' ? ' btn-primary' : ''}`}
+            onClick={() => setMode('channel')}
+          >
+            Channel
+          </button>
         </div>
 
         {mode === 'group' ? (
@@ -145,27 +176,60 @@ function NewConversation() {
           </>
         ) : null}
 
-        <UserSearch
-          onSelect={(user) => {
-            if (mode === 'dm') void startDm(user);
-            else addMember(user);
-          }}
-          excludeIds={new Set(members.map((m) => m.id))}
-          placeholder={mode === 'dm' ? 'Who do you want to message?' : 'Add members'}
-        />
+        {mode === 'channel' ? (
+          <>
+            <div className="field">
+              <label htmlFor="channel-title">Channel name</label>
+              <input
+                id="channel-title"
+                className="input"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                maxLength={100}
+                placeholder="e.g. campus happenings"
+              />
+            </div>
+            <p className="muted small">
+              A channel is a broadcast: only you and the admins you appoint can post — everyone
+              else reads and reacts. People join through an invite link you share after creating
+              it. No member counters, ever.
+            </p>
+            {error ? <p className="error-text">{error}</p> : null}
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ width: '100%', marginTop: 12 }}
+              disabled={busy || !title.trim()}
+              onClick={() => void createChannel()}
+            >
+              {busy ? 'Creating…' : 'Create channel'}
+            </button>
+          </>
+        ) : (
+          <>
+            <UserSearch
+              onSelect={(user) => {
+                if (mode === 'dm') void startDm(user);
+                else addMember(user);
+              }}
+              excludeIds={new Set(members.map((m) => m.id))}
+              placeholder={mode === 'dm' ? 'Who do you want to message?' : 'Add members'}
+            />
 
-        {error ? <p className="error-text">{error}</p> : null}
-        {mode === 'group' ? (
-          <button
-            type="button"
-            className="btn btn-primary"
-            style={{ width: '100%', marginTop: 12 }}
-            disabled={busy || members.length === 0 || !title.trim()}
-            onClick={() => void createGroup()}
-          >
-            {busy ? 'Creating…' : 'Create group'}
-          </button>
-        ) : null}
+            {error ? <p className="error-text">{error}</p> : null}
+            {mode === 'group' ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ width: '100%', marginTop: 12 }}
+                disabled={busy || members.length === 0 || !title.trim()}
+                onClick={() => void createGroup()}
+              >
+                {busy ? 'Creating…' : 'Create group'}
+              </button>
+            ) : null}
+          </>
+        )}
       </div>
     </div>
   );

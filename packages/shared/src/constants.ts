@@ -359,3 +359,87 @@ export const PUZZLE_WORDLIST = [
 // chat is a named, consensual act; a ranked table and a streak are on the
 // PSYCHOLOGY never-build list. GET /api/puzzle/today/friends lists DM partners
 // who POSTED a result (opt-in by sharing), ordered by username — never by score.
+
+// ============================ v0.5a additions =================================
+// Social layer (FEATURES #46–#48; API.md §1.28–§1.37; ADR-011). Connections,
+// threads/replies, edit/delete, forwarding, pins, @mentions, stories, channels,
+// the finite feed, and rich profiles. PSYCHOLOGY.md stays binding: finite feeds
+// with a hard caught-up end, named faces never numeric scores, no seen-at
+// timestamps, mentions may override mute but NEVER blocks.
+
+// ---- Connections (v0.5a — API.md §1.28) ----
+// FRIENDS-OF (the v0.5a audience primitive) = accepted connections UNION
+// dm-partners. The beacons 'friends' audience and the beacon_default_audience
+// setting keep their STORED enum value 'friends' but resolve to friends-of
+// from v0.5a on (semantic upgrade, API.md §1.28). show_last_seen /
+// group_add_policy 'dm_partners' are untouched — they name DM partners
+// literally and still mean exactly that.
+export const CONNECTION_REQUEST_RATE_PER_HOUR = 30;
+
+// ---- Threads / replies (v0.5a — API.md §1.29) ----
+// Server-resolved reply context snippet: first chars of the referenced
+// message's body (grapheme-safe truncation client-side is cosmetic only).
+export const REPLY_EXCERPT_MAX_CHARS = 80;
+
+// ---- Edit & delete (v0.5a — API.md §1.30) ----
+// PATCH window measured from created_at; outside it → 409 edit_window_closed.
+export const EDIT_WINDOW_S = 86400;
+// Kinds whose body the author may edit. Tombstones, 'system', 'poll',
+// 'vibe_check' (replies already answered the original prompt), 'game_ttt' and
+// 'puzzle_result' (server-owned state) are never editable.
+export const EDITABLE_MESSAGE_TYPES = ['text', 'image', 'video', 'file', 'audio'] as const;
+
+// ---- Forwarding (v0.5a — API.md §1.31) ----
+export const FORWARD_MAX_TARGETS = 5;
+// Forwardable kinds — interactive/server-owned kinds stay where they happened.
+export const FORWARDABLE_MESSAGE_TYPES = ['text', 'image', 'video', 'file', 'audio'] as const;
+
+// ---- Pins (v0.5a — API.md §1.32) ----
+// Per conversation; the 11th pin → 409 pin_limit.
+export const MAX_PINS = 10;
+
+// ---- Mentions (v0.5a — API.md §1.33) ----
+// Server-parsed @username tokens against ACTIVE PARTICIPANTS at send time;
+// tokens past the cap stay plain text (never an error). A mention overrides
+// muted_until for push, but NEVER a block (API.md §1.14 is structural).
+export const MENTIONS_PER_MESSAGE_MAX = 20;
+
+// ---- Stories (v0.5a — API.md §1.34) ----
+export const STORY_CAPTION_MAX_CHARS = 140;
+// expires_at = created_at + 24 h, fixed (no custom story TTLs).
+export const STORY_TTL_S = 24 * 3600;
+export const STORY_CREATE_RATE_PER_HOUR = 20;
+// Worker expiry sweep cadence (queue `timers`, repeatable): expired stories
+// are hard-deleted (rows + attachments; MinIO objects refcount-guarded).
+export const STORY_SWEEP_INTERVAL_S = 60;
+
+// ---- Channels (v0.5a — API.md §1.35) ----
+// Participant cap for type='channel' conversations. Watermark receipts are the
+// entire reason this is safe: receipts/unread stay one cursor row per member,
+// O(participants) not O(messages × participants) (ARCHITECTURE §1 + ADR-002).
+// Groups keep MAX_GROUP_PARTICIPANTS=256 — min-watermark tick math and
+// participant-list serialization stay bounded there.
+export const CHANNEL_MAX = 10000;
+
+// ---- Feed (v0.5a — API.md §1.36) ----
+export const POST_BODY_MAX_CHARS = 2000;
+export const POST_MAX_ATTACHMENTS = 4;
+export const POST_CREATE_RATE_PER_HOUR = 10;
+export const POST_COMMENT_MAX_CHARS = 500;
+// Distinct emoji one user may hold on one post; the 9th distinct POST → 409.
+export const REACTIONS_PER_USER_PER_POST_MAX = 8;
+// Reaction chips carry named FACES: the first N reactors as UserLite +
+// has_more — NEVER a numeric total anywhere (PSYCHOLOGY design rule 3).
+export const POST_REACTORS_PREVIEW_MAX = 12;
+// Latest comments inlined on the Post DTO (ASC); has_more_comments carries the
+// rest — no comment COUNT is ever serialized.
+export const POST_COMMENTS_PREVIEW_MAX = 3;
+
+// ---- Rich profiles (v0.5a — API.md §1.37) ----
+export const INTERESTS_MAX = 10;
+export const INTEREST_TAG_MAX_CHARS = 24;
+export const PROFILE_ENTRIES_MAX = 12;
+export const PROFILE_ENTRY_TITLE_MAX_CHARS = 80;
+export const PROFILE_ENTRY_DETAIL_MAX_CHARS = 160;
+// The 3-GIF strip: profile_media rows, order_idx 0..2.
+export const PROFILE_MEDIA_MAX = 3;

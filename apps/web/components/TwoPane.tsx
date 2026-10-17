@@ -8,6 +8,7 @@ import type { ReactNode } from 'react';
 import AppShell from './AppShell';
 import ConversationListView from './ConversationListView';
 import { InviteButton } from './InviteSheet';
+import Tabs from './Tabs';
 
 export default function TwoPane({
   activeId = null,
@@ -18,11 +19,15 @@ export default function TwoPane({
 }) {
   return (
     <AppShell>
-      <div className={`split${activeId ? ' split-has-active' : ''}`}>
-        <aside className="split-side">
-          <ConversationListView activeId={activeId} />
-        </aside>
-        <main className="split-main">{children ?? <IdlePane />}</main>
+      <div className="shell">
+        <div className={`split${activeId ? ' split-has-active' : ''}`}>
+          <aside className="split-side">
+            <ConversationListView activeId={activeId} />
+          </aside>
+          <main className="split-main">{children ?? <IdlePane />}</main>
+        </div>
+        {/* DOM-last = bottom on mobile; the rail orders itself first on desktop. */}
+        <Tabs active="chats" hideOnMobile={activeId !== null} />
       </div>
     </AppShell>
   );

@@ -23,6 +23,7 @@ import {
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { blockPairsAmong, blockedSetOf, isBlockedPair } from '../../lib/blocks.js';
+import { friendsOfIds, friendsOfPairCond, isFriendOf } from '../../lib/friends.js';
 import { userLiteDto, type UserRow } from '../../lib/dto.js';
 import { publishToUsers } from '../../ws/events.js';
 import { enqueueBeaconPushBulk } from '../../queues.js';
@@ -49,19 +50,6 @@ export function icebreakerFor(beaconId: string): string {
 
 function sameArea(a: string | null, b2: string | null): boolean {
   return a !== null && b2 !== null && a.toLowerCase() === b2.toLowerCase();
-}
-
-async function sharesActiveDm(a: string, b2: string): Promise<boolean> {
-  const rows = (await db.execute(sql`
-    SELECT 1 AS one
-    FROM conversation_participants p1
-    JOIN conversation_participants p2 ON p2.conversation_id = p1.conversation_id
-    JOIN conversations c ON c.id = p1.conversation_id AND c.type = 'dm'
-    WHERE p1.user_id = ${a} AND p2.user_id = ${b2}
-      AND p1.left_at IS NULL AND p2.left_at IS NULL
-    LIMIT 1
-  `)) as unknown as { one: number }[];
-  return rows.length > 0;
 }
 
 export async function loadBeacon(beaconId: string): Promise<BeaconRow | null> {
@@ -120,7 +108,10 @@ export async function isBeaconVisibleTo(
     case 'area':
       return sameArea(me.area, row.area);
     case 'friends':
-      return sharesActiveDm(me.id, row.creatorId);
+      // v0.5a (§1.28): 'friends' RESOLVES to friends-of (accepted connections
+      // ∪ dm-partners) — the stored enum value is unchanged. The block clause
+      // above already answered; isFriendOf's own minus-blocks is a no-op here.
+      return isFriendOf(me.id, row.creatorId);
     default:
       return false;
   }
@@ -129,12 +120,11 @@ export async function isBeaconVisibleTo(
 function visibleOpenCond(me: { id: string; area: string | null }) {
   const clauses = [sql`${b.creatorId} = ${me.id}`, sql`${b.audience} = 'public'`];
   if (me.area !== null) clauses.push(sql`(${b.audience} = 'area' AND ${b.area} = ${me.area})`);
-  clauses.push(sql`(${b.audience} = 'friends' AND EXISTS (
-    SELECT 1 FROM conversation_participants p1
-    JOIN conversation_participants p2 ON p2.conversation_id = p1.conversation_id
-    JOIN conversations c ON c.id = p1.conversation_id AND c.type = 'dm'
-    WHERE p1.user_id = ${me.id} AND p2.user_id = ${b.creatorId}
-      AND p1.left_at IS NULL AND p2.left_at IS NULL))`);
+  // v0.5a (§1.28): 'friends' = FRIENDS-OF (dm-partners ∪ accepted
+  // connections); the §1.14 block clause rides every caller separately.
+  clauses.push(
+    sql`(${b.audience} = 'friends' AND ${friendsOfPairCond(me.id, sql`${b.creatorId}`)})`,
+  );
   return sql`(${b.status} = 'open' AND ${b.expiresAt} > now() AND (${sql.join(clauses, sql` OR `)}))`;
 }
 
@@ -194,14 +184,9 @@ export async function radarCount(me: { id: string; area: string | null }): Promi
 export async function audienceUserIds(row: BeaconRow): Promise<string[]> {
   let rows: { id: string }[];
   if (row.audience === 'friends') {
-    rows = (await db.execute(sql`
-      SELECT DISTINCT other.user_id AS id
-      FROM conversation_participants mine
-      JOIN conversation_participants other ON other.conversation_id = mine.conversation_id
-      JOIN conversations c ON c.id = mine.conversation_id AND c.type = 'dm'
-      WHERE mine.user_id = ${row.creatorId} AND mine.left_at IS NULL
-        AND other.left_at IS NULL AND other.user_id <> ${row.creatorId}
-    `)) as unknown as { id: string }[];
+    // v0.5a (§1.28): the friends audience IS the friends-of set (already minus
+    // blocks w.r.t. the creator; the shared filter below stays as a no-op).
+    rows = [...(await friendsOfIds(row.creatorId))].map((id) => ({ id }));
   } else if (row.audience === 'area') {
     rows = (await db.execute(sql`
       SELECT id FROM users WHERE area = ${row.area} AND id <> ${row.creatorId}

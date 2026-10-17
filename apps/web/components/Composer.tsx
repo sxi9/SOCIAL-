@@ -8,6 +8,7 @@ import type {
   LinkPreview,
   MessageEffect,
   UploadResponse,
+  UserLite,
 } from '@socialchat/shared';
 import { MAX_AUDIO_DURATION_S } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
@@ -15,10 +16,12 @@ import { EFFECT_EMOJI, EFFECT_LABEL, suggestEffect } from '@/lib/effects';
 import { EMOJI_GRID } from '@/lib/emoji';
 import { firstUrl, formatDuration } from '@/lib/format';
 import { useAppState } from '@/lib/useStore';
+import Avatar from './Avatar';
 import PreviewCard from './PreviewCard';
 import ScheduleSheet, { type ScheduleDraft } from './ScheduleSheet';
 import styles from './chat.module.css';
 import exp from './expression.module.css';
+import soc from './social.module.css';
 
 const URL_PREVIEW_DEBOUNCE_MS = 800;
 const SEND_LONG_PRESS_MS = 450;
@@ -46,6 +49,14 @@ interface ComposerProps {
   conversationId?: string;
   /** Set in a live chat: shows the "+" menu (doodle / vibe check / games). */
   onPlusAction?: (action: PlusAction) => void;
+  /** v0.5a §1.33: participants the client already holds (DMs/groups) — powers
+   * the @mention autocomplete. Channels pass searchMentions instead. */
+  mentionCandidates?: UserLite[];
+  /** v0.5a §1.35: channel autocomplete via GET .../participants?q= (the full
+   * list is never shipped; senders there are owner/admins, who may read it). */
+  searchMentions?: (q: string) => Promise<UserLite[]>;
+  /** Channels: games need peers, not audiences — hide the ttt entry. */
+  hideGames?: boolean;
 }
 
 type RecState = { phase: 'recording'; startedAt: number; cancelArmed: boolean } | null;
@@ -60,6 +71,9 @@ export default function Composer({
   autoFocus,
   conversationId,
   onPlusAction,
+  mentionCandidates,
+  searchMentions,
+  hideGames,
 }: ComposerProps) {
   const state = useAppState();
   const [body, setBody] = useState(initialBody ?? '');
@@ -76,6 +90,70 @@ export default function Composer({
   const textRef = useRef<HTMLTextAreaElement | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [plusOpen, setPlusOpen] = useState(false);
+
+  // ---- v0.5a §1.33 @mention autocomplete. The server is the only writer of
+  // metadata.mentions — this merely helps type a literal @username token. ----
+  const mentionsEnabled = mentionCandidates !== undefined || searchMentions !== undefined;
+  const [mentionToken, setMentionToken] = useState<{ start: number; query: string } | null>(null);
+  const [mentionResults, setMentionResults] = useState<UserLite[]>([]);
+  const [mentionIdx, setMentionIdx] = useState(0);
+  const mentionSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function detectMention(value: string, caret: number): void {
+    if (!mentionsEnabled) return;
+    const before = value.slice(0, caret);
+    const m = /(^|\s)@([a-z0-9_]{0,24})$/i.exec(before);
+    if (!m) {
+      setMentionToken(null);
+      setMentionResults([]);
+      return;
+    }
+    const query = m[2].toLowerCase();
+    const start = caret - m[2].length - 1; // index of the '@'
+    setMentionToken({ start, query });
+    setMentionIdx(0);
+    if (mentionCandidates) {
+      const hits = mentionCandidates
+        .filter(
+          (u) =>
+            u.username.toLowerCase().startsWith(query) ||
+            u.display_name.toLowerCase().startsWith(query)
+        )
+        .slice(0, 6);
+      setMentionResults(hits);
+    } else if (searchMentions) {
+      if (mentionSearchRef.current) clearTimeout(mentionSearchRef.current);
+      mentionSearchRef.current = setTimeout(() => {
+        void searchMentions(query)
+          .then((hits) => {
+            // Only apply if the token is still live.
+            setMentionToken((cur) => {
+              if (cur && cur.start === start) setMentionResults(hits.slice(0, 6));
+              return cur;
+            });
+          })
+          .catch(() => setMentionResults([]));
+      }, 250);
+    }
+  }
+
+  function pickMention(user: UserLite): void {
+    const token = mentionToken;
+    setMentionToken(null);
+    setMentionResults([]);
+    if (!token) return;
+    const el = textRef.current;
+    const caret = el?.selectionStart ?? token.start + token.query.length + 1;
+    const inserted = `@${user.username} `;
+    setBody((prev) => prev.slice(0, token.start) + inserted + prev.slice(caret));
+    requestAnimationFrame(() => {
+      if (el) {
+        el.focus();
+        const pos = token.start + inserted.length;
+        el.setSelectionRange(pos, pos);
+      }
+    });
+  }
 
   // ---- v0.4 §1.22 effects: suggest-only; the sender must confirm (arm). ----
   const [armedEffect, setArmedEffect] = useState<MessageEffect | null>(null);
@@ -424,7 +502,8 @@ export default function Composer({
   const plusItems: { action: PlusAction; icon: string; label: string }[] = [
     { action: 'doodle', icon: '✏️', label: 'Doodle' },
     { action: 'vibe', icon: '🎭', label: 'Vibe check' },
-    { action: 'ttt', icon: '🎮', label: 'Tic-tac-toe' },
+    // §1.35: games are not startable in channels (peers, not audiences).
+    ...(hideGames ? [] : [{ action: 'ttt' as PlusAction, icon: '🎮', label: 'Tic-tac-toe' }]),
     { action: 'puzzle', icon: '🧩', label: 'Daily puzzle' },
   ];
 
@@ -666,14 +745,56 @@ export default function Composer({
           onChange={(e) => {
             setBody(e.target.value);
             if (e.target.value.trim()) onTyping?.();
+            detectMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
           }}
           onKeyDown={(e) => {
+            // §1.33 autocomplete steals navigation keys while open.
+            if (mentionToken && mentionResults.length > 0) {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setMentionIdx((i) => (i + 1) % mentionResults.length);
+                return;
+              }
+              if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setMentionIdx((i) => (i - 1 + mentionResults.length) % mentionResults.length);
+                return;
+              }
+              if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                pickMention(mentionResults[Math.min(mentionIdx, mentionResults.length - 1)]);
+                return;
+              }
+              if (e.key === 'Escape') {
+                setMentionToken(null);
+                setMentionResults([]);
+                return;
+              }
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               void handleSend();
             }
           }}
         />
+        {mentionToken && mentionResults.length > 0 ? (
+          <div className={soc.mentionPop} role="listbox" aria-label="Mention someone">
+            {mentionResults.map((u, i) => (
+              <button
+                key={u.id}
+                type="button"
+                role="option"
+                aria-selected={i === mentionIdx}
+                className={`${soc.mentionRow}${i === mentionIdx ? ` ${soc.mentionRowActive}` : ''}`}
+                onMouseEnter={() => setMentionIdx(i)}
+                onClick={() => pickMention(u)}
+              >
+                <Avatar avatar={u.avatar} name={u.display_name} size={26} />
+                {u.display_name} <span>@{u.username}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         {showMic ? (
           <button
             type="button"

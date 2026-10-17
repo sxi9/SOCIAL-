@@ -11,6 +11,7 @@ import { parseMultipart } from '../../lib/multipart.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
 import { enqueueMedia } from '../../queues.js';
 import { getObjectStream } from '../../s3.js';
+import { friendsOfPairCond } from '../../lib/friends.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { processUploadStream, type ProcessedFile } from './pipeline.js';
 
@@ -129,6 +130,37 @@ export async function uploadRoutes(fastify: FastifyInstance): Promise<void> {
               WHERE m.id = a.message_id AND p.user_id = ${user.id}
                 AND m.seq > p.join_seq
                 AND (p.left_at IS NULL OR m.seq <= COALESCE(p.left_seq, 0))
+            )
+            -- §1.36: feed attachments are readable by the post's audience
+            -- (author's friends-of set, minus §1.14 blocks — both directions).
+            OR EXISTS (
+              SELECT 1 FROM posts po
+              WHERE po.id = a.post_id
+                AND ${friendsOfPairCond(user.id, sql`po.author_id`)}
+                AND NOT EXISTS (
+                  SELECT 1 FROM blocks bl
+                  WHERE (bl.blocker_id = ${user.id} AND bl.blocked_id = po.author_id)
+                     OR (bl.blocker_id = po.author_id AND bl.blocked_id = ${user.id}))
+            )
+            -- §1.34: story media — unexpired, viewer in the author's audience.
+            OR EXISTS (
+              SELECT 1 FROM stories st
+              WHERE st.attachment_id = a.id AND st.expires_at > now()
+                AND ${friendsOfPairCond(user.id, sql`st.author_id`)}
+                AND NOT EXISTS (
+                  SELECT 1 FROM blocks bl
+                  WHERE (bl.blocker_id = ${user.id} AND bl.blocked_id = st.author_id)
+                     OR (bl.blocker_id = st.author_id AND bl.blocked_id = ${user.id}))
+            )
+            -- §1.37: profile GIF strip — the profile page is readable by any
+            -- authed user except blocked pairs (which 404 the whole page).
+            OR EXISTS (
+              SELECT 1 FROM profile_media pm
+              WHERE pm.attachment_id = a.id
+                AND NOT EXISTS (
+                  SELECT 1 FROM blocks bl
+                  WHERE (bl.blocker_id = ${user.id} AND bl.blocked_id = pm.user_id)
+                     OR (bl.blocker_id = pm.user_id AND bl.blocked_id = ${user.id}))
             )
           )
         LIMIT 1

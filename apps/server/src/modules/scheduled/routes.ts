@@ -17,7 +17,7 @@ import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { isBlockedPair } from '../../lib/blocks.js';
 import { activeParticipantUserIds } from '../../lib/dto.js';
-import { badRequest, conflict, notFound, rateLimited } from '../../lib/errors.js';
+import { ApiError, badRequest, conflict, notFound, rateLimited } from '../../lib/errors.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
 import { enqueueScheduledDelivery } from '../../queues.js';
 import { authed, requireAuth } from '../auth/guard.js';
@@ -69,6 +69,11 @@ export async function scheduledRoutes(fastify: FastifyInstance): Promise<void> {
       if (conv?.type === 'dm') {
         const peer = (await activeParticipantUserIds(convId)).find((id) => id !== user.id);
         if (peer && (await isBlockedPair(user.id, peer))) throw notFound('conversation_not_found');
+      }
+      // v0.5a §1.35: a schedule is a deferred send — owner/admin only in
+      // channels (delivery re-checks the role at send time too).
+      if (conv?.type === 'channel' && part.role !== 'owner' && part.role !== 'admin') {
+        throw new ApiError(403, 'channel_read_only');
       }
 
       const body = req.body;
@@ -132,13 +137,18 @@ export async function scheduledRoutes(fastify: FastifyInstance): Promise<void> {
             .returning();
 
           if (attachmentIds.length > 0) {
-            // Mine, unbound (not on a message, not on another schedule);
-            // binding shields them from the orphan GC while they wait.
+            // Mine, unbound (not on a message, not on another schedule, and
+            // v0.5a: not on a post/story/profile either — §1.31 re-use mints
+            // a NEW row); binding shields them from the orphan GC while they
+            // wait.
             const bound = (await tx.execute(sql`
               UPDATE attachments SET scheduled_message_id = ${inserted!.id}, share_import_id = NULL
               WHERE id IN (${sql.join(attachmentIds.map((id) => sql`${id}::uuid`), sql`, `)})
                 AND uploader_id = ${user.id}
                 AND message_id IS NULL AND scheduled_message_id IS NULL
+                AND post_id IS NULL
+                AND NOT EXISTS (SELECT 1 FROM stories st WHERE st.attachment_id = attachments.id)
+                AND NOT EXISTS (SELECT 1 FROM profile_media pm WHERE pm.attachment_id = attachments.id)
               RETURNING id, kind, status
             `)) as unknown as { id: string; kind: string; status: string }[];
             if (bound.length !== attachmentIds.length) throw badRequest('invalid_attachments');

@@ -85,6 +85,10 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
         .limit(1);
       if (!conv) throw notFound('conversation_not_found');
 
+      // v0.5a §1.35: games are not startable in channels — challenges need
+      // peers, not audiences.
+      if (conv.type === 'channel') throw badRequest('bad_opponent');
+
       const participants = await activeParticipantUserIds(convId);
       let opponentId: string;
       if (conv.type === 'dm') {

@@ -42,6 +42,15 @@ const IdParams = z.object({ id: z.string().uuid() });
 // endpoints never explain themselves beyond the status enum).
 const TokenParams = z.object({ token: z.string().min(1).max(256) });
 
+/** v0.5a (§1.35): invite kind from the scoped conversation's type. */
+function inviteKindOf(
+  conversationId: string | null,
+  convType: string | null | undefined,
+): 'dm' | 'group' | 'channel' {
+  if (!conversationId) return 'dm';
+  return convType === 'channel' ? 'channel' : 'group';
+}
+
 function requireTokenShape(token: string): void {
   if (!INVITE_TOKEN_REGEX.test(token)) throw notFound('invite_not_found');
 }
@@ -69,9 +78,12 @@ export async function inviteRoutes(fastify: FastifyInstance): Promise<void> {
       if (!rate.allowed) throw rateLimited(rate.retryAfterS);
 
       const conversationId = req.body.conversation_id ?? null;
+      let scopeKind: 'dm' | 'group' | 'channel' = 'dm';
       if (conversationId) {
         // Error precedence per API.md §1.11: 404 (unknown / not-a-participant)
-        // → 400 invite_bad_scope (a DM) → 403 forbidden (group, not admin).
+        // → 400 invite_bad_scope (a DM) → 403 forbidden (not privileged).
+        // v0.5a §1.35: channel invites are owner/admin-minted (membership
+        // arrives ONLY through invites — there is no direct-add for channels).
         const [conv] = await db
           .select()
           .from(schema.conversations)
@@ -80,8 +92,12 @@ export async function inviteRoutes(fastify: FastifyInstance): Promise<void> {
         if (!conv) throw notFound();
         const part = await getParticipant(conversationId, user.id);
         if (!part || part.leftAt !== null) throw notFound();
-        if (conv.type !== 'group') throw badRequest('invite_bad_scope');
-        if (part.role !== 'admin') throw forbidden();
+        if (conv.type === 'dm') throw badRequest('invite_bad_scope');
+        if (conv.type === 'group' && part.role !== 'admin') throw forbidden();
+        if (conv.type === 'channel' && part.role !== 'owner' && part.role !== 'admin') {
+          throw forbidden();
+        }
+        scopeKind = conv.type as 'group' | 'channel';
       }
 
       // Cap simultaneously OPEN invites per user (revoke or let one lapse to
@@ -106,7 +122,7 @@ export async function inviteRoutes(fastify: FastifyInstance): Promise<void> {
           maxUses: INVITE_MAX_USES,
         })
         .returning();
-      return reply.status(201).send({ invite: invitePrivateDto(row!) });
+      return reply.status(201).send({ invite: invitePrivateDto(row!, scopeKind) });
     },
   );
 
@@ -115,12 +131,17 @@ export async function inviteRoutes(fastify: FastifyInstance): Promise<void> {
   app.get('/api/invites', { preHandler: requireAuth }, async (req) => {
     const { user } = authed(req);
     const rows = await db
-      .select()
+      .select({ invite: schema.invites, convType: schema.conversations.type })
       .from(schema.invites)
+      .leftJoin(schema.conversations, eq(schema.invites.conversationId, schema.conversations.id))
       .where(eq(schema.invites.inviterId, user.id))
       .orderBy(desc(schema.invites.createdAt))
       .limit(100);
-    return { invites: rows.map(invitePrivateDto) };
+    return {
+      invites: rows.map(({ invite, convType }) =>
+        invitePrivateDto(invite, inviteKindOf(invite.conversationId, convType)),
+      ),
+    };
   });
 
   // §1.11 DELETE /api/invites/:id — revoke; idempotent re-revoke is also 204.
@@ -162,15 +183,24 @@ export async function inviteRoutes(fastify: FastifyInstance): Promise<void> {
       if (!inviter) throw notFound('invite_not_found');
 
       let groupTitle: string | null = null;
+      let convType: string | null = null;
       if (invite.conversationId) {
         const [conv] = await db
-          .select({ title: schema.conversations.title })
+          .select({ title: schema.conversations.title, type: schema.conversations.type })
           .from(schema.conversations)
           .where(eq(schema.conversations.id, invite.conversationId))
           .limit(1);
         groupTitle = conv?.title ?? null;
+        convType = conv?.type ?? null;
       }
-      return { invite: invitePublicDto(invite, inviter, groupTitle) };
+      return {
+        invite: invitePublicDto(
+          invite,
+          inviter,
+          groupTitle,
+          inviteKindOf(invite.conversationId, convType),
+        ),
+      };
     },
   );
 

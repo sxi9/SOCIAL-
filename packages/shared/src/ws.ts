@@ -7,8 +7,11 @@ import {
   AttachmentSchema,
   BeaconRoleSchema,
   BeaconSchema,
+  ConnectionSchema,
   ConversationPrefsSchema,
   ConversationSchema,
+  PostSchema,
+  StorySchema,
   IsoDateTimeSchema,
   KudosKindSchema,
   LinkPreviewSchema,
@@ -262,6 +265,48 @@ export const ScheduledUpdatedEventSchema = z.object({
 });
 export type ScheduledUpdatedEvent = z.infer<typeof ScheduledUpdatedEventSchema>;
 
+// v0.5a (API.md §1.28): a connection changed — to THE TWO PARTIES ONLY, and
+// not even both for every transition: request → requester's own sockets +
+// addressee; accept → both; decline → addressee's own sockets only (the
+// requester is never pinged about a rejection — liking gap, PSYCHOLOGY §9);
+// remove → remover's own sockets only. The DTO is viewer-specific (direction/
+// user are per-recipient), stamped at the gateway like beacon.*.
+export const ConnectionUpdatedEventSchema = z.object({
+  t: z.literal('connection.updated'),
+  d: z.object({
+    connection: ConnectionSchema,
+    // true = the row is gone (decline/remove); the DTO is its last state.
+    removed: z.boolean().default(false),
+  }),
+});
+export type ConnectionUpdatedEvent = z.infer<typeof ConnectionUpdatedEventSchema>;
+
+// v0.5a (API.md §1.34): a new story — ONLY to sockets of the author's
+// FRIENDS-OF audience minus blocks (never to anyone who cannot view it).
+// viewed is stamped false per recipient. NO push for stories (ambient,
+// user-pulled; PSYCHOLOGY §6 digest rule). Expiry fans nothing — expired
+// stories simply drop out of the next GET.
+export const StoryNewEventSchema = z.object({
+  t: z.literal('story.new'),
+  d: z.object({
+    story: StorySchema,
+  }),
+});
+export type StoryNewEvent = z.infer<typeof StoryNewEventSchema>;
+
+// v0.5a (API.md §1.36): a new feed post — ONLY to sockets of the author's
+// FRIENDS-OF audience minus blocks. No push (the feed is pulled, never
+// pushed). Reactions/comments do NOT fan out live — viewers reconcile from
+// GET /api/feed / GET /api/posts/:id when THEY return to the feed (no
+// approval pings; PSYCHOLOGY design rules 3/4).
+export const PostNewEventSchema = z.object({
+  t: z.literal('post.new'),
+  d: z.object({
+    post: PostSchema,
+  }),
+});
+export type PostNewEvent = z.infer<typeof PostNewEventSchema>;
+
 export const ErrorEventSchema = z.object({
   t: z.literal('error'),
   d: z.object({
@@ -291,6 +336,9 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
   PollUpdatedEventSchema,
   PrefsUpdatedEventSchema,
   ScheduledUpdatedEventSchema,
+  ConnectionUpdatedEventSchema,
+  StoryNewEventSchema,
+  PostNewEventSchema,
   ErrorEventSchema,
 ]);
 export type ServerEvent = z.infer<typeof ServerEventSchema>;

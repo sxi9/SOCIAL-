@@ -68,6 +68,10 @@ export const users = pgTable(
     invitesPaused: boolean('invites_paused').notNull().default(false),
     beaconDefaultAudience: text('beacon_default_audience').notNull().default('friends'),
     groupAddPolicy: text('group_add_policy').notNull().default('everyone'),
+    // v0.5a (migration 0005, API.md §1.37): interest tags, ≤ INTERESTS_MAX
+    // (cardinality CHECK); the ≤ 24-char per-tag bound is Zod/route-enforced.
+    // Serialized on the profile page response only — never into participants.
+    interests: text('interests').array().notNull().default(sql`'{}'::text[]`),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },
@@ -81,6 +85,7 @@ export const users = pgTable(
       sql`${t.avatarMotion} IN ('auto','reduced','off')`,
     ),
     areaCheck: check('users_area_check', sql`char_length(${t.area}) <= 64`),
+    interestsCheck: check('users_interests_check', sql`cardinality(${t.interests}) <= 10`),
     beaconsCreatedCheck: check('users_beacons_created_check', sql`${t.beaconsCreated} >= 0`),
     beaconsSparkedCheck: check('users_beacons_sparked_check', sql`${t.beaconsSparked} >= 0`),
     showLastSeenCheck: check(
@@ -144,7 +149,11 @@ export const conversations = pgTable(
     createdAt: timestamptz('created_at').notNull().defaultNow(),
   },
   (t) => ({
-    typeCheck: check('conversations_type_check', sql`${t.type} IN ('dm','group')`),
+    // v0.5a adds 'channel' (migration 0005, API.md §1.35): broadcast
+    // conversations — owner/admins send, everyone reads + reacts; cap
+    // CHANNEL_MAX=10000, route-enforced (watermark receipts keep it safe,
+    // ADR-002); joined via invites; typing suppressed; no seen-by exposure.
+    typeCheck: check('conversations_type_check', sql`${t.type} IN ('dm','group','channel')`),
     avatarStatusCheck: check(
       'conversations_avatar_status_check',
       sql`${t.avatarStatus} IN ('none','processing','ready','failed')`,
@@ -184,7 +193,9 @@ export const conversationParticipants = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.conversationId, t.userId] }),
-    roleCheck: check('participants_role_check', sql`${t.role} IN ('member','admin')`),
+    // v0.5a adds 'owner' (migration 0005): the channel creator — exactly one
+    // per channel, never used in DMs/groups (their creator stays 'admin').
+    roleCheck: check('participants_role_check', sql`${t.role} IN ('member','admin','owner')`),
     byUserIdx: index('participants_by_user_idx')
       .on(t.userId)
       .where(sql`${t.leftAt} IS NULL`),
@@ -206,9 +217,17 @@ export const messages = pgTable(
     type: text('type').notNull(),
     body: text('body'),
     metadata: jsonb('metadata').notNull().default({}),
+    // v0.1 seam, RETIRED in v0.5a (always NULL from migration 0005 on):
+    // replies are keyed by seq (reply_to_seq below), the message identity
+    // reactions/polls/reports already use.
     replyToId: uuid('reply_to_id').references((): AnyPgColumn => messages.id, {
       onDelete: 'set null',
     }),
+    // v0.5a (migration 0005, API.md §1.29): the replied-to message's seq in
+    // the SAME conversation (composite self-FK below; CHECK < seq — replies
+    // only point backwards). The DTO carries a server-resolved reply_context
+    // snippet; tombstoned targets render deleted:true.
+    replyToSeq: bigint('reply_to_seq', { mode: 'number' }),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     editedAt: timestamptz('edited_at'),
     deletedAt: timestamptz('deleted_at'),
@@ -229,6 +248,20 @@ export const messages = pgTable(
       'messages_metadata_effect_check',
       sql`NOT (${t.metadata} ? 'effect') OR ${t.metadata}->>'effect' IN ('confetti','hearts','fireworks','snow')`,
     ),
+    // v0.5a: replies point backwards within the conversation. The FK only
+    // ever cascades on whole-conversation deletion — individual messages are
+    // tombstoned, never deleted (ADR-003), so a reply's target always exists.
+    replyToSeqCheck: check(
+      'messages_reply_to_seq_check',
+      sql`${t.replyToSeq} IS NULL OR (${t.replyToSeq} > 0 AND ${t.replyToSeq} < ${t.seq})`,
+    ),
+    replyToFk: foreignKey({
+      name: 'messages_reply_to_fk',
+      columns: [t.conversationId, t.replyToSeq],
+      // Self-reference via the callback's own columns (the outer `messages`
+      // const would make type inference circular).
+      foreignColumns: [t.conversationId, t.seq],
+    }).onDelete('cascade'),
     idempotencyIdx: uniqueIndex('messages_idempotency_idx')
       .on(t.conversationId, t.senderId, t.clientMsgId)
       .where(sql`${t.clientMsgId} IS NOT NULL`),
@@ -376,6 +409,11 @@ export const attachments = pgTable(
       (): AnyPgColumn => scheduledMessages.id,
       { onDelete: 'set null' },
     ),
+    // v0.5a (migration 0005, §1.36): bound to a feed post — the orphan-GC
+    // shield for post media (posts.attachment_ids jsonb keeps the ordering).
+    postId: uuid('post_id').references((): AnyPgColumn => posts.id, {
+      onDelete: 'set null',
+    }),
     kind: text('kind').notNull(),
     originalKey: text('original_key').notNull(),
     thumbKey: text('thumb_key'),
@@ -405,10 +443,18 @@ export const attachments = pgTable(
       sql`${t.waveform} IS NULL OR (jsonb_typeof(${t.waveform}) = 'array' AND jsonb_array_length(${t.waveform}) = 48)`,
     ),
     messageIdx: index('attachments_message_idx').on(t.messageId),
+    // v0.5a (migration 0005): the refcount guard for RE-REFERENCED objects —
+    // forwarding (§1.31) and recap-to-story (§1.34) create new attachment
+    // rows over the SAME content-hashed MinIO objects, so every object
+    // deletion first checks no other row shares original_key/thumb_key.
+    originalKeyIdx: index('attachments_original_key_idx').on(t.originalKey),
+    // CANDIDATE list only: the GC worker additionally guards with indexed
+    // NOT EXISTS over stories.attachment_id and profile_media.attachment_id
+    // (partial indexes cannot reference other tables).
     orphanIdx: index('attachments_orphan_idx')
       .on(t.createdAt)
       .where(
-        sql`${t.messageId} IS NULL AND ${t.shareImportId} IS NULL AND ${t.scheduledMessageId} IS NULL`,
+        sql`${t.messageId} IS NULL AND ${t.shareImportId} IS NULL AND ${t.scheduledMessageId} IS NULL AND ${t.postId} IS NULL`,
       ),
   }),
 );
@@ -843,5 +889,244 @@ export const puzzleAttempts = pgTable(
       'puzzle_attempts_guesses_check',
       sql`jsonb_typeof(${t.guesses}) = 'array' AND jsonb_array_length(${t.guesses}) <= 6`,
     ),
+  }),
+);
+
+// ============================== connections ==================================
+// v0.5a (migration 0005, API.md §1.28, ADR-011). One row per UNORDERED pair
+// (unique on LEAST/GREATEST); status 'pending' until the addressee accepts.
+// Decline DELETES the row and is silent to the requester (no rejection ping —
+// PSYCHOLOGY §9 liking gap); a block deletes pending rows and makes accepted
+// ones DORMANT (friends-of excludes blocked pairs at read time; the row
+// survives, §1.14). FRIENDS-OF = accepted connections ∪ dm-partners, minus
+// blocks — the v0.5a audience primitive (stories, feed, upgraded beacon
+// 'friends'), resolved at read/fan-out time, never stored.
+
+export const connections = pgTable(
+  'connections',
+  {
+    id: uuid('id').primaryKey(),
+    requesterId: uuid('requester_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    addresseeId: uuid('addressee_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    status: text('status').notNull().default('pending'),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+    respondedAt: timestamptz('responded_at'),
+  },
+  (t) => ({
+    statusCheck: check('connections_status_check', sql`${t.status} IN ('pending','accepted')`),
+    notSelfCheck: check('connections_not_self_check', sql`${t.requesterId} <> ${t.addresseeId}`),
+    respondedShapeCheck: check(
+      'connections_responded_shape_check',
+      sql`(${t.status} = 'accepted') = (${t.respondedAt} IS NOT NULL)`,
+    ),
+    pairIdx: uniqueIndex('connections_pair_idx').on(
+      sql`LEAST(${t.requesterId}, ${t.addresseeId})`,
+      sql`GREATEST(${t.requesterId}, ${t.addresseeId})`,
+    ),
+    byRequesterIdx: index('connections_by_requester_idx').on(t.requesterId, t.status),
+    byAddresseeIdx: index('connections_by_addressee_idx').on(t.addresseeId, t.status),
+  }),
+);
+
+// ============================ conversation pins ==============================
+// v0.5a (migration 0005, API.md §1.32). ≤ MAX_PINS per conversation (route-
+// enforced under the conversation row lock). Keyed by the message identity;
+// tombstoning a pinned message removes its pin in the same transaction.
+// Pins ride the Conversation DTO; mutations fan out conv.updated.
+
+export const conversationPins = pgTable(
+  'conversation_pins',
+  {
+    conversationId: uuid('conversation_id').notNull(),
+    seq: bigint('seq', { mode: 'number' }).notNull(),
+    pinnedBy: uuid('pinned_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.conversationId, t.seq] }),
+    messageFk: foreignKey({
+      name: 'conversation_pins_message_fk',
+      columns: [t.conversationId, t.seq],
+      foreignColumns: [messages.conversationId, messages.seq],
+    }).onDelete('cascade'),
+  }),
+);
+
+// ================================ stories ===================================
+// v0.5a (migration 0005, API.md §1.34). 24 h ephemera over the existing §1.6
+// upload pipeline; audience CHECK-pinned to 'friends_of' (one value today,
+// enum stable). Visibility = author's friends-of minus blocks + the author.
+// The worker sweep (queue `timers`) HARD-deletes expired stories: rows, views
+// (cascade), the attachment row and its MinIO objects (refcount-guarded —
+// recap shares re-reference objects). story.new fans to the audience only.
+
+export const stories = pgTable(
+  'stories',
+  {
+    id: uuid('id').primaryKey(),
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    attachmentId: uuid('attachment_id')
+      .notNull()
+      .references(() => attachments.id, { onDelete: 'cascade' }),
+    caption: text('caption').notNull().default(''),
+    audience: text('audience').notNull().default('friends_of'),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+    expiresAt: timestamptz('expires_at')
+      .notNull()
+      .default(sql`now() + interval '24 hours'`),
+  },
+  (t) => ({
+    captionCheck: check('stories_caption_check', sql`char_length(${t.caption}) <= 140`),
+    audienceCheck: check('stories_audience_check', sql`${t.audience} IN ('friends_of')`),
+    byAuthorIdx: index('stories_by_author_idx').on(t.authorId, t.createdAt),
+    expiryIdx: index('stories_expiry_idx').on(t.expiresAt),
+    attachmentIdx: index('stories_attachment_idx').on(t.attachmentId),
+  }),
+);
+
+// Who viewed which story. DELIBERATELY NO TIMESTAMP COLUMN: the DB cannot
+// leak what it does not store — the author-private view list is faces ordered
+// by username (§1.18 seen-by pattern; "seen X min ago" is on the PSYCHOLOGY
+// never-build list). The author's own views are never recorded.
+
+export const storyViews = pgTable(
+  'story_views',
+  {
+    storyId: uuid('story_id')
+      .notNull()
+      .references(() => stories.id, { onDelete: 'cascade' }),
+    viewerId: uuid('viewer_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.storyId, t.viewerId] }),
+  }),
+);
+
+// ================================== feed ====================================
+// v0.5a (migration 0005, API.md §1.36). The FINITE feed: posts by the
+// viewer's friends-of set + their own, newest first, cursor-paginated to a
+// hard all_caught_up end — no wraparound, no ranking, no share/repost
+// mechanic (PSYCHOLOGY design rule 5). attachment_ids keeps the author's
+// ordering; attachments.post_id is the binding/GC shield.
+
+export const posts = pgTable(
+  'posts',
+  {
+    id: uuid('id').primaryKey(),
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    body: text('body').notNull().default(''),
+    attachmentIds: jsonb('attachment_ids').notNull().default([]),
+    audience: text('audience').notNull().default('friends_of'),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    bodyCheck: check('posts_body_check', sql`char_length(${t.body}) <= 2000`),
+    attachmentIdsCheck: check(
+      'posts_attachment_ids_check',
+      sql`jsonb_typeof(${t.attachmentIds}) = 'array' AND jsonb_array_length(${t.attachmentIds}) <= 4`,
+    ),
+    audienceCheck: check('posts_audience_check', sql`${t.audience} IN ('friends_of')`),
+    byAuthorIdx: index('posts_by_author_idx').on(t.authorId, sql`${t.createdAt} DESC`),
+  }),
+);
+
+// Reactions render as NAMED FACES — the DTO carries the first 12 reactors as
+// UserLite + has_more, NEVER a numeric total (PSYCHOLOGY rule 3). created_at
+// orders the face row and is never serialized. The 8-distinct-emoji cap
+// (REACTIONS_PER_USER_PER_POST_MAX) is enforced in the route transaction.
+
+export const postReactions = pgTable(
+  'post_reactions',
+  {
+    postId: uuid('post_id')
+      .notNull()
+      .references(() => posts.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    emoji: text('emoji').notNull(),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.postId, t.userId, t.emoji] }),
+    emojiCheck: check('post_reactions_emoji_check', sql`char_length(${t.emoji}) BETWEEN 1 AND 16`),
+  }),
+);
+
+export const postComments = pgTable(
+  'post_comments',
+  {
+    id: uuid('id').primaryKey(),
+    postId: uuid('post_id')
+      .notNull()
+      .references(() => posts.id, { onDelete: 'cascade' }),
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    body: text('body').notNull(),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    bodyCheck: check('post_comments_body_check', sql`char_length(${t.body}) BETWEEN 1 AND 500`),
+    byPostIdx: index('post_comments_by_post_idx').on(t.postId, t.createdAt),
+  }),
+);
+
+// ============================== rich profiles ================================
+// v0.5a (migration 0005, API.md §1.37). Work/skill portfolio rows + the 3-GIF
+// strip. PATCH /users/me/profile full-replaces each present set in one
+// transaction (order_idx = array order). Profile data rides the profile page
+// response only; blocked viewers get the §1.14 404 for the whole page.
+
+export const profileEntries = pgTable(
+  'profile_entries',
+  {
+    id: uuid('id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    title: text('title').notNull(),
+    detail: text('detail').notNull().default(''),
+    orderIdx: integer('order_idx').notNull(),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    kindCheck: check('profile_entries_kind_check', sql`${t.kind} IN ('work','skill')`),
+    titleCheck: check(
+      'profile_entries_title_check',
+      sql`char_length(${t.title}) BETWEEN 1 AND 80`,
+    ),
+    detailCheck: check('profile_entries_detail_check', sql`char_length(${t.detail}) <= 160`),
+    orderIdxCheck: check('profile_entries_order_idx_check', sql`${t.orderIdx} >= 0`),
+    orderUnique: uniqueIndex('profile_entries_user_id_order_idx_key').on(t.userId, t.orderIdx),
+  }),
+);
+
+export const profileMedia = pgTable(
+  'profile_media',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    attachmentId: uuid('attachment_id')
+      .notNull()
+      .references(() => attachments.id, { onDelete: 'cascade' }),
+    orderIdx: integer('order_idx').notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.orderIdx] }),
+    orderIdxCheck: check('profile_media_order_idx_check', sql`${t.orderIdx} BETWEEN 0 AND 2`),
+    attachmentIdx: index('profile_media_attachment_idx').on(t.attachmentId),
   }),
 );

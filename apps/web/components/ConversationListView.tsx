@@ -1,16 +1,18 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { PRESENCE_SUB_MAX, type ConversationListItem } from '@socialchat/shared';
 import { retryConnection, subscribePresence, unsubscribePresence } from '@/lib/connection';
+import { refreshConnections } from '@/lib/connections';
 import { conversationTitle, dmPeer, formatTime, messageSnippet } from '@/lib/format';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
-import { BoredButton } from './BeaconCreateSheet';
-import BeaconStrip, { KudosBanner } from './BeaconStrip';
+import ConnectionRequestsSheet from './ConnectionRequestsSheet';
 import { InviteButton } from './InviteSheet';
+import StoriesStrip from './StoriesStrip';
 import styles from './list.module.css';
+import soc from './social.module.css';
 
 function sortKey(item: ConversationListItem): number {
   return item.last_message_at ? new Date(item.last_message_at).getTime() : new Date(item.created_at).getTime();
@@ -19,6 +21,14 @@ function sortKey(item: ConversationListItem): number {
 export default function ConversationListView({ activeId = null }: { activeId?: string | null }) {
   const state = useAppState();
   const meId = state.me?.id;
+  const [requestsOpen, setRequestsOpen] = useState(false);
+  const incomingCount = state.connections?.incoming.length ?? 0;
+
+  // Connections power the requests badge here and the connect states on
+  // profiles — one cheap GET, then connection.updated keeps it live.
+  useEffect(() => {
+    void refreshConnections();
+  }, []);
 
   // The store mutates in place and bumps a version, so derive per render.
   const items = [...state.conversations.values()].sort((a, b) => sortKey(b) - sortKey(a));
@@ -43,6 +53,17 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
       <header className="topbar">
         <h1>Bored Chat</h1>
         <InviteButton className={`btn btn-ghost btn-icon ${styles.headerInvite}`} label="" />
+        <button
+          type="button"
+          className="btn btn-ghost btn-icon"
+          aria-label={incomingCount > 0 ? `Friend requests (${incomingCount} waiting)` : 'Friend requests'}
+          onClick={() => setRequestsOpen(true)}
+        >
+          <span className={soc.tabIcon}>
+            <PeopleIcon />
+            {incomingCount > 0 ? <span className={soc.tabDot} aria-hidden /> : null}
+          </span>
+        </button>
         <Link
           href="/new"
           className={`btn btn-ghost btn-icon ${styles.desktopOnly}`}
@@ -65,9 +86,8 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
         <div className="offline-banner">Offline — reconnecting…</div>
       ) : null}
 
-      {/* Private kudos (recipient-only) + the live beacon strip (v0.3). */}
-      <KudosBanner />
-      <BeaconStrip />
+      {/* v0.5a story tray — unviewed rings first, by username (§1.34). */}
+      <StoriesStrip />
 
       {!state.booted ? (
         <div className={styles.empty}>Loading conversations…</div>
@@ -108,7 +128,10 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
                   </span>
                   <span className={styles.main}>
                     <span className={styles.titleLine}>
-                      <span className={styles.title}>{title}</span>
+                      <span className={styles.title}>
+                        {item.type === 'channel' ? <span aria-label="channel">📣 </span> : null}
+                        {title}
+                      </span>
                       {item.last_message_at ? (
                         <span className={styles.time}>{formatTime(item.last_message_at)}</span>
                       ) : null}
@@ -127,8 +150,7 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
         </ul>
       )}
 
-      {/* The bored user never waits: one tap from here to vibe chips. */}
-      <BoredButton />
+      {requestsOpen ? <ConnectionRequestsSheet onClose={() => setRequestsOpen(false)} /> : null}
 
       <Link href="/new" className={styles.fab} aria-label="New conversation">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -136,6 +158,16 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
         </svg>
       </Link>
     </div>
+  );
+}
+
+function PeopleIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="9" cy="8.6" r="3.1" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M3.4 19 c1.2 -2.9 3.3 -4.3 5.6 -4.3 s4.4 1.4 5.6 4.3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <path d="M15.5 9.4 a2.6 2.6 0 1 0 1.4 -4.9 M16.6 13.9 c2 0.3 3.4 1.6 4.2 3.9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
   );
 }
 

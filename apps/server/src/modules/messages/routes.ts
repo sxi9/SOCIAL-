@@ -3,18 +3,27 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
+  EDIT_WINDOW_S,
+  EDITABLE_MESSAGE_TYPES,
+  EditMessageRequestSchema,
+  FORWARDABLE_MESSAGE_TYPES,
+  ForwardMessageRequestSchema,
   ListMessagesQuerySchema,
   PUZZLE_MAX_GUESSES,
   SendMessageRequestSchema,
   VIBE_CHECK_PROMPT_MAX_CHARS,
+  type ForwardedFrom,
+  type Message,
   type MessageMetadata,
   type UserLite,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
+import { newId } from '../../ids.js';
 import { blockedSetOf, isBlockedPair } from '../../lib/blocks.js';
-import { activeParticipantUserIds, messageDtos, userLiteDto } from '../../lib/dto.js';
-import { ApiError, badRequest, conflict, notFound } from '../../lib/errors.js';
+import { activeParticipantUserIds, messageDtos, userLiteDto, type AttRow, type MsgRow } from '../../lib/dto.js';
+import { ApiError, badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { extractFirstUrl } from '../../lib/urls.js';
+import { deleteAttachmentObjects } from '../../jobs/gc.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant } from '../conversations/routes.js';
 import {
@@ -24,7 +33,14 @@ import {
   type PreviewLookup,
 } from '../previews/service.js';
 import { parseGuesses, utcToday } from '../puzzle/service.js';
-import { fanOutNewMessage, insertMessage, publishMessageUpdated } from './service.js';
+import { publishConversationToUsers } from '../../lib/dto.js';
+import {
+  fanOutNewMessage,
+  insertMessage,
+  publishMessageUpdated,
+  requireSendContext,
+  resolveMentions,
+} from './service.js';
 
 const IdParams = z.object({ id: z.string().uuid() });
 const m = schema.messages;
@@ -80,21 +96,9 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const { user } = authed(req);
       const convId = req.params.id;
-      const part = await getParticipant(convId, user.id);
-      if (!part || part.leftAt !== null) throw notFound('conversation_not_found');
-
-      // §1.14: an existing DM between a blocked pair stays readable but is
-      // FROZEN — sends answer 404, byte-identical to an unknown conversation,
-      // in both directions.
-      const [conv] = await db
-        .select({ type: schema.conversations.type })
-        .from(schema.conversations)
-        .where(eq(schema.conversations.id, convId))
-        .limit(1);
-      if (conv?.type === 'dm') {
-        const peer = (await activeParticipantUserIds(convId)).find((id) => id !== user.id);
-        if (peer && (await isBlockedPair(user.id, peer))) throw notFound('conversation_not_found');
-      }
+      // §1.14 frozen DMs + §1.35 channel send permission (owner/admin only
+      // → 403 channel_read_only), in 404-shape order.
+      const { part } = await requireSendContext(convId, user.id);
 
       const body = req.body;
       const replay = await findByClientMsgId(convId, user.id, body.client_msg_id);
@@ -142,6 +146,20 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       // §1.22: sender-confirmed effect (consent is client-side but binding —
       // the server merely stores the confirmed value; the DB CHECK pins the set).
       if (rider.effect) metadata.effect = rider.effect;
+
+      // ---- v0.5a §1.29: reply_to_seq — the target must exist within my §1.5
+      // visibility floor (tombstoned targets ARE repliable: the context
+      // renders "message deleted"); it must be an earlier seq by construction
+      // (DB CHECK reply_to_seq < seq — the fresh seq is always larger).
+      const replyToSeq = body.reply_to_seq ?? null;
+      if (replyToSeq !== null) {
+        const [target] = await db
+          .select({ seq: m.seq })
+          .from(m)
+          .where(and(eq(m.conversationId, convId), eq(m.seq, replyToSeq), gt(m.seq, part.joinSeq)))
+          .limit(1);
+        if (!target) throw notFound();
+      }
 
       // §1.23: a vibe check's body IS the prompt.
       if (body.type === 'vibe_check') {
@@ -208,6 +226,14 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
+      // ---- v0.5a §1.33: SERVER-parsed mentions against active participants.
+      // Client-sent mention values never exist (the schema has no field); the
+      // tokens live in the body and the server is the only metadata writer.
+      if (text) {
+        const mentions = await resolveMentions(convId, text);
+        if (mentions.length > 0) metadata.mentions = mentions;
+      }
+
       let pendingUnfurl: PreviewLookup | null = null;
 
       if (body.metadata?.link_preview) {
@@ -248,6 +274,7 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
           type: body.type,
           body: text,
           metadata,
+          replyToSeq,
           attachmentIds,
           // §1.23: ONE reply per user per vibe check. The seq transaction's
           // conversations-row lock serializes all senders in the conversation,
@@ -325,6 +352,15 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
 
       const part = await getParticipant(convId, user.id);
       if (!part || part.leftAt !== null) throw notFound();
+      // v0.5a (§1.35): NO seen-by exposure in channels — watermarks still
+      // drive unread counts, but min-watermark math over 10k members is
+      // neither cheap nor wanted.
+      const [convRow] = await db
+        .select({ type: schema.conversations.type })
+        .from(schema.conversations)
+        .where(eq(schema.conversations.id, convId))
+        .limit(1);
+      if (convRow?.type === 'channel') throw new ApiError(403, 'channel_no_receipts');
       const [msg] = await db
         .select({ seq: m.seq, senderId: m.senderId })
         .from(m)
@@ -359,6 +395,282 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       return { seen: seen.map((s) => s.lite), delivered: delivered.map((d) => d.lite) };
     },
   );
+
+  // ---------------------------------------------------------------------------
+  // v0.5a §1.30 — edit & delete.
+  // ---------------------------------------------------------------------------
+
+  const SeqParams = z.object({
+    id: z.string().uuid(),
+    seq: z.coerce.number().int().positive(),
+  });
+
+  /** Active participant + §1.14 frozen-DM gate (404-shaped), WITHOUT the
+   * channel send gate: edit/delete are authorship surfaces (§1.30 — in
+   * channels the same rules apply to the senders' own messages). */
+  async function requireUnfrozenParticipant(convId: string, userId: string) {
+    const part = await getParticipant(convId, userId);
+    if (!part || part.leftAt !== null) throw notFound('conversation_not_found');
+    const [conv] = await db
+      .select()
+      .from(schema.conversations)
+      .where(eq(schema.conversations.id, convId))
+      .limit(1);
+    if (!conv) throw notFound('conversation_not_found');
+    if (conv.type === 'dm') {
+      const peer = (await activeParticipantUserIds(convId)).find((id) => id !== userId);
+      if (peer && (await isBlockedPair(userId, peer))) throw notFound('conversation_not_found');
+    }
+    return { conv, part };
+  }
+
+  // §1.30 PATCH .../messages/:seq {body} — author only, EDITABLE types, within
+  // EDIT_WINDOW_S, not tombstoned. Re-parses §1.33 mentions (metadata is
+  // rewritten) but NEVER re-pushes; keeps the link_preview snapshot; the
+  // edited badge is edited_at != null (no edit history stored or served).
+  app.patch(
+    '/api/conversations/:id/messages/:seq',
+    { preHandler: requireAuth, schema: { params: SeqParams, body: EditMessageRequestSchema } },
+    async (req) => {
+      const { user } = authed(req);
+      const { id: convId, seq } = req.params;
+      const { part } = await requireUnfrozenParticipant(convId, user.id);
+      const [row] = await db
+        .select()
+        .from(m)
+        .where(and(eq(m.conversationId, convId), eq(m.seq, seq), gt(m.seq, part.joinSeq)))
+        .limit(1);
+      if (!row) throw notFound();
+      if (row.senderId !== user.id) throw forbidden();
+      if (!(EDITABLE_MESSAGE_TYPES as readonly string[]).includes(row.type)) {
+        throw badRequest('not_editable');
+      }
+      if (row.createdAt.getTime() < Date.now() - EDIT_WINDOW_S * 1000) {
+        throw conflict('edit_window_closed');
+      }
+      if (row.deletedAt !== null) throw conflict('message_deleted');
+
+      const metadata = { ...((row.metadata ?? {}) as MessageMetadata) };
+      // §1.33: edits re-parse mentions against CURRENT active participants —
+      // stored, but mention pushes fire at send time ONLY (no re-ping).
+      const mentions = await resolveMentions(convId, req.body.body);
+      if (mentions.length > 0) metadata.mentions = mentions;
+      else delete metadata.mentions;
+      // §1.30: edits never re-run unfurl; the existing snapshot stays.
+
+      const [updated] = await db
+        .update(m)
+        .set({ body: req.body.body, metadata, editedAt: new Date() })
+        .where(and(eq(m.conversationId, convId), eq(m.seq, seq)))
+        .returning();
+      await publishMessageUpdated(updated!);
+      const [dto] = await messageDtos([updated!], user.id);
+      return { message: dto };
+    },
+  );
+
+  // §1.30 DELETE .../messages/:seq — TOMBSTONE, never row deletion (ADR-003):
+  // deleted_at set, body nulled, metadata emptied, attachments deleted (rows +
+  // MinIO objects, refcount-guarded §1.31), dependent reaction/poll rows
+  // removed, any §1.32 pin removed (+ conv.updated). Idempotent re-delete 204.
+  app.delete(
+    '/api/conversations/:id/messages/:seq',
+    { preHandler: requireAuth, schema: { params: SeqParams } },
+    async (req, reply) => {
+      const { user } = authed(req);
+      const { id: convId, seq } = req.params;
+      const { part } = await requireUnfrozenParticipant(convId, user.id);
+      const [row] = await db
+        .select()
+        .from(m)
+        .where(and(eq(m.conversationId, convId), eq(m.seq, seq), gt(m.seq, part.joinSeq)))
+        .limit(1);
+      if (!row) throw notFound();
+      // System messages have no author and are undeletable; only the author
+      // tombstones their own words (channels included).
+      if (row.senderId !== user.id) throw forbidden();
+      if (row.deletedAt !== null) return reply.status(204).send(); // idempotent
+
+      const atts = await db
+        .select()
+        .from(schema.attachments)
+        .where(eq(schema.attachments.messageId, row.id));
+
+      let pinRemoved = false;
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`
+          DELETE FROM message_reactions
+          WHERE conversation_id = ${convId} AND seq = ${seq}::bigint
+        `);
+        await tx.execute(sql`
+          DELETE FROM polls WHERE conversation_id = ${convId} AND seq = ${seq}::bigint
+        `);
+        const pins = (await tx.execute(sql`
+          DELETE FROM conversation_pins
+          WHERE conversation_id = ${convId} AND seq = ${seq}::bigint
+          RETURNING seq
+        `)) as unknown as { seq: number }[];
+        pinRemoved = pins.length > 0;
+        await tx.execute(sql`DELETE FROM attachments WHERE message_id = ${row.id}`);
+        await tx.execute(sql`
+          UPDATE messages SET deleted_at = now(), body = NULL, metadata = '{}'::jsonb
+          WHERE id = ${row.id} AND deleted_at IS NULL
+        `);
+      });
+      // Objects AFTER commit: the refcount guard then sees only other rows
+      // (§1.31 — forwarded copies keep the shared content-hashed objects alive).
+      for (const att of atts) await deleteAttachmentObjects(att);
+
+      const [fresh] = await db.select().from(m).where(eq(m.id, row.id)).limit(1);
+      if (fresh) await publishMessageUpdated(fresh);
+      if (pinRemoved) {
+        await publishConversationToUsers(
+          convId,
+          await activeParticipantUserIds(convId),
+          'conv.updated',
+        );
+      }
+      return reply.status(204).send();
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // v0.5a §1.31 — forwarding. All-or-nothing across ≤ FORWARD_MAX_TARGETS;
+  // attachments RE-REFERENCED (new rows, same content-hashed objects); the
+  // forwarder is sender_id (never spoofs authorship); forwarded_from is a
+  // snapshot that sticks through forward-of-forward chains.
+  // ---------------------------------------------------------------------------
+
+  app.post(
+    '/api/conversations/:id/messages/:seq/forward',
+    { preHandler: requireAuth, schema: { params: SeqParams, body: ForwardMessageRequestSchema } },
+    async (req, reply) => {
+      const { user } = authed(req);
+      const { id: convId, seq } = req.params;
+      const srcPart = await getParticipant(convId, user.id);
+      if (!srcPart || srcPart.leftAt !== null) throw notFound('not_found');
+      const [src] = await db
+        .select()
+        .from(m)
+        .where(and(eq(m.conversationId, convId), eq(m.seq, seq), gt(m.seq, srcPart.joinSeq)))
+        .limit(1);
+      if (!src) throw notFound('not_found');
+      if (src.deletedAt !== null || !(FORWARDABLE_MESSAGE_TYPES as readonly string[]).includes(src.type)) {
+        throw badRequest('not_forwardable');
+      }
+
+      // ALL-OR-NOTHING target validation, byte-identical 404 for every failure
+      // mode: unknown id, non-membership, channel I cannot post to, frozen DM.
+      const targets = req.body.target_conversation_ids;
+      for (const t of targets) {
+        try {
+          await requireSendContext(t, user.id, { denialShape: '404' });
+        } catch (err) {
+          if (err instanceof ApiError) throw notFound('not_found');
+          throw err;
+        }
+      }
+
+      // forwarded_from: preserved verbatim on a forward-of-forward, else a
+      // snapshot of the original author at forward time (not a UserLite — no
+      // avatar reach into foreign conversations).
+      const srcMeta = (src.metadata ?? {}) as MessageMetadata;
+      let forwardedFrom: ForwardedFrom | undefined = srcMeta.forwarded_from;
+      if (!forwardedFrom && src.senderId) {
+        const [author] = await db
+          .select({ username: schema.users.username, displayName: schema.users.displayName })
+          .from(schema.users)
+          .where(eq(schema.users.id, src.senderId))
+          .limit(1);
+        if (author) {
+          forwardedFrom = { username: author.username, display_name: author.displayName };
+        }
+      }
+      // Copied: body, link_preview snapshot, doodle. NOT copied: mentions
+      // (a forward never re-pings anyone), effect, reply refs, vibe/game/
+      // capsule riders (§1.31).
+      const metadata: MessageMetadata = {};
+      if (forwardedFrom) metadata.forwarded_from = forwardedFrom;
+      if (srcMeta.link_preview) metadata.link_preview = srcMeta.link_preview;
+      if (srcMeta.doodle) metadata.doodle = true;
+
+      const srcAtts = await db
+        .select()
+        .from(schema.attachments)
+        .where(eq(schema.attachments.messageId, src.id))
+        .orderBy(asc(schema.attachments.createdAt));
+
+      const out: Message[] = [];
+      let createdAny = false;
+      for (const targetId of targets) {
+        const replay = await findByClientMsgId(targetId, user.id, req.body.client_msg_id);
+        if (replay) {
+          out.push(replay);
+          continue;
+        }
+        let msg: MsgRow;
+        try {
+          msg = await insertMessage({
+            conversationId: targetId,
+            senderId: user.id,
+            clientMsgId: req.body.client_msg_id,
+            type: src.type as Message['type'],
+            body: src.body,
+            metadata,
+            // §1.31: re-reference, never re-upload — new attachment rows over
+            // the SAME content-hashed objects, inside the seq transaction.
+            withinTx:
+              srcAtts.length > 0
+                ? async (tx, inserted) => {
+                    for (const a of srcAtts) {
+                      await tx.insert(schema.attachments).values(reRefValues(a, user.id, inserted.id));
+                    }
+                  }
+                : undefined,
+          });
+        } catch (err) {
+          if ((err as { code?: string }).code === '23505') {
+            // Per-target idempotency: a partially delivered retry completes
+            // the remainder without duplicating (§1.31).
+            const raced = await findByClientMsgId(targetId, user.id, req.body.client_msg_id);
+            if (raced) {
+              out.push(raced);
+              continue;
+            }
+          }
+          throw err;
+        }
+        createdAny = true;
+        await fanOutNewMessage(msg);
+        const [dto] = await messageDtos([msg], user.id);
+        out.push(dto!);
+      }
+      return reply.status(createdAny ? 201 : 200).send({ messages: out });
+    },
+  );
+}
+
+/** §1.31 re-reference: a NEW attachment row for the forwarder's message over
+ * the same MinIO objects — the attachments_original_key_idx refcount guard is
+ * what keeps those objects alive until the LAST referencing row goes. */
+function reRefValues(a: AttRow, uploaderId: string, messageId: string) {
+  return {
+    id: newId(),
+    uploaderId,
+    messageId,
+    kind: a.kind,
+    originalKey: a.originalKey,
+    thumbKey: a.thumbKey,
+    blurhash: a.blurhash,
+    mime: a.mime,
+    fileName: a.fileName,
+    sizeBytes: a.sizeBytes,
+    width: a.width,
+    height: a.height,
+    durationMs: a.durationMs,
+    waveform: a.waveform,
+    status: a.status,
+  };
 }
 
 async function findByClientMsgId(convId: string, senderId: string, clientMsgId: string) {

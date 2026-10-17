@@ -5,14 +5,20 @@ import type {
   Attachment,
   Beacon,
   BeaconRole,
+  Connection,
   Conversation,
   ConversationListItem,
   ConversationPrefs,
   KudosKind,
   LinkPreview,
+  ListConnectionsResponse,
+  ListStoriesResponse,
   Message,
   Poll,
+  Post,
   ScheduledMessage,
+  Story,
+  StoryAuthorGroup,
   SyncResponse,
   UserLite,
   UserPrivate,
@@ -78,6 +84,15 @@ export interface AppState {
   /** v0.4 (§1.26): MY scheduled messages by id (private until delivery). */
   scheduled: Map<string, ScheduledMessage>;
   scheduledLoaded: boolean;
+  /** v0.5a (§1.28): my connections mirror (accepted / incoming / outgoing). */
+  connections: ListConnectionsResponse | null;
+  /** v0.5a (§1.34): the story tray — mine + friends-of groups. */
+  stories: ListStoriesResponse | null;
+  /** v0.5a (§1.36): the FINITE feed window (null = not loaded yet). */
+  feedPosts: Post[] | null;
+  feedCursor: string | null;
+  /** true once the hard "all caught up" end was reached — the client STOPS. */
+  feedCaughtUp: boolean;
 }
 
 const state: AppState = {
@@ -104,6 +119,11 @@ const state: AppState = {
   prefs: new Map(),
   scheduled: new Map(),
   scheduledLoaded: false,
+  connections: null,
+  stories: null,
+  feedPosts: null,
+  feedCursor: null,
+  feedCaughtUp: false,
 };
 
 let version = 0;
@@ -729,5 +749,166 @@ export function resetOnLogout(): void {
   state.prefs = new Map();
   state.scheduled = new Map();
   state.scheduledLoaded = false;
+  state.connections = null;
+  state.stories = null;
+  state.feedPosts = null;
+  state.feedCursor = null;
+  state.feedCaughtUp = false;
+  emit();
+}
+
+// ---------------------------------------------------------------------------
+// Connections (v0.5a — API.md §1.28). connection.updated frames reach the two
+// parties only; declines/removals arrive as removed:true. Reconnect truth is
+// GET /api/connections, never frame replay.
+// ---------------------------------------------------------------------------
+
+function byUsername(a: Connection, b: Connection): number {
+  return a.user.username.localeCompare(b.user.username);
+}
+
+export function setConnections(res: ListConnectionsResponse): void {
+  state.connections = res;
+  emit();
+}
+
+export function applyConnectionUpdated(conn: Connection, removed: boolean): void {
+  const cur = state.connections ?? { connections: [], incoming: [], outgoing: [] };
+  const strip = (list: Connection[]): Connection[] => list.filter((c) => c.id !== conn.id);
+  let connections = strip(cur.connections);
+  let incoming = strip(cur.incoming);
+  let outgoing = strip(cur.outgoing);
+  if (!removed) {
+    if (conn.status === 'accepted') {
+      connections = [...connections, conn].sort(byUsername);
+    } else if (conn.direction === 'incoming') {
+      incoming = [...incoming, conn];
+    } else {
+      outgoing = [...outgoing, conn];
+    }
+  }
+  state.connections = { connections, incoming, outgoing };
+  emit();
+}
+
+// ---------------------------------------------------------------------------
+// Stories (v0.5a — API.md §1.34). Tray ordering is the server's: authors with
+// any unviewed story first, then all-viewed, each bucket by username; within
+// an author created_at ASC. story.new inserts live; expiry drops locally.
+// ---------------------------------------------------------------------------
+
+function sortStoryGroups(groups: StoryAuthorGroup[]): StoryAuthorGroup[] {
+  return [...groups].sort((a, b) => {
+    const unA = a.stories.some((s) => !s.viewed) ? 0 : 1;
+    const unB = b.stories.some((s) => !s.viewed) ? 0 : 1;
+    if (unA !== unB) return unA - unB;
+    return a.author.username.localeCompare(b.author.username);
+  });
+}
+
+export function setStories(res: ListStoriesResponse): void {
+  state.stories = { mine: res.mine, groups: sortStoryGroups(res.groups) };
+  emit();
+}
+
+export function applyStoryNew(story: Story): void {
+  const cur = state.stories ?? { mine: [], groups: [] };
+  if (state.me && story.author.id === state.me.id) {
+    if (cur.mine.some((s) => s.id === story.id)) return;
+    state.stories = { ...cur, mine: [...cur.mine, story] };
+    emit();
+    return;
+  }
+  const groups = cur.groups.map((g) =>
+    g.author.id === story.author.id
+      ? g.stories.some((s) => s.id === story.id)
+        ? g
+        : { ...g, stories: [...g.stories, story] }
+      : g
+  );
+  if (!groups.some((g) => g.author.id === story.author.id)) {
+    groups.push({ author: story.author, stories: [story] });
+  }
+  state.stories = { ...cur, groups: sortStoryGroups(groups) };
+  emit();
+}
+
+export function markStoryViewedLocal(storyId: string): void {
+  const cur = state.stories;
+  if (!cur) return;
+  const groups = cur.groups.map((g) =>
+    g.stories.some((s) => s.id === storyId)
+      ? { ...g, stories: g.stories.map((s) => (s.id === storyId ? { ...s, viewed: true } : s)) }
+      : g
+  );
+  // Deliberately NOT re-sorted mid-session: a watched author's ring dims in
+  // place; the next GET re-buckets (keeps the tray from reshuffling underfoot).
+  state.stories = { ...cur, groups };
+  emit();
+}
+
+export function removeStoryLocal(storyId: string): void {
+  const cur = state.stories;
+  if (!cur) return;
+  state.stories = {
+    mine: cur.mine.filter((s) => s.id !== storyId),
+    groups: cur.groups
+      .map((g) => ({ ...g, stories: g.stories.filter((s) => s.id !== storyId) }))
+      .filter((g) => g.stories.length > 0),
+  };
+  emit();
+}
+
+/** Drop expired cards between frames (expiry fans nothing, §1.34). */
+export function sweepStories(): void {
+  const cur = state.stories;
+  if (!cur) return;
+  const now = Date.now();
+  const live = (s: Story) => new Date(s.expires_at).getTime() > now;
+  if (cur.mine.every(live) && cur.groups.every((g) => g.stories.every(live))) return;
+  state.stories = {
+    mine: cur.mine.filter(live),
+    groups: cur.groups
+      .map((g) => ({ ...g, stories: g.stories.filter(live) }))
+      .filter((g) => g.stories.length > 0),
+  };
+  emit();
+}
+
+// ---------------------------------------------------------------------------
+// Feed (v0.5a — API.md §1.36). A finite window with a hard end; post.new
+// prepends live. Reactions/comments reconcile via single-post refetch only.
+// ---------------------------------------------------------------------------
+
+export function setFeedPage(
+  posts: Post[],
+  nextCursor: string | null,
+  allCaughtUp: boolean,
+  reset: boolean
+): void {
+  const cur = reset ? [] : state.feedPosts ?? [];
+  const seen = new Set(cur.map((p) => p.id));
+  state.feedPosts = [...cur, ...posts.filter((p) => !seen.has(p.id))];
+  state.feedCursor = nextCursor;
+  state.feedCaughtUp = allCaughtUp;
+  emit();
+}
+
+export function prependPost(post: Post): void {
+  if (state.feedPosts === null) return; // tab not opened yet — first GET carries it
+  if (state.feedPosts.some((p) => p.id === post.id)) return;
+  state.feedPosts = [post, ...state.feedPosts];
+  emit();
+}
+
+export function replacePost(post: Post): void {
+  if (state.feedPosts === null) return;
+  state.feedPosts = state.feedPosts.map((p) => (p.id === post.id ? post : p));
+  emit();
+}
+
+export function removePostLocal(postId: string): void {
+  if (state.feedPosts === null) return;
+  state.feedPosts = state.feedPosts.filter((p) => p.id !== postId);
   emit();
 }
