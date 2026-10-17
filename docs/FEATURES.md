@@ -99,6 +99,8 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 87. Floating minimized call: in-call screen collapses to a draggable floating pill (avatar, timer, mute, hang-up) so the app stays usable mid-call; tap to expand; browser PiP for video where supported
 88. Incoming-call push notification (ring + Answer/Decline actions) when the app is closed, not just the live overlay; respects mute/blocks like all push
 89. Call connectivity UX: live connection states in the UI (connecting / connected / reconnecting / failed with the REASON), automatic ICE restart on drop, and a Settings → Call self-test page (mic/cam permission, secure context, TURN reachability, candidate types found)
+90a. Global confirmation toasts: every action that has no visible immediate result confirms itself with a small popup (sent to board, beacon lit, invite copied, settings saved, report submitted, scheduled, kudos sent...) — one shared toast component, bottom-anchored above the tab bar, auto-dismiss, reduced-motion safe
+90b. Notifications-on assurance: on login/first-run, detect push permission state; a friendly one-time prompt explains what notifications are for (messages, calls, sparked plans, wave nudges) with Enable now; a persistent but quiet settings row shows ON/OFF/blocked-by-browser with per-browser unblock help; incoming-call ring push depends on this and surfaces it when disabled
 90. TURN honesty: when TURN_SECRET is unset or the relay is unreachable, the CALLER sees "this server has no call relay — calls only work on the same network" instead of silent failure; ./bored status and the admin panel surface TURN state; docs explain laptop-behind-NAT vs VPS reality
 
 ## 📋 v0.8 — Identity, moods & community care
