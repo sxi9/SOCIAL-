@@ -110,6 +110,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 76. Profile activity strip (lit/sparked beacons, posts, listings, games) with per-type privacy (public/connections/private); never leaks past the underlying object's audience
 77. Anonymous message game: opt-in (default connections-only), reveal via timer (progressive avatar un-blur) or riddle; sender anonymous to recipient never to the server; reports attach identity
 78. People-you-may-know suggestions (mutuals/area/groups) + post-signup "find your people" (never on the login page)
+78b. Discovery filters: filter Bored Together cards by area, shared interests (profile tags) and what-for vibe (opt-in gains optional vibe chips); filters only ever narrow by what people chose to share — no age/gender fields exist to filter on
 79. GIF/video chat backgrounds (per-user per-chat, dimmed, paused off-screen, poster for reduced-motion)
 80. Discoverability: first-run tour, "✨ Things you can do" feature directory with Try-it buttons, "new since last visit" update cards
 81. Admin: public-content moderation tab (public posts/beacons/listings, remove with reason, logged); support inbox (in-app Help & feedback → categorized tickets → admin replies land as a Support conversation); report-context viewer (reported message + surrounding context, reporter-consented)
