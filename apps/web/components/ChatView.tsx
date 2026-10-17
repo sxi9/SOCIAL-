@@ -612,8 +612,22 @@ export default function ChatView({ conversationId }: { conversationId: string })
         <Link href="/" className={styles.back} aria-label="Back">
           <BackIcon />
         </Link>
-        {/* Animated avatar renders in the open-chat header only (§5.4). */}
-        <Avatar avatar={headerAvatar} name={title} size={40} animated />
+        {/* Animated avatar renders in the open-chat header only (§5.4).
+            v1.1: tappable — DM goes to the profile, groups open chat info. */}
+        {peer ? (
+          <Link href={`/u/${encodeURIComponent(peer.username)}`} aria-label={`${title} — open profile`} style={{ lineHeight: 0 }}>
+            <Avatar avatar={headerAvatar} name={title} size={40} animated />
+          </Link>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setInfoOpen(true)}
+            aria-label="Open chat info"
+            style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', lineHeight: 0 }}
+          >
+            <Avatar avatar={headerAvatar} name={title} size={40} animated />
+          </button>
+        )}
         <div className={styles.headerText}>
           <h1>
             {peer ? (
@@ -980,8 +994,7 @@ function UndoPillRow({
           onClick={() => onUndo(u.seq)}
         >
           <strong>↩ Undo</strong>
-          {u.snippet ? <span className={idm.undoSnippet}>{u.snippet}</span> : null}
-          <span>{Math.max(0, Math.ceil((u.until - now) / 1000))}s</span>
+          <span>· {Math.max(0, Math.ceil((u.until - now) / 1000))}s</span>
         </button>
       ))}
     </div>
@@ -1437,8 +1450,17 @@ function MessageRow({
     >
       {sender ? (
         <div className={styles.sender}>
-          {/* §1.58: group sender names are a pinned animated-name site. */}
-          {senderUser && message.sender_id ? (
+          {/* §1.58: group sender names are a pinned animated-name site.
+              v1.1: the name links to the profile (everything clickable) —
+              except in ghost groups, where identities are masks. */}
+          {senderUser && message.sender_id && conv.visibility !== 'ghost' ? (
+            <Link
+              href={`/u/${encodeURIComponent(senderUser.username)}`}
+              style={{ color: 'inherit', textDecoration: 'none' }}
+            >
+              <StyledName userId={senderUser.id} style={senderUser.name_style} name={sender} />
+            </Link>
+          ) : senderUser && message.sender_id ? (
             <StyledName userId={senderUser.id} style={senderUser.name_style} name={sender} />
           ) : supportMsg ? (
             <span className={cm.supportBrandName}>{sender}</span>
@@ -1911,6 +1933,35 @@ function LocationDrop({
  * usernames via the participants the client holds; tokens that cannot resolve
  * (e.g. channel members outside the shipped owner/admin slice) stay plain.
  */
+/** v1.1 fix: URLs in message bodies are real links (new tab, no referrer).
+ * Mentions still win — this only runs over the non-mention text parts. */
+const URL_RE = /(https?:\/\/[^\s<>"')\]]+)/g;
+
+function LinkifiedText({ text }: { text: string }) {
+  if (!text.includes('http')) return <span>{text}</span>;
+  const parts = text.split(URL_RE);
+  return (
+    <span>
+      {parts.map((part, i) =>
+        /^https?:\/\//.test(part) ? (
+          <a
+            key={i}
+            href={part}
+            target="_blank"
+            rel="noreferrer noopener"
+            className={styles.bodyLink}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {part}
+          </a>
+        ) : (
+          <span key={i}>{part}</span>
+        ),
+      )}
+    </span>
+  );
+}
+
 function MentionedBody({
   message,
   conv,
@@ -1922,7 +1973,7 @@ function MentionedBody({
 }) {
   const body = message.body ?? '';
   const ids = message.metadata.mentions;
-  if (!ids || ids.length === 0) return <span>{body}</span>;
+  if (!ids || ids.length === 0) return <LinkifiedText text={body} />;
   const byUsername = new Map<string, { id: string; display: string }>();
   for (const id of ids) {
     const p = conv.participants.find((x) => x.user.id === id);
@@ -1933,7 +1984,7 @@ function MentionedBody({
       });
     }
   }
-  if (byUsername.size === 0) return <span>{body}</span>;
+  if (byUsername.size === 0) return <LinkifiedText text={body} />;
   const parts = body.split(/(@[a-z0-9_]{3,24})/gi);
   return (
     <span>
@@ -1949,7 +2000,9 @@ function MentionedBody({
             {part}
           </Link>
         ) : (
-          <span key={`${i}-t`}>{part}</span>
+          <span key={`${i}-t`}>
+            <LinkifiedText text={part} />
+          </span>
         );
       })}
     </span>

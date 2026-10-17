@@ -888,3 +888,12 @@
   font: inherit;
   text-align: inherit;
 }
+
+/* v1.1 fix: URLs in bubbles are tappable links — readable on BOTH bubble
+   inks (incoming white text, outgoing ink text). */
+.bodyLink {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
