@@ -124,6 +124,20 @@ with the story. Media served via share-token-gated endpoints (invite-avatar
 pattern): no open media routes, no enumeration, rate-limited. Pages
 reportable by non-users (feeds admin queue). PUBLIC_ORIGIN governs the URLs.
 
+**Group visibility modes (79d):** owner/admin setting per group. PRIVATE =
+today's behavior. INVITE-ONLY = public share page renders the group CARD only
+(name, avatar, member count, description — never messages); joining via
+invite links or request->approval queue. PUBLIC = group appears in discovery
+and gets a read-only live share page (no login to read; reply/react/join
+gates to signup with deep-link back); the switch requires admin confirm +
+system message + persistent member banner; ONLY messages after the switch
+render publicly (history never retro-exposed); page reportable, covered by
+admin content moderation. GHOST = unlisted everywhere (no discovery, no
+share page, never in activity/suggestions); direct invite only; members wear
+masks (chosen pseudonym + emoji avatar) — anonymous to each other, never to
+the server; group admins can see real identities for abuse handling and
+reports always attach them (same precedent as the anonymous game, item 77).
+
 **GIF/video chat backgrounds (79):** per-user per-chat upload through the
 existing pipeline; auto-dimmed behind bubbles; muted+looped; paused when
 off-screen / battery saver; static poster for reduced-motion; size caps.
