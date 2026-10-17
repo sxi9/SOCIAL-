@@ -910,6 +910,10 @@ export const MOOD_DRUNK_DEFAULT_VISIBILITY = 'connections' as const;
 // a "message deleted" stub. Works on every own message type, editable or not.
 export const MOOD_DRUNK_UNDO_WINDOW_S = 10;
 export const MOOD_DRUNK_UNDO_SLACK_S = 2;
+// v1.0a (#96): the drunk-mode undo generalized — EVERY send gets a short
+// transparent undo pill. Drunk keeps its longer window; the slack constant is
+// shared. Same ?undo=1 path, same vanish semantics ({"undone": true}).
+export const UNDO_SEND_WINDOW_S = 5;
 // Cold-contact confirm (CLIENT-side): before sending into a DM whose
 // conversation.last_message_at is older than this (or into a brand-new DM),
 // and before any public post/listing/beacon, the composer asks "you sure?".
@@ -1045,7 +1049,8 @@ export const FEATURE_DIRECTORY = [
   { id: 'local_board', title: 'Local board', one_liner: 'Gigs, rides, rooms, place reviews nearby.', href: '/local', since: 'v0.5' },
   { id: 'calls', title: 'Calls', one_liner: 'Audio and video, up to 8 people.', href: '/', since: 'v0.6' },
   { id: 'watch_together', title: 'Watch together', one_liner: 'Synced videos in any chat.', href: '/', since: 'v0.6' },
-  { id: 'discovery', title: 'Bored Together', one_liner: 'Find people who are bored right now.', href: '/feed', since: 'v0.6' },
+  { id: 'discovery', title: 'Bored Together', one_liner: 'Find people who are bored right now.', href: '/local', since: 'v0.6' },
+  { id: 'people', title: 'Find people', one_liner: 'People you may know, with filters.', href: '/people', since: 'v1.0' },
   { id: 'rescue', title: 'Rescue me', one_liner: 'One tap asks a friend to call you out of anywhere.', href: '/', since: 'v0.6' },
   { id: 'locations', title: 'Location drops', one_liner: '"Join me here" pins with map links.', href: '/', since: 'v0.7' },
   { id: 'moods', title: 'Moods', one_liner: 'Set a chip that says how you are — it fades on its own.', href: '/settings', since: 'v0.8' },

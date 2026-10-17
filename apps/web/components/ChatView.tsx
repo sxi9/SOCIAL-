@@ -10,6 +10,7 @@ import {
   FORWARDABLE_MESSAGE_TYPES,
   MAX_MESSAGE_BODY_CHARS,
   MOOD_DRUNK_UNDO_WINDOW_S,
+  UNDO_SEND_WINDOW_S,
   ON_MY_WAY_BODY,
   PAGE_SIZE_DEFAULT,
   PAGE_SIZE_MAX,
@@ -293,14 +294,16 @@ export default function ChatView({ conversationId }: { conversationId: string })
     }
   }, [messages, loadingOlder, conversationId]);
 
-  // v0.8a §1.57: while drunk, every successful send gets a 10 s undo pill.
-  // CLIENT-side gate only — the server re-checks drunk + window at undo time.
+  // v1.0a (#96): EVERY successful send gets a transparent undo pill — the
+  // §1.57 drunk undo generalized. Drunk keeps its longer window; the server
+  // re-checks the window at undo time either way.
   const registerUndoable = useCallback((msg: Message | null) => {
-    if (!msg || !isSelfDrunk()) return;
+    if (!msg) return;
+    const windowS = isSelfDrunk() ? MOOD_DRUNK_UNDO_WINDOW_S : UNDO_SEND_WINDOW_S;
     const snippet = messageSnippet(msg);
     setUndoables((prev) => [
       ...prev.filter((u) => u.until > Date.now() && u.seq !== msg.seq),
-      { seq: msg.seq, until: Date.now() + MOOD_DRUNK_UNDO_WINDOW_S * 1000, snippet },
+      { seq: msg.seq, until: Date.now() + windowS * 1000, snippet },
     ]);
   }, []);
 

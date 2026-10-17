@@ -557,3 +557,17 @@ select.input {
     animation: none;
   }
 }
+
+/* v1.0a (#93): avatar tap target for the zoom viewer. */
+.avatarZoomTap {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: zoom-in;
+  border-radius: 50%;
+  line-height: 0;
+}
+.avatarZoomTap:disabled {
+  cursor: default;
+}

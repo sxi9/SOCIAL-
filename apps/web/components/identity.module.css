@@ -253,8 +253,11 @@
   border: none;
   border-radius: 999px;
   padding: 7px 14px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
+  /* v1.0a (#96): translucent glass pill — present but never in the way. */
+  background: color-mix(in srgb, var(--panel-2) 62%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
   color: var(--text);
   font-size: 13px;
   cursor: pointer;

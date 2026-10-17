@@ -11,6 +11,7 @@ import {
   ListMessagesQuerySchema,
   MOOD_DRUNK_UNDO_SLACK_S,
   MOOD_DRUNK_UNDO_WINDOW_S,
+  UNDO_SEND_WINDOW_S,
   PUZZLE_MAX_GUESSES,
   SendMessageRequestSchema,
   VIBE_CHECK_PROMPT_MAX_CHARS,
@@ -572,13 +573,16 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       // tombstones their own words (channels included).
       if (row.senderId !== user.id) throw forbidden();
       if (isUndo) {
-        // Drunk live AT UNDO TIME (live-expiry filter; the auth read is fresh).
+        // v1.0a (#96): send-undo for EVERYONE — the drunk-mode §1.57 undo
+        // generalized. Drunk live AT UNDO TIME keeps its longer window
+        // (live-expiry filter; the auth read is fresh); everyone else gets
+        // UNDO_SEND_WINDOW_S. Same tombstone semantics either way.
         const drunkLive =
           user.moodKind === 'drunk' &&
           user.moodExpiresAt !== null &&
           user.moodExpiresAt.getTime() > Date.now();
-        if (!drunkLive) throw conflict('not_drunk');
-        const windowMs = (MOOD_DRUNK_UNDO_WINDOW_S + MOOD_DRUNK_UNDO_SLACK_S) * 1000;
+        const windowS = drunkLive ? MOOD_DRUNK_UNDO_WINDOW_S : UNDO_SEND_WINDOW_S;
+        const windowMs = (windowS + MOOD_DRUNK_UNDO_SLACK_S) * 1000;
         if (Date.now() - row.createdAt.getTime() > windowMs) {
           throw conflict('undo_window_closed');
         }

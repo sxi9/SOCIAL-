@@ -722,3 +722,15 @@
   line-height: 1;
   cursor: pointer;
 }
+
+/* v1.0a (#93): image bubbles are tap targets for the zoom viewer. */
+.mediaTap {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  display: inline-block;
+  cursor: zoom-in;
+  font: inherit;
+  text-align: inherit;
+}

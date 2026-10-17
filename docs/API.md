@@ -1306,6 +1306,10 @@ use. The v0.1 `reply_to_id` column is retired (always `null` from v0.5a on).
   `404 not_found` (they are write surfaces).
 - In channels (§1.35) the same rules apply to the owner/admins' own messages;
   nobody edits or deletes anyone else's words in v0.5a.
+- v1.0a (#96): `DELETE …/messages/:seq?undo=1` works for EVERY sender within
+  `UNDO_SEND_WINDOW_S` (5 s) + slack of `created_at` — the drunk-mode undo
+  generalized. A live drunk mood keeps the longer `MOOD_DRUNK_UNDO_WINDOW_S`
+  window (and its push-hold). Outside the window → `409 undo_window_closed`.
 - v0.8a (§1.57): `DELETE …/messages/:seq?undo=1` is the drunk-mode send-undo
   variant — same tombstone machinery, but `metadata` becomes
   `{"undone": true}` and clients render nothing (no "message deleted" stub).
@@ -2514,7 +2518,7 @@ People-you-may-know for Feed-Discover and the connections page. Pull-only
 
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/suggestions` | — | `200 {suggestions: Suggestion[]}` — ≤ `SUGGESTIONS_MAX` (20), best evidence first (`mutual_count` DESC, then `shared_groups`, then `same_area`, then newest account). Candidates: connections-of-my-connections ∪ same-`area` users ∪ co-members of my **non-ghost** groups. **Excluded entirely:** me, §1.14 blocked pairs (both ways), the friends-of set, pending connection requests either direction, dismissed, banned, and anyone reachable ONLY through a 👻 ghost group (unlisted everywhere, §1.68). Signals per card: `mutuals` (≤ `SUGGESTION_MUTUALS_PREVIEW_MAX` faces — people I already know, so no new exposure) + `mutual_count`; `same_area` as a **boolean** (the area TEXT stays owner-private, FEATURES #30); `shared_groups` count. |
+| `GET /api/suggestions` | `?mutuals=&groups=&area=&interests=` (v1.0 #78c — each flag NARROWS the pool, the §1.65 doctrine: mutuals → `mutual_count > 0`; groups → shared non-ghost group; area → my `users.area` match (no area of mine → honest empty); interests → PUBLIC §1.37 interest-tag overlap (no public tags of mine → honest empty)) | `200 {suggestions: Suggestion[]}` — ≤ `SUGGESTIONS_MAX` (20), best evidence first (`mutual_count` DESC, then `shared_groups`, then `same_area`, then newest account). Each card also carries `shared_interests` (≤ `DISCOVERY_SHARED_INTERESTS_MAX`, the §1.65 overlap rule — already-public data). Candidates: connections-of-my-connections ∪ same-`area` users ∪ co-members of my **non-ghost** groups. **Excluded entirely:** me, §1.14 blocked pairs (both ways), the friends-of set, pending connection requests either direction, dismissed, banned, and anyone reachable ONLY through a 👻 ghost group (unlisted everywhere, §1.68). Signals per card: `mutuals` (≤ `SUGGESTION_MUTUALS_PREVIEW_MAX` faces — people I already know, so no new exposure) + `mutual_count`; `same_area` as a **boolean** (the area TEXT stays owner-private, FEATURES #30); `shared_groups` count. |
 | `POST /api/suggestions/:userId/dismiss` | — | `204` — idempotent, permanent (`suggestion_dismissals`, migration 0010). The dismissed user is NEVER told, and nothing re-surfaces them (PSYCHOLOGY rule 4). |
 
 **Find-your-people (client flow, binding):** one post-signup step — set your
@@ -3077,7 +3081,11 @@ plan changing shape (PSYCHOLOGY rule 2); blocks stay structural.
 **v0.7.1 ring push (§1.55, ADR-017, FEATURES #88):** on call create, every
 callee passing the guards above **who has no live socket** (the online-now
 guard, doing its usual job — a live socket rings via `call.invite`) gets a
-`call.ring` push. Differences from message push, and ONLY these: the
+`call.ring` push. Copy (v1.0): DM — title is the caller's display name, body
+`Incoming <kind> call`; group — title is the group title, body
+`<Caller> — incoming <kind> call` (the caller is always resolved, so a rung
+member knows WHO is calling before opening the app).
+Differences from message push, and ONLY these: the
 5 s debounce key is per **call** (one ring push per call per user, never
 collapsed with message pushes); the read-elsewhere guard does not apply (no
 seq); the web-push `TTL` header is `CALL_RING_PUSH_TTL_S=45` with

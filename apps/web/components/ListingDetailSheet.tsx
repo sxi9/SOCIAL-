@@ -23,6 +23,7 @@ import { upsertConversation } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
 import Avatar from './Avatar';
+import MediaLightbox from './MediaLightbox';
 import ListingEditSheet from './ListingEditSheet';
 import { LocationChip } from './LocationPicker';
 import Portal from './Portal';
@@ -48,6 +49,7 @@ export default function ListingDetailSheet({
   const router = useRouter();
   const now = useNow(30_000);
   const [listing, setListing] = useState(initial);
+  const [zoomPhoto, setZoomPhoto] = useState<string | null>(null); // v1.0a #93
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
@@ -345,12 +347,22 @@ export default function ListingDetailSheet({
         {listing.photos.length > 0 ? (
           <div className={st.detailPhotos}>
             {listing.photos.map((p) => (
-              <a key={p.id} href={p.url} target="_blank" rel="noreferrer">
+              /* v1.0a (#93): tap opens the pinch-zoom viewer. */
+              <button
+                key={p.id}
+                type="button"
+                className="avatarZoomTap"
+                aria-label="View photo full screen"
+                onClick={() => setZoomPhoto(p.url)}
+              >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={p.thumb_url ?? p.url} alt="" loading="lazy" />
-              </a>
+              </button>
             ))}
           </div>
+        ) : null}
+        {zoomPhoto !== null ? (
+          <MediaLightbox src={zoomPhoto} alt="Listing photo" onClose={() => setZoomPhoto(null)} />
         ) : null}
 
         {listing.body ? <p className={st.detailBody}>{listing.body}</p> : null}

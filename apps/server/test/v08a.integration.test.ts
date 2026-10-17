@@ -11,6 +11,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   MOOD_DRUNK_UNDO_SLACK_S,
+  UNDO_SEND_WINDOW_S,
   MOOD_DRUNK_UNDO_WINDOW_S,
   MOOD_SWING_INTERVAL_S,
   MOOD_SWING_JITTER_S,
@@ -384,12 +385,27 @@ describe.runIf(infra)('v0.8a identity & moods', () => {
       expect((gone.metadata as { undone?: true }).undone).toBeUndefined();
     });
 
-    it('drunk must be live AT UNDO TIME → 409 not_drunk (nothing is stamped on the message)', async () => {
+    it('v1.0a #96: sober undo works within the SHORT window; past it (but inside the drunk window) → 409', async () => {
+      // Sober-up between send and undo: the undo still works — generalized
+      // send-undo (UNDO_SEND_WINDOW_S), no longer drunk-gated.
       const msg = await sendMessage(a, convId, 'sober now');
       await del(a, '/api/users/me/mood'); // sober up between send and undo
       const res = await del(a, `/api/conversations/${convId}/messages/${msg.seq}?undo=1`);
-      expect(res.statusCode).toBe(409);
-      expect((res.json() as { error: string }).error).toBe('not_drunk');
+      expect(res.statusCode).toBe(204);
+      const gone = await messageAt(a, convId, msg.seq);
+      expect((gone.metadata as { undone?: true }).undone).toBe(true);
+
+      // But sober gets ONLY the short window: a message older than
+      // UNDO_SEND_WINDOW_S+slack (yet younger than the drunk window) is late.
+      const msg2 = await sendMessage(a, convId, 'sober and slow');
+      const pastS = UNDO_SEND_WINDOW_S + MOOD_DRUNK_UNDO_SLACK_S + 1;
+      await db.execute(sqlTag`
+        UPDATE messages SET created_at = now() - make_interval(secs => ${pastS})
+        WHERE conversation_id = ${convId} AND seq = ${msg2.seq}::bigint
+      `);
+      const late = await del(a, `/api/conversations/${convId}/messages/${msg2.seq}?undo=1`);
+      expect(late.statusCode).toBe(409);
+      expect((late.json() as { error: string }).error).toBe('undo_window_closed');
     });
 
     it("only the author may undo — 403 for anyone else's message", async () => {

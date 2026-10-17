@@ -21,6 +21,7 @@ import { formatLastSeen } from '@/lib/format';
 import { refreshMyMood } from '@/lib/mood';
 import { upsertConversation } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
+import MediaLightbox from '@/components/MediaLightbox';
 import { useReducedMotion } from '@/lib/useReducedMotion';
 import ActivityStrip from '@/components/ActivityStrip';
 import AnonSendSheet from '@/components/AnonSendSheet';
@@ -43,6 +44,7 @@ function PublicProfile({ username }: { username: string }) {
   const [trust, setTrust] = useState<Trust | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
+  const [picZoom, setPicZoom] = useState(false); // v1.0a #93
   const [report, setReport] = useState(false);
   const [blockBusy, setBlockBusy] = useState(false);
   const [blocked, setBlocked] = useState(false);
@@ -288,8 +290,24 @@ function PublicProfile({ username }: { username: string }) {
       ) : (
         <div className="settings-section">
           <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            {/* Profile pages render the animated WebP (motion-gated, §5.4). */}
-            <Avatar avatar={shown.avatar} name={shown.display_name} size={96} animated />
+            {/* Profile pages render the animated WebP (motion-gated, §5.4).
+                v1.0a (#93): tap opens the full-screen pinch-zoom viewer. */}
+            <button
+              type="button"
+              className="avatarZoomTap"
+              aria-label="View profile picture full screen"
+              disabled={shown.avatar.static_url === null}
+              onClick={() => setPicZoom(true)}
+            >
+              <Avatar avatar={shown.avatar} name={shown.display_name} size={96} animated />
+            </button>
+            {picZoom && shown.avatar.static_url !== null ? (
+              <MediaLightbox
+                src={shown.avatar.animated_url ?? shown.avatar.static_url}
+                alt={`${shown.display_name}'s profile picture`}
+                onClose={() => setPicZoom(false)}
+              />
+            ) : null}
             <div style={{ flex: 1, minWidth: 0 }}>
               {/* v0.8a §1.58: the profile page is a pinned animated-name site. */}
               <h2 style={{ margin: 0 }}>

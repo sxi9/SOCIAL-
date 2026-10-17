@@ -4,6 +4,7 @@ import { useState, type CSSProperties } from 'react';
 import type { Attachment } from '@socialchat/shared';
 import AudioBubble from './AudioBubble';
 import BlurhashCanvas from './BlurhashCanvas';
+import MediaLightbox from './MediaLightbox';
 import { formatBytes } from '@/lib/format';
 import styles from './chat.module.css';
 import exp from './expression.module.css';
@@ -32,6 +33,7 @@ export default function AttachmentView({
   doodle?: boolean;
 }) {
   const [loaded, setLoaded] = useState(false);
+  const [zoomed, setZoomed] = useState(false); // v1.0a #93
 
   if (attachment.kind === 'audio') {
     // v0.4 §1.20: waveform playback bubble; never autoplays.
@@ -53,10 +55,25 @@ export default function AttachmentView({
         ) : null}
       </span>
     );
+    // v1.0a (#93): tap opens the pinch-zoom viewer (was: raw new-tab link).
     return (
-      <a href={attachment.url} target="_blank" rel="noreferrer">
-        {doodle ? <span className={exp.doodleFrame}>{img}</span> : img}
-      </a>
+      <>
+        <button
+          type="button"
+          className={styles.mediaTap}
+          aria-label="View photo full screen"
+          onClick={() => setZoomed(true)}
+        >
+          {doodle ? <span className={exp.doodleFrame}>{img}</span> : img}
+        </button>
+        {zoomed ? (
+          <MediaLightbox
+            src={attachment.url}
+            alt={attachment.file_name ?? 'Photo'}
+            onClose={() => setZoomed(false)}
+          />
+        ) : null}
+      </>
     );
   }
 
