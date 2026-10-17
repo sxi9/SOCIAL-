@@ -23,7 +23,7 @@ Status: ✅ shipped · 🔨 building · 📋 planned
 17. Hardening: argon2id, rate limits, CSRF header, CSP, magic-byte sniffing
 18. One-command deploy (compose, 8 services, auto-HTTPS), ops CLI, CI (incl. image builds), ADRs
 
-## 🔨 Building — v0.2.1
+## ✅ v0.2.1 — Mascot login (shipped)
 
 19. Bored Blob mascot login: eye tracking, covers eyes on password (peeks on "show"), idle yawn, error head-shake, success bounce, logo-tap party mode
 20. Pointer-reactive background, 3D card tilt, rotating taglines, time-aware greetings, register confetti
@@ -67,13 +67,13 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 47. Rich profiles: 3-GIF strip, interest tags, work/skills portfolio
 48. Connections graph; replies/threads, edit/delete, forwarding, pins, @mentions, group admins
 
-## 📋 v0.6 — Calls + discovery
+## ✅ v0.6 — Calls + discovery (shipped)
 
-49. 1:1 voice & video (WebRTC + self-hosted TURN)
-50. Group calls (self-hosted LiveKit SFU)
-51. Watch together / listen together
-52. Bored Together & Bored Roulette (opt-in stranger discovery, gated on the v0.3 safety bundle)
-53. Rescue me (ping friends to call you out of a boring situation)
+49. 1:1 voice & video (browser WebRTC + self-hosted coturn TURN, HMAC time-limited creds)
+50. Group calls — mesh WebRTC up to 8 participants (LiveKit SFU upgrade seam documented in ADR-014; the SFU itself remains 📋)
+51. Watch together (host-synced YouTube sessions); listen together remains 📋
+52. Bored Together & Bored Roulette (opt-in discovery, mutual waves, 5-min keep-or-vanish chats, private expectation feedback — gated on the v0.3 safety bundle)
+53. Rescue me (ping up to 3 connections, daily-capped)
 
 ## 📋 Backlog — operator & platform
 
@@ -83,7 +83,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 57. End-to-end encryption (session/device registry already in place)
 58. One-click backup/restore; boredom status & mood-ring avatars; mascot evolution; i18n; federation (someday)
 
-## Standing design rules (psychology research brief pending — will extend)
+## Standing design rules (full research brief: docs/PSYCHOLOGY.md)
 
 - Active connection over passive consumption: no infinite feeds to doomscroll
 - No variable-reward mechanics, guilt streaks, or public like-counts
