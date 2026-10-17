@@ -4,6 +4,10 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
 import { config } from './config.js';
 import { authRoutes } from './modules/auth/routes.js';
+import { loginLinkRoutes } from './modules/auth/links.js';
+import { passkeyRoutes } from './modules/auth/passkeys.js';
+import { recoveryRoutes } from './modules/auth/recovery.js';
+import { totpRoutes } from './modules/auth/totp.js';
 import { beaconRoutes } from './modules/beacons/routes.js';
 import { blockRoutes } from './modules/blocks/routes.js';
 import { channelRoutes } from './modules/conversations/channels.js';
@@ -105,6 +109,10 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
   app.get('/healthz', async () => ({ ok: true as const }));
 
   await app.register(authRoutes);
+  await app.register(passkeyRoutes); // v0.9 §1.70
+  await app.register(loginLinkRoutes); // v0.9 §1.71
+  await app.register(recoveryRoutes); // v0.9 §1.72
+  await app.register(totpRoutes); // v0.9 §1.73
   await app.register(profileRoutes); // v0.5a §1.37 (/users/me/profile before userRoutes' :username is path-distinct)
   await app.register(moodRoutes); // v0.8a §1.57 (/users/me/mood — path-distinct from :username)
   await app.register(activityRoutes); // v0.8a §1.59 (/users/:username/activity)

@@ -15,6 +15,7 @@ import { onAuthenticated } from '@/lib/connection';
 import { setMe } from '@/lib/store';
 import AuthScene, { useAuthFx } from '@/components/AuthScene';
 import Mascot, { caretPoint, type MascotHandle, type MascotState } from '@/components/Mascot';
+import RecoveryCodes from '@/components/RecoveryCodes';
 import authStyles from '@/components/auth.module.css';
 
 // RegisterForm renders INSIDE AuthScene so useAuthFx() reaches the scene's
@@ -30,6 +31,10 @@ function RegisterForm() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showPw, setShowPw] = useState(false);
+  // v0.9 (§1.72): the once-only recovery-codes reveal between "account
+  // created" and routing in — the server keeps only hashes, so this moment is
+  // the one chance to save them.
+  const [reveal, setReveal] = useState<{ codes: string[]; dest: string } | null>(null);
 
   // The Bored Blob: tracks the caret while you type, covers its eyes on the
   // password (peeks when shown), winces on a taken username and celebrates
@@ -102,6 +107,13 @@ function RegisterForm() {
           : '/welcome';
       setMascot('celebrate');
       fx.burst();
+      // v0.9 (§1.72): the server handed back the 6 recovery codes — shown
+      // ONCE, right now, before the card lifts away. "I saved them" routes in.
+      if (res.recovery_codes.length > 0) {
+        setReveal({ codes: res.recovery_codes, dest });
+        setBusy(false);
+        return;
+      }
       fx.lift();
       window.setTimeout(() => router.replace(dest), fx.reducedMotion ? 0 : 800);
       return; // keep busy=true while the card lifts away
@@ -123,6 +135,30 @@ function RegisterForm() {
       }
       setBusy(false);
     }
+  }
+
+  if (reveal) {
+    return (
+      <div>
+        <div className={authStyles.mascotRow}>
+          <Mascot ref={mascotRef} state={fx.party ? 'party' : 'celebrate'} size={96} />
+        </div>
+        <h2 className={authStyles.formTitle}>Save your recovery codes</h2>
+        <p className="muted small" style={{ margin: '0 0 4px' }}>
+          You&rsquo;re in, @{username}! One thing first: these 6 codes are your way back in if you
+          ever lose your password. This is the only time they&rsquo;re shown.
+        </p>
+        <RecoveryCodes
+          codes={reveal.codes}
+          username={username}
+          confirmLabel="I saved them — let's go"
+          onConfirm={() => {
+            fx.lift();
+            window.setTimeout(() => router.replace(reveal.dest), fx.reducedMotion ? 0 : 700);
+          }}
+        />
+      </div>
+    );
   }
 
   return (

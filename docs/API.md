@@ -604,7 +604,11 @@ Avatar URLs are content-hashed media-proxy URLs (`/api/media/:key`), immutable-c
 | `DELETE /api/auth/sessions/:id` | — | `204`; revokes + closes its sockets. `404` if not yours. |
 
 Password reset is CLI-only in MVP: `node dist/cli.js reset-password <username>` (prints a
-temporary password, revokes all sessions).
+temporary password, revokes all sessions). **v0.9 (§1.70–§1.73) adds user-facing session
+minting paths** — passkey login, QR cross-device login, recovery-code reset, and TOTP
+gating of password/passkey logins (`POST /api/auth/login` then answers the §1.73
+LoginOutcome: `{user}` or `{totp_required, totp_token}`); register additionally returns
+the §1.72 `recovery_codes` once. The CLI reset remains the operator path.
 
 ### 1.2 Users & profiles
 
@@ -2753,6 +2757,173 @@ banner renders the §1.61 release-notes delta as its changelog plus the
 instruction: **run `./bored update` on the host** — the container never gets
 docker.sock and never updates itself (ADR-013's trust line, restated in
 ADR-020).
+
+### 1.70 Passkeys (v0.9 — ADR-021, FEATURES #82)
+
+WebAuthn login (platform authenticators first; security keys work too), with
+the password retained as fallback. **The ADR-001 session layer is untouched**:
+a verified passkey assertion mints the exact same opaque-token `sid` session a
+password login mints — passkeys (like everything in v0.9) only change how a
+session **starts**. Server-side verification is `@simplewebauthn/server`
+(version-pinned; the ONE sanctioned dependency exception — ADR-021 records
+why and the pins); the browser side uses `@simplewebauthn/browser`. The
+WebAuthn options/response JSON bodies are the W3C wire shapes owned by the
+library — `packages/shared` validates them only as opaque JSON objects
+(`WebAuthnJson`) and pins everything around them.
+
+**rpID & origin:** rpID = `WEBAUTHN_RP_ID` env when set, else the hostname of
+`PUBLIC_ORIGIN`, else `DOMAIN`. Expected origin = `PUBLIC_ORIGIN` when set,
+else `https://<DOMAIN>` (plus the localhost dev origins outside production).
+**Tunnel caveat (binding, tell the operator):** passkeys cryptographically
+bind to the rpID domain — on a quick tunnel (`*.trycloudflare.com`) every new
+tunnel is a new domain, orphaning every registered credential. The settings
+page surfaces the active rpID and warns on known quick-tunnel suffixes;
+recommend a stable domain before enrolling passkeys (ADR-021).
+
+**Challenges are Redis TTL state, never rows** (`WEBAUTHN_CHALLENGE_TTL_S` =
+300 s, one-shot: consumed by the verify, hit or miss).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/auth/passkeys/options` | — (authed) | `200 {options}` — registration options: challenge stored at `webauthn:reg:{user_id}` (one pending registration per user; a new call replaces it), `excludeCredentials` = my registered ids (no dupes), platform-friendly `authenticatorSelection` (`residentKey:'preferred'`, `userVerification:'preferred'`). |
+| `POST /api/auth/passkeys` | `{response, nickname? 1..32}` (authed) | `201 {passkey: PasskeyInfo}` — verifies against the stored challenge + rpID/origin, inserts the credential row. Cap `PASSKEYS_MAX` (10) → `409 passkeys_cap`, enforced under `pg_advisory_xact_lock` (the counter-race rule). Duplicate credential id → `409 passkey_exists`. Bad/expired challenge or failed verification → `400 bad_passkey`. |
+| `GET /api/auth/passkeys` | — (authed) | `200 {passkeys: PasskeyInfo[]}` — `created_at ASC`. `PasskeyInfo` never carries the public key or counter — settings UI material only (nickname, transports, `device_type`, `backed_up`, created/last-used). |
+| `PATCH /api/auth/passkeys/:id` | `{nickname: 1..32}` | `200 {passkey}`. `404` if not mine (the §1.14 shape). |
+| `DELETE /api/auth/passkeys/:id` | — | `204`. `404` if not mine. Deleting the last passkey is fine — the password always remains. |
+| `POST /api/auth/passkey-login/options` | `{username?}` — **unauthenticated**; username LOOSE (≤ 254 chars) | `200 {challenge_ref, options}`. With `username`: `allowCredentials` = that user's credential ids — but an **unknown username answers the same 200 with empty `allowCredentials` as a user who has no passkeys** (never an enumeration oracle; §1.44 doctrine). Without: discoverable-credential flow (`allowCredentials` empty by design). Challenge at `webauthn:auth:{challenge_ref}` (`challenge_ref` = 16 random bytes base64url). Rate `PASSKEY_LOGIN_RATE_PER_MIN` (10/min/IP). |
+| `POST /api/auth/passkey-login` | `{challenge_ref, response}` | `200` **LoginOutcome**: `{user}` + `Set-Cookie: sid` (standard §1.1 session; `sessions.user_agent`/`ip` captured as at any login), or the §1.73 `{totp_required: true, totp_token}` when the account is TOTP-armed (SPECS #85: passkey login is gated like password login). On success: `counter` updated, `last_used_at` stamped. **A counter LOWER than stored = cloned-credential signal → `401 bad_credentials` + ring-log** (`level:'warn'`). Any verification failure, unknown credential, consumed/expired challenge_ref → the same `401 bad_credentials`. Suspended/banned → `403` as §1.1. Rate as options. |
+
+### 1.71 QR cross-device login (v0.9 — ADR-021, FEATURES #83)
+
+WhatsApp-Web style, **pure first-party, built on the sessions table**. The
+logged-out laptop mints a short-lived link; the logged-in phone approves it;
+the laptop's next poll mints a standard §1.1 session **on the laptop's own
+request** — no token ever transits the phone, a QR relay service, or a DB row.
+
+**Two codes, one row** (`login_links`, both stored sha256): the **full code**
+(32 random bytes base64url) rides the QR as the URL `<origin>/link/<code>`
+and is the laptop's poll/redeem capability; the **display code** (6 chars
+from `LOGIN_LINK_DISPLAY_ALPHABET` — no 0/O/1/I/L) is the human fallback
+typed into the phone's approve page, and can ONLY approve — its small
+keyspace never polls or redeems, so the worst a lucky guesser achieves is
+logging a stranger's laptop into the *guesser's own* account, rate-limited to
+irrelevance. The QR itself renders client-side via the hand-rolled SVG
+encoder in `apps/web/lib/qr.ts` (no dependency — ADR-021); the display code
+is ALWAYS shown beneath it.
+
+Status is a one-way `pending → approved → consumed` walk; every transition is
+an atomic `UPDATE … WHERE status='<prev>' RETURNING` (the race rule). TTL
+`LOGIN_LINK_TTL_S` (120 s), single-use; the login page simply mints a fresh
+link when one expires. The `gc` job deletes rows an hour past expiry.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/auth/link` | — (**unauthenticated**, the laptop) | `201 {code, display_code, url, expires_at}` — `code` returned ONCE; `url` is the app-origin PATH `/link/<code>`. Captures the laptop's `user_agent` + ip (so the phone sees what it approves). Rate `LOGIN_LINK_CREATE_RATE_PER_HOUR` (30/h/IP). |
+| `POST /api/auth/link/poll` | `{code}` (the laptop; loose ≤ 64) | `200 {status:'pending', expires_at}` until approved (client re-polls every `LOGIN_LINK_POLL_INTERVAL_MS` = 2 s — plain polling, no WS/SSE: the laptop has no session to upgrade with). First poll after approval: **atomically flips `approved → consumed`, mints the session for `approved_by` (standard §1.1 row + `Set-Cookie: sid`), stamps `new_session_id`** → `200 {status:'consumed', user}`. Unknown/expired/already-consumed code → `410 link_gone`, **byte-identical** in every case. |
+| `POST /api/auth/link/lookup` | `{code}` (**authed** — the phone; full OR display code) | `200 {link: {created_at, expires_at, user_agent, ip_hint}}` — the approve sheet's facts about the laptop (`ip_hint` is coarse, e.g. the /24 or just "this network"/"elsewhere"). Unknown/expired → `410 link_gone`. Rate `LOGIN_LINK_APPROVE_RATE_PER_MIN` (5/min/user). |
+| `POST /api/auth/link/approve` | `{code}` (**authed** — the phone) | `204` — atomic `pending → approved`, stamps `approved_by` = me. The phone's session is the factor; the sheet it just read is the informed consent. Expired/raced/unknown → `410 link_gone`. Suspended/banned approvers → `403` (their session is already dead per §1.41, defensive). Rate as lookup. |
+
+**Web pages:** the login page gains a "Log in with your phone" panel (QR +
+display code + countdown, re-mint on expiry); `/link/<code>` in the phone's
+PWA opens the approve sheet (Portal, §1.56 toast on approve); a logged-OUT
+phone opening `/link/<code>` sees login-first, then returns to the sheet.
+After approval, the new session appears in `GET /api/auth/sessions` like any
+other and is revocable from the phone (the §1.1 machinery — that is the
+remote-logout story too).
+
+### 1.72 Recovery codes (v0.9 — ADR-021, FEATURES #84)
+
+Email-free account recovery. `RECOVERY_CODES_COUNT` (6) one-time codes,
+generated **at registration** and shown ONCE (copyable + downloadable as a
+.txt client-side); only sha256 rows persist. Display form `xxxxx-xxxxx`
+(`RECOVERY_CODE_LEN` = 10 chars of `RECOVERY_CODE_ALPHABET`, ~49 bits);
+inputs are normalized route-side (lowercase, strip `-`/spaces) and arrive
+loose at the schema (the §1.1 invite_token doctrine).
+
+**§1.1 changes:** `POST /api/auth/register` response gains
+`recovery_codes: string[]` (the once-only reveal). The §1.1 note "Password
+reset is CLI-only" is superseded: recovery codes are the user-facing path;
+the CLI reset remains the operator's.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/auth/recovery-codes` | — (authed) | `200 {total, remaining, generated_at}` — status only, NEVER the codes (they are unrecoverable by design; `generated_at: null` for pre-v0.9 accounts, which the settings row turns into "generate yours now"). |
+| `POST /api/auth/recovery-codes` | `{password}` (authed — re-proof, so a borrowed unlocked phone can't silently re-mint) | `200 {recovery_codes}` — **deletes the old set, inserts 6 fresh, one tx**; shown once. `401 bad_credentials` on wrong password. Ring-logged (`level:'warn'`, no codes in the log). Rate 5/h/user. |
+| `POST /api/auth/recover` | `{username_or_email, code}` (**unauthenticated**) | `200 {reset_token}` — consumes the code **atomically** (`UPDATE … WHERE used_at IS NULL RETURNING`), **revokes ALL sessions (rows deleted, sockets closed 4401)**, and notifies: one §1.69 Support-conversation message ("A recovery code was just used on your account. If this wasn't you, your other codes may be compromised — regenerate them after you're back in.") + its ordinary push. NO session is minted — recovery **forces a new password** first. `reset_token` = one-shot Redis ref, `RESET_TOKEN_TTL_S` (15 min). Wrong code / unknown user / already-used → the same `401 bad_recovery`, byte-identical (no enumeration). Rate `RECOVERY_LOGIN_RATE_PER_HOUR` (5/h/IP — scorched-earth path, deliberately slow). |
+| `POST /api/auth/reset-password` | `{reset_token, new_password ≥ 8}` | `200 {user}` + `Set-Cookie: sid` — sets the argon2id hash, consumes the token, mints the fresh session. Recovery **bypasses TOTP** by design (SPECS #85: it's the lost-authenticator path) — TOTP stays armed afterward. Expired/bogus token → `401 bad_reset_token`. |
+
+### 1.73 TOTP 2FA (v0.9 — ADR-021, FEATURES #85)
+
+Optional authenticator-app second factor. **RFC 6238 implemented by hand**
+(HMAC-SHA1 via `node:crypto`; `TOTP_DIGITS` 6, `TOTP_PERIOD_S` 30, drift
+±`TOTP_DRIFT_STEPS` step) — no dependency (ADR-021). The secret
+(`TOTP_SECRET_BYTES` = 20) lives in `users.totp_secret`,
+**AES-256-GCM-encrypted at rest** with a key HKDF-derived from
+`SESSION_SECRET` (info `'totp:'`; stored `v1:<iv>:<ct>:<tag>` base64url).
+Consequence, documented honestly: **rotating `SESSION_SECRET` orphans every
+enrolled TOTP** — affected logins fall back to recovery codes and users
+re-enroll (ADR-021 weighs this against plaintext and likes the trade).
+A verified step is burned in Redis (`totp:used:{user_id}:{step}`, TTL one
+window) so one code never authenticates twice.
+
+**DTO change:** `UserPrivate += {totp_enabled: boolean}`.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/auth/totp/setup` | — (authed; `409 totp_enabled` if already armed) | `200 {otpauth_uri, manual_key, expires_at}` — a PENDING secret in Redis (`totp:pending:{user_id}`, `TOTP_SETUP_TTL_S` 10 min); **nothing touches the users row until a valid code proves the authenticator holds it**. `otpauth_uri` = `otpauth://totp/Bored%20Chat:<username>?secret=<b32>&issuer=Bored+Chat&algorithm=SHA1&digits=6&period=30` (`TOTP_ISSUER`), rendered client-side as a QR (the §1.71 hand-rolled encoder); `manual_key` = the base32 secret in groups of 4, ALWAYS shown + copyable. Re-call = fresh secret (replaces pending). |
+| `POST /api/auth/totp/enable` | `{code: 6 digits}` | `200 {user}` — verifies against the PENDING secret, then writes `totp_secret` (encrypted) + `totp_enabled_at` in one tx, clears the pending key, fans `user.updated` (owner frame carries `totp_enabled`). Wrong code → `400 bad_totp_code` (pending survives until TTL). The response is a natural moment for the client to re-surface recovery-code status (§1.72) — "these are your way back in". |
+| `POST /api/auth/totp` | `{totp_token, code}` (**unauthenticated** — the second half of a login) | `200 {user}` + `Set-Cookie: sid`. `totp_token` is the one-shot ref a correct password (§1.1) or passkey (§1.70) earned; wrong code decrements its attempt budget (`TOTP_VERIFY_RATE_PER_MIN`, also per-IP) → `401 bad_totp_code`; token expiry/consumption → `401 bad_totp_token` (start the login over). |
+| `POST /api/auth/totp/disable` | `{code}` XOR `{recovery_code}` (authed) | `200 {user}` — proof required: the current code, or one recovery code (**consumed**, the §1.72 atomic claim). Nulls both columns, fans `user.updated`, ring-logged. `400 bad_totp_code` / `401 bad_recovery`. |
+
+**Login gating (§1.1/§1.70/§1.71 semantics):** with TOTP armed, a correct
+password or verified passkey answers `200 {totp_required: true, totp_token}`
+— **no session, no cookie** — and the client shows the 6-digit prompt. The
+§1.71 QR login is NOT re-gated: the approving phone session already cleared
+TOTP at its own login, and approval is an authed, informed action (ADR-021).
+Recovery (§1.72) bypasses by design. `totp_token` reveals nothing and expires
+in `TOTP_TOKEN_TTL_S` (5 min).
+
+### 1.74 Admin: Authentication settings, OTP-ready (v0.9 — ADR-021, FEATURES #86)
+
+Config-not-code readiness. All §1.41 framing holds (admin-only 404-shape,
+ring-logged writes). The instance stores a full SMTP block + per-feature
+toggles **today**; every email-dependent flow is specified to flag off
+`instance_settings` at runtime — so when a mailer lands (a FUTURE release:
+golden rule 10 means **no SMTP client ships in v0.9**, and ADR-021 says so
+honestly rather than half-shipping one), enabling email verification / email
+OTP / magic links / password-reset mail is **configuration, not code**. The
+SMS-gateway slot stays a documented placeholder (no column, no key) until a
+gateway design exists — SPECS #86 names the slot, not a schema.
+
+**DTO changes:** `InstanceSettings += {auth: AuthSettings}` where
+`AuthSettings = {smtp: {host, port, secure, username, from, password_set},
+features: {email_verification, email_otp, magic_links, password_reset},
+mailer_available}`. The §1.41 `PATCH /api/admin/settings` accepts
+`auth: AuthSettingsPatch` (deep-partial; `smtp.password` is **write-only** —
+set a string to store, `null` to clear, it never reads back:
+`password_set: boolean` is all that serializes). `mailer_available` is
+server-computed — `false` in v0.9, always.
+
+**SMTP password storage:** its own `instance_settings` key
+(`auth_smtp_password`), AES-256-GCM-encrypted with the SESSION_SECRET-derived
+key (HKDF info `'smtp:'` — the §1.73 machinery, different domain separation).
+The `SMTP_PASSWORD` env, when set, **takes precedence** over the stored value
+(the env-reference option in SPECS #86) and the settings page then shows
+"set via environment" with the field disabled.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/admin/settings` | — | `200 {settings}` — now includes `auth` (per §1.41; `password_set`, never the password). |
+| `PATCH /api/admin/settings` | `{…, auth?: AuthSettingsPatch}` | `200 {settings}` — merges deep; ring-logged **without** the password value. Feature toggles persist even while inert (that is the point). |
+| `POST /api/admin/settings/auth/test-send` | `{to: email}` | **v0.9: always `503 mailer_unavailable`** — the endpoint exists so the UI contract is stable, and answers honestly until a mailer ships. The admin page renders the Test send button disabled with "needs SMTP support in a future update" (binding UX copy class, §1.56), EXCEPT the config fields themselves, which save fine. |
+
+**Admin → Authentication page (web):** SMTP block (host/port/secure/username/
+from/password with `password_set` indicator), the four feature toggles —
+each rendered with an inline "needs SMTP support in a future update" note and
+disabled interaction while `mailer_available` is false (visible but inert,
+SPECS #86's exact ask) — the Test send button (disabled, same note), the
+SMS-gateway slot as a labeled "coming later" placeholder, and the §1.70 rpID
+readout with the quick-tunnel warning.
 
 ### 2.1 Connection & handshake
 

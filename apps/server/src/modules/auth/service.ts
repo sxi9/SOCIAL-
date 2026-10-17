@@ -28,6 +28,13 @@ export function hashToken(raw: string): string {
   return createHash('sha256').update(raw).digest('hex');
 }
 
+/** v0.9 (§1.71/§1.72): the sha256-base64url form the login_links and
+ *  recovery_codes rows store (the migration-0011 contract — hex stays the
+ *  sessions encoding above; both are the same ADR-001 doctrine). */
+export function hashCode(raw: string): string {
+  return createHash('sha256').update(raw).digest('base64url');
+}
+
 export function newSessionToken(): string {
   return randomBytes(32).toString('base64url');
 }

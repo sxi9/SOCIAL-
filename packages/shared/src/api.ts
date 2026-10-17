@@ -137,6 +137,13 @@ import {
   SUPPORT_CATEGORIES,
   SUPPORT_TICKET_STATUSES,
   TAKEDOWN_REASON_MAX_CHARS,
+  // ---- v0.9 auth pack (API.md §1.70–§1.74, ADR-021) ----
+  AUTH_FEATURE_TOGGLES,
+  LOGIN_LINK_DISPLAY_CODE_LEN,
+  PASSKEY_DEVICE_TYPES,
+  PASSKEY_NICKNAME_MAX_CHARS,
+  SMTP_FIELD_MAX_CHARS,
+  TOTP_CODE_REGEX,
 } from './constants.js';
 
 // ---------------------------------------------------------------------------
@@ -255,6 +262,9 @@ export const UserPrivateSchema = UserPublicSchema.extend({
   // beacon visibility via case-insensitive equality.
   area: z.string().nullable().default(null),
   created_at: IsoDateTimeSchema,
+  // v0.9 (§1.73): is TOTP 2FA armed on this account. The secret itself NEVER
+  // serializes anywhere. default(false) keeps pre-v0.9 payloads parsing clean.
+  totp_enabled: z.boolean().default(false),
 });
 export type UserPrivate = z.infer<typeof UserPrivateSchema>;
 
@@ -792,6 +802,10 @@ export const RegisterResponseSchema = z.object({
   // created and invite is null (default(null) keeps the pre-v0.2 handler and
   // old fixtures valid).
   invite: z.object({ conversation_id: UuidSchema }).nullable().default(null),
+  // v0.9 (§1.72): the SIX one-time recovery codes, display form
+  // (xxxxx-xxxxx), shown to the user ONCE here — the server keeps only
+  // sha256 rows. default([]) keeps pre-v0.9 fixtures parsing clean.
+  recovery_codes: z.array(z.string()).default([]),
 });
 export type RegisterResponse = z.infer<typeof RegisterResponseSchema>;
 
@@ -803,6 +817,20 @@ export type LoginRequest = z.infer<typeof LoginRequestSchema>;
 
 export const LoginResponseSchema = z.object({ user: UserPrivateSchema });
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;
+
+// v0.9 (§1.73): a TOTP-armed account does NOT get a session from a correct
+// password (or passkey) alone — the 200 carries this half-login challenge
+// instead (totp_token = one-shot Redis ref, TOTP_TOKEN_TTL_S). Finish at
+// POST /api/auth/totp with the 6-digit code. LoginOutcome is the §1.1 /
+// §1.70 login response: exactly one of the two shapes.
+export const TotpChallengeSchema = z.object({
+  totp_required: z.literal(true),
+  totp_token: z.string(),
+});
+export type TotpChallenge = z.infer<typeof TotpChallengeSchema>;
+
+export const LoginOutcomeSchema = z.union([LoginResponseSchema, TotpChallengeSchema]);
+export type LoginOutcome = z.infer<typeof LoginOutcomeSchema>;
 
 export const SessionInfoSchema = z.object({
   id: UuidSchema,
@@ -2793,19 +2821,90 @@ export const ReleaseNoteSchema = z.object({
 });
 export type ReleaseNote = z.infer<typeof ReleaseNoteSchema>;
 
-// §1.41 instance settings (instance_settings key/value jsonb; one key today).
+// v0.9 (§1.74, ADR-021): the OTP-ready Authentication settings. The SMTP
+// password is NOT here — it is write-only (PATCH field smtp.password), stored
+// AES-256-GCM-encrypted under its own instance_settings key (or supplied via
+// the SMTP_PASSWORD env, which takes precedence), and serializes back ONLY as
+// password_set. mailer_available is SERVER-computed honesty: false until a
+// mailer ships (none in v0.9 — golden rule 10), and the admin UI disables the
+// feature toggles and Test send behind "needs SMTP support in a future
+// update" while the config itself stores fine.
+export const SmtpSettingsSchema = z.object({
+  host: z.string().max(SMTP_FIELD_MAX_CHARS).nullable(),
+  port: z.number().int().min(1).max(65535),
+  secure: z.boolean(), // implicit TLS (465-style) vs STARTTLS
+  username: z.string().max(SMTP_FIELD_MAX_CHARS).nullable(),
+  from: z.string().max(SMTP_FIELD_MAX_CHARS).nullable(),
+  password_set: z.boolean(), // read-side flag; the password itself NEVER serializes
+});
+export type SmtpSettings = z.infer<typeof SmtpSettingsSchema>;
+
+// AUTH_FEATURE_TOGGLES, spelled out — persisted today, INERT until
+// mailer_available (keys match the constant; a drift is a type error at the
+// satisfies below).
+export const AuthFeatureTogglesSchema = z.object({
+  email_verification: z.boolean(),
+  email_otp: z.boolean(),
+  magic_links: z.boolean(),
+  password_reset: z.boolean(),
+} satisfies Record<(typeof AUTH_FEATURE_TOGGLES)[number], z.ZodBoolean>);
+export type AuthFeatureToggles = z.infer<typeof AuthFeatureTogglesSchema>;
+
+export const AuthSettingsSchema = z.object({
+  smtp: SmtpSettingsSchema,
+  features: AuthFeatureTogglesSchema,
+  mailer_available: z.boolean(),
+});
+export type AuthSettings = z.infer<typeof AuthSettingsSchema>;
+
+const AUTH_SETTINGS_DEFAULT: AuthSettings = {
+  smtp: { host: null, port: 587, secure: true, username: null, from: null, password_set: false },
+  features: {
+    email_verification: false,
+    email_otp: false,
+    magic_links: false,
+    password_reset: false,
+  },
+  mailer_available: false,
+};
+
+// §1.41 instance settings (instance_settings key/value jsonb).
 // invites_enabled=false is enforced at invite MINT (403 invites_disabled) and
 // ACCEPT (403 invites_disabled, no use_count claim); register-with-token
 // degrades to invite: null per §1.1.
 // v0.8a (§1.61) adds release_notes (newest first; default [] keeps pre-v0.8
 // payloads parsing clean) — migrations seed it, admin PATCH may curate it.
+// v0.9 (§1.74) adds auth (default keeps pre-v0.9 payloads parsing clean).
 export const InstanceSettingsSchema = z.object({
   invites_enabled: z.boolean(),
   release_notes: z.array(ReleaseNoteSchema).default([]),
+  auth: AuthSettingsSchema.default(AUTH_SETTINGS_DEFAULT),
 });
 export type InstanceSettings = z.infer<typeof InstanceSettingsSchema>;
 
-export const UpdateInstanceSettingsRequestSchema = InstanceSettingsSchema.partial();
+// v0.9 (§1.74): the auth PATCH shape — deep-partial, plus the write-only
+// smtp.password (set a string to store it encrypted, null to clear it; it
+// never reads back). mailer_available is server-computed and not patchable.
+export const AuthSettingsPatchSchema = z.object({
+  smtp: z
+    .object({
+      host: z.string().max(SMTP_FIELD_MAX_CHARS).nullable().optional(),
+      port: z.number().int().min(1).max(65535).optional(),
+      secure: z.boolean().optional(),
+      username: z.string().max(SMTP_FIELD_MAX_CHARS).nullable().optional(),
+      from: z.string().max(SMTP_FIELD_MAX_CHARS).nullable().optional(),
+      password: z.string().min(1).max(SMTP_FIELD_MAX_CHARS).nullable().optional(),
+    })
+    .optional(),
+  features: AuthFeatureTogglesSchema.partial().optional(),
+});
+export type AuthSettingsPatch = z.infer<typeof AuthSettingsPatchSchema>;
+
+export const UpdateInstanceSettingsRequestSchema = z.object({
+  invites_enabled: z.boolean().optional(),
+  release_notes: z.array(ReleaseNoteSchema).optional(),
+  auth: AuthSettingsPatchSchema.optional(),
+});
 export type UpdateInstanceSettingsRequest = z.infer<typeof UpdateInstanceSettingsRequestSchema>;
 
 export const InstanceSettingsResponseSchema = z.object({
@@ -3789,3 +3888,221 @@ export type AdminUpdateStatus = z.infer<typeof AdminUpdateStatusSchema>;
 
 export const AdminUpdateResponseSchema = z.object({ update: AdminUpdateStatusSchema });
 export type AdminUpdateResponse = z.infer<typeof AdminUpdateResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.70 Passkeys (v0.9 — ADR-021, FEATURES #82)
+// ---------------------------------------------------------------------------
+
+// The WebAuthn request/response JSON (PublicKeyCredentialCreationOptionsJSON,
+// RegistrationResponseJSON, …) is the W3C-specified wire format produced and
+// consumed by @simplewebauthn (version-pinned in ADR-021). The contract
+// deliberately does NOT re-pin that shape — the library owns it; we validate
+// only that it is a JSON object and let verification do the real work.
+export const WebAuthnJsonSchema = z.record(z.unknown());
+export type WebAuthnJson = z.infer<typeof WebAuthnJsonSchema>;
+
+export const PasskeyInfoSchema = z.object({
+  id: UuidSchema,
+  nickname: z.string().max(PASSKEY_NICKNAME_MAX_CHARS).nullable(),
+  transports: z.array(z.string()), // authenticator hints ('internal','hybrid',…), advisory
+  device_type: z.enum(PASSKEY_DEVICE_TYPES),
+  backed_up: z.boolean(), // synced credential (e.g. iCloud/Google) vs device-bound
+  created_at: IsoDateTimeSchema,
+  last_used_at: IsoDateTimeSchema.nullable(),
+});
+export type PasskeyInfo = z.infer<typeof PasskeyInfoSchema>;
+
+export const PasskeysResponseSchema = z.object({ passkeys: z.array(PasskeyInfoSchema) });
+export type PasskeysResponse = z.infer<typeof PasskeysResponseSchema>;
+
+export const PasskeyRegisterOptionsResponseSchema = z.object({ options: WebAuthnJsonSchema });
+export type PasskeyRegisterOptionsResponse = z.infer<typeof PasskeyRegisterOptionsResponseSchema>;
+
+export const PasskeyRegisterRequestSchema = z.object({
+  response: WebAuthnJsonSchema, // RegistrationResponseJSON from the browser
+  nickname: z.string().min(1).max(PASSKEY_NICKNAME_MAX_CHARS).optional(),
+});
+export type PasskeyRegisterRequest = z.infer<typeof PasskeyRegisterRequestSchema>;
+
+export const PasskeyRegisterResponseSchema = z.object({ passkey: PasskeyInfoSchema });
+export type PasskeyRegisterResponse = z.infer<typeof PasskeyRegisterResponseSchema>;
+
+export const RenamePasskeyRequestSchema = z.object({
+  nickname: z.string().min(1).max(PASSKEY_NICKNAME_MAX_CHARS),
+});
+export type RenamePasskeyRequest = z.infer<typeof RenamePasskeyRequestSchema>;
+
+// Login. username is LOOSE (max-length only, the §1.1 invite_token doctrine):
+// an unknown username answers the SAME 200 with empty allowCredentials as a
+// user with no passkeys — never an enumeration oracle. Omitted username =
+// discoverable-credential (resident key) flow.
+export const PasskeyLoginOptionsRequestSchema = z.object({
+  username: z.string().max(254).optional(),
+});
+export type PasskeyLoginOptionsRequest = z.infer<typeof PasskeyLoginOptionsRequestSchema>;
+
+// challenge_ref binds the verify call to the Redis-stored challenge
+// (WEBAUTHN_CHALLENGE_TTL_S, one-shot) — the logged-out client has no other
+// anchor. It is random, single-use, and worthless without the matching
+// authenticator assertion.
+export const PasskeyLoginOptionsResponseSchema = z.object({
+  challenge_ref: z.string(),
+  options: WebAuthnJsonSchema,
+});
+export type PasskeyLoginOptionsResponse = z.infer<typeof PasskeyLoginOptionsResponseSchema>;
+
+export const PasskeyLoginRequestSchema = z.object({
+  challenge_ref: z.string().min(1).max(128),
+  response: WebAuthnJsonSchema, // AuthenticationResponseJSON from the browser
+});
+export type PasskeyLoginRequest = z.infer<typeof PasskeyLoginRequestSchema>;
+// Response: LoginOutcome (§1.1) — {user} + Set-Cookie, or the §1.73 TOTP
+// challenge when the account is TOTP-armed.
+
+// ---------------------------------------------------------------------------
+// §1.71 QR / cross-device login (v0.9 — ADR-021, FEATURES #83)
+// ---------------------------------------------------------------------------
+
+// Minted by the LOGGED-OUT laptop. code is returned ONCE (the server keeps
+// sha256 only): it rides the QR as <origin>/link/<code> and is the poll
+// capability. display_code is the human fallback the phone can type instead
+// of scanning. url is the app-origin PATH /link/<code> (the §1.11 url rule).
+export const CreateLoginLinkResponseSchema = z.object({
+  code: z.string(),
+  display_code: z.string().length(LOGIN_LINK_DISPLAY_CODE_LEN),
+  url: z.string(),
+  expires_at: IsoDateTimeSchema,
+});
+export type CreateLoginLinkResponse = z.infer<typeof CreateLoginLinkResponseSchema>;
+
+// Codes arrive LOOSE everywhere (≤ 64 chars; normalized route-side) — a
+// mangled paste fails verification with the same 410 as an expired link,
+// never schema validation.
+export const PollLoginLinkRequestSchema = z.object({ code: z.string().min(1).max(64) });
+export type PollLoginLinkRequest = z.infer<typeof PollLoginLinkRequestSchema>;
+
+// 'pending' while unapproved (laptop re-polls every LOGIN_LINK_POLL_INTERVAL_MS);
+// the first poll AFTER approval mints the session (Set-Cookie on this very
+// response), flips the row to consumed, and answers 'consumed' + user. Every
+// later poll — and any unknown/expired/foreign code — is 410 link_gone,
+// byte-identical.
+export const PollLoginLinkResponseSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('pending'), expires_at: IsoDateTimeSchema }),
+  z.object({ status: z.literal('consumed'), user: UserPrivateSchema }),
+]);
+export type PollLoginLinkResponse = z.infer<typeof PollLoginLinkResponseSchema>;
+
+export const LookupLoginLinkRequestSchema = z.object({ code: z.string().min(1).max(64) });
+export type LookupLoginLinkRequest = z.infer<typeof LookupLoginLinkRequestSchema>;
+
+// What the phone's approve sheet shows about the laptop asking to be logged
+// in: UA (parsed client-side into "Chrome on Linux" style) + a COARSE ip hint
+// — enough to say "that's my laptop", nothing more.
+export const LoginLinkInfoSchema = z.object({
+  created_at: IsoDateTimeSchema,
+  expires_at: IsoDateTimeSchema,
+  user_agent: z.string().nullable(),
+  ip_hint: z.string().nullable(),
+});
+export type LoginLinkInfo = z.infer<typeof LoginLinkInfoSchema>;
+
+export const LookupLoginLinkResponseSchema = z.object({ link: LoginLinkInfoSchema });
+export type LookupLoginLinkResponse = z.infer<typeof LookupLoginLinkResponseSchema>;
+
+// code may be the FULL code (QR path /link/<code>) or the 6-char display
+// code (typed) — the server tries both hashes.
+export const ApproveLoginLinkRequestSchema = z.object({ code: z.string().min(1).max(64) });
+export type ApproveLoginLinkRequest = z.infer<typeof ApproveLoginLinkRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.72 Recovery codes (v0.9 — ADR-021, FEATURES #84)
+// ---------------------------------------------------------------------------
+
+export const RecoveryCodesStatusResponseSchema = z.object({
+  total: z.number().int().nonnegative(), // codes in the current generation
+  remaining: z.number().int().nonnegative(), // unused among them
+  generated_at: IsoDateTimeSchema.nullable(), // null = none exist (pre-v0.9 account)
+});
+export type RecoveryCodesStatusResponse = z.infer<typeof RecoveryCodesStatusResponseSchema>;
+
+// Regeneration re-proves the password (a stolen unlocked phone must not be
+// able to mint fresh codes silently) and INVALIDATES the old set.
+export const RegenerateRecoveryCodesRequestSchema = z.object({ password: z.string().min(1) });
+export type RegenerateRecoveryCodesRequest = z.infer<typeof RegenerateRecoveryCodesRequestSchema>;
+
+export const RecoveryCodesResponseSchema = z.object({
+  recovery_codes: z.array(z.string()), // display form, shown ONCE
+});
+export type RecoveryCodesResponse = z.infer<typeof RecoveryCodesResponseSchema>;
+
+// Recovery login: consumes one code atomically, revokes ALL sessions (4401),
+// notifies via the §1.69 Support conversation + push, and answers a one-shot
+// reset_token (Redis, RESET_TOKEN_TTL_S) — NO session yet: recovery FORCES a
+// new password first.
+export const RecoverRequestSchema = z.object({
+  username_or_email: z.string().min(1),
+  code: z.string().min(1).max(64), // loose; normalized route-side
+});
+export type RecoverRequest = z.infer<typeof RecoverRequestSchema>;
+
+export const RecoverResponseSchema = z.object({ reset_token: z.string() });
+export type RecoverResponse = z.infer<typeof RecoverResponseSchema>;
+
+export const ResetPasswordRequestSchema = z.object({
+  reset_token: z.string().min(1).max(128),
+  new_password: z.string().min(PASSWORD_MIN_LENGTH),
+});
+export type ResetPasswordRequest = z.infer<typeof ResetPasswordRequestSchema>;
+
+export const ResetPasswordResponseSchema = z.object({ user: UserPrivateSchema });
+export type ResetPasswordResponse = z.infer<typeof ResetPasswordResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.73 TOTP 2FA (v0.9 — ADR-021, FEATURES #85)
+// ---------------------------------------------------------------------------
+
+// Setup: a PENDING secret (Redis, TOTP_SETUP_TTL_S — nothing touches the
+// users row until a valid code proves the authenticator has it). otpauth_uri
+// renders as a QR client-side (hand-rolled SVG encoder, ADR-021); manual_key
+// is the same secret as grouped base32 for copy/type-in — ALWAYS shown.
+export const TotpSetupResponseSchema = z.object({
+  otpauth_uri: z.string(),
+  manual_key: z.string(),
+  expires_at: IsoDateTimeSchema,
+});
+export type TotpSetupResponse = z.infer<typeof TotpSetupResponseSchema>;
+
+export const TotpEnableRequestSchema = z.object({
+  code: z.string().regex(TOTP_CODE_REGEX),
+});
+export type TotpEnableRequest = z.infer<typeof TotpEnableRequestSchema>;
+
+// Disable requires proof: the current 6-digit code OR one recovery code
+// (consumed) — exactly one of the two fields.
+export const TotpDisableRequestSchema = z
+  .object({
+    code: z.string().regex(TOTP_CODE_REGEX).optional(),
+    recovery_code: z.string().min(1).max(64).optional(),
+  })
+  .refine((d) => (d.code === undefined) !== (d.recovery_code === undefined), {
+    message: 'exactly one of code / recovery_code',
+  });
+export type TotpDisableRequest = z.infer<typeof TotpDisableRequestSchema>;
+
+// The second half of a TOTP-gated login (§1.1/§1.70 LoginOutcome handed out
+// totp_token). Success mints the standard session → {user} + Set-Cookie.
+export const TotpVerifyRequestSchema = z.object({
+  totp_token: z.string().min(1).max(128),
+  code: z.string().regex(TOTP_CODE_REGEX),
+});
+export type TotpVerifyRequest = z.infer<typeof TotpVerifyRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.74 Admin Authentication settings (v0.9 — ADR-021, FEATURES #86)
+// ---------------------------------------------------------------------------
+// The settings DTOs live with InstanceSettings above (AuthSettingsSchema /
+// AuthSettingsPatchSchema). Test send exists in the contract but answers
+// 503 mailer_unavailable until a mailer ships (ADR-021 honesty).
+
+export const SmtpTestSendRequestSchema = z.object({ to: z.string().email() });
+export type SmtpTestSendRequest = z.infer<typeof SmtpTestSendRequestSchema>;

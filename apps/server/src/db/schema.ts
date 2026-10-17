@@ -129,6 +129,14 @@ export const users = pgTable(
     // batched anonymous wave nudge during a live discovery opt-in. Off kills
     // both the push and the in-app discovery.nudge frame.
     waveNudges: boolean('wave_nudges').notNull().default(true),
+    // v0.9 TOTP (migration 0011, API.md §1.73, ADR-021): the RFC 6238 shared
+    // secret, AES-256-GCM-encrypted at rest with a SESSION_SECRET-derived key
+    // (HKDF-SHA256, info 'totp:'; stored as v1:<iv>:<ct>:<tag> base64url
+    // parts). The ONE secret the server must read back, hence encrypted, not
+    // hashed. NEVER serialized — UserPrivate and the §1.41 export carry only
+    // the totp_enabled boolean. Both columns move together (shape CHECK).
+    totpSecret: text('totp_secret'),
+    totpEnabledAt: timestamptz('totp_enabled_at'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },
@@ -210,6 +218,11 @@ export const users = pgTable(
     anonMessagesCheck: check(
       'users_anon_messages_check',
       sql`${t.anonMessages} IN ('nobody','connections','everyone')`,
+    ),
+    // ---- v0.9 (migration 0011) ----
+    totpShapeCheck: check(
+      'users_totp_shape_check',
+      sql`(${t.totpSecret} IS NULL) = (${t.totpEnabledAt} IS NULL)`,
     ),
     // Expiry sweep + swing-rotation walks (partial: most users have no mood).
     moodExpiryIdx: index('users_mood_expiry_idx')
@@ -2258,5 +2271,108 @@ export const supportTickets = pgTable(
     attachmentIdx: index('support_tickets_attachment_idx')
       .on(t.attachmentId)
       .where(sql`${t.attachmentId} IS NOT NULL`),
+  }),
+);
+
+// ================================ auth pack ==================================
+// v0.9 (migration 0011, API.md §1.70–§1.74, ADR-021, FEATURES #82–#86). New
+// ways to MINT a session — the ADR-001 session layer itself (opaque sha256
+// token, sid cookie, sliding expiry, 4401 revocation) is untouched.
+
+// §1.70 passkeys (WebAuthn, #82). credential_id/public_key are the base64url
+// strings @simplewebauthn/server emits (ADR-021 pins the library). counter is
+// the authenticator signature counter — a verify that comes back LOWER than
+// the stored value is a cloned-credential signal: refuse (401
+// bad_credentials) + ring-log. Cap PASSKEYS_MAX per user is route-enforced
+// under pg_advisory_xact_lock(hashtextextended(user_id::text, 82)) — the
+// TROUBLESHOOTING counter-race rule, never check-then-insert.
+export const passkeyCredentials = pgTable(
+  'passkey_credentials',
+  {
+    id: uuid('id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    credentialId: text('credential_id').notNull(),
+    publicKey: text('public_key').notNull(), // base64url COSE blob — verified against, not a secret
+    counter: bigint('counter', { mode: 'number' }).notNull().default(0),
+    transports: text('transports').array().notNull().default(sql`'{}'::text[]`),
+    deviceType: text('device_type').notNull().default('singleDevice'),
+    backedUp: boolean('backed_up').notNull().default(false),
+    nickname: text('nickname'),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+    lastUsedAt: timestamptz('last_used_at'),
+  },
+  (t) => ({
+    counterCheck: check('passkey_credentials_counter_check', sql`${t.counter} >= 0`),
+    deviceTypeCheck: check(
+      'passkey_credentials_device_type_check',
+      sql`${t.deviceType} IN ('singleDevice','multiDevice')`,
+    ),
+    nicknameCheck: check(
+      'passkey_credentials_nickname_check',
+      sql`char_length(${t.nickname}) BETWEEN 1 AND 32`, // PASSKEY_NICKNAME_MAX_CHARS
+    ),
+    credentialIdx: uniqueIndex('passkey_credentials_credential_idx').on(t.credentialId),
+    userIdx: index('passkey_credentials_user_idx').on(t.userId, t.createdAt),
+  }),
+);
+
+// §1.71 QR / cross-device login links (#83). TWO hashed codes per row:
+// code_hash = sha256 of the 32-byte secret that rides the QR URL and is the
+// laptop's poll/redeem capability; display_code_hash = sha256 of the
+// normalized 6-char human code (approve-only — its small keyspace can never
+// poll or redeem). No user_id at creation (the laptop is anonymous);
+// approved_by is the phone. status is a ONE-WAY pending → approved →
+// consumed walk, each step an atomic UPDATE ... WHERE status='<prev>'
+// RETURNING. user_agent/ip are the LAPTOP's, captured so the phone's approve
+// sheet shows what it is logging in. TTL LOGIN_LINK_TTL_S (120 s); gc deletes
+// rows an hour past expiry.
+export const loginLinks = pgTable(
+  'login_links',
+  {
+    id: uuid('id').primaryKey(),
+    codeHash: text('code_hash').notNull(),
+    displayCodeHash: text('display_code_hash').notNull(),
+    status: text('status').notNull().default('pending'),
+    approvedBy: uuid('approved_by').references(() => users.id, { onDelete: 'set null' }),
+    newSessionId: uuid('new_session_id').references(() => sessions.id, {
+      onDelete: 'set null',
+    }),
+    userAgent: text('user_agent'),
+    ip: inet('ip'),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+    expiresAt: timestamptz('expires_at').notNull(),
+  },
+  (t) => ({
+    statusCheck: check(
+      'login_links_status_check',
+      sql`${t.status} IN ('pending','approved','consumed')`,
+    ),
+    codeIdx: uniqueIndex('login_links_code_idx').on(t.codeHash),
+    displayCodeIdx: uniqueIndex('login_links_display_code_idx').on(t.displayCodeHash),
+    expiresIdx: index('login_links_expires_idx').on(t.expiresAt),
+  }),
+);
+
+// §1.72 recovery codes (#84). RECOVERY_CODES_COUNT (6) per generation, shown
+// ONCE; rows store sha256 of the normalized code (the ADR-001 token
+// doctrine). Regeneration deletes + reinserts in one tx; consumption is the
+// atomic UPDATE ... WHERE used_at IS NULL RETURNING — a code can never be
+// spent twice.
+export const recoveryCodes = pgTable(
+  'recovery_codes',
+  {
+    id: uuid('id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    codeHash: text('code_hash').notNull(),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+    usedAt: timestamptz('used_at'),
+  },
+  (t) => ({
+    codeIdx: uniqueIndex('recovery_codes_code_idx').on(t.codeHash),
+    userIdx: index('recovery_codes_user_idx').on(t.userId),
   }),
 );

@@ -225,6 +225,8 @@ export function userPrivateDto(u: UserRow): UserPrivate {
     avatar_motion: u.avatarMotion as UserPrivate['avatar_motion'],
     area: u.area,
     created_at: iso(u.createdAt),
+    // v0.9 (§1.73): armed-or-not only — the secret itself NEVER serializes.
+    totp_enabled: u.totpEnabledAt !== null,
   };
 }
 
