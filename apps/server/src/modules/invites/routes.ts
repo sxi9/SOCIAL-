@@ -25,6 +25,7 @@ import { badRequest, conflict, forbidden, notFound, rateLimited } from '../../li
 import { fixedWindow } from '../../lib/ratelimit.js';
 import { getObjectStream } from '../../s3.js';
 import { authed, requireAuth } from '../auth/guard.js';
+import { invitesEnabled } from '../admin/service.js';
 import { getParticipant } from '../conversations/routes.js';
 import {
   acceptInvite,
@@ -72,6 +73,8 @@ export async function inviteRoutes(fastify: FastifyInstance): Promise<void> {
     { preHandler: requireAuth, schema: { body: CreateInviteRequestSchema } },
     async (req, reply) => {
       const { user } = authed(req);
+      // v0.5b (§1.41): instance-wide invite switch — mint refuses outright.
+      if (!(await invitesEnabled())) throw forbidden('invites_disabled');
       // §1.13 invites_paused: minting is paused along with accepts.
       if (user.invitesPaused) throw forbidden('invites_paused');
       const rate = await fixedWindow(`invitecreate:${user.id}`, INVITE_CREATE_RATE_PER_HOUR, 3600);

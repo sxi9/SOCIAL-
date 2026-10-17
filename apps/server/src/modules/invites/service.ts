@@ -27,6 +27,7 @@ import {
   type UserRow,
 } from '../../lib/dto.js';
 import { ApiError, badRequest, notFound } from '../../lib/errors.js';
+import { invitesEnabled } from '../admin/service.js';
 import { sendSystemMessage } from '../messages/service.js';
 
 export type InviteRow = typeof schema.invites.$inferSelect;
@@ -205,6 +206,12 @@ export async function acceptInvite(
   joinerId: string,
 ): Promise<{ conversation_id: string }> {
   if (invite.inviterId === joinerId) throw badRequest('invite_own');
+
+  // v0.5b (§1.41): instance-wide invite switch — accepts refuse 403 with NO
+  // use_count claim; register-with-token degrades to invite: null (§1.1,
+  // the caller's catch). GET /:token/public still renders — the join page
+  // explains on accept.
+  if (!(await invitesEnabled())) throw new ApiError(403, 'invites_disabled');
 
   // §1.14: an invite whose inviter is blocked w.r.t. the joiner reads as
   // nonexistent — 404-shaped, both directions, before any use is claimed.

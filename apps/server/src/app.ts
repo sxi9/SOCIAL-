@@ -28,14 +28,24 @@ import { settingsRoutes } from './modules/settings/routes.js';
 import { shareRoutes } from './modules/share/routes.js';
 import { uploadRoutes } from './modules/uploads/routes.js';
 import { userRoutes } from './modules/users/routes.js';
+import { listingRoutes } from './modules/listings/routes.js';
+import { personReviewRoutes } from './modules/listings/reviews.js';
+import { adminRoutes } from './modules/admin/routes.js';
 import { ApiError } from './lib/errors.js';
+import { createRingLogStream } from './lib/logring.js';
 
 const MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 
 export async function buildApp(opts: { logger?: boolean } = {}): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: opts.logger ?? true,
-    trustProxy: true, // behind Caddy
+    // v0.5b (§1.41): the pino destination tees warn+error lines into the admin
+    // log ring (lib/logring.ts) while stdout keeps every line verbatim.
+    logger: (opts.logger ?? true) ? { stream: createRingLogStream() } : false,
+    // Fixer r1: exactly ONE trusted hop (Caddy). `true` trusted every hop and
+    // made req.ip the LEFTMOST (client-forged) X-Forwarded-For entry — which
+    // v0.5b stores as registration_ip/sessions.ip and keys rate limits on.
+    // With 1, req.ip is the entry Caddy appended (the address Caddy saw).
+    trustProxy: 1,
     bodyLimit: 1024 * 1024,
   });
 
@@ -101,6 +111,9 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
   await app.register(puzzleRoutes); // v0.4 §1.27
   await app.register(storyRoutes); // v0.5a §1.34
   await app.register(feedRoutes); // v0.5a §1.36
+  await app.register(listingRoutes); // v0.5b §1.38/§1.39
+  await app.register(personReviewRoutes); // v0.5b §1.40
+  await app.register(adminRoutes); // v0.5b §1.41
   await app.register(inviteRoutes);
   await app.register(uploadRoutes);
   await app.register(previewRoutes);

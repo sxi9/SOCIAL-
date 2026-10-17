@@ -72,6 +72,18 @@ export const users = pgTable(
     // (cardinality CHECK); the ≤ 24-char per-tag bound is Zod/route-enforced.
     // Serialized on the profile page response only — never into participants.
     interests: text('interests').array().notNull().default(sql`'{}'::text[]`),
+    // v0.5b admin & account state (migration 0006, API.md §1.41, ADR-013).
+    // is_admin is set ONLY via the ops CLI (grant-admin / revoke-admin) — no
+    // web path to adminhood. suspended_at: login refused 403 account_suspended,
+    // sessions revoked, sockets closed 4401. banned_at: suspension PLUS public
+    // invisibility (profile/listings/stories/posts hidden at read/fan-out
+    // time — serialization-side, like every §1.13/§1.14 rule).
+    isAdmin: boolean('is_admin').notNull().default(false),
+    suspendedAt: timestamptz('suspended_at'),
+    bannedAt: timestamptz('banned_at'),
+    // Captured at register; NULLED by the nightly retention GC after
+    // IP_RETENTION_DAYS (90) — sessions.ip ages out on the same sweep.
+    registrationIp: inet('registration_ip'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },
@@ -414,6 +426,11 @@ export const attachments = pgTable(
     postId: uuid('post_id').references((): AnyPgColumn => posts.id, {
       onDelete: 'set null',
     }),
+    // v0.5b (migration 0006, §1.38): bound to a room listing — same pattern
+    // (listings.details.attachment_ids keeps the author's ordering).
+    listingId: uuid('listing_id').references((): AnyPgColumn => listings.id, {
+      onDelete: 'set null',
+    }),
     kind: text('kind').notNull(),
     originalKey: text('original_key').notNull(),
     thumbKey: text('thumb_key'),
@@ -454,7 +471,7 @@ export const attachments = pgTable(
     orphanIdx: index('attachments_orphan_idx')
       .on(t.createdAt)
       .where(
-        sql`${t.messageId} IS NULL AND ${t.shareImportId} IS NULL AND ${t.scheduledMessageId} IS NULL AND ${t.postId} IS NULL`,
+        sql`${t.messageId} IS NULL AND ${t.shareImportId} IS NULL AND ${t.scheduledMessageId} IS NULL AND ${t.postId} IS NULL AND ${t.listingId} IS NULL`,
       ),
   }),
 );
@@ -732,11 +749,25 @@ export const reports = pgTable(
     reason: text('reason').notNull().default(''),
     status: text('status').notNull().default('open'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
+    // v0.5b (migration 0006, API.md §1.41): the admin queue consumes this
+    // table at last (FEATURES #54). Closing is an admin action — who, when,
+    // optional note — and is always ring-logged too.
+    closedBy: uuid('closed_by').references(() => users.id, { onDelete: 'set null' }),
+    closedAt: timestamptz('closed_at'),
+    closeNote: text('close_note').notNull().default(''),
   },
   (t) => ({
     kindCheck: check('reports_kind_check', sql`${t.kind} IN ('user','message','beacon')`),
     reasonCheck: check('reports_reason_check', sql`char_length(${t.reason}) <= 500`),
     statusCheck: check('reports_status_check', sql`${t.status} IN ('open','closed')`),
+    closeNoteCheck: check(
+      'reports_close_note_check',
+      sql`char_length(${t.closeNote}) <= 500`,
+    ),
+    closedShapeCheck: check(
+      'reports_closed_shape_check',
+      sql`(${t.status} = 'closed') = (${t.closedAt} IS NOT NULL)`,
+    ),
     targetCheck: check(
       'reports_target_check',
       sql`(${t.kind} = 'user' AND ${t.targetUserId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL) OR (${t.kind} = 'message' AND ${t.targetConversationId} IS NOT NULL AND ${t.targetSeq} IS NOT NULL AND ${t.targetUserId} IS NULL AND ${t.targetBeaconId} IS NULL) OR (${t.kind} = 'beacon' AND ${t.targetBeaconId} IS NOT NULL AND ${t.targetUserId} IS NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL)`,
@@ -1130,3 +1161,160 @@ export const profileMedia = pgTable(
     attachmentIdx: index('profile_media_attachment_idx').on(t.attachmentId),
   }),
 );
+
+// ================================ listings ===================================
+// v0.5b (migration 0006, API.md §1.38, ADR-012, FEATURES #39–#43). ONE table,
+// four card kinds; per-kind payloads live in `details` jsonb validated by the
+// shared Zod discriminated union (the house metadata pattern). `area` is a
+// citext SNAPSHOT of the author's users.area at mint (beacons.area pattern);
+// visibility = same area OR is_public, minus §1.14 blocks both ways, resolved
+// at read time. price_text is DISPLAY TEXT ONLY — no payment machinery exists
+// (FEATURES #45). Expiry: gig/room = created_at + LISTING_TTL_S; ride = the
+// details departs_at copied here at write time (sweep/reads never parse
+// jsonb); place_review = NULL (evergreen). The board is PULL-BASED: no WS
+// events, no push (PSYCHOLOGY design rules 2/4) — reads also filter
+// `expires_at > now()` live, so the hourly `timers` sweep is bookkeeping.
+// conversation_id = the gig team-up group, claimed once via the guarded
+// UPDATE ... WHERE conversation_id IS NULL (the beacon-spark pattern).
+
+export const listings = pgTable(
+  'listings',
+  {
+    id: uuid('id').primaryKey(),
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull().default(''),
+    priceText: text('price_text'),
+    area: citext('area').notNull(),
+    isPublic: boolean('is_public').notNull().default(false),
+    details: jsonb('details').notNull().default({}),
+    status: text('status').notNull().default('active'),
+    conversationId: uuid('conversation_id').references(() => conversations.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+    expiresAt: timestamptz('expires_at'),
+  },
+  (t) => ({
+    kindCheck: check(
+      'listings_kind_check',
+      sql`${t.kind} IN ('gig','ride','room','place_review')`,
+    ),
+    titleCheck: check('listings_title_check', sql`char_length(${t.title}) BETWEEN 1 AND 80`),
+    bodyCheck: check('listings_body_check', sql`char_length(${t.body}) <= 2000`),
+    priceTextCheck: check('listings_price_text_check', sql`char_length(${t.priceText}) <= 40`),
+    areaCheck: check('listings_area_check', sql`char_length(${t.area}) <= 64`),
+    detailsCheck: check('listings_details_check', sql`jsonb_typeof(${t.details}) = 'object'`),
+    statusCheck: check(
+      'listings_status_check',
+      sql`${t.status} IN ('active','closed','expired')`,
+    ),
+    expiryShapeCheck: check(
+      'listings_expiry_shape_check',
+      sql`(${t.kind} = 'place_review') = (${t.expiresAt} IS NULL)`,
+    ),
+    boardIdx: index('listings_board_idx')
+      .on(t.area, sql`${t.createdAt} DESC`)
+      .where(sql`${t.status} = 'active'`),
+    publicIdx: index('listings_public_idx')
+      .on(sql`${t.createdAt} DESC`)
+      .where(sql`${t.status} = 'active' AND ${t.isPublic}`),
+    byAuthorIdx: index('listings_by_author_idx').on(t.authorId, sql`${t.createdAt} DESC`),
+    expiryIdx: index('listings_expiry_idx')
+      .on(t.expiresAt)
+      .where(sql`${t.status} = 'active' AND ${t.expiresAt} IS NOT NULL`),
+  }),
+);
+
+// One row per (listing, contacter) — written by POST /api/listings/:id/contact
+// in the same transaction as the DM create/dedupe + 'listing_contact' system
+// message. Load-bearing three ways: contact idempotency (re-POST returns the
+// DM, no second system message), the author's team-up pick pool (§1.39), and
+// THE GATE for §1.40 person reviews. Rows cascade with the listing; reviews
+// already written survive (person_reviews snapshots what it needs).
+
+export const listingContacts = pgTable(
+  'listing_contacts',
+  {
+    listingId: uuid('listing_id')
+      .notNull()
+      .references(() => listings.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.listingId, t.userId] }),
+    byUserIdx: index('listing_contacts_by_user_idx').on(t.userId),
+  }),
+);
+
+// ============================ person reviews =================================
+// v0.5b (migration 0006, API.md §1.40, ADR-012, FEATURES #44). Marketplace
+// trust: a review exists ONLY between the two parties of a listing contact,
+// each reviewing the OTHER (route-enforced; blocked pairs 404-shaped, §1.14).
+// listing_id is SET NULL on listing deletion with listing_kind SNAPSHOTTED,
+// because trust data must survive its subject matter (the reports precedent)
+// — a cascading FK would let an author purge bad reviews by deleting the
+// listing. The once-per-(listing, reviewer) guard is a partial unique index:
+// it binds at creation time, when the listing necessarily still exists.
+// Star averages are SAFETY INFORMATION, not social approval (ADR-012 argues
+// the distinction vs PSYCHOLOGY rule 3): avg hidden under TRUST_AVG_MIN_
+// REVIEWS, and nothing anywhere ranks or sorts people by rating.
+
+export const personReviews = pgTable(
+  'person_reviews',
+  {
+    id: uuid('id').primaryKey(),
+    listingId: uuid('listing_id').references(() => listings.id, { onDelete: 'set null' }),
+    listingKind: text('listing_kind').notNull(),
+    reviewerId: uuid('reviewer_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    subjectId: uuid('subject_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    rating: integer('rating').notNull(),
+    body: text('body').notNull().default(''),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    listingKindCheck: check(
+      'person_reviews_listing_kind_check',
+      sql`${t.listingKind} IN ('gig','ride','room','place_review')`,
+    ),
+    ratingCheck: check('person_reviews_rating_check', sql`${t.rating} BETWEEN 1 AND 5`),
+    bodyCheck: check('person_reviews_body_check', sql`char_length(${t.body}) <= 500`),
+    notSelfCheck: check(
+      'person_reviews_not_self_check',
+      sql`${t.reviewerId} <> ${t.subjectId}`,
+    ),
+    onceIdx: uniqueIndex('person_reviews_once_idx')
+      .on(t.listingId, t.reviewerId)
+      .where(sql`${t.listingId} IS NOT NULL`),
+    bySubjectIdx: index('person_reviews_by_subject_idx').on(
+      t.subjectId,
+      sql`${t.createdAt} DESC`,
+    ),
+  }),
+);
+
+// ============================ instance settings ==============================
+// v0.5b (migration 0006, API.md §1.41, ADR-013). Operator-tunable instance
+// state: key PK + jsonb value — adding a setting is an INSERT, not a
+// migration. One key today: invites_enabled (boolean, seeded true) — enforced
+// at invite MINT and ACCEPT (403 invites_disabled); register-with-token
+// degrades to invite: null per §1.1, like every bad invite.
+
+export const instanceSettings = pgTable('instance_settings', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').notNull(),
+  updatedAt: timestamptz('updated_at').notNull().defaultNow(),
+});

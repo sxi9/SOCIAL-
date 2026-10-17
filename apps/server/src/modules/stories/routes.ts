@@ -100,6 +100,7 @@ export async function storyRoutes(fastify: FastifyInstance): Promise<void> {
             isNull(schema.attachments.messageId),
             isNull(schema.attachments.scheduledMessageId),
             isNull(schema.attachments.postId),
+            isNull(schema.attachments.listingId),
           ),
         )
         .limit(1);

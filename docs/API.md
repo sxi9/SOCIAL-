@@ -237,6 +237,80 @@ ProfileEntry = { id, kind: 'work'|'skill', title: string(≤80), detail: string(
 Profile = { interests: string[](≤10, each ≤24),
   entries: ProfileEntry[],        // order_idx ASC, ≤ 12
   media: Attachment[] }           // the 3-GIF strip, order_idx ASC, ≤ 3
+
+// ---- v0.5b (§1.38–§1.41; ADR-012/ADR-013) ----
+
+// v0.5b changes to existing DTOs:
+//  Message.metadata += { listing_ref?: ListingRef }   // §1.39 — SERVER-written
+//    snapshot {listing_id, kind, title} on the 'listing_contact' DM context
+//    message and the 'team_up' group kickoff (the forwarded_from pattern:
+//    keeps rendering after the listing is gone).
+//  GET /api/users/:username response += { trust: Trust }  // §1.40; Zod default
+//    {review_count: 0, avg_rating: null, recent: []} keeps old payloads clean.
+//  NO new WS events and NO push anywhere in v0.5b outside the admin 4401
+//  closes — the board is pull-based by design (§1.38).
+
+ListingKind = 'gig'|'ride'|'room'|'place_review'
+
+// Per-kind details payloads (jsonb, Zod discriminated union — shape authority
+// is packages/shared; the DB pins only jsonb_typeof):
+GigDetails         = { direction: 'offering'|'seeking', tags: string[](≤5, each ≤24) }
+RideDetails        = { from_text: string(≤80), to_text: string(≤80),
+                       departs_at, seats: 1..8 }
+RoomDetails        = { monthly_price_text: string(≤40)|null,
+                       available_from: 'YYYY-MM-DD'|null,
+                       attachment_ids: uuid[](≤6) }   // §1.6 uploads, kind image
+PlaceReviewDetails = { place_name: string(≤80), rating: 1..5 }  // a PLACE, not a person
+
+Listing = { id, author: UserLite, kind: ListingKind, title: string(≤80),
+  body: string(≤2000), price_text: string(≤40)|null,  // DISPLAY TEXT ONLY — no payments exist
+  area: string,                   // author-area snapshot at mint (citext equality)
+  is_public: boolean,             // false = my area only
+  details: <per kind, above>,
+  status: 'active'|'closed'|'expired',
+  photos: Attachment[],           // room listings: resolved from details.attachment_ids; else []
+  my_contacted: boolean,          // viewer-specific; false for the author
+  conversation_id: string|null,   // §1.39 team-up group — author + picked members ONLY, else null
+  created_at, expires_at: string|null }  // gig/room +30d; ride = departs_at; place_review null
+
+// §1.40 marketplace trust. listing_kind is a SNAPSHOT (reviews survive the
+// listing); the listing itself is deliberately not resolved.
+PersonReview = { id, reviewer: UserLite, rating: 1..5, body: string(≤500),
+  listing_kind: ListingKind, created_at }
+
+Trust = { review_count: number,
+  avg_rating: number|null,        // 1 decimal; null under TRUST_AVG_MIN_REVIEWS (3)
+  recent: PersonReview[] }        // newest ≤ 5, minus blocked-pair reviewers
+
+// ---- §1.41 admin-only DTOs (never served to non-admins; METADATA ONLY —
+// no private message bodies exist in any admin payload, by contract) ----
+
+AdminUserRow = { id, username, display_name, created_at,
+  last_seen_bucket: 'today'|'this_week'|'this_month'|'older'|'never',
+  registration_ip: string|null,   // null once the retention GC aged it out
+  last_session: { ip: string|null, user_agent: string|null, last_seen_at }|null,
+  session_count: number, storage_bytes: number,
+  is_admin: boolean, suspended: boolean, banned: boolean }
+
+AdminReport = { id, kind: 'user'|'message'|'beacon', reporter: UserLite|null,
+  reason, status: 'open'|'closed', created_at,
+  closed_at: string|null, closed_by: UserLite|null, close_note: string,
+  // exactly one non-null, matching kind (null if the target was deleted since):
+  target_user: UserLite|null,
+  target_message: { conversation_id, seq, sender: UserLite|null,
+                    type: MessageType, created_at, deleted: boolean }|null,  // NO body, ever
+  target_beacon: { id, vibe, status, creator: UserLite|null }|null }
+
+AdminMetrics = { registrations_per_day: DayCount[], active_users_per_day: DayCount[],
+  messages_per_day: DayCount[],   // each 30 days (ADMIN_METRICS_WINDOW_DAYS)
+  users_total, open_beacons, active_listings, open_reports, storage_total_bytes }
+DayCount = { date: 'YYYY-MM-DD', count: number }
+
+AdminLogEntry = { ts, level: 'warn'|'error'|'admin', msg,
+  actor: {id, username}|null,     // non-null on level 'admin' (the acting admin)
+  data?: object }                 // structured remainder of the log line
+
+InstanceSettings = { invites_enabled: boolean }
 ```
 
 Avatar URLs are content-hashed media-proxy URLs (`/api/media/:key`), immutable-cacheable;
@@ -1147,6 +1221,152 @@ tapping one is a future discovery seam, not a link in v0.5a. Work/skill
 entries render as a two-section list in `order_idx` order. No endorsement
 counts, no connection counts, no profile view counters — a profile is a page
 about a person, not a scoreboard (PSYCHOLOGY rule 3).
+
+### 1.38 Local board — listings (v0.5b — ADR-012, FEATURES #39–#43, #45)
+
+ONE listing system, four card kinds (`gig` / `ride` / `room` /
+`place_review`), all area-tagged, all with expiry, all answered with "Message
+me" (§1.39). Per-kind payloads live in the `details` jsonb column validated by
+the shared Zod discriminated union (§0) — the house metadata pattern. Plan
+beacons join the board's "Local" tab **client-side** (FEATURES #43): they keep
+their own table, API and FoMO rules; nothing here duplicates them.
+
+**Hard product rules (binding):**
+
+- **No payments.** `price_text` / `monthly_price_text` are display strings —
+  never parsed, never summed, never charged; money settles outside the app.
+  No payment machinery of any kind exists (FEATURES #45).
+- **Safety note.** gig/ride/room detail views render `LISTING_SAFETY_NOTE`
+  verbatim (`LISTING_SAFETY_NOTE_KINDS`): meet in public, verify before you
+  pay, the app does not vet listings. It rides the card where the money talk
+  happens, not a settings page.
+- **The board is PULL-BASED — no WS events, no push, deliberately.** A listing
+  is a standing offer, not an interruption: pushing "new gig near you" is an
+  app-pushed nudge (PSYCHOLOGY design rule 4, user-pulled not app-pushed) and
+  advertising cards a viewer may not want manufactures the ambient
+  FoMO/obligation rule 2 exists to kill. Clients see new cards when **they**
+  open the board. (Contrast: a beacon pushes because it is a live, expiring
+  invitation addressed to people who can join.)
+
+**Visibility (resolved at read time, like beacon audiences):** a listing is
+visible to viewer V iff `listing.area = V.area` (citext equality; `area` is
+the author's snapshot at mint) **or** `is_public`, always **minus §1.14
+blocks both ways** (author⊥viewer blocked ⇒ the listing does not exist for V,
+and V's listings do not exist for the author). Banned authors' listings are
+hidden everywhere (§1.41). Direct `GET` of an invisible listing →
+`404 listing_not_found` (blocks confirm nothing).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/listings` | `{kind, title ≤80, body? ≤2000, price_text? ≤40, area?, is_public? (default false), details: <per kind>}` — `area` defaults to my `users.area`; neither → `400 area_required` (the §1.15 rule). Room `details.attachment_ids` (≤6): mine, kind `image`, unbound → else `400 bad_attachment`; they bind via `attachments.listing_id` (orphan-GC shield, the `post_id` pattern). Ride `details.departs_at` must be in the future → `400 departs_at_past`. | `201 {listing}`. `expires_at`: gig/room `created_at + 30d` (`LISTING_TTL_S`); ride = `departs_at` (copied to the column at write time — sweeps and board reads never parse jsonb); place_review `null`. `409 listing_limit` past **10 simultaneously active** per author (`LISTING_ACTIVE_MAX_PER_USER`). Rate **10/hour/user** (`LISTING_CREATE_RATE_PER_HOUR`) → `429`. No fan-out. |
+| `GET /api/listings?kind=&area=&q=&cursor=&limit=` | `area` defaults to **mine** (no `area` param and no `users.area` → public listings only); a foreign `area` filter shows only that area's `is_public` cards — the visibility rule binds whatever the filter says. `q` = ILIKE substring over `title` + `details->>'place_name'` (≤80 chars, `LISTING_SEARCH_MAX_CHARS`). | `200 {listings, next_cursor}` — `active` and unexpired only (`expires_at > now()` filtered live), `created_at DESC`, keyset cursor. Blocked pairs excluded both ways. |
+| `GET /api/listings/mine` | — | `200 {listings}` — my listings, every status, `created_at DESC` (the management list; capped at 100, no cursor). |
+| `GET /api/listings/:id` | — | `200 {listing}`. `404 listing_not_found` (unknown, not visible, or blocked — identical). Closed/expired listings stay readable by their author and by anyone who contacted them (the DM context must stay explicable); invisible to everyone else. |
+| `POST /api/listings/:id/close` | — (author only) | `200 {listing}` status `closed` — idempotent re-close `200`. `403 forbidden` (not author). Cards retire silently from the board. |
+| `DELETE /api/listings/:id` | — (author only) | `204` — hard delete (contacts cascade; room-photo attachments unbind to orphan GC, objects refcount-guarded §1.31). **Person reviews written through this listing survive** (`listing_id` goes null; `listing_kind` snapshot keeps them rendering — §1.40). `404 not_found` if not mine. |
+
+**Expiry sweep (worker queue `timers`, repeatable every
+`LISTING_SWEEP_INTERVAL_S` = 1 h):** `UPDATE listings SET status='expired'
+WHERE status='active' AND expires_at <= now()` — bookkeeping only, since reads
+filter `expires_at` live; no fan-out, no notification. Expired and closed
+cards simply stop appearing (nothing "expired on you" is ever pushed —
+unsparked-beacon semantics, §1.15).
+
+### 1.39 Message-the-author & gig team-up (v0.5b — ADR-012)
+
+**Contact — the board's only call to action.** `POST /api/listings/:id/contact`
+reuses the §1.4 DM path verbatim (`dm_key` create-or-dedupe) and drops **one**
+`system` message in the DM as context: `metadata.system = {event:
+'listing_contact', actor_id: <contacter>}`, `metadata.listing_ref =
+{listing_id, kind, title}` (a **snapshot**, the `forwarded_from` pattern —
+the message keeps rendering after the listing closes, expires or is deleted),
+body `asked about: <title>`. The same transaction records the
+`listing_contacts (listing_id, user_id, conversation_id)` row — the
+idempotency key, the author's team-up pick pool, and **the §1.40 review gate**.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/listings/:id/contact` | — | `201 {conversation_id}` (`200` idempotent re-contact: the existing DM, **no** second system message, no new row). `400 listing_own` (my own listing), `404 listing_not_found` (unknown/invisible/blocked — identical; a frozen DM between blocked parties never gets this far because the listing is already invisible), `410 listing_closed` (closed/expired). Rate **20/hour/user** (`LISTING_CONTACT_RATE_PER_HOUR`). Fan-out: ordinary `conv.new`/`msg.new` of the DM machinery — nothing board-specific. |
+| `GET /api/listings/:id/contacts` | — (**author only**) | `200 {contacts: UserLite[]}` — everyone who contacted, username order (the team-up picker read). `404 not_found` if not mine. Contacters blocked w.r.t. the author since contacting are omitted. |
+| `POST /api/listings/:id/team-up` | `{user_ids: uuid[1..7]}` (`TEAM_UP_MAX_PICKS`) — **author only, kind `gig` only** | `201 {conversation}` — a `group` conversation named after the listing title, creator `admin`, picked members `member` with `join_seq = 0` (founding members see the whole plan — the §1.15 spark semantics), kickoff `system` message `metadata.system = {event:'team_up', actor_id}` + `metadata.listing_ref`. `400 not_a_gig`, `400 bad_team_pick` (any id not in the contact pool), `403 group_add_denied` (any target's §1.13 `group_add_policy` or a §1.14 block — byte-identical, confirms nothing; all-or-nothing like §1.4), `409 team_up_exists` (one team-up per listing — claimed via the guarded `UPDATE listings SET conversation_id=$c WHERE id=$1 AND conversation_id IS NULL`, the invite/spark pattern). Fan-out: the §1.4 group-create machinery verbatim (`conv.new` to members, push per §2.9). |
+
+`Listing.conversation_id` serializes **only** to the author and picked members
+(everyone else always reads `null` — the §1.15 sparked-beacon rule: never show
+people a room they are not in).
+
+### 1.40 Person reviews — marketplace trust (v0.5b — ADR-012, FEATURES #44)
+
+Trust stars for **marketplace transactions**: after a listing contact, each
+party may review **the other party, once per listing**. This is the one place
+in the product a number attaches to a person, and ADR-012 documents why it is
+not a PSYCHOLOGY rule-3 violation: the average is **safety information for a
+stranger deciding whether to get in your car** — the same class of signal as
+the §1.14 safety bundle — not social approval. The structural guardrails:
+reviews exist only behind a real contact (no drive-by rating), the average
+hides below 3 reviews (`TRUST_AVG_MIN_REVIEWS` — one angry star must not read
+as a verdict), it renders **only on the profile trust panel**, and nothing
+anywhere ranks, sorts, compares or leaderboards people by rating.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/listings/:id/reviews` | `{subject_id?, rating: 1..5, body? ≤500}` — `subject_id` **required when I am the listing's author** (names which contacter I'm reviewing, must be in the contact pool); otherwise it must be omitted (or equal the author) — the subject is the author → else `400 bad_subject` | `201 {review}`. **Gate:** a `listing_contacts` row must tie me and the subject to this listing — `{reviewer, subject} = {author, contacter}`, one reviewing the OTHER → else `403 review_not_eligible`. `409 review_exists` (once per `(listing, reviewer)` — DB unique). `404 listing_not_found` (unknown/blocked — §1.14 shape; **blocked pairs cannot review**, both directions). Closed/expired listings stay reviewable (transactions finish after cards retire); a deleted listing does not (the gate row is gone). Rate **10/hour/user** (`PERSON_REVIEW_RATE_PER_HOUR`). No fan-out, no push — the subject discovers reviews on their own profile (no approval/disapproval pings, PSYCHOLOGY rule 4). |
+| `GET /api/users/:username/reviews?cursor=&limit=` | — | `200 {reviews: PersonReview[], next_cursor}` — reviews **about** that user, `created_at DESC`. `404 not_found` for blocked pairs, both directions (the §1.14 profile rule). Rows by reviewers blocked w.r.t. the **viewer** are omitted from the list (count/avg stay computed over all — serialization-time filtering, §2.11 doctrine). |
+
+**Profile integration:** `GET /api/users/:username` (§1.37) gains a `trust`
+sibling: `{review_count, avg_rating, recent}` — `avg_rating` rounded to 1
+decimal (`TRUST_AVG_DECIMALS`), null under 3 reviews; `recent` = the newest
+≤ 5 (`TRUST_RECENT_REVIEWS_MAX`). `listing_kind` on each review is a snapshot —
+reviews survive their listing (ADR-012). The trust panel is part of the
+profile page; the §1.14 blocked-pair 404 covers it wholesale.
+
+### 1.41 Admin (v0.5b — ADR-013, FEATURES #54)
+
+The operator surface. **Adminhood is CLI-only**: `docker compose exec api node
+dist/cli.js grant-admin <username>` / `revoke-admin <username>` — there is no
+web path to promote anyone; shell access to the box is the root of trust
+(ADR-013). All `/api/admin/*` routes require `is_admin` **and** a
+non-suspended, non-banned account; for everyone else they answer
+`404 not_found` — the admin surface does not exist for non-admins (the §1.14
+shape). **Every admin action appends to the log ring.** Admin mutations
+targeting an admin account (including yourself) → `400 bad_admin_target` —
+demote via CLI first.
+
+**Binding boundary: admin routes NEVER expose private message content.** A
+reported message serializes who/where/when/what-kind — never its body; the
+reporter's own `reason` text is where quoted content lives (it is the
+reporter's submission, not a counterparty's private words). The user export
+excludes message bodies for the same reason (see below; ADR-013).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/admin/users?q=&cursor=&limit=` | `q` = username/display-name prefix ILIKE | `200 {users: AdminUserRow[], next_cursor}` — `created_at DESC`. `last_seen_bucket` is coarse (`LAST_SEEN_BUCKETS`) — the operator needs liveness, not a surveillance feed; `registration_ip`/`last_session.ip` go null as the retention GC ages them out; `storage_bytes` = sum of the user's uploads. |
+| `POST /api/admin/users/:id/suspend` | `{note? ≤500}` | `200 {user: AdminUserRow}` — sets `suspended_at`, **revokes all sessions** (rows deleted) and **closes all live sockets `4401`**; login thereafter → `403 account_suspended`. Idempotent re-suspend `200`. `400 bad_admin_target`. |
+| `POST /api/admin/users/:id/unsuspend` | `{note? ≤500}` | `200 {user}` — clears `suspended_at`. Idempotent. |
+| `POST /api/admin/users/:id/ban` | `{note? ≤500}` | `200 {user}` — everything suspend does (sessions revoked, sockets `4401`, login → `403 account_banned`), **plus public invisibility**: profile `404`, listings/stories/posts hidden, excluded from search, beacon audiences and story/post/feed reads — enforced at serialization/fan-out time like every §1.13/§1.14 rule (nothing stored is rewritten; unban restores instantly). Conversation history and membership survive (messages are group function — the §1.14 principle; the ban stops the account, not the archive). |
+| `POST /api/admin/users/:id/unban` | `{note? ≤500}` | `200 {user}` — clears `banned_at` (and the invisibility with it). |
+| `GET /api/admin/reports?status=&cursor=&limit=` | `status` `open`\|`closed`, omitted = both | `200 {reports: AdminReport[], next_cursor}` — open first, then `created_at DESC`; each row joins reporter + the **metadata-only** target preview (§0 `AdminReport`). Reports outlive their targets (v0.3 design) — previews go null where the target is gone. |
+| `POST /api/admin/reports/:id/close` | `{note? ≤500}` | `200 {report}` — sets `closed_at`/`closed_by`/`close_note`. `409 report_closed` on re-close. |
+| `GET /api/admin/metrics` | — | `200 {metrics: AdminMetrics}` — 30-day series (`ADMIN_METRICS_WINDOW_DAYS`): registrations/day, **DAU proxy** (distinct users whose sessions were seen that day — sliding sessions make this approximate; documented honesty, not precision), messages/day; plus totals: users, open beacons, active listings, open reports, storage bytes. |
+| `GET /api/admin/logs?offset=&limit=` | — | `200 {entries: AdminLogEntry[], next_offset}` — the **log ring**: pino `warn`+`error` entries from api and worker, plus every admin action (`level: 'admin'`, always written), LPUSHed to a capped Redis list (`LPUSH` + `LTRIM`, `LOG_RING_MAX` = 1000). Newest first, offset-paged (a ring has no stable cursors); `next_offset: null` = whole ring read. Telemetry, not product data: it lives in Redis on purpose (ADR-013). |
+| `GET /api/admin/settings` | — | `200 {settings: InstanceSettings}` |
+| `PATCH /api/admin/settings` | `{invites_enabled?}` | `200 {settings}`. `invites_enabled: false` → `POST /api/invites` and `POST /api/invites/:token/accept` answer `403 invites_disabled` (no `use_count` claim); register-with-token degrades to `invite: null` (§1.1); `GET /:token/public` still renders (the join page explains on accept). Ring-logged. |
+| `GET /api/admin/users/:id/export` | — | `200 {export: AdminUserExport}` — JSON of the user's **own rows**: the users row (profile + settings columns), sessions **metadata**, listings, posts, reviews received. Secrets stripped (`password_hash`, session `token_hash`, push keys). **NOT their messages**: a member's conversations contain their counterparties' words, and bulk operator access to those is exactly what this product promises not to build — the export is operator tooling (backups, disputes, deletion requests), not a wiretap (ADR-013 documents the line; a user-initiated takeout of their own message history is future user-facing scope, not an admin surface). |
+
+**Sessions & IP capture.** `sessions.ip` + `sessions.user_agent` (columns
+since v0.1) are captured at login and register; registration additionally
+stamps `users.registration_ip`. **Retention:** the nightly GC job (queue `gc`)
+nulls `users.registration_ip` and `sessions.ip` older than
+`IP_RETENTION_DAYS` (90, counted from the row's `created_at`) — the window is
+documented in the instance's privacy note (FEATURES #54). The admin UI shows
+whatever has not yet aged out, never more.
+
+**Suspension semantics, spelled out:** suspend/ban take effect immediately —
+session rows deleted (the §1.1 revocation machinery: live sockets close
+`4401`), subsequent logins `403 account_suspended` / `403 account_banned`,
+password reset via CLI does not lift either flag. Suspended (not banned)
+users remain **publicly visible** (profiles, old listings) — suspension stops
+the account, not its record; ban hides the public surfaces too (§0 table
+above). Neither deletes anything.
 
 ---
 

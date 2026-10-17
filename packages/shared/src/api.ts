@@ -10,6 +10,27 @@ import {
   FORWARD_MAX_TARGETS,
   INTEREST_TAG_MAX_CHARS,
   INTERESTS_MAX,
+  ADMIN_LOG_LEVELS,
+  ADMIN_NOTE_MAX_CHARS,
+  LAST_SEEN_BUCKETS,
+  LISTING_BODY_MAX_CHARS,
+  LISTING_GIG_DIRECTIONS,
+  LISTING_GIG_TAG_MAX_CHARS,
+  LISTING_GIG_TAGS_MAX,
+  LISTING_KINDS,
+  LISTING_PLACE_NAME_MAX_CHARS,
+  LISTING_PRICE_TEXT_MAX_CHARS,
+  LISTING_RATING_MAX,
+  LISTING_RATING_MIN,
+  LISTING_RIDE_LEG_MAX_CHARS,
+  LISTING_RIDE_SEATS_MAX,
+  LISTING_RIDE_SEATS_MIN,
+  LISTING_ROOM_PHOTOS_MAX,
+  LISTING_SEARCH_MAX_CHARS,
+  LISTING_TITLE_MAX_CHARS,
+  PERSON_REVIEW_BODY_MAX_CHARS,
+  TEAM_UP_MAX_PICKS,
+  TRUST_RECENT_REVIEWS_MAX,
   POST_BODY_MAX_CHARS,
   POST_COMMENT_MAX_CHARS,
   POST_MAX_ATTACHMENTS,
@@ -290,6 +311,23 @@ export const ForwardedFromSchema = z.object({
 });
 export type ForwardedFrom = z.infer<typeof ForwardedFromSchema>;
 
+// v0.5b (§1.38): the four local-board card kinds. Defined up here (ahead of
+// the §1.38 block) because the listing_ref metadata rider below needs it.
+export const ListingKindSchema = z.enum(LISTING_KINDS);
+export type ListingKind = z.infer<typeof ListingKindSchema>;
+
+// v0.5b (§1.39): rides the 'listing_contact' context system message in the DM
+// and the 'team_up' kickoff system message in the project group. A SNAPSHOT of
+// the listing's identity at contact/team-up time (the forwarded_from pattern):
+// not an FK — the message must keep rendering after the listing is closed,
+// expired or deleted.
+export const ListingRefSchema = z.object({
+  listing_id: UuidSchema,
+  kind: ListingKindSchema,
+  title: z.string().min(1).max(LISTING_TITLE_MAX_CHARS),
+});
+export type ListingRef = z.infer<typeof ListingRefSchema>;
+
 export const MessageMetadataSchema = z.object({
   link_preview: LinkPreviewSchema.optional(),
   system: SystemEventMetadataSchema.optional(),
@@ -321,6 +359,10 @@ export const MessageMetadataSchema = z.object({
   // §1.31: present on forwarded messages; preserved verbatim when a forward is
   // forwarded again (attribution sticks to the original author).
   forwarded_from: ForwardedFromSchema.optional(),
+  // ---- v0.5b (§1.39) ----
+  // SERVER-written listing snapshot on the 'listing_contact' DM context message
+  // and the 'team_up' group kickoff message (client-sent values are ignored).
+  listing_ref: ListingRefSchema.optional(),
 });
 export type MessageMetadata = z.infer<typeof MessageMetadataSchema>;
 
@@ -1595,10 +1637,45 @@ export type Profile = z.infer<typeof ProfileSchema>;
 export const ProfileResponseSchema = z.object({ profile: ProfileSchema });
 export type ProfileResponse = z.infer<typeof ProfileResponseSchema>;
 
-// GET /api/users/:username (v0.5a shape — additive: `profile` joins `user`).
+// ---------------------------------------------------------------------------
+// v0.5b (§1.40) — marketplace trust, defined here because the profile response
+// below embeds it. A person review exists only after a real §1.39 listing
+// contact between the two parties; star averages are SAFETY INFORMATION about
+// transacting with a stranger, not social approval (the distinction vs
+// PSYCHOLOGY design rule 3 is argued in ADR-012). Nothing anywhere ranks or
+// sorts people by rating.
+// ---------------------------------------------------------------------------
+
+// One review, as the subject's profile shows it. listing_kind is a SNAPSHOT
+// (the review survives deletion of the listing that brokered it); the full
+// listing is deliberately not resolved — the review is about the person.
+export const PersonReviewSchema = z.object({
+  id: UuidSchema,
+  reviewer: UserLiteSchema,
+  rating: z.number().int().min(LISTING_RATING_MIN).max(LISTING_RATING_MAX),
+  body: z.string().max(PERSON_REVIEW_BODY_MAX_CHARS),
+  listing_kind: ListingKindSchema,
+  created_at: IsoDateTimeSchema,
+});
+export type PersonReview = z.infer<typeof PersonReviewSchema>;
+
+// avg_rating: rounded to TRUST_AVG_DECIMALS, and null while review_count <
+// TRUST_AVG_MIN_REVIEWS (a one-review average reads like a verdict). recent =
+// newest TRUST_RECENT_REVIEWS_MAX, minus reviewers blocked w.r.t. the viewer
+// (count/avg stay computed over all reviews — §1.14 filters serialization).
+export const TrustSchema = z.object({
+  review_count: z.number().int().nonnegative(),
+  avg_rating: z.number().min(LISTING_RATING_MIN).max(LISTING_RATING_MAX).nullable(),
+  recent: z.array(PersonReviewSchema).max(TRUST_RECENT_REVIEWS_MAX),
+});
+export type Trust = z.infer<typeof TrustSchema>;
+
+// GET /api/users/:username (v0.5a shape — additive: `profile` joins `user`;
+// v0.5b adds `trust`, defaulted so pre-v0.5b payloads parse clean).
 export const UserProfileResponseSchema = z.object({
   user: UserPublicSchema,
   profile: ProfileSchema,
+  trust: TrustSchema.default({ review_count: 0, avg_rating: null, recent: [] }),
 });
 export type UserProfileResponse = z.infer<typeof UserProfileResponseSchema>;
 
@@ -1648,3 +1725,407 @@ export const UpdateParticipantRoleRequestSchema = z.object({
   role: z.enum(['member', 'admin']),
 });
 export type UpdateParticipantRoleRequest = z.infer<typeof UpdateParticipantRoleRequestSchema>;
+
+// ===========================================================================
+// v0.5b — Local board + admin (API.md §1.38–§1.41, ADR-012/ADR-013)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// §1.38 Listings. ONE table, four card kinds; per-kind payloads live in a
+// jsonb `details` column validated by the discriminated schemas below (the
+// house metadata pattern — Zod is the shape authority, the DB pins only
+// jsonb_typeof). The board is PULL-BASED: no WS events, no push, ever —
+// a listing is an offer, not an interruption (PSYCHOLOGY design rules 2/4).
+// All price fields are DISPLAY TEXT: no payment machinery exists (FEATURES
+// #45); gig/ride/room detail views render LISTING_SAFETY_NOTE verbatim.
+// ---------------------------------------------------------------------------
+
+export const ListingStatusSchema = z.enum(['active', 'closed', 'expired']);
+export type ListingStatus = z.infer<typeof ListingStatusSchema>;
+
+export const GigDirectionSchema = z.enum(LISTING_GIG_DIRECTIONS);
+export type GigDirection = z.infer<typeof GigDirectionSchema>;
+
+// kind='gig' — "work together / hire me" (FEATURES #39). direction: offering
+// = portfolio/hire-me; seeking = I need people/a gig.
+export const GigDetailsSchema = z.object({
+  direction: GigDirectionSchema,
+  tags: z
+    .array(z.string().min(1).max(LISTING_GIG_TAG_MAX_CHARS))
+    .max(LISTING_GIG_TAGS_MAX)
+    .default([]),
+});
+export type GigDetails = z.infer<typeof GigDetailsSchema>;
+
+// kind='ride' (FEATURES #40). departs_at doubles as the listing's expires_at.
+export const RideDetailsSchema = z.object({
+  from_text: z.string().min(1).max(LISTING_RIDE_LEG_MAX_CHARS),
+  to_text: z.string().min(1).max(LISTING_RIDE_LEG_MAX_CHARS),
+  departs_at: IsoDateTimeSchema,
+  seats: z.number().int().min(LISTING_RIDE_SEATS_MIN).max(LISTING_RIDE_SEATS_MAX),
+});
+export type RideDetails = z.infer<typeof RideDetailsSchema>;
+
+// kind='room' (FEATURES #41). attachment_ids ride the EXISTING §1.6 upload
+// pipeline (kind 'image', mine, unbound at create; bound via
+// attachments.listing_id — the post_id GC-shield pattern). The DTO resolves
+// them into Listing.photos; available_from is a plain date (timezone-blind,
+// like the §1.15 window chips).
+export const RoomDetailsSchema = z.object({
+  monthly_price_text: z.string().max(LISTING_PRICE_TEXT_MAX_CHARS).nullable().default(null),
+  available_from: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullable()
+    .default(null),
+  attachment_ids: z.array(UuidSchema).max(LISTING_ROOM_PHOTOS_MAX).default([]),
+});
+export type RoomDetails = z.infer<typeof RoomDetailsSchema>;
+
+// kind='place_review' (FEATURES #42). rating here is about a PLACE, not a
+// person — PSYCHOLOGY rule 3 is about scoring people; venues are fair game.
+// These never expire and later feed beacon venue suggestions.
+export const PlaceReviewDetailsSchema = z.object({
+  place_name: z.string().min(1).max(LISTING_PLACE_NAME_MAX_CHARS),
+  rating: z.number().int().min(LISTING_RATING_MIN).max(LISTING_RATING_MAX),
+});
+export type PlaceReviewDetails = z.infer<typeof PlaceReviewDetailsSchema>;
+
+// Shared DTO fields (spread into each kind branch below).
+const ListingDtoBase = {
+  id: UuidSchema,
+  author: UserLiteSchema,
+  title: z.string().min(1).max(LISTING_TITLE_MAX_CHARS),
+  body: z.string().max(LISTING_BODY_MAX_CHARS),
+  // DISPLAY TEXT ONLY — never parsed, never charged (FEATURES #45).
+  price_text: z.string().max(LISTING_PRICE_TEXT_MAX_CHARS).nullable(),
+  // The author's area snapshot at mint (citext equality, the beacons.area
+  // pattern). Always serialized: a card names where it applies.
+  area: z.string(),
+  // false = visible to same-area users only; true = board-wide.
+  is_public: z.boolean(),
+  status: ListingStatusSchema,
+  // §1.38 room photos, resolved server-side from details.attachment_ids
+  // ([] for every other kind).
+  photos: z.array(AttachmentSchema).default([]),
+  // Viewer-specific: I already contacted this listing (the "Message me"
+  // button flips to "Open chat"). Always false for the author.
+  my_contacted: z.boolean().default(false),
+  // §1.39 team-up: the project group. Non-null ONLY for the author and the
+  // picked members (everyone else always sees null — the beacon
+  // conversation_id pattern).
+  conversation_id: UuidSchema.nullable().default(null),
+  created_at: IsoDateTimeSchema,
+  // gig/room: created_at + LISTING_TTL_S; ride: details.departs_at;
+  // place_review: null (never expires).
+  expires_at: IsoDateTimeSchema.nullable(),
+};
+
+export const ListingSchema = z.discriminatedUnion('kind', [
+  z.object({ ...ListingDtoBase, kind: z.literal('gig'), details: GigDetailsSchema }),
+  z.object({ ...ListingDtoBase, kind: z.literal('ride'), details: RideDetailsSchema }),
+  z.object({ ...ListingDtoBase, kind: z.literal('room'), details: RoomDetailsSchema }),
+  z.object({
+    ...ListingDtoBase,
+    kind: z.literal('place_review'),
+    details: PlaceReviewDetailsSchema,
+  }),
+]);
+export type Listing = z.infer<typeof ListingSchema>;
+
+// Create fields shared by every kind. `area` defaults to my users.area; a
+// request with neither → 400 area_required (the §1.15 beacon rule).
+const CreateListingBase = {
+  title: z.string().min(1).max(LISTING_TITLE_MAX_CHARS),
+  body: z.string().max(LISTING_BODY_MAX_CHARS).default(''),
+  price_text: z.string().min(1).max(LISTING_PRICE_TEXT_MAX_CHARS).nullable().optional(),
+  area: z.string().min(1).max(AREA_MAX_CHARS).optional(),
+  is_public: z.boolean().default(false),
+};
+
+export const CreateListingRequestSchema = z.discriminatedUnion('kind', [
+  z.object({ ...CreateListingBase, kind: z.literal('gig'), details: GigDetailsSchema }),
+  z.object({ ...CreateListingBase, kind: z.literal('ride'), details: RideDetailsSchema }),
+  z.object({ ...CreateListingBase, kind: z.literal('room'), details: RoomDetailsSchema }),
+  z.object({
+    ...CreateListingBase,
+    kind: z.literal('place_review'),
+    details: PlaceReviewDetailsSchema,
+  }),
+]);
+export type CreateListingRequest = z.infer<typeof CreateListingRequestSchema>;
+
+export const ListingResponseSchema = z.object({ listing: ListingSchema });
+export type ListingResponse = z.infer<typeof ListingResponseSchema>;
+
+// GET /api/listings — the board read. `area` defaults to MY area (visibility:
+// same-area OR is_public, minus §1.14 blocks both ways — route-enforced);
+// `q` is an ILIKE substring over title + details->>'place_name'.
+export const ListListingsQuerySchema = z.object({
+  kind: ListingKindSchema.optional(),
+  area: z.string().min(1).max(AREA_MAX_CHARS).optional(),
+  q: z.string().min(1).max(LISTING_SEARCH_MAX_CHARS).optional(),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(PAGE_SIZE_DEFAULT),
+});
+export type ListListingsQuery = z.infer<typeof ListListingsQuerySchema>;
+
+export const ListListingsResponseSchema = z.object({
+  listings: z.array(ListingSchema), // created_at DESC, keyset cursor
+  next_cursor: z.string().nullable(),
+});
+export type ListListingsResponse = z.infer<typeof ListListingsResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.39 Message-the-author & gig team-up.
+// ---------------------------------------------------------------------------
+
+// POST /api/listings/:id/contact — no body. Creates/dedupes the DM (the §1.4
+// dm_key path verbatim) and drops ONE 'listing_contact' system message with
+// metadata.listing_ref; records the (listing, me) contact row that gates
+// §1.40 reviews and feeds the team-up pick pool. Idempotent per listing.
+export const ContactListingResponseSchema = z.object({
+  conversation_id: UuidSchema,
+});
+export type ContactListingResponse = z.infer<typeof ContactListingResponseSchema>;
+
+// Author-only pick pool for team-up: everyone who contacted, username order.
+export const ListingContactsResponseSchema = z.object({
+  contacts: z.array(UserLiteSchema),
+});
+export type ListingContactsResponse = z.infer<typeof ListingContactsResponseSchema>;
+
+// POST /api/listings/:id/team-up — author only, gigs only. user_ids must all
+// have contacted the listing; + the author = a group of ≤ TEAM_UP_MAX_PICKS+1.
+export const TeamUpRequestSchema = z.object({
+  user_ids: z.array(UuidSchema).min(1).max(TEAM_UP_MAX_PICKS),
+});
+export type TeamUpRequest = z.infer<typeof TeamUpRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.40 Person reviews (PersonReviewSchema/TrustSchema live beside the §1.37
+// profile DTOs above — the profile response embeds them).
+// ---------------------------------------------------------------------------
+
+// POST /api/listings/:id/reviews. subject_id is REQUIRED when the reviewer is
+// the listing's author (which contacter is being reviewed) and must be
+// omitted/equal to the author otherwise (route-enforced → 400 bad_subject).
+export const CreatePersonReviewRequestSchema = z.object({
+  subject_id: UuidSchema.optional(),
+  rating: z.number().int().min(LISTING_RATING_MIN).max(LISTING_RATING_MAX),
+  body: z.string().max(PERSON_REVIEW_BODY_MAX_CHARS).default(''),
+});
+export type CreatePersonReviewRequest = z.infer<typeof CreatePersonReviewRequestSchema>;
+
+export const PersonReviewResponseSchema = z.object({ review: PersonReviewSchema });
+export type PersonReviewResponse = z.infer<typeof PersonReviewResponseSchema>;
+
+export const ListPersonReviewsQuerySchema = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(PAGE_SIZE_DEFAULT),
+});
+export type ListPersonReviewsQuery = z.infer<typeof ListPersonReviewsQuerySchema>;
+
+export const ListPersonReviewsResponseSchema = z.object({
+  reviews: z.array(PersonReviewSchema), // created_at DESC
+  next_cursor: z.string().nullable(),
+});
+export type ListPersonReviewsResponse = z.infer<typeof ListPersonReviewsResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// §1.41 Admin (operator-only; ADR-013). Every schema here serializes METADATA
+// ONLY — no private message bodies exist in any admin payload, by contract.
+// ---------------------------------------------------------------------------
+
+export const LastSeenBucketSchema = z.enum(LAST_SEEN_BUCKETS);
+export type LastSeenBucket = z.infer<typeof LastSeenBucketSchema>;
+
+export const AdminUserRowSchema = z.object({
+  id: UuidSchema,
+  username: z.string(),
+  display_name: z.string(),
+  created_at: IsoDateTimeSchema,
+  // Coarse liveness, never a timestamp (LAST_SEEN_BUCKETS).
+  last_seen_bucket: LastSeenBucketSchema,
+  // null once the §1.41 retention GC has aged it out (IP_RETENTION_DAYS).
+  registration_ip: z.string().nullable(),
+  // The most recently seen session's metadata; null = no live sessions.
+  last_session: z
+    .object({
+      ip: z.string().nullable(),
+      user_agent: z.string().nullable(),
+      last_seen_at: IsoDateTimeSchema,
+    })
+    .nullable(),
+  session_count: z.number().int().nonnegative(),
+  // Sum of attachments.size_bytes uploaded by this user.
+  storage_bytes: z.number().int().nonnegative(),
+  is_admin: z.boolean(),
+  suspended: z.boolean(),
+  banned: z.boolean(),
+});
+export type AdminUserRow = z.infer<typeof AdminUserRowSchema>;
+
+export const AdminUsersQuerySchema = z.object({
+  q: z.string().min(1).optional(), // username/display_name prefix ILIKE
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(PAGE_SIZE_DEFAULT),
+});
+export type AdminUsersQuery = z.infer<typeof AdminUsersQuerySchema>;
+
+export const AdminUsersResponseSchema = z.object({
+  users: z.array(AdminUserRowSchema), // created_at DESC
+  next_cursor: z.string().nullable(),
+});
+export type AdminUsersResponse = z.infer<typeof AdminUsersResponseSchema>;
+
+// Body for suspend/unsuspend/ban/unban: an optional operator note, ring-logged.
+export const AdminActionRequestSchema = z.object({
+  note: z.string().max(ADMIN_NOTE_MAX_CHARS).default(''),
+});
+export type AdminActionRequest = z.infer<typeof AdminActionRequestSchema>;
+
+// §1.41 report queue row. Target previews are METADATA ONLY: a reported
+// message serializes who/where/when/what-kind — NEVER its body (the
+// reporter's own `reason` text is where quoted content lives, and it is the
+// reporter's submission, not a counterparty's private words).
+export const AdminReportSchema = z.object({
+  id: UuidSchema,
+  kind: z.enum(['user', 'message', 'beacon']),
+  reporter: UserLiteSchema.nullable(), // null = account deleted since
+  reason: z.string(),
+  status: z.enum(['open', 'closed']),
+  created_at: IsoDateTimeSchema,
+  closed_at: IsoDateTimeSchema.nullable(),
+  closed_by: UserLiteSchema.nullable().default(null),
+  close_note: z.string().default(''),
+  // Exactly one of these three is non-null, matching `kind` (unless the
+  // target has been deleted since — reports outlive their targets).
+  target_user: UserLiteSchema.nullable().default(null),
+  target_message: z
+    .object({
+      conversation_id: UuidSchema,
+      seq: z.number().int().positive(),
+      sender: UserLiteSchema.nullable(),
+      type: MessageTypeSchema,
+      created_at: IsoDateTimeSchema,
+      deleted: z.boolean(), // tombstoned since the report
+    })
+    .nullable()
+    .default(null),
+  target_beacon: z
+    .object({
+      id: UuidSchema,
+      vibe: BeaconVibeSchema,
+      status: z.enum(['open', 'sparked', 'expired', 'cancelled']),
+      creator: UserLiteSchema.nullable(),
+    })
+    .nullable()
+    .default(null),
+});
+export type AdminReport = z.infer<typeof AdminReportSchema>;
+
+export const AdminReportsQuerySchema = z.object({
+  status: z.enum(['open', 'closed']).optional(), // omitted = both
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(PAGE_SIZE_DEFAULT),
+});
+export type AdminReportsQuery = z.infer<typeof AdminReportsQuerySchema>;
+
+export const AdminReportsResponseSchema = z.object({
+  reports: z.array(AdminReportSchema), // open first, then created_at DESC
+  next_cursor: z.string().nullable(),
+});
+export type AdminReportsResponse = z.infer<typeof AdminReportsResponseSchema>;
+
+export const CloseReportRequestSchema = z.object({
+  note: z.string().max(ADMIN_NOTE_MAX_CHARS).default(''),
+});
+export type CloseReportRequest = z.infer<typeof CloseReportRequestSchema>;
+
+export const AdminReportResponseSchema = z.object({ report: AdminReportSchema });
+export type AdminReportResponse = z.infer<typeof AdminReportResponseSchema>;
+
+// §1.41 metrics. Day series cover ADMIN_METRICS_WINDOW_DAYS; DAU is a PROXY
+// (distinct users whose sessions were seen that day — sliding sessions make
+// this approximate, documented as such).
+export const DayCountSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  count: z.number().int().nonnegative(),
+});
+export type DayCount = z.infer<typeof DayCountSchema>;
+
+export const AdminMetricsSchema = z.object({
+  registrations_per_day: z.array(DayCountSchema),
+  active_users_per_day: z.array(DayCountSchema), // DAU proxy
+  messages_per_day: z.array(DayCountSchema),
+  users_total: z.number().int().nonnegative(),
+  open_beacons: z.number().int().nonnegative(),
+  active_listings: z.number().int().nonnegative(),
+  open_reports: z.number().int().nonnegative(),
+  storage_total_bytes: z.number().int().nonnegative(),
+});
+export type AdminMetrics = z.infer<typeof AdminMetricsSchema>;
+
+export const AdminMetricsResponseSchema = z.object({ metrics: AdminMetricsSchema });
+export type AdminMetricsResponse = z.infer<typeof AdminMetricsResponseSchema>;
+
+// §1.41 log ring entries (capped Redis list, LOG_RING_MAX). level 'admin' =
+// an admin action (always logged); 'warn'/'error' = pino entries from
+// api/worker. `data` is the structured remainder of the log line.
+export const AdminLogEntrySchema = z.object({
+  ts: IsoDateTimeSchema,
+  level: z.enum(ADMIN_LOG_LEVELS),
+  msg: z.string(),
+  actor: z.object({ id: UuidSchema, username: z.string() }).nullable().default(null),
+  data: z.record(z.unknown()).optional(),
+});
+export type AdminLogEntry = z.infer<typeof AdminLogEntrySchema>;
+
+// Ring paging is by offset into the capped list (newest first) — a ring has
+// no stable cursors; next_offset null = you have read the whole ring.
+export const AdminLogsQuerySchema = z.object({
+  offset: z.coerce.number().int().nonnegative().default(0),
+  limit: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(PAGE_SIZE_DEFAULT),
+});
+export type AdminLogsQuery = z.infer<typeof AdminLogsQuerySchema>;
+
+export const AdminLogsResponseSchema = z.object({
+  entries: z.array(AdminLogEntrySchema),
+  next_offset: z.number().int().nonnegative().nullable(),
+});
+export type AdminLogsResponse = z.infer<typeof AdminLogsResponseSchema>;
+
+// §1.41 instance settings (instance_settings key/value jsonb; one key today).
+// invites_enabled=false is enforced at invite MINT (403 invites_disabled) and
+// ACCEPT (403 invites_disabled, no use_count claim); register-with-token
+// degrades to invite: null per §1.1.
+export const InstanceSettingsSchema = z.object({
+  invites_enabled: z.boolean(),
+});
+export type InstanceSettings = z.infer<typeof InstanceSettingsSchema>;
+
+export const UpdateInstanceSettingsRequestSchema = InstanceSettingsSchema.partial();
+export type UpdateInstanceSettingsRequest = z.infer<typeof UpdateInstanceSettingsRequestSchema>;
+
+export const InstanceSettingsResponseSchema = z.object({
+  settings: InstanceSettingsSchema,
+});
+export type InstanceSettingsResponse = z.infer<typeof InstanceSettingsResponseSchema>;
+
+// §1.41 per-user data export — the user's OWN rows only, secrets stripped
+// (password_hash, session token_hash, push keys) and NO private message
+// bodies (ADR-013: a member's messages contain their counterparties' words;
+// bulk operator access to them is exactly what this surface must not be).
+// Row payloads are the DB rows as JSON — deliberately loose here: the DB
+// schema is the authority, and the export must not silently drop columns a
+// stricter DTO forgot to name.
+export const AdminUserExportSchema = z.object({
+  exported_at: IsoDateTimeSchema,
+  user: z.record(z.unknown()), // users row (profile + settings columns)
+  sessions: z.array(z.record(z.unknown())), // metadata only, no token_hash
+  listings: z.array(z.record(z.unknown())),
+  posts: z.array(z.record(z.unknown())),
+  reviews_received: z.array(z.record(z.unknown())),
+});
+export type AdminUserExport = z.infer<typeof AdminUserExportSchema>;

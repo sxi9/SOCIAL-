@@ -11,6 +11,7 @@ import type {
   Attachment,
   ConversationResponse,
   Profile,
+  Trust,
   UserProfileResponse,
   UserPublic,
 } from '@socialchat/shared';
@@ -23,6 +24,7 @@ import { useReducedMotion } from '@/lib/useReducedMotion';
 import AppShell from '@/components/AppShell';
 import Avatar from '@/components/Avatar';
 import ReportSheet from '@/components/ReportSheet';
+import TrustPanel from '@/components/TrustPanel';
 import bz from '@/components/beacons.module.css';
 import st from '@/components/social.module.css';
 
@@ -31,6 +33,7 @@ function PublicProfile({ username }: { username: string }) {
   const router = useRouter();
   const [user, setUser] = useState<UserPublic | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [trust, setTrust] = useState<Trust | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
   const [report, setReport] = useState(false);
@@ -43,6 +46,7 @@ function PublicProfile({ username }: { username: string }) {
     let cancelled = false;
     setUser(null);
     setProfile(null);
+    setTrust(null);
     setError(null);
     void api
       .get<UserProfileResponse>(`/api/users/${encodeURIComponent(username)}`)
@@ -50,6 +54,8 @@ function PublicProfile({ username }: { username: string }) {
         if (cancelled) return;
         setUser(res.user);
         setProfile(res.profile ?? null);
+        // v0.5b §1.40: defaulted server-side; guard keeps old payloads clean.
+        setTrust(res.trust ?? null);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -340,6 +346,11 @@ function PublicProfile({ username }: { username: string }) {
               })}
             </div>
           ) : null}
+
+          {/* v0.5b §1.40: marketplace trust — safety information from real
+              listing contacts, shown ONLY here (never ranked, never compared;
+              the no-scores argument lives in ADR-012). */}
+          {trust ? <TrustPanel username={shown.username} trust={trust} /> : null}
 
           {/* Plan karma (§1.15): a private fact about yourself, never a score
               against anyone else — shown on your OWN profile only, never

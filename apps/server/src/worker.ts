@@ -8,7 +8,8 @@ import { processMediaJob } from './jobs/media.js';
 import { initWebPush, processPushJob } from './jobs/push.js';
 import { processTimersJob } from './jobs/timers.js';
 import { processUnfurlJob } from './jobs/unfurl.js';
-import { DISAPPEAR_SWEEP_INTERVAL_S, STORY_SWEEP_INTERVAL_S } from '@socialchat/shared';
+import { DISAPPEAR_SWEEP_INTERVAL_S, LISTING_SWEEP_INTERVAL_S, STORY_SWEEP_INTERVAL_S } from '@socialchat/shared';
+import { ringError } from './lib/logring.js';
 import type { AvatarJob, BeaconsJob, MediaJob, PushJob, TimersJob, UnfurlJob } from './queues.js';
 import { beaconsQueue, gcQueue, timersQueue } from './queues.js';
 import { createRedis } from './redis.js';
@@ -51,11 +52,14 @@ async function main(): Promise<void> {
   ];
 
   for (const w of workers) {
+    // v0.5b (§1.41): worker failures mirror into the admin log ring too.
     w.on('failed', (job, err) => {
       console.error(`worker[${w.name}]: job ${job?.id ?? '?'} failed:`, err.message);
+      ringError(`worker[${w.name}]: job failed`, { job_id: job?.id ?? null, err: err.message });
     });
     w.on('error', (err) => {
       console.error(`worker[${w.name}]: error:`, err.message);
+      ringError(`worker[${w.name}]: error`, { err: err.message });
     });
   }
 
@@ -111,6 +115,19 @@ async function main(): Promise<void> {
     {
       repeat: { every: STORY_SWEEP_INTERVAL_S * 1000 },
       jobId: 'story-sweep',
+      removeOnComplete: 10,
+      removeOnFail: 10,
+    },
+  );
+
+  // v0.5b (API.md §1.38): hourly listing expiry sweep — bookkeeping only,
+  // board reads filter expires_at live; no fan-out, no push (pull-based board).
+  await timersQueue.add(
+    'listing-sweep',
+    {},
+    {
+      repeat: { every: LISTING_SWEEP_INTERVAL_S * 1000 },
+      jobId: 'listing-sweep',
       removeOnComplete: 10,
       removeOnFail: 10,
     },

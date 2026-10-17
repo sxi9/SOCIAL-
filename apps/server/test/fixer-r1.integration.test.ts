@@ -326,4 +326,72 @@ describe.runIf(infra)('fixer round 1 regressions', () => {
     const dedupeConv = (dedupe.json() as { conversation: Conversation }).conversation;
     expect(readSeqOf(dedupeConv, mia.userId)).toBe(0); // reciprocity, admin is off
   });
+
+  // ---------------------------------------------------------------------------
+  it('a session that survives the suspend race is dead on first use (authenticateToken re-check)', async () => {
+    const { db } = await import('../src/db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const racer = await register(`fx1race_${run}`);
+
+    // Simulate the login-vs-revokeAllSessions race: the account is suspended
+    // but a session row slipped in AFTER the admin's one-shot delete ran.
+    await db.execute(sql`UPDATE users SET suspended_at = now() WHERE id = ${racer.userId}`);
+
+    const res = await get(racer, '/api/auth/sessions');
+    expect(res.statusCode).toBe(401);
+
+    // The stray session was destroyed, not merely refused — so it does not
+    // come back to life if the account is later unsuspended.
+    const rows = (await db.execute(
+      sql`SELECT count(*)::int AS n FROM sessions WHERE user_id = ${racer.userId}`,
+    )) as unknown as { n: number }[];
+    expect(rows[0]!.n).toBe(0);
+    await db.execute(sql`UPDATE users SET suspended_at = NULL WHERE id = ${racer.userId}`);
+    expect((await get(racer, '/api/auth/sessions')).statusCode).toBe(401);
+  });
+
+  // ---------------------------------------------------------------------------
+  it('req.ip is the Caddy-appended X-Forwarded-For hop, never a client-forged one', async () => {
+    const { db } = await import('../src/db/index.js');
+    const { sql } = await import('drizzle-orm');
+
+    // A client forges a leftmost entry; the trusted hop appends the real one.
+    const realIp = nextIp();
+    const forged = await app.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      headers: { ...CSRF, 'x-forwarded-for': `8.8.8.8, ${realIp}` },
+      payload: {
+        username: `fx1xff_${run}`,
+        email: `fx1xff_${run}@example.com`,
+        password: 'password123',
+        display_name: 'xff test',
+      },
+    });
+    expect(forged.statusCode).toBe(201);
+    const forgedId = (forged.json() as { user: { id: string } }).user.id;
+    const [row] = (await db.execute(
+      sql`SELECT host(registration_ip) AS rip FROM users WHERE id = ${forgedId}`,
+    )) as unknown as { rip: string | null }[];
+    expect(row!.rip).toBe(realIp);
+
+    // A non-IP value must degrade to NULL instead of 500ing the inet insert.
+    const garbage = await app.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      headers: { ...CSRF, 'x-forwarded-for': `not-an-ip-${run}` },
+      payload: {
+        username: `fx1gbg_${run}`,
+        email: `fx1gbg_${run}@example.com`,
+        password: 'password123',
+        display_name: 'garbage xff',
+      },
+    });
+    expect(garbage.statusCode).toBe(201);
+    const garbageId = (garbage.json() as { user: { id: string } }).user.id;
+    const [grow] = (await db.execute(
+      sql`SELECT registration_ip::text AS rip FROM users WHERE id = ${garbageId}`,
+    )) as unknown as { rip: string | null }[];
+    expect(grow!.rip).toBeNull();
+  });
 });

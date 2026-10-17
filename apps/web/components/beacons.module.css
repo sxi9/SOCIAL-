@@ -73,6 +73,9 @@
 /* ---- live beacon strip ---- */
 
 .strip {
+  /* The strip is a flex child of the .page column; without this, overflowing
+     board content below crushes it to its padding height (fixer r1). */
+  flex: none;
   display: flex;
   gap: 10px;
   overflow-x: auto;
@@ -339,6 +342,7 @@
 /* ---- radar / nothing-state ---- */
 
 .radarLine {
+  flex: none; /* same .page-column shrink guard as .strip (fixer r1) */
   display: flex;
   align-items: center;
   gap: 8px;
@@ -369,6 +373,7 @@
 /* ---- kudos banner (private, recipient-only) ---- */
 
 .kudosBanner {
+  flex: none; /* same .page-column shrink guard as .strip (fixer r1) */
   display: flex;
   align-items: center;
   gap: 10px;

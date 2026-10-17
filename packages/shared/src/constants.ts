@@ -443,3 +443,92 @@ export const PROFILE_ENTRY_TITLE_MAX_CHARS = 80;
 export const PROFILE_ENTRY_DETAIL_MAX_CHARS = 160;
 // The 3-GIF strip: profile_media rows, order_idx 0..2.
 export const PROFILE_MEDIA_MAX = 3;
+
+// ============================ v0.5b additions =================================
+// Local board + admin (FEATURES #39–#45, #54; API.md §1.38–§1.41; ADR-012 /
+// ADR-013). One listing system, four card kinds, all area-tagged; marketplace
+// trust via gated person reviews; the operator admin surface. HARD PRODUCT
+// RULES: no payment processing of any kind — every price field is DISPLAY
+// TEXT, money settles outside the app; the board is PULL-BASED (no WS events,
+// no push — PSYCHOLOGY design rules 2 and 4); admin routes never expose
+// private message content.
+
+// ---- Listings (v0.5b — API.md §1.38, ADR-012) ----
+// The four card kinds (listings.kind CHECK). Beacons join the board tab
+// client-side (FEATURES #43) — they stay their own table and API.
+export const LISTING_KINDS = ['gig', 'ride', 'room', 'place_review'] as const;
+export const LISTING_TITLE_MAX_CHARS = 80;
+export const LISTING_BODY_MAX_CHARS = 2000;
+// DISPLAY TEXT ONLY ("₹2000 / month", "free", "split petrol") — never parsed,
+// never summed, never charged. There is no payment machinery anywhere.
+export const LISTING_PRICE_TEXT_MAX_CHARS = 40;
+// Simultaneously ACTIVE listings per author; the 11th → 409 listing_limit.
+export const LISTING_ACTIVE_MAX_PER_USER = 10;
+export const LISTING_CREATE_RATE_PER_HOUR = 10;
+// gig/room: expires_at = created_at + 30 d. ride: expires_at = departs_at.
+// place_review: never expires (expires_at NULL).
+export const LISTING_TTL_S = 30 * 24 * 3600;
+// Worker sweep cadence (queue `timers`) — bookkeeping only: board reads also
+// filter `expires_at > now()` live, so sweep precision never shows a stale card.
+export const LISTING_SWEEP_INTERVAL_S = 3600;
+// Per-kind details (jsonb, Zod-validated — the house metadata pattern):
+export const LISTING_GIG_DIRECTIONS = ['offering', 'seeking'] as const;
+export const LISTING_GIG_TAGS_MAX = 5;
+export const LISTING_GIG_TAG_MAX_CHARS = 24; // the INTEREST_TAG_MAX_CHARS bound
+export const LISTING_RIDE_LEG_MAX_CHARS = 80; // from_text / to_text
+export const LISTING_RIDE_SEATS_MIN = 1;
+export const LISTING_RIDE_SEATS_MAX = 8;
+export const LISTING_ROOM_PHOTOS_MAX = 6;
+export const LISTING_PLACE_NAME_MAX_CHARS = 80;
+export const LISTING_RATING_MIN = 1;
+export const LISTING_RATING_MAX = 5;
+// `q` filter: ILIKE substring over title + details->>'place_name'.
+export const LISTING_SEARCH_MAX_CHARS = 80;
+// The bulletin-board terms, rendered VERBATIM on gig/ride/room detail views
+// (LISTING_SAFETY_NOTE_KINDS) — FEATURES #45. Not dismissible copy to bury in
+// a settings page: it rides the card where the money talk happens.
+export const LISTING_SAFETY_NOTE =
+  'Bored Chat is a bulletin board: it does not vet listings, hold money, or process payments. Meet in public, bring a friend for first meetings, and verify before you pay — money settles outside the app, at your own judgement.';
+export const LISTING_SAFETY_NOTE_KINDS = ['gig', 'ride', 'room'] as const;
+
+// ---- Message-the-author & gig team-up (v0.5b — API.md §1.39) ----
+export const LISTING_CONTACT_RATE_PER_HOUR = 20;
+// Team-up picks (people who contacted the gig); + the author = a group of ≤ 8,
+// the same human-scale bound as ride seats (PSYCHOLOGY §3 favors small crews).
+export const TEAM_UP_MAX_PICKS = 7;
+
+// ---- Person reviews / marketplace trust (v0.5b — API.md §1.40, ADR-012) ----
+// Star averages here are SAFETY INFORMATION about transacting with a stranger
+// — not social approval. The distinction vs PSYCHOLOGY design rule 3 (no
+// scores on people) is argued in ADR-012; the guardrails are structural:
+// reviews only after a real listing contact, one per (listing, reviewer),
+// avg hidden under TRUST_AVG_MIN_REVIEWS, and NOTHING ever ranks or sorts
+// people by rating.
+export const PERSON_REVIEW_BODY_MAX_CHARS = 500;
+export const PERSON_REVIEW_RATE_PER_HOUR = 10;
+// avg_rating serializes null below this count (a 1-review "2.0" is noise that
+// reads like a verdict); the count + recent list still show.
+export const TRUST_AVG_MIN_REVIEWS = 3;
+// avg_rating is rounded to this many decimals server-side.
+export const TRUST_AVG_DECIMALS = 1;
+// Recent reviews inlined on the profile trust panel.
+export const TRUST_RECENT_REVIEWS_MAX = 5;
+
+// ---- Admin (v0.5b — API.md §1.41, ADR-013, FEATURES #54) ----
+// Promotion is CLI-ONLY: node dist/cli.js grant-admin <username> /
+// revoke-admin <username>. There is no web path to adminhood — shell access to
+// the box is the root of trust (ADR-013).
+// IP retention: a nightly GC job (queue `gc`) nulls users.registration_ip and
+// sessions.ip older than this window. Documented in the instance privacy note.
+export const IP_RETENTION_DAYS = 90;
+// Server log ring: pino warn+error entries + EVERY admin action, LPUSHed to a
+// capped Redis list (LPUSH + LTRIM) — operational telemetry, not product data.
+export const LOG_RING_MAX = 1000;
+export const ADMIN_LOG_LEVELS = ['warn', 'error', 'admin'] as const;
+// GET /api/admin/users serializes last_seen as a COARSE bucket, not a
+// timestamp — the operator needs liveness, not a surveillance feed.
+export const LAST_SEEN_BUCKETS = ['today', 'this_week', 'this_month', 'older', 'never'] as const;
+// Metrics time series length (registrations/day, DAU proxy, messages/day).
+export const ADMIN_METRICS_WINDOW_DAYS = 30;
+// Optional note on suspend/ban/unsuspend/unban/report-close; ring-logged.
+export const ADMIN_NOTE_MAX_CHARS = 500;

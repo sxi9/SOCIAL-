@@ -21,6 +21,7 @@ import {
 } from '../lib/dto.js';
 import { deliverScheduledMessage } from '../modules/scheduled/service.js';
 import { publishMessageUpdated } from '../modules/messages/service.js';
+import { runListingSweep } from '../modules/listings/service.js';
 import { runStorySweep } from '../modules/stories/service.js';
 import type { TimersJob } from '../queues.js';
 import { deleteAttachmentObjects } from './gc.js';
@@ -166,6 +167,10 @@ export async function processTimersJob(name: string, job: TimersJob): Promise<vo
     // "story expired" event; they drop out of the next GET.
     case 'story-sweep':
       return runStorySweep();
+    // v0.5b (§1.38): hourly listing expiry — status BOOKKEEPING only (board
+    // reads filter expires_at live); no fan-out, no notification, ever.
+    case 'listing-sweep':
+      return runListingSweep();
     case 'scheduled-deliver': {
       const id = (job as { scheduled_id?: string }).scheduled_id;
       if (id) await deliverScheduledMessage(id);

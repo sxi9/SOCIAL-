@@ -1,0 +1,718 @@
+/* v0.5b Local board (API.md §1.38–§1.40, ADR-012) — Bored Blob language:
+   soft rounded cards, dark-first, playful accents, reduced-motion guarded.
+   PULL-BASED surface: nothing in here blinks, badges or counts unprompted. */
+
+/* ============================ filter rail ============================ */
+
+.chipRow {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.chipRow::-webkit-scrollbar {
+  display: none;
+}
+
+.kindChip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 7px 13px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.kindChip:hover {
+  border-color: var(--accent);
+}
+
+.kindChipOn {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.controlRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 16px;
+}
+
+.areaPill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 46%;
+  border: 1px dashed var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.areaPill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.areaPill:hover {
+  border-color: var(--accent);
+}
+
+.searchBox {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ============================ listing cards ============================ */
+
+.cardList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 16px 110px;
+}
+
+@media (min-width: 900px) {
+  .cardList {
+    padding-bottom: 24px;
+  }
+}
+
+.lCard {
+  text-align: left;
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 13px 14px;
+  display: flex;
+  gap: 12px;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+
+.lCard:hover {
+  border-color: var(--accent);
+}
+
+.lCard:active {
+  transform: scale(0.99);
+}
+
+.lCardMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.lCardTop {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.lKindEmoji {
+  flex: none;
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+.lTitle {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lExpiry {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.lLine {
+  font-size: 13.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lMeta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.lMeta > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.priceTag {
+  display: inline-block;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 7px;
+  padding: 1px 7px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tagRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 3px;
+}
+
+.tag {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.lThumb {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+
+.lThumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.statusTag {
+  display: inline-block;
+  border-radius: 7px;
+  padding: 1px 7px;
+  font-size: 11.5px;
+  font-weight: 700;
+  background: var(--panel-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.boardEmpty {
+  text-align: center;
+  color: var(--muted);
+  padding: 28px 24px;
+  font-size: 14px;
+}
+
+.boardEmpty h3 {
+  color: var(--text);
+  margin: 8px 0 4px;
+  font-size: 16px;
+}
+
+.boardEmpty p {
+  margin: 0;
+}
+
+.morePill {
+  align-self: center;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+/* ============================ stars ============================ */
+
+.stars {
+  display: inline-flex;
+  gap: 1px;
+  color: #f2b24c;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.starDim {
+  opacity: 0.28;
+}
+
+.starBtn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 30px;
+  line-height: 1;
+  padding: 2px 4px;
+  color: #f2b24c;
+  transition: transform 100ms ease;
+}
+
+.starBtn:active {
+  transform: scale(1.2);
+}
+
+/* ============================ detail sheet ============================ */
+
+.detailBody {
+  white-space: pre-wrap;
+  margin: 4px 0 0;
+  font-size: 14.5px;
+}
+
+.detailFacts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 13.5px;
+}
+
+.factRow {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.factRow dt {
+  flex: none;
+  width: 86px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.factRow dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.detailPhotos {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.detailPhotos a {
+  display: block;
+  aspect-ratio: 1;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+
+.detailPhotos img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* The bulletin-board terms — rendered VERBATIM on gig/ride/room (FEATURES
+   #45). Quiet but unmissable: it rides the card where money talk happens. */
+.safetyNote {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, #f2b24c 40%, var(--border));
+  background: color-mix(in srgb, #f2b24c 9%, var(--panel));
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.safetyNote span:first-child {
+  flex: none;
+}
+
+.ctaCol {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.msgBtn {
+  width: 100%;
+  border: none;
+  border-radius: 14px;
+  background: var(--accent-strong);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  padding: 13px 16px;
+  cursor: pointer;
+  transition: filter 120ms ease, transform 100ms ease;
+}
+
+.msgBtn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.msgBtn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.msgBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.authorRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.authorRow a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: inherit;
+  min-width: 0;
+}
+
+.authorName {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.authorName strong {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.authorName span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ============================ create sheet ============================ */
+
+.kindPickGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.kindPick {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 14px;
+  padding: 12px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.kindPick:hover {
+  border-color: var(--accent);
+}
+
+.kindPickEmoji {
+  font-size: 22px;
+}
+
+.kindPick strong {
+  font-size: 14px;
+}
+
+.kindPick span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.formGrid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.photoRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.photoRow > span {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+.photoRow img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.photoRemove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.photoAdd {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  border: 1px dashed var(--border);
+  background: none;
+  color: var(--muted);
+  font-size: 22px;
+  cursor: pointer;
+}
+
+.toggleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  font-size: 14px;
+}
+
+.toggleRow p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ============================ team-up picker ============================ */
+
+.pickRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 9px 2px;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+
+.pickRow:last-of-type {
+  border-bottom: none;
+}
+
+.pickName {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.pickName strong {
+  font-size: 14px;
+}
+
+.pickName span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.pickBox {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  border: 2px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: #fff;
+}
+
+.pickBoxOn {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+/* ============================ trust panel ============================ */
+
+.trustHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.trustAvg {
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.trustCount {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.reviewRow {
+  display: flex;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.reviewRow:first-of-type {
+  border-top: none;
+}
+
+.reviewBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.reviewTop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.reviewTop strong {
+  font-size: 13.5px;
+}
+
+.reviewKind {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.reviewText {
+  margin: 3px 0 0;
+  font-size: 13.5px;
+  white-space: pre-wrap;
+}
+
+/* ============================ review nudge ============================ */
+
+.nudge {
+  margin: 6px 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13.5px;
+}
+
+.nudge p {
+  margin: 0;
+}
+
+.nudgeActions {
+  display: flex;
+  gap: 8px;
+}
+
+/* listing_ref chip under system pills (§1.39 context messages). */
+.refChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 12.5px;
+  text-decoration: none;
+}
+
+.refChip:hover {
+  border-color: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lCard,
+  .lCard:active,
+  .msgBtn,
+  .msgBtn:active:not(:disabled),
+  .starBtn,
+  .starBtn:active {
+    transition: none;
+    transform: none;
+  }
+}

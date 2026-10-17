@@ -21,6 +21,7 @@ import { badRequest, notFound } from '../../lib/errors.js';
 import { parseMultipart } from '../../lib/multipart.js';
 import { enqueueAvatar } from '../../queues.js';
 import { authed, requireAuth } from '../auth/guard.js';
+import { loadTrust } from '../listings/reviews.js';
 import { loadProfile } from '../profiles/routes.js';
 import { stashAvatarSource } from '../uploads/pipeline.js';
 
@@ -125,7 +126,8 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       const ctx = await viewCtxFor(user);
       return {
         users: rows
-          .filter((row) => !blocked.has(row.id))
+          // §1.41: banned accounts are publicly invisible — search included.
+          .filter((row) => !blocked.has(row.id) && row.bannedAt === null)
           .slice(0, USER_SEARCH_LIMIT)
           .map((row) => userPublicDto(row, ctx)),
       };
@@ -143,13 +145,19 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
         .where(eq(schema.users.username, req.params.username))
         .limit(1);
       if (!row) throw notFound('user_not_found');
+      // §1.41: a banned account's profile 404s for everyone but its owner —
+      // byte-identical to never existing (serialization-side; unban restores).
+      if (row.id !== user.id && row.bannedAt !== null) throw notFound('user_not_found');
       // §1.14: profile 404 in BOTH directions — identical to never existing.
       if (await isBlockedPair(user.id, row.id)) throw notFound('user_not_found');
       // v0.5a (§1.37): the profile page grows a `profile` sibling — additive;
       // UserPublic itself stays lean (it rides every participant list).
+      // v0.5b (§1.40): + `trust` — count/avg over ALL reviews, recent minus
+      // reviewers blocked w.r.t. the viewer (§2.11 serialization filtering).
       return {
         user: userPublicDto(row, await viewCtxFor(user)),
         profile: await loadProfile(row.id, row.interests),
+        trust: await loadTrust(row.id, user.id),
       };
     },
   );

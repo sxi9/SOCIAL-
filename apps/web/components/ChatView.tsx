@@ -42,6 +42,7 @@ import {
   myRole,
 } from '@/lib/format';
 import { uuidv7 } from '@/lib/ids';
+import { KIND_EMOJI } from '@/lib/listings';
 import { displayNameFor, loadPrefs, themeClassName, wallpaperClassName } from '@/lib/prefs';
 import { toggleReaction, toggleStamp } from '@/lib/reactions';
 import { pendingFor, refreshScheduled } from '@/lib/scheduled';
@@ -57,6 +58,7 @@ import EffectOverlay from './EffectOverlay';
 import ForwardSheet from './ForwardSheet';
 import GameTttView from './GameTttView';
 import { InviteButton } from './InviteSheet';
+import ListingReviewNudge from './ListingReviewNudge';
 import PinnedBar from './PinnedBar';
 import PlanHeader from './PlanHeader';
 import PollView from './PollView';
@@ -71,6 +73,7 @@ import TttChallengeSheet from './TttChallengeSheet';
 import TypingIndicator from './TypingIndicator';
 import VibeCheckSheet from './VibeCheckSheet';
 import VibeCheckView from './VibeCheckView';
+import brd from './board.module.css';
 import styles from './chat.module.css';
 import exp from './expression.module.css';
 import soc from './social.module.css';
@@ -549,6 +552,11 @@ export default function ChatView({ conversationId }: { conversationId: string })
         ))}
       </div>
 
+      {/* v0.5b §1.40: ONE gentle review prompt after a listing DM wraps up. */}
+      {meId && conv.type === 'dm' ? (
+        <ListingReviewNudge conv={conv} messages={messages} meId={meId} />
+      ) : null}
+
       {/* Typing is gateway-dropped in channels (§2.11) — don't render the slot. */}
       {!isChannel ? <TypingIndicator conversation={conv} /> : null}
 
@@ -758,7 +766,24 @@ function MessageRow({
     const label = subject
       ? `${subjectId === meId ? 'You' : nameFor(subject.id, subject.display_name)} ${body}`
       : body;
-    return <div className={styles.system}>{label}</div>;
+    // v0.5b §1.39: listing-context pills ('listing_contact' / 'team_up') carry
+    // a listing_ref SNAPSHOT — the chip keeps rendering (and deep-linking)
+    // even after the listing closes, expires or is deleted.
+    const listingRef = message.metadata.listing_ref;
+    return (
+      <div className={styles.system}>
+        {label}
+        {listingRef ? (
+          <>
+            <br />
+            <Link className={brd.refChip} href={`/local?l=${listingRef.listing_id}`}>
+              <span aria-hidden>{KIND_EMOJI[listingRef.kind]}</span>
+              <span>{listingRef.title}</span>
+            </Link>
+          </>
+        ) : null}
+      </div>
+    );
   }
 
   // §1.25/§1.30 tombstone: body/metadata nulled, attachments dropped; the row

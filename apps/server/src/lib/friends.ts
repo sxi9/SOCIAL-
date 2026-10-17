@@ -47,6 +47,11 @@ export async function friendsOfIds(userId: string): Promise<Set<string>> {
       SELECT 1 FROM blocks bl
       WHERE (bl.blocker_id = ${userId} AND bl.blocked_id = t.other_id)
          OR (bl.blocker_id = t.other_id AND bl.blocked_id = ${userId}))
+      -- v0.5b (§1.41): banned accounts are publicly invisible — their stories
+      -- and posts drop out of every friends-of read (serialization-side; the
+      -- stored connection/DM survives, so unban restores instantly).
+      AND NOT EXISTS (
+        SELECT 1 FROM users bu WHERE bu.id = t.other_id AND bu.banned_at IS NOT NULL)
   `)) as unknown as { other_id: string }[];
   return new Set(rows.map((r) => r.other_id));
 }
@@ -61,6 +66,9 @@ export async function isFriendOf(a: string, b: string): Promise<boolean> {
         SELECT 1 FROM blocks bl
         WHERE (bl.blocker_id = ${a} AND bl.blocked_id = ${b})
            OR (bl.blocker_id = ${b} AND bl.blocked_id = ${a}))
+      -- v0.5b (§1.41): a banned party voids the pair on public surfaces.
+      AND NOT EXISTS (
+        SELECT 1 FROM users bu WHERE bu.id IN (${a}::uuid, ${b}::uuid) AND bu.banned_at IS NOT NULL)
   `)) as unknown as { one: number }[];
   return rows.length > 0;
 }

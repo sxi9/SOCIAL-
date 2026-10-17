@@ -1,7 +1,9 @@
 // Nightly GC (ARCHITECTURE §5): orphan attachments, expired share imports,
 // expired link previews (+ images), expired sessions, abandoned stash objects.
+// v0.5b (§1.41): + the IP retention sweep (users.registration_ip, sessions.ip).
 import { and, eq, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import {
+  IP_RETENTION_DAYS,
   ORPHAN_ATTACHMENT_TTL_H,
   SHARE_IMPORT_TTL_DAYS,
 } from '@socialchat/shared';
@@ -35,8 +37,30 @@ export async function deleteAttachmentsFully(rows: AttRow[]): Promise<void> {
   }
 }
 
+/**
+ * v0.5b IP retention (API.md §1.41, FEATURES #54): nulls users.registration_ip
+ * and sessions.ip older than IP_RETENTION_DAYS, counted from the ROW's
+ * created_at — young rows keep theirs (the admin UI shows whatever has not
+ * aged out, never more). Exported separately so tests can run it without the
+ * MinIO-dependent object sweeps below.
+ */
+export async function runIpRetention(now = Date.now()): Promise<void> {
+  const cutoffIso = new Date(now - IP_RETENTION_DAYS * 24 * 3600 * 1000).toISOString();
+  await db.execute(sql`
+    UPDATE users SET registration_ip = NULL
+    WHERE registration_ip IS NOT NULL AND created_at < ${cutoffIso}::timestamptz
+  `);
+  await db.execute(sql`
+    UPDATE sessions SET ip = NULL
+    WHERE ip IS NOT NULL AND created_at < ${cutoffIso}::timestamptz
+  `);
+}
+
 export async function runGc(): Promise<void> {
   const now = Date.now();
+
+  // 0. IP retention (§1.41) — the privacy sweep runs first, unconditionally.
+  await runIpRetention(now);
 
   // 1. Orphan attachments: unbound (no message / share import / scheduled row
   //    / post), older than 24 h. v0.5a (migration 0005): the partial orphan
@@ -54,6 +78,8 @@ export async function runGc(): Promise<void> {
         isNull(schema.attachments.shareImportId),
         isNull(schema.attachments.scheduledMessageId),
         isNull(schema.attachments.postId),
+        // v0.5b (§1.38): room-listing photos bind via listing_id.
+        isNull(schema.attachments.listingId),
         lt(schema.attachments.createdAt, orphanCutoff),
         sql`NOT EXISTS (SELECT 1 FROM stories s WHERE s.attachment_id = ${schema.attachments.id})`,
         sql`NOT EXISTS (SELECT 1 FROM profile_media pm WHERE pm.attachment_id = ${schema.attachments.id})`,

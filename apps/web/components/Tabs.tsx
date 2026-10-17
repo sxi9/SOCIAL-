@@ -1,17 +1,18 @@
 'use client';
 
-// v0.5a tab shell: Chats / Plans / Feed / Profile. Bottom bar on mobile, slim
-// left rail from 900px up (the two-pane chat shell stays intact). The bar hides
-// on mobile while a chat is open (hideOnMobile).
+// v0.5b tab shell: Chats / Local / Feed / Profile (the Plans tab absorbed the
+// board and became Local — FEATURES #43). Bottom bar on mobile, slim left rail
+// from 900px up (the two-pane chat shell stays intact). The bar hides on
+// mobile while a chat is open (hideOnMobile).
 import Link from 'next/link';
 import { useAppState } from '@/lib/useStore';
 import st from './social.module.css';
 
-export type TabKey = 'chats' | 'plans' | 'feed' | 'profile';
+export type TabKey = 'chats' | 'local' | 'feed' | 'profile';
 
 const TABS: { key: TabKey; href: string; label: string }[] = [
   { key: 'chats', href: '/', label: 'Chats' },
-  { key: 'plans', href: '/plans', label: 'Plans' },
+  { key: 'local', href: '/local', label: 'Local' },
   { key: 'feed', href: '/feed', label: 'Feed' },
   { key: 'profile', href: '/settings/profile', label: 'Profile' },
 ];
@@ -60,16 +61,17 @@ function TabIcon({ tab }: { tab: TabKey }) {
           />
         </svg>
       );
-    case 'plans':
+    case 'local':
+      // Map-pin: the board is about where you are (beacons + listings).
       return (
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
           <path
-            d="M12 3 c1 3 3.4 4.2 3.4 7 a3.4 3.4 0 0 1 -6.8 0 C8.6 7.2 11 6 12 3 Z"
+            d="M12 21 C8 16.6 5.5 13.4 5.5 10.2 a6.5 6.5 0 0 1 13 0 C18.5 13.4 16 16.6 12 21 Z"
             stroke="currentColor"
             strokeWidth="1.7"
             strokeLinejoin="round"
           />
-          <path d="M6 16.5 c1.6 2.4 4 3.5 6 3.5 s4.4 -1.1 6 -3.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+          <circle cx="12" cy="10" r="2.4" stroke="currentColor" strokeWidth="1.7" />
         </svg>
       );
     case 'feed':

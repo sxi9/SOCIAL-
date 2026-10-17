@@ -65,6 +65,14 @@ export async function authenticateToken(rawToken: string): Promise<AuthContext |
     .where(eq(schema.sessions.tokenHash, hashToken(rawToken)))
     .limit(1);
   if (!row) return null;
+  // Fixer r1: suspend/ban re-checked on EVERY authentication (REST and WS
+  // upgrade), not just at login. revokeAllSessions is one-shot — a login racing
+  // the admin action can insert a session row after its delete ran; this makes
+  // that stray session dead on first use and destroys it.
+  if (row.user.suspendedAt !== null || row.user.bannedAt !== null) {
+    await db.delete(schema.sessions).where(eq(schema.sessions.id, row.session.id));
+    return null;
+  }
   const now = Date.now();
   if (row.session.expiresAt.getTime() <= now) {
     await db.delete(schema.sessions).where(eq(schema.sessions.id, row.session.id));

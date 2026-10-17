@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import argon2 from 'argon2';
 import { eq, or } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply } from 'fastify';
@@ -24,6 +25,13 @@ import {
   SESSION_COOKIE,
   SESSION_TTL_MS,
 } from './service.js';
+
+/** Fixer r1: never let a non-IP X-Forwarded-For value reach an `inet` column
+ *  (a direct connection past Caddy could put garbage in req.ip and 500 the
+ *  insert) — store NULL instead. */
+function storableIp(ip: string | undefined): string | null {
+  return ip && isIP(ip) !== 0 ? ip : null;
+}
 
 function setSessionCookie(reply: FastifyReply, token: string): void {
   reply.setCookie(SESSION_COOKIE, token, {
@@ -57,7 +65,18 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
     try {
       const inserted = await db
         .insert(schema.users)
-        .values({ id: newId(), username, email, passwordHash, displayName: display_name })
+        .values({
+          id: newId(),
+          username,
+          email,
+          passwordHash,
+          displayName: display_name,
+          // v0.5b (§1.41): registration IP, captured via trustProxy: 1 (the
+          // X-Forwarded-For entry the one trusted hop, Caddy, appended) —
+          // nulled by the nightly retention GC after IP_RETENTION_DAYS, like
+          // sessions.ip.
+          registrationIp: storableIp(req.ip),
+        })
         .returning();
       user = inserted[0]!;
     } catch (err) {
@@ -69,7 +88,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
       throw err;
     }
 
-    const { token } = await createSession(user.id, req.headers['user-agent'] ?? null, req.ip);
+    const { token } = await createSession(user.id, req.headers['user-agent'] ?? null, storableIp(req.ip));
     setSessionCookie(reply, token);
 
     // v0.2 (API.md §1.11): register-with-token runs the invite accept AFTER
@@ -107,7 +126,13 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
     const ok = await argon2.verify(user.passwordHash, password);
     if (!ok) throw new ApiError(401, 'bad_credentials');
 
-    const { token } = await createSession(user.id, req.headers['user-agent'] ?? null, req.ip);
+    // v0.5b (§1.41): suspended/banned accounts cannot log back in — checked
+    // AFTER the password so the account state leaks only to its owner. Ban
+    // outranks suspension; CLI password reset lifts neither.
+    if (user.bannedAt !== null) throw new ApiError(403, 'account_banned');
+    if (user.suspendedAt !== null) throw new ApiError(403, 'account_suspended');
+
+    const { token } = await createSession(user.id, req.headers['user-agent'] ?? null, storableIp(req.ip));
     setSessionCookie(reply, token);
     return reply.status(200).send({ user: userPrivateDto(user) });
   });

@@ -52,7 +52,7 @@ Status: ✅ shipped · 🔨 building · 📋 planned
 37. Disappearing messages; scheduled messages; time capsules
 38. Mini-games in chat + daily puzzle shared with friends (friends-who-shared strip ordered by username — no leaderboard, no ranking, per PSYCHOLOGY rule 3 and API §1.27)
 
-## 📋 v0.5 — Local board + social layer
+## ✅ v0.5 — Local board + social layer (shipped: v0.5a social layer, v0.5b local board)
 
 One listing system, five card kinds, all area-tagged with expiry and "Message me" → DM:
 
@@ -61,7 +61,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 41. Room & space sharing (price, photos, dates) and "looking for" posts
 42. Place reviews with area tags (feed beacon venue suggestions)
 43. Plan beacons join the board as one card kind; a filterable "Local" tab
-44. Trust layer: person reviews after transactions, account-age/mutual-friend signals
+44. Trust layer: person reviews after transactions (shipped v0.5b — API §1.40, ADR-012); account-age/mutual-friend signals remain 📋
 45. No in-app payments — the app connects people, money settles outside; bulletin-board terms shown plainly
 46. Stories (24h) with view lists; broadcast channels; feed (posts/likes/comments)
 47. Rich profiles: 3-GIF strip, interest tags, work/skills portfolio
@@ -77,7 +77,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 
 ## 📋 Backlog — operator & platform
 
-54. Admin dashboard (operator-only): user list with registration/last-login IPs and sessions, reports queue with actions (warn/suspend/ban), server log viewer (api/worker), metrics (DAU, messages/day, storage), invite on/off, data export. Boundaries: metadata only — no private message contents in the UI; IP retention window (default 90 days) documented in the instance's privacy note
+54. ✅ (shipped v0.5b — API §1.41, ADR-013) Admin dashboard (operator-only): user list with registration/last-login IPs and sessions, reports queue with actions (warn/suspend/ban), server log viewer (api/worker), metrics (DAU, messages/day, storage), invite on/off, data export. Boundaries: metadata only — no private message contents in the UI; IP retention window (default 90 days) documented in the instance's privacy note
 55. Make-it-yours kit: per-instance name, colors, mascot
 56. Full-text search; multi-device polish; Capacitor Android/iOS wrappers
 57. End-to-end encryption (session/device registry already in place)

@@ -93,6 +93,7 @@ export async function profileRoutes(fastify: FastifyInstance): Promise<void> {
                 AND a.message_id IS NULL
                 AND a.scheduled_message_id IS NULL
                 AND a.post_id IS NULL
+                AND a.listing_id IS NULL
                 AND NOT EXISTS (SELECT 1 FROM stories s WHERE s.attachment_id = a.id)
                 AND NOT EXISTS (
                   SELECT 1 FROM profile_media pm
