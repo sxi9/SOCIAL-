@@ -63,6 +63,9 @@ services:
       # Server-side forward target of app/share/route.ts (Caddy handles
       # browser /api and /ws; this is the only web->api hop in prod).
       API_ORIGIN: http://api:3000
+      # Absolute-URL base for link previews (OG tags). Set in .env when the
+      # public address can't be derived from headers (tunnels). Empty = derive.
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
 
   api:
     build:

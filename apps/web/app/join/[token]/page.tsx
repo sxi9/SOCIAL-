@@ -36,8 +36,13 @@ async function fetchInvite(token: string): Promise<InvitePublic | null> {
   }
 }
 
-/** Public origin for absolute OG URLs (Caddy sets x-forwarded-* in prod). */
+/** Public origin for absolute OG URLs. PUBLIC_ORIGIN env wins when set —
+ * required behind tunnels (cloudflared/ngrok rewrite Host to the local
+ * origin, so headers can't recover the public name). Otherwise derive from
+ * the forwarded headers Caddy sends. */
 async function publicOrigin(): Promise<string> {
+  const fixed = process.env.PUBLIC_ORIGIN;
+  if (fixed) return fixed.replace(/\/+$/, '');
   const h = await headers();
   const host = h.get('x-forwarded-host') ?? h.get('host') ?? 'localhost';
   const proto = h.get('x-forwarded-proto') ?? (host.startsWith('localhost') ? 'http' : 'https');
