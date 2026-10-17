@@ -179,6 +179,109 @@ magic links, password reset). ALL auth features flag off instance settings at
 runtime — enabling OTP later is configuration, not code. Until configured,
 toggles are visible but disabled with "needs SMTP" notes.
 
+## v1.0 — The owner's big UX wave (four packs, polish woven in)
+
+Owner's 2026-10-17 wishlist, triaged. Ship order: a → b → c → d, each at the
+full verification bar. Every pack ships its screens polished (animations,
+alignment, reduced-motion safe); a final global alignment audit closes v1.0.
+Constraints that bind all four: PSYCHOLOGY rule 3 (named faces, never public
+numeric counts — no Instagram-style stats), ghost groups stay unenumerable
+(ADR-020), blocks/privacy enforced server-side at every new surface, media
+self-hosted in MinIO through the auth proxy (bundled sounds, no tile keys).
+
+### v1.0a — Board & media pack
+
+**Board photos (91):** BUG — owner could not attach photos to a board post;
+`POST /api/posts` already takes `attachment_ids ≤ 4`. Root-cause the
+composer; then every post/board composer (feed compose, local board, group
+contexts) gets the photo picker with previews and remove-before-send.
+**Edit before upload (92):** in-app crop/rotate editor (canvas-based, no new
+deps) offered wherever an image is picked: profile/group avatars, chat
+sends, posts, stories. Aspect presets (free/1:1/4:5/16:9). Output re-encoded
+client-side; server pipeline unchanged.
+**Pic zoom (93):** tapping any full avatar/profile pic opens a full-screen
+pinch-zoom/pan viewer (portal to body, safe-area aware).
+**Personal gallery + story saver (94):** private "My gallery" page: my
+uploaded media across chats/posts/stories, filterable; my stories auto-save
+here past their 24 h (private, deletable). Nothing new is shared — it is a
+view over my own attachments.
+**Shared chat backgrounds (95):** background picker gains "Set for everyone"
+(DMs: either side; groups: admins) → stored on the conversation, fanned out
+via WS; each member may still override locally (per-user row wins). Both
+sides see the shared one by default — the owner's ask.
+**Transparent undo-send (96):** every message send shows a small translucent
+Undo pill for `UNDO_SEND_WINDOW_S` (5 s; shared constant) — generalizes the
+drunk-mode 10 s undo (drunk keeps 10). Undo = the existing delete-for-
+everyone path before anyone's watermark passes the seq.
+
+### v1.0b — Stories pack
+
+**Multiple stories (97):** several active stories per author; tray groups by
+author, auto-advance; per-story viewer list for the author (named faces,
+chronological, NO view count headline — the list itself is the signal).
+**Audiences (98):** per-story audience: public / connections / exclusive
+list (reusable "close friends" list) / connections-minus-hide-from list.
+Server-enforced at read/fan-out like every §1.14 rule; public stories feed
+the existing share pages.
+**Voice reactions (99):** holding the reaction mic records ≤ 15 s audio sent
+to the author as a story-reply DM (existing audio message type); quick emoji
+reactions stay.
+**Live comments (100):** author opt-in per story: a comment strip all
+eligible viewers can read and join (realtime via WS), author can remove
+comments / ban users from their stories; blocks invisible-enforced;
+reportable. Comments die with the story.
+
+### v1.0c — Calls pack
+
+**Call history (102):** `call_sessions` style log (caller, callees, in/out/
+missed, duration) → per-chat header entry + global Calls tab; owner-only
+delete of own history rows. Missed-call row doubles as callback button.
+**Sounds (103):** bundled self-hosted ringtone + message-notification
+sounds (ship small OGG/MP3 assets in-repo); settings: ring choice, text
+sound on/off, per-chat override; respects mute, quiet digests, and never
+plays for blocked senders (pushGuard parity).
+**Audio↔video switch (104):** mid-call upgrade to video prompts the other
+side (consent), downgrade is instant; renegotiation over the existing
+signaling channel (ADR-014/017 patterns).
+**Layouts (105):** 1:1 video gets layout templates: classic PiP (draggable,
+snap corners) and two-half split; tap a tile to swap focus; remembered per
+user. Group calls keep the grid.
+
+### v1.0d — Profile, search & sharing
+
+**Tap-photo → profile (106):** tapping a user's avatar/photo anywhere opens
+the profile sheet: pic, mood (per its visibility), interests, pic feed +
+posts the viewer may already see. Strictly a navigation feature — it reveals
+nothing the viewer couldn't reach at `/u/username`.
+**Profile sections + privacy (107):** profile gains tabs (posts, gallery,
+groups, connections) — each with owner toggle public/connections/private.
+Groups tab lists ONLY public + invite-only groups the owner opted to show
+(ghost: never; private: never). Gallery tab shows only media already public
+to that viewer. Defaults conservative (connections).
+**Global search (108):** persistent search bar: people (existing `?q=`),
+public/invite-only groups, board listings, my own messages (per-user pg
+trigram/FTS on my conversations only). All results pass block/privacy
+filters server-side; backlog item 56 partially lands here.
+**Location pins (109):** "Spotted" pins — photo + place on the local board
+(listing-flavored, lat/lng optional label + OSM/Google link-out, no embedded
+tile maps); others tap "interested 👀" (named faces strip, no counts);
+pins expire like beacons; reportable, block-filtered.
+**Share audit (110):** every shareable surface (story, post, beacon,
+listing, group, profile) carries the share button wired to the existing
+share pages/links + OS share sheet; stranger lands on the SSR page, signup
+gates interaction (79c/79d machinery — surface, don't rebuild). Owner
+emphasis (2026-10-17): sharing must work to OTHER social media — share pages
+get full OG/Twitter-card meta so links unfurl in Instagram/WhatsApp/etc.;
+profiles get a standalone share link (public profile page + copy-link
+button); posts AND videos on share pages are viewable/PLAYABLE by non-users
+(share-token-gated streaming, rate-limited), with every interaction gating
+to signup + deep-link-back. Growth loop: viewer → login wall only at the
+moment of interaction, never at view time for public content.
+
+**Explicitly NOT building:** public numeric profile stats (follower/like
+counts) — banned by PSYCHOLOGY rule 3; the Instagram-style grid + share
+link ship without numbers.
+
 ## Standing decisions made in conversation (do not relitigate silently)
 
 - No private-chat monitor in admin; report-context viewer is the moderation

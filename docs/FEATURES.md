@@ -129,6 +129,37 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 85. Optional TOTP 2FA (authenticator apps)
 86. OTP-READY admin settings: an Authentication section in the admin panel to configure delivery when available — SMTP (email verification, OTP, magic links, password reset) and an SMS-gateway slot — with per-feature toggles and a test-send button; all auth features flag off instance settings so enabling OTP later is configuration, not code
 
+## 📋 v1.0a — Board & media pack (full design: SPECS.md §v1.0)
+
+91. Photos on board posts: fix the composer bug + photo picker (≤4, previews) on every post/board composer
+92. Edit-before-upload: in-app crop/rotate with aspect presets wherever an image is picked (avatars, chat, posts, stories)
+93. Full-screen pinch-zoom viewer for profile/group pics
+94. Personal gallery ("My gallery"): private view over my own media + story auto-saver past 24h
+95. Shared chat backgrounds: "Set for everyone" (group: admins) fanned out live; per-user override stays
+96. Transparent undo-send pill on every message (5 s; drunk mode keeps 10 s)
+
+## 📋 v1.0b — Stories pack
+
+97. Multiple active stories per author; per-story viewer list (named faces, no count headline)
+98. Story audiences: public / connections / exclusive close-friends list / hide-from — server-enforced
+99. Story voice reactions (≤15 s audio → story-reply DM) + quick emoji reactions
+100. Story live comments (author opt-in): realtime thread all eligible viewers see and join; author moderates; die with the story
+
+## 📋 v1.0c — Calls pack
+
+102. Call history: global Calls tab + per-chat log (in/out/missed, duration), callback from missed row
+103. Ringtone + text notification sounds (bundled, self-hosted); per-chat override; mute/pushGuard parity
+104. Mid-call audio↔video switch (consent prompt on upgrade)
+105. 1:1 video layouts: draggable PiP + two-half split, tap-to-swap focus
+
+## 📋 v1.0d — Profile, search & sharing
+
+106. Tap any user photo anywhere → profile sheet (mood, interests, pic feed, posts — only what the viewer could already see)
+107. Profile tabs (posts, gallery, groups, connections) each with public/connections/private owner toggle; ghost groups never listed
+108. Global search bar: people, public/invite-only groups, board listings, my own messages
+109. "Spotted" pins: photo + place on the local board, "interested 👀" named-faces reactions, beacon-style expiry
+110. Share everywhere: OG/Twitter-card unfurls for other social media, standalone profile share link, non-users can view posts and PLAY videos on share pages — login only gates interaction (never viewing public content)
+
 ## 📋 Backlog — operator & platform
 
 54. ✅ (shipped v0.5b — API §1.41, ADR-013) Admin dashboard (operator-only): user list with registration/last-login IPs and sessions, reports queue with actions (warn/suspend/ban), server log viewer (api/worker), metrics (DAU, messages/day, storage), invite on/off, data export. Boundaries: metadata only — no private message contents in the UI; IP retention window (default 90 days) documented in the instance's privacy note
