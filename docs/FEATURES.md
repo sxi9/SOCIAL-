@@ -75,6 +75,46 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 52. Bored Together & Bored Roulette (opt-in discovery, mutual waves, 5-min keep-or-vanish chats, private expectation feedback — gated on the v0.3 safety bundle)
 53. Rescue me (ping up to 3 connections, daily-capped)
 
+## 🔜 v0.6.1 — UI correctness (in progress)
+
+59. Overlay/placement fixes from real-device testing: rescue sheet positioning, click-blocking backdrop, beacon-sheet submit clipped on phones, SOS header overflow, roulette tap target — plus a five-viewport sweep of every sheet/button (containment, clickability, triple dismissability)
+
+## 📋 v0.7 — Interactivity pack
+
+60. Clickable beacon joiners → "Who's in" sheet; every avatar anywhere → profile with Connect/Message
+61. Edit live beacons (vibe/note/time/threshold, joiners see a change note) + edit board listings; custom vibe chips (emoji + word, recents remembered)
+62. "Start with whoever's here" — early spark below threshold (creator button)
+63. Joiner notifications: sparked / edited / starting soon / cancelled (joiners only)
+64. Feed lanes: Friends / Public (Discover) toggle; public posts visible to all
+65. Interactive posts: inline poll posts (song polls via options + links), open game-challenge posts (first tap joins), "Join my…" cards (cross-post a beacon/listing to the feed with a Join button)
+66. GIF/image attachments on comments; emoji + avatar-stamp reactions on comments
+67. Location chips on posts/beacons/listings (place name or one-tap current location → map link; no tile embeds, no API keys)
+68. Chat "📍 Join me here" location drops with "On my way 🏃" quick-reply headcount
+69. Scheduled-send confirmation toast + pending-count badge opening the scheduled drawer
+70. OG banner image for invite links (composed 1200×630: avatar + "X invited you" + mascot; good card even with no avatar)
+71. Login flipping wordmark ("[Bored|Sad|Excited|Happy] Chat") with mascot reacting per word
+
+## 📋 v0.8 — Identity, moods & community care
+
+72. Moods: 😴🎉💤 + custom emoji+word, auto-expiring, visibility everyone/connections/nobody; 🎢 swing mode (auto-cycling chip)
+73. 🍻 Drunk mode: wobbly chip (connections-only default), 10s send-undo, "you sure?" checks for cold contacts/public posts, chat banner for others ("take tonight's messages lightly" + "Check on them 💙" button), auto-expiry with no trace
+74. Mood-reactive messages: drunk = dancing bubbles, sad = rain + falling text, hyped = bounce — subtle, per-viewer toggle, reduced-motion off
+75. Animated display names: Off/Glow/Shimmer/Rainbow/Surprise-me (static for reduced-motion viewers, legibility first)
+76. Profile activity strip (lit/sparked beacons, posts, listings, games) with per-type privacy (public/connections/private); never leaks past the underlying object's audience
+77. Anonymous message game: opt-in (default connections-only), reveal via timer (progressive avatar un-blur) or riddle; sender anonymous to recipient never to the server; reports attach identity
+78. People-you-may-know suggestions (mutuals/area/groups) + post-signup "find your people" (never on the login page)
+79. GIF/video chat backgrounds (per-user per-chat, dimmed, paused off-screen, poster for reduced-motion)
+80. Discoverability: first-run tour, "✨ Things you can do" feature directory with Try-it buttons, "new since last visit" update cards
+81. Admin: public-content moderation tab (public posts/beacons/listings, remove with reason, logged); support inbox (in-app Help & feedback → categorized tickets → admin replies land as a Support conversation); report-context viewer (reported message + surrounding context, reporter-consented)
+
+## 📋 v0.9 — Auth pack
+
+82. Passkeys (WebAuthn): fingerprint/face login, password fallback
+83. QR cross-device login (scan with logged-in phone, WhatsApp-Web style)
+84. Recovery codes at signup (one-time, printable) for email-free account recovery
+85. Optional TOTP 2FA (authenticator apps)
+86. OTP-READY admin settings: an Authentication section in the admin panel to configure delivery when available — SMTP (email verification, OTP, magic links, password reset) and an SMS-gateway slot — with per-feature toggles and a test-send button; all auth features flag off instance settings so enabling OTP later is configuration, not code
+
 ## 📋 Backlog — operator & platform
 
 54. ✅ (shipped v0.5b — API §1.41, ADR-013) Admin dashboard (operator-only): user list with registration/last-login IPs and sessions, reports queue with actions (warn/suspend/ban), server log viewer (api/worker), metrics (DAU, messages/day, storage), invite on/off, data export. Boundaries: metadata only — no private message contents in the UI; IP retention window (default 90 days) documented in the instance's privacy note
