@@ -69,6 +69,15 @@ import {
   TTT_BOARD_CELLS,
   USERNAME_REGEX,
   VIBE_CHECK_PROMPT_MAX_CHARS,
+  // ---- v0.6 (API.md §1.42–§1.46; ADR-014/ADR-015) ----
+  CALL_KINDS,
+  CALL_STATUSES,
+  DISCOVERY_NOTE_MAX_CHARS,
+  DISCOVERY_SCOPES,
+  EXPECTATION_CONTEXTS,
+  EXPECTATION_VERDICTS,
+  RESCUE_MAX_TARGETS,
+  RESCUE_NOTE_MAX_CHARS,
 } from './constants.js';
 
 // ---------------------------------------------------------------------------
@@ -328,6 +337,26 @@ export const ListingRefSchema = z.object({
 });
 export type ListingRef = z.infer<typeof ListingRefSchema>;
 
+// v0.6 calls (§1.42): defined up here (ahead of the §1.42 block) because the
+// call_ref metadata rider below needs them.
+export const CallKindSchema = z.enum(CALL_KINDS);
+export type CallKind = z.infer<typeof CallKindSchema>;
+
+export const CallStatusSchema = z.enum(CALL_STATUSES);
+export type CallStatus = z.infer<typeof CallStatusSchema>;
+
+// v0.6 (§1.42): SERVER-written snapshot on the missed-call system message
+// (event 'call_missed') — the forwarded_from pattern: the message keeps
+// rendering whatever later happens to the calls row. duration_s is reserved
+// for a future call-log message on 'completed'; it is null on missed calls.
+export const CallRefSchema = z.object({
+  call_id: UuidSchema,
+  kind: CallKindSchema,
+  status: CallStatusSchema,
+  duration_s: z.number().int().nonnegative().nullable(),
+});
+export type CallRef = z.infer<typeof CallRefSchema>;
+
 export const MessageMetadataSchema = z.object({
   link_preview: LinkPreviewSchema.optional(),
   system: SystemEventMetadataSchema.optional(),
@@ -363,6 +392,13 @@ export const MessageMetadataSchema = z.object({
   // SERVER-written listing snapshot on the 'listing_contact' DM context message
   // and the 'team_up' group kickoff message (client-sent values are ignored).
   listing_ref: ListingRefSchema.optional(),
+  // ---- v0.6 (§1.42, §1.46) ----
+  // §1.42: SERVER-written call snapshot on the missed-call system message
+  // (client-sent values are ignored).
+  call_ref: CallRefSchema.optional(),
+  // §1.46: this message is a rescue SOS — render the rescue card with the
+  // one-tap "call <name>" action. SERVER-written by POST /api/rescue only.
+  rescue: z.literal(true).optional(),
 });
 export type MessageMetadata = z.infer<typeof MessageMetadataSchema>;
 
@@ -529,6 +565,22 @@ export const ConversationSchema = z.object({
   // (NOT personal like themes): everyone sees the same TTL. default(null)
   // keeps pre-v0.4 payloads parsing clean.
   disappear_ttl_s: z.number().int().positive().nullable().default(null),
+  // v0.6 (§1.44/§1.45): how this DM came to exist — 'discovery' (mutual wave)
+  // or 'roulette'; null for every ordinary conversation. Drives the client's
+  // one-time PRIVATE expectation-feedback prompt (§1.45; PSYCHOLOGY finding
+  // #10). default(null) keeps pre-v0.6 payloads parsing clean.
+  origin: z.enum(['discovery', 'roulette']).nullable().default(null),
+  // v0.6 (§1.45): non-null ONLY while a roulette DM is provisional. kept is
+  // the VIEWER's own keep state — whether the other party kept is never
+  // serialized (no pressure surface; it resolves when both have kept or the
+  // window lapses). default(null) keeps pre-v0.6 payloads parsing clean.
+  roulette: z
+    .object({
+      expires_at: IsoDateTimeSchema,
+      kept: z.boolean(),
+    })
+    .nullable()
+    .default(null),
   created_at: IsoDateTimeSchema,
 });
 export type Conversation = z.infer<typeof ConversationSchema>;
@@ -2129,3 +2181,199 @@ export const AdminUserExportSchema = z.object({
   reviews_received: z.array(z.record(z.unknown())),
 });
 export type AdminUserExport = z.infer<typeof AdminUserExportSchema>;
+
+// ---------------------------------------------------------------------------
+// Calls (v0.6 — API.md §1.42 + §2.12, ADR-014, FEATURES #49–#50)
+// ---------------------------------------------------------------------------
+
+// The durable call row (the call LOG — who called whom, when, how it ended).
+// Everything live about a call is EPHEMERAL: the in-call member set lives in
+// Redis, signaling rides the WS gateway and is never persisted (§2.12).
+// participant_ids = the CURRENT live mesh members (from Redis; [] once the
+// call is terminal) — ids only, clients resolve faces from the participants
+// they already hold. Hard cap CALL_MESH_MAX (ADR-014).
+export const CallSchema = z.object({
+  id: UuidSchema,
+  conversation_id: UuidSchema,
+  initiator_id: UuidSchema.nullable(), // null = account deleted since
+  kind: CallKindSchema,
+  is_group: z.boolean(),
+  status: CallStatusSchema,
+  participant_ids: z.array(UuidSchema),
+  started_at: IsoDateTimeSchema,
+  answered_at: IsoDateTimeSchema.nullable(),
+  ended_at: IsoDateTimeSchema.nullable(),
+});
+export type Call = z.infer<typeof CallSchema>;
+
+// coturn static-auth-secret credentials (the TURN REST API memo format):
+// username = "<unix expiry>:<user_id>", credential = base64(HMAC-SHA1(
+// TURN_SECRET, username)). Time-limited (TURN_CRED_TTL_S = 1 h); long calls
+// refresh via GET /api/turn-credentials before expiry. uris carry the stun:
+// and turn: (udp + tcp) URIs for RTCPeerConnection.iceServers.
+export const TurnCredentialsSchema = z.object({
+  username: z.string(),
+  credential: z.string(),
+  uris: z.array(z.string()),
+  expires_at: IsoDateTimeSchema,
+});
+export type TurnCredentials = z.infer<typeof TurnCredentialsSchema>;
+
+export const CreateCallRequestSchema = z.object({
+  kind: CallKindSchema,
+});
+export type CreateCallRequest = z.infer<typeof CreateCallRequestSchema>;
+
+// turn is null only when the instance has no TURN_SECRET configured (local
+// dev without coturn — host candidates still connect same-network peers).
+export const CallResponseSchema = z.object({
+  call: CallSchema,
+  turn: TurnCredentialsSchema.nullable(),
+});
+export type CallResponse = z.infer<typeof CallResponseSchema>;
+
+export const EndCallRequestSchema = z.object({
+  // 'failed' marks a call whose media never (re)connected — client-reported,
+  // only honored on transitions where it is coherent (§1.42).
+  reason: z.enum(['completed', 'failed']).default('completed'),
+});
+export type EndCallRequest = z.infer<typeof EndCallRequestSchema>;
+
+export const TurnCredentialsQuerySchema = z.object({
+  call_id: UuidSchema,
+});
+export type TurnCredentialsQuery = z.infer<typeof TurnCredentialsQuerySchema>;
+
+export const TurnCredentialsResponseSchema = z.object({
+  turn: TurnCredentialsSchema,
+});
+export type TurnCredentialsResponse = z.infer<typeof TurnCredentialsResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Bored Together — discovery (v0.6 — API.md §1.44, ADR-015, FEATURES #52)
+// ---------------------------------------------------------------------------
+
+export const DiscoveryScopeSchema = z.enum(DISCOVERY_SCOPES);
+export type DiscoveryScope = z.infer<typeof DiscoveryScopeSchema>;
+
+// My own opt-in state (owner-only — nobody else ever sees this DTO).
+export const DiscoveryOptinSchema = z.object({
+  scope: DiscoveryScopeSchema,
+  note: z.string().max(DISCOVERY_NOTE_MAX_CHARS),
+  created_at: IsoDateTimeSchema,
+  expires_at: IsoDateTimeSchema,
+});
+export type DiscoveryOptin = z.infer<typeof DiscoveryOptinSchema>;
+
+export const DiscoveryOptinRequestSchema = z.object({
+  scope: DiscoveryScopeSchema,
+  note: z.string().max(DISCOVERY_NOTE_MAX_CHARS).default(''),
+});
+export type DiscoveryOptinRequest = z.infer<typeof DiscoveryOptinRequestSchema>;
+
+export const DiscoveryOptinResponseSchema = z.object({
+  optin: DiscoveryOptinSchema.nullable(),
+});
+export type DiscoveryOptinResponse = z.infer<typeof DiscoveryOptinResponseSchema>;
+
+// A stranger's card. UserLite ONLY (no last_seen, no area text — the area
+// MATCH is computed server-side and never printed; FEATURES #30). waved is
+// viewer-specific: I already waved at them (renders the "waved" chip — their
+// card never shows who waved at THEM; a single wave notifies nobody, §1.44).
+export const DiscoveryCardSchema = z.object({
+  user: UserLiteSchema,
+  scope: DiscoveryScopeSchema,
+  note: z.string().max(DISCOVERY_NOTE_MAX_CHARS),
+  expires_at: IsoDateTimeSchema,
+  waved: z.boolean(),
+});
+export type DiscoveryCard = z.infer<typeof DiscoveryCardSchema>;
+
+export const DiscoveryCardsResponseSchema = z.object({
+  cards: z.array(DiscoveryCardSchema),
+});
+export type DiscoveryCardsResponse = z.infer<typeof DiscoveryCardsResponseSchema>;
+
+export const WaveRequestSchema = z.object({
+  user_id: UuidSchema,
+});
+export type WaveRequest = z.infer<typeof WaveRequestSchema>;
+
+// matched=false → the wave is parked silently (NOBODY is notified — no
+// FoMO, no rejection surface; ADR-015). matched=true → the mutual-wave DM.
+export const WaveResponseSchema = z.object({
+  matched: z.boolean(),
+  conversation_id: UuidSchema.nullable(),
+});
+export type WaveResponse = z.infer<typeof WaveResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Expectation feedback & encouragement (v0.6 — API.md §1.45, ADR-015,
+// PSYCHOLOGY finding #10: people underestimate how pleasant strangers are)
+// ---------------------------------------------------------------------------
+
+export const ExpectationContextSchema = z.enum(EXPECTATION_CONTEXTS);
+export type ExpectationContext = z.infer<typeof ExpectationContextSchema>;
+
+export const ExpectationVerdictSchema = z.enum(EXPECTATION_VERDICTS);
+export type ExpectationVerdict = z.infer<typeof ExpectationVerdictSchema>;
+
+// conversation_id is a dedupe key, not an FK — expired roulette DMs are
+// hard-deleted, and the one-tap often lands right after that deletion.
+export const ExpectationFeedbackRequestSchema = z.object({
+  context: ExpectationContextSchema,
+  conversation_id: UuidSchema,
+  verdict: ExpectationVerdictSchema,
+});
+export type ExpectationFeedbackRequest = z.infer<typeof ExpectationFeedbackRequestSchema>;
+
+// The anonymous instance-wide aggregate, shown ONLY pre-opt-in (client rule,
+// §1.45). better_percent is null under ENCOURAGEMENT_MIN_SAMPLES.
+export const EncouragementResponseSchema = z.object({
+  sample_size: z.number().int().nonnegative(),
+  better_percent: z.number().int().min(0).max(100).nullable(),
+});
+export type EncouragementResponse = z.infer<typeof EncouragementResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Bored Roulette (v0.6 — API.md §1.45, ADR-015, FEATURES #52)
+// ---------------------------------------------------------------------------
+
+export const RouletteJoinResponseSchema = z.object({
+  status: z.literal('queued'),
+});
+export type RouletteJoinResponse = z.infer<typeof RouletteJoinResponseSchema>;
+
+export const RouletteKeepRequestSchema = z.object({
+  conversation_id: UuidSchema,
+});
+export type RouletteKeepRequest = z.infer<typeof RouletteKeepRequestSchema>;
+
+// permanent=true the moment BOTH parties have kept (the DTO's roulette rider
+// goes null); until then the viewer only ever learns their own keep state.
+export const RouletteKeepResponseSchema = z.object({
+  conversation: ConversationSchema,
+  permanent: z.boolean(),
+});
+export type RouletteKeepResponse = z.infer<typeof RouletteKeepResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Rescue me (v0.6 — API.md §1.46, FEATURES #53)
+// ---------------------------------------------------------------------------
+
+export const RescueRequestSchema = z.object({
+  user_ids: z.array(UuidSchema).min(1).max(RESCUE_MAX_TARGETS),
+  note: z.string().max(RESCUE_NOTE_MAX_CHARS).default(''),
+});
+export type RescueRequest = z.infer<typeof RescueRequestSchema>;
+
+export const RescueResponseSchema = z.object({
+  // One entry per target: the DM the rescue message landed in.
+  rescues: z.array(
+    z.object({
+      user_id: UuidSchema,
+      conversation_id: UuidSchema,
+    }),
+  ),
+});
+export type RescueResponse = z.infer<typeof RescueResponseSchema>;

@@ -17,6 +17,22 @@ export interface SocketMeta {
   strikes: number;
   presenceSubs: Set<string>;
   receiptGates: Map<string, ReceiptGate>;
+  /** v0.6 §2.12 flood guards (fixer r1: widened from ICE-only to EVERY
+   * relayed signaling frame; fixer r2: watch.sync/watch.stop included): per-
+   * (socket, kind, call|conversation) fixed windows — keys like
+   * `ice:<call_id>` / `sdp:<call_id>` / `inv:<call_id>` / `ctl:<call_id>` /
+   * `wst:<conversation_id>` / `wsy:<conversation_id>` /
+   * `wsp:<conversation_id>`, each with its own per-window budget (gateway
+   * constants). Excess is silently dropped BEFORE any DB or Redis work
+   * (signaling degrades, nothing breaks, nothing amplifies), and the map is
+   * capped at 64 live windows so made-up ids cannot grow it. */
+  sigGates: Map<string, { windowStart: number; count: number }>;
+  /** v0.6 §2.12 flood guard: per-(socket, conversation) last RELAYED
+   * watch.sync timestamp (WATCH_SYNC_MIN_INTERVAL_MS). Written only after a
+   * sync is authorized and relayed (fixer r2), so it holds entries only for
+   * conversations this user actually hosts a live watch session in — spam
+   * with made-up ids never grows it (that lands on the capped sigGates). */
+  watchSyncAt: Map<string, number>;
 }
 
 class Registry {

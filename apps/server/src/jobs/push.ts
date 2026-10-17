@@ -12,7 +12,14 @@ import { isBlockedPair } from '../lib/blocks.js';
 // mention/mute/block rules are unit-tested there); re-exported for callers.
 import { messagePushAllowed } from '../lib/pushGuard.js';
 export { messagePushAllowed };
-import type { BeaconPushJob, MessagePushJob, PushJob, SocialPushJob } from '../queues.js';
+import type {
+  BeaconPushJob,
+  CallPushJob,
+  MessagePushJob,
+  PushJob,
+  RescuePushJob,
+  SocialPushJob,
+} from '../queues.js';
 import { presenceKey, redis } from '../redis.js';
 
 export function initWebPush(): boolean {
@@ -115,10 +122,92 @@ async function processSocialPushJob(job: SocialPushJob): Promise<void> {
   await sendToSubscriptions(job.user_id, payload);
 }
 
+// v0.6 (§1.42): the missed-call push — the UNCHANGED §2.9 guards re-checked
+// at execution: presence, read-elsewhere (the missed-call system message's
+// seq), muted_until, per-(user, conversation) debounce; the block belt covers
+// a block created between enqueue and execution.
+async function processCallPushJob(job: CallPushJob): Promise<void> {
+  if ((await redis.exists(presenceKey(job.user_id))) === 1) return;
+  const [part] = await db
+    .select()
+    .from(schema.conversationParticipants)
+    .where(
+      and(
+        eq(schema.conversationParticipants.conversationId, job.conversation_id),
+        eq(schema.conversationParticipants.userId, job.user_id),
+      ),
+    )
+    .limit(1);
+  if (!part || part.leftAt !== null) return;
+  const blockedPair = job.initiator_id
+    ? await isBlockedPair(job.user_id, job.initiator_id)
+    : false;
+  if (
+    !messagePushAllowed({
+      blockedPair,
+      lastReadSeq: part.lastReadSeq,
+      seq: job.seq,
+      mutedUntil: part.mutedUntil,
+      mentioned: false,
+    })
+  ) {
+    return;
+  }
+  const debounced = await redis.set(
+    `pushdb:${job.user_id}:${job.conversation_id}`,
+    '1',
+    'EX',
+    PUSH_DEBOUNCE_S,
+    'NX',
+  );
+  if (debounced !== 'OK') return;
+
+  // Title: caller display name (DM) or the group title (§1.42).
+  const [conv] = await db
+    .select()
+    .from(schema.conversations)
+    .where(eq(schema.conversations.id, job.conversation_id))
+    .limit(1);
+  if (!conv) return;
+  let title = conv.title ?? 'Missed call';
+  if (conv.type === 'dm' && job.initiator_id) {
+    const [caller] = await db
+      .select({ displayName: schema.users.displayName })
+      .from(schema.users)
+      .where(eq(schema.users.id, job.initiator_id))
+      .limit(1);
+    if (caller) title = caller.displayName;
+  }
+  const payload = JSON.stringify({
+    title,
+    body: `Missed ${job.call_kind} call`,
+    tag: job.conversation_id,
+    data: { url: `/c/${job.conversation_id}` },
+  });
+  await sendToSubscriptions(job.user_id, payload);
+}
+
+// v0.6 (§1.46): the ONE push that bypasses the §2.9 guards — presence,
+// read-elsewhere and debounce SKIPPED, muted_until OVERRIDDEN (the §1.33
+// mention precedent). Blocks remain structural: the route's friends-of gate
+// excludes blocked pairs before any enqueue; this re-check is the belt.
+async function processRescuePushJob(job: RescuePushJob): Promise<void> {
+  if (await isBlockedPair(job.user_id, job.sender_id)) return;
+  const payload = JSON.stringify({
+    title: job.title,
+    body: job.body,
+    tag: job.conversation_id,
+    data: { url: `/c/${job.conversation_id}` },
+  });
+  await sendToSubscriptions(job.user_id, payload);
+}
+
 export async function processPushJob(job: PushJob): Promise<void> {
   if (!config.vapid) return;
   if (job.kind === 'beacon') return processBeaconPushJob(job);
   if (job.kind === 'social') return processSocialPushJob(job);
+  if (job.kind === 'call') return processCallPushJob(job);
+  if (job.kind === 'rescue') return processRescuePushJob(job);
   return processMessagePushJob(job);
 }
 

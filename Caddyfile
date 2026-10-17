@@ -1,6 +1,15 @@
 # SocialChat edge — the ONE public entrypoint (ARCHITECTURE §3).
 # /api/* and /ws -> api:3000 (reverse_proxy handles the WebSocket upgrade
 # automatically); everything else -> web:3000 (Next.js SSR/PWA).
+#
+# v0.6 exception (ADR-014): coturn (service `turn`) does NOT ride Caddy — it
+# publishes 3478/udp+tcp and the 49160-49200/udp relay range on the host
+# itself, because TURN is UDP-first media relay and an HTTP reverse proxy
+# cannot carry it. Nothing to configure here: call SIGNALING still rides /ws
+# through this file; only the media relay bypasses it. CSP note: WebRTC media
+# is not governed by connect-src in practice, and the YouTube watch-together
+# embed (API.md §1.43) needs the frame-src carve-out below — the ONLY
+# third-party origin in the policy.
 
 (socialchat) {
 	encode zstd gzip
@@ -14,7 +23,18 @@
 	#     inline bootstrap/flight-data <script> tags (no nonce pipeline in this
 	#     stack); style-src needs it for Next's inline style runtime. NO
 	#     unsafe-eval anywhere.
-	header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' ws: wss:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+	#   * script-src also whitelists https://www.youtube.com — EXACTLY ONE
+	#     external script, the IFrame Player API controller
+	#     (https://www.youtube.com/iframe_api, which chain-loads its
+	#     www-widgetapi.js from the same origin). It exists solely for v0.6
+	#     §1.43 watch together: the API drives play/pause/seek on the embed so
+	#     host syncs can steer every participant. Nothing else may load from
+	#     there, and no other external script origin is allowed.
+	#   * frame-src adds www.youtube-nocookie.com (v0.6 §1.43 watch together:
+	#     the IFrame player is the whole playback path — the server never
+	#     fetches YouTube). Together with script-src above these are the ONLY
+	#     third-party origins in the policy.
+	header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://www.youtube.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' ws: wss:; worker-src 'self'; manifest-src 'self'; frame-src 'self' https://www.youtube-nocookie.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 
 	handle /api/* {
 		reverse_proxy api:3000

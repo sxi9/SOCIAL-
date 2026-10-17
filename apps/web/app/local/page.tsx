@@ -9,6 +9,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { BoredButton } from '@/components/BeaconCreateSheet';
 import BeaconStrip, { KudosBanner } from '@/components/BeaconStrip';
 import BoardView from '@/components/BoardView';
+import DiscoverySection from '@/components/DiscoverySection';
+import { RescueButton } from '@/components/RescueSheet';
 import TabPage from '@/components/TabPage';
 
 function LocalContent() {
@@ -20,9 +22,14 @@ function LocalContent() {
     <div className="page">
       <header className="topbar">
         <h1>Local</h1>
+        {/* v0.6 §1.46 (fixer r1): one-tap SOS on the boredom tab itself. */}
+        <RescueButton />
       </header>
       <KudosBanner />
       <BeaconStrip />
+      {/* v0.6 Bored Together (§1.44/§1.45): opt-in discovery + roulette — a
+          moment, not a setting; strangers only, never your friends. */}
+      <DiscoverySection />
       <BoardView
         initialListingId={deepLink}
         onDeepLinkDone={() => {

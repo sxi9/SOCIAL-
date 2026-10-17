@@ -1,0 +1,493 @@
+/* v0.6 calls (API.md §1.42 + §2.12) — incoming overlay, in-call screen,
+   floating pill, header buttons. Bored Blob language: soft panels, round
+   controls, one accent. Every animation stills under reduced motion. */
+
+/* ---- incoming ring overlay (works anywhere — GlobalOverlays) ---- */
+
+.ringBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(5, 8, 16, 0.78);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  animation: call-fade 180ms ease;
+}
+
+@keyframes call-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.ringCard {
+  width: 100%;
+  max-width: 340px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 26px;
+  box-shadow: var(--shadow);
+  padding: 26px 20px calc(22px + env(safe-area-inset-bottom));
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The mascot "rings": a gentle pendulum wiggle, like a phone on a table. */
+.ringMascot {
+  animation: ring-wiggle 1.15s ease-in-out infinite;
+  transform-origin: 50% 85%;
+}
+
+@keyframes ring-wiggle {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  20% {
+    transform: rotate(-7deg) translateY(-2px);
+  }
+  40% {
+    transform: rotate(6deg);
+  }
+  60% {
+    transform: rotate(-4deg) translateY(-1px);
+  }
+  80% {
+    transform: rotate(3deg);
+  }
+}
+
+.ringTitle {
+  margin: 4px 0 0;
+  font-size: 19px;
+}
+
+.ringSub {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.ringPulse {
+  display: inline-flex;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+.ringPulse span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: ring-dot 1.2s ease-in-out infinite;
+}
+
+.ringPulse span:nth-child(2) {
+  animation-delay: 0.18s;
+}
+
+.ringPulse span:nth-child(3) {
+  animation-delay: 0.36s;
+}
+
+@keyframes ring-dot {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+.ringActions {
+  display: flex;
+  gap: 36px;
+  margin-top: 16px;
+}
+
+.ringAction {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.roundBtn {
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  transition: transform 120ms ease, filter 120ms ease;
+}
+
+.ringAction:hover .roundBtn,
+.ringAction:focus-visible .roundBtn {
+  transform: translateY(-2px);
+  filter: brightness(1.08);
+}
+
+.accept {
+  background: var(--ok);
+}
+
+.reject {
+  background: var(--danger);
+}
+
+/* ---- in-call screen ---- */
+
+.callScreen {
+  position: fixed;
+  inset: 0;
+  z-index: 69;
+  background: #070a12;
+  color: #e8ecf4;
+  display: flex;
+  flex-direction: column;
+}
+
+.callTop {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  padding-top: calc(12px + env(safe-area-inset-top));
+}
+
+.callTitle {
+  flex: 1;
+  min-width: 0;
+}
+
+.callTitle h2 {
+  margin: 0;
+  font-size: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.callTitle p {
+  margin: 1px 0 0;
+  font-size: 12.5px;
+  color: #9aa4bd;
+  font-variant-numeric: tabular-nums;
+}
+
+.minBtn {
+  background: rgba(255, 255, 255, 0.08);
+  border: none;
+  color: inherit;
+  border-radius: 10px;
+  padding: 8px;
+  line-height: 0;
+  cursor: pointer;
+}
+
+/* Remote grid: 1 tile fills, 2–4 → 2 columns, 5–9 → 3 (mesh caps at 8). */
+.grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 8px;
+  padding: 0 10px;
+  grid-template-columns: 1fr;
+  grid-auto-rows: 1fr;
+}
+
+.grid2 {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.grid9 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+@media (max-width: 600px) {
+  .grid9 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.tile {
+  position: relative;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #121828;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.tile video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.tileFace {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.tileName {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  max-width: calc(100% - 20px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tileBadge {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  color: #ffd166;
+}
+
+/* Local preview: PiP when others are on screen; a grid tile when alone. */
+.pip {
+  position: absolute;
+  right: 14px;
+  bottom: calc(108px + env(safe-area-inset-bottom));
+  width: 96px;
+  aspect-ratio: 3 / 4;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #121828;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  z-index: 3;
+}
+
+.pip video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+
+.mirror {
+  transform: scaleX(-1);
+}
+
+.callStatus {
+  text-align: center;
+  color: #9aa4bd;
+  font-size: 13.5px;
+  padding: 6px 16px 0;
+}
+
+.controls {
+  display: flex;
+  justify-content: center;
+  gap: 18px;
+  padding: 16px 16px calc(18px + env(safe-area-inset-bottom));
+}
+
+.ctl {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.ctl:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.ctlOff {
+  background: #fff;
+  color: #0b0e14;
+}
+
+.ctlEnd {
+  background: var(--danger);
+  width: 62px;
+}
+
+/* ---- minimized floating pill ---- */
+
+.pill {
+  position: fixed;
+  right: 14px;
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--accent-strong);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 10px 16px;
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+}
+
+/* ---- ended card ---- */
+
+.endCard {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(86px + env(safe-area-inset-bottom));
+  z-index: 71;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(92vw, 420px);
+  animation: call-fade 160ms ease;
+}
+
+.endCard p {
+  margin: 0;
+  font-size: 13.5px;
+}
+
+/* ---- chat header call buttons & missed-call pill ---- */
+
+.headerCallBtns {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.joinChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  border-radius: 999px;
+  background: var(--ok);
+  color: #06281c;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 7px 13px;
+  cursor: pointer;
+  animation: join-breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes join-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(76, 212, 160, 0.45);
+  }
+  60% {
+    box-shadow: 0 0 0 7px rgba(76, 212, 160, 0);
+  }
+}
+
+.callBackBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* ---- rescue card (metadata.rescue, §1.46) ---- */
+
+.rescueCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 2px;
+}
+
+.rescueHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.rescueBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: none;
+  border-radius: 12px;
+  background: var(--ok);
+  color: #06281c;
+  font-weight: 600;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ringBackdrop,
+  .endCard {
+    animation: none;
+  }
+
+  .ringMascot,
+  .ringPulse span,
+  .joinChip {
+    animation: none;
+  }
+
+  .ringAction:hover .roundBtn,
+  .ringAction:focus-visible .roundBtn {
+    transform: none;
+  }
+}

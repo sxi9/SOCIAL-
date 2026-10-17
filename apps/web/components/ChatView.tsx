@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import {
   EDIT_WINDOW_S,
   EDITABLE_MESSAGE_TYPES,
+  extractYoutubeVideoId,
   FORWARDABLE_MESSAGE_TYPES,
   MAX_MESSAGE_BODY_CHARS,
   PAGE_SIZE_DEFAULT,
@@ -30,11 +31,15 @@ import {
   subscribePresence,
   unsubscribePresence,
 } from '@/lib/connection';
+import { queueFeedback } from '@/lib/discovery';
+import { isSessionLive, startWatch } from '@/lib/watch';
+import { joinCall, startCall } from '@/lib/webrtc';
 import { claimFirstView, EFFECT_EMOJI, EFFECT_LABEL, wasViewed } from '@/lib/effects';
 import {
   canPostIn,
   conversationTitle,
   dmPeer,
+  firstUrl,
   formatClock,
   formatLastSeen,
   kindLabel,
@@ -48,9 +53,11 @@ import { toggleReaction, toggleStamp } from '@/lib/reactions';
 import { pendingFor, refreshScheduled } from '@/lib/scheduled';
 import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
+import { useNow } from '@/lib/useNow';
 import AfterglowCard from './AfterglowCard';
 import AttachmentView from './AttachmentView';
 import Avatar from './Avatar';
+import { PhoneIcon, VideoIcon } from './CallOverlay';
 import ChatInfoSheet from './ChatInfoSheet';
 import Composer, { type ComposerPayload, type PlusAction } from './Composer';
 import DoodleSheet from './DoodleSheet';
@@ -66,6 +73,7 @@ import PreviewCard from './PreviewCard';
 import PuzzleResultView from './PuzzleResultView';
 import ReactionPicker from './ReactionPicker';
 import ReportSheet from './ReportSheet';
+import RouletteBanner from './RouletteBanner';
 import ScheduledDrawer from './ScheduledDrawer';
 import SeenBySheet from './SeenBySheet';
 import Ticks, { tickStateFor } from './Ticks';
@@ -73,10 +81,13 @@ import TttChallengeSheet from './TttChallengeSheet';
 import TypingIndicator from './TypingIndicator';
 import VibeCheckSheet from './VibeCheckSheet';
 import VibeCheckView from './VibeCheckView';
+import WatchTogetherSheet from './WatchTogetherSheet';
 import brd from './board.module.css';
+import cls from './calls.module.css';
 import styles from './chat.module.css';
 import exp from './expression.module.css';
 import soc from './social.module.css';
+import wtc from './watch.module.css';
 
 const LONG_PRESS_MS = 420;
 const SWIPE_REPLY_PX = 64;
@@ -121,6 +132,23 @@ export default function ChatView({ conversationId }: { conversationId: string })
   const [forwarding, setForwarding] = useState<Message | null>(null);
   const [flashSeq, setFlashSeq] = useState<number | null>(null);
 
+  // v0.6 watch together (§1.43): sheet open + session liveness (coarse tick —
+  // a session is stale once syncs stop for WATCH_SESSION_TTL_S).
+  const [watchOpen, setWatchOpen] = useState(false);
+  const watchNow = useNow(10_000);
+  const watchSession = state.watch.get(conversationId);
+  const watchLive = isSessionLive(watchSession, watchNow);
+
+  // v0.6 (§1.45 prompt rule): leaving an origin:'discovery' DM for the first
+  // time queues the one-time PRIVATE expectation-feedback sheet (it guards
+  // itself against ever showing twice).
+  const convOrigin = conv?.origin ?? null;
+  useEffect(() => {
+    if (convOrigin !== 'discovery') return;
+    const id = conversationId;
+    return () => queueFeedback('discovery', id);
+  }, [convOrigin, conversationId]);
+
   // This is the open conversation (read receipts, sync priority).
   useEffect(() => {
     store.setActiveConversation(conversationId);
@@ -131,6 +159,26 @@ export default function ChatView({ conversationId }: { conversationId: string })
   useEffect(() => {
     void loadPrefs(conversationId);
   }, [conversationId]);
+
+  // v0.6 §1.42: reconnect truth for calls is the log, never frame replay —
+  // one page on open keeps the "Join call" chip honest after a cold start.
+  const convType = conv?.type;
+  useEffect(() => {
+    if (!convType || convType === 'channel') return;
+    let cancelled = false;
+    void api
+      .get<{ calls: import('@socialchat/shared').Call[] }>(
+        `/api/conversations/${conversationId}/calls?limit=3`
+      )
+      .then((res) => {
+        if (cancelled) return;
+        for (const c of res.calls) store.upsertLiveCall(c);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [convType, conversationId]);
   useEffect(() => {
     if (!store.state.scheduledLoaded) void refreshScheduled().catch(() => undefined);
   }, []);
@@ -462,6 +510,8 @@ export default function ChatView({ conversationId }: { conversationId: string })
             {state.conn === 'error' ? 'connection error' : state.conn !== 'online' ? 'connecting…' : subline}
           </div>
         </div>
+        {/* v0.6 (§1.42): calls exist for dm/group only — never channels. */}
+        {conv.type !== 'channel' ? <CallHeaderButtons conv={conv} /> : null}
         {conv.disappear_ttl_s !== null ? (
           <span className={exp.ttlChip} title={`Messages disappear after ${TTL_SHORT[conv.disappear_ttl_s] ?? ''}`}>
             ⏳ {TTL_SHORT[conv.disappear_ttl_s] ?? ''}
@@ -494,8 +544,22 @@ export default function ChatView({ conversationId }: { conversationId: string })
 
       {planBeacon && meId ? <PlanHeader beacon={planBeacon} meId={meId} /> : null}
 
+      {/* v0.6 (§1.45): the provisional roulette window — countdown + KEEP. */}
+      {conv.origin === 'roulette' ? <RouletteBanner conv={conv} /> : null}
+
       {/* §1.32: the stable pin board — tap cycles pins and jumps. */}
       <PinnedBar conv={conv} canPin={canPin} onJump={(seq) => void jumpToSeq(seq)} />
+
+      {/* v0.6 (§1.43): a live watch-together session — one tap locks on. */}
+      {watchLive && !watchOpen ? (
+        <div className={wtc.banner} role="status">
+          <span className={wtc.bannerDot} aria-hidden />
+          <span>Watch together is live</span>
+          <button type="button" className={wtc.bannerJoin} onClick={() => setWatchOpen(true)}>
+            Join
+          </button>
+        </div>
+      ) : null}
 
       <div
         ref={scrollRef}
@@ -543,6 +607,12 @@ export default function ChatView({ conversationId }: { conversationId: string })
             onReply={canPost ? (m) => setReplyTo(m) : undefined}
             onForward={(m) => setForwarding(m)}
             onPinToggle={canPin ? (m, pinned) => void togglePin(m, pinned) : undefined}
+            onWatch={(url, videoId) => {
+              // Session already live → just lock on; else this client becomes
+              // the host (the server parses the URL again — §1.43).
+              if (!watchLive) startWatch(conversationId, url, videoId);
+              setWatchOpen(true);
+            }}
           />
         ))}
         {pendingOutbox.map((item) => (
@@ -606,6 +676,9 @@ export default function ChatView({ conversationId }: { conversationId: string })
         </div>
       )}
 
+      {watchOpen ? (
+        <WatchTogetherSheet conversationId={conversationId} onClose={() => setWatchOpen(false)} />
+      ) : null}
       {activeEffect ? <EffectOverlay effect={activeEffect} onDone={() => setActiveEffect(null)} /> : null}
       {forwarding ? <ForwardSheet message={forwarding} onClose={() => setForwarding(null)} /> : null}
       {infoOpen && meId ? <ChatInfoSheet conv={conv} meId={meId} onClose={() => setInfoOpen(false)} /> : null}
@@ -653,6 +726,7 @@ function MessageRow({
   onReply,
   onForward,
   onPinToggle,
+  onWatch,
 }: {
   message: Message;
   conv: ConversationListItem;
@@ -667,6 +741,7 @@ function MessageRow({
   onReply?: (message: Message) => void;
   onForward: (message: Message) => void;
   onPinToggle?: (message: Message, pinned: boolean) => void;
+  onWatch?: (url: string, videoId: string) => void;
 }) {
   const state = useAppState();
   const [picker, setPicker] = useState(false);
@@ -770,8 +845,16 @@ function MessageRow({
     // a listing_ref SNAPSHOT — the chip keeps rendering (and deep-linking)
     // even after the listing closes, expires or is deleted.
     const listingRef = message.metadata.listing_ref;
+    // v0.6 §1.42: the missed-call system message carries a server-written
+    // call_ref snapshot — render the pill with a one-tap call-back (same
+    // kind). Calls exist for dm/group only, so the guard mirrors the header.
+    const callRef = message.metadata.call_ref;
+    const missedByMe = sys?.actor_id === meId; // I was the unanswered caller
     return (
       <div className={styles.system}>
+        {callRef ? (
+          <span aria-hidden>{callRef.kind === 'video' ? '📹 ' : '📞 '}</span>
+        ) : null}
         {label}
         {listingRef ? (
           <>
@@ -780,6 +863,19 @@ function MessageRow({
               <span aria-hidden>{KIND_EMOJI[listingRef.kind]}</span>
               <span>{listingRef.title}</span>
             </Link>
+          </>
+        ) : null}
+        {callRef && conv.type !== 'channel' ? (
+          <>
+            <br />
+            <button
+              type="button"
+              className={cls.callBackBtn}
+              onClick={() => void startCall(message.conversation_id, callRef.kind)}
+            >
+              {callRef.kind === 'video' ? <VideoIcon /> : <PhoneIcon />}
+              {missedByMe ? 'Call again' : 'Call back'}
+            </button>
           </>
         ) : null}
       </div>
@@ -812,6 +908,11 @@ function MessageRow({
   const canEdit = own && editTypes.includes(message.type) && withinEditWindow && message.body !== null;
   const canForward = fwdTypes.includes(message.type);
   const canDelete = own;
+  // v0.6 §1.43: a YouTube link lights the "Watch together" affordance — the
+  // SAME shared parser the server runs on watch.start, so we never offer a
+  // session the gateway would refuse (watch_bad_url).
+  const bodyUrl = message.body ? firstUrl(message.body) : null;
+  const ytVideoId = bodyUrl ? extractYoutubeVideoId(bodyUrl) : null;
 
   const saveEdit = async (): Promise<void> => {
     const body = (editing ?? '').trim();
@@ -964,7 +1065,30 @@ function MessageRow({
         <AttachmentView key={att.id} attachment={att} doodle={message.metadata.doodle === true} />
       ))}
       {message.metadata.link_preview ? <PreviewCard preview={message.metadata.link_preview} /> : null}
-      {message.type === 'poll' && message.poll ? (
+      {message.metadata.rescue === true ? (
+        // v0.6 §1.46: the rescue SOS card — one tap starts the call back.
+        <span className={cls.rescueCard}>
+          <span className={cls.rescueHead}>
+            <span aria-hidden>🆘</span>
+            {own
+              ? 'You asked for a rescue call'
+              : `${(() => {
+                  const p = conv.participants.find((x) => x.user.id === message.sender_id);
+                  return p ? nameFor(p.user.id, p.user.display_name) : 'A friend';
+                })()} needs a rescue call!`}
+          </span>
+          {message.body ? <span>{message.body}</span> : null}
+          {!own ? (
+            <button
+              type="button"
+              className={cls.rescueBtn}
+              onClick={() => void startCall(message.conversation_id, 'audio')}
+            >
+              <PhoneIcon /> Call now
+            </button>
+          ) : null}
+        </span>
+      ) : message.type === 'poll' && message.poll ? (
         <PollView poll={message.poll} />
       ) : message.type === 'vibe_check' && message.vibe ? (
         <VibeCheckView message={message} nameFor={nameFor} />
@@ -1019,6 +1143,16 @@ function MessageRow({
         </span>
       ) : message.body ? (
         <MentionedBody message={message} conv={conv} nameFor={nameFor} />
+      ) : null}
+      {ytVideoId && bodyUrl && onWatch ? (
+        <button
+          type="button"
+          className={wtc.watchBtn}
+          onClick={() => onWatch(bodyUrl, ytVideoId)}
+          aria-label="Watch this video together, in sync"
+        >
+          <span aria-hidden>📺</span> Watch together
+        </button>
       ) : null}
       <span className={styles.meta}>
         {effect ? (
@@ -1286,6 +1420,55 @@ function MentionedBody({
           <span key={`${i}-t`}>{part}</span>
         );
       })}
+    </span>
+  );
+}
+
+/**
+ * v0.6 §1.42 header call buttons: audio + video starters, replaced by ONE
+ * breathing "Join" chip while a call is live in this conversation (DM accept
+ * and group join are the same transition). Disabled while I am already in a
+ * call — the mesh is one call per person.
+ */
+function CallHeaderButtons({ conv }: { conv: ConversationListItem }) {
+  const state = useAppState();
+  const live = state.liveCalls.get(conv.id);
+  const inCall = state.callUi !== null && state.callUi.phase !== 'ended';
+  const inThisCall = inCall && state.callUi?.conversation_id === conv.id;
+
+  if (live && !inThisCall) {
+    return (
+      <button
+        type="button"
+        className={cls.joinChip}
+        disabled={inCall}
+        onClick={() => void joinCall(live.id, live.kind)}
+        aria-label={`Join the ${live.kind} call`}
+      >
+        {live.kind === 'video' ? <VideoIcon /> : <PhoneIcon />} Join
+      </button>
+    );
+  }
+  return (
+    <span className={cls.headerCallBtns}>
+      <button
+        type="button"
+        className="btn btn-ghost btn-icon"
+        aria-label="Start a voice call"
+        disabled={inCall}
+        onClick={() => void startCall(conv.id, 'audio')}
+      >
+        <PhoneIcon />
+      </button>
+      <button
+        type="button"
+        className="btn btn-ghost btn-icon"
+        aria-label="Start a video call"
+        disabled={inCall}
+        onClick={() => void startCall(conv.id, 'video')}
+      >
+        <VideoIcon />
+      </button>
     </span>
   );
 }

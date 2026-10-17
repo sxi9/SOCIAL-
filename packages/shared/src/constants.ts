@@ -532,3 +532,117 @@ export const LAST_SEEN_BUCKETS = ['today', 'this_week', 'this_month', 'older', '
 export const ADMIN_METRICS_WINDOW_DAYS = 30;
 // Optional note on suspend/ban/unsuspend/unban/report-close; ring-logged.
 export const ADMIN_NOTE_MAX_CHARS = 500;
+
+// ============================ v0.6 additions =================================
+// Calls + discovery (FEATURES #49–#53; API.md §1.42–§1.46 + §2.12; ADR-014 /
+// ADR-015; PSYCHOLOGY finding #10). HARD RULES carried here: signaling is
+// EPHEMERAL (rides the existing WS gateway, relayed per recipient, never
+// persisted — only the calls row is durable, via REST); group calls are MESH
+// WebRTC capped at CALL_MESH_MAX (the LiveKit SFU seam is documented in
+// ADR-014, not built); a single wave notifies NOBODY (no rejection surface);
+// roulette DMs that are not kept are HARD-DELETED.
+
+// ---- Calls (v0.6 — API.md §1.42 + §2.12, ADR-014) ----
+export const CALL_KINDS = ['audio', 'video'] as const;
+export const CALL_STATUSES = [
+  'ringing',
+  'ongoing',
+  'completed',
+  'missed',
+  'rejected',
+  'failed',
+] as const;
+// Mesh fan-out cap: n-1 peer connections per participant. 8 is the ceiling a
+// mid-range phone encodes video for; past it the answer is an SFU (ADR-014
+// documents the LiveKit upgrade seam), never a bigger mesh.
+export const CALL_MESH_MAX = 8;
+// A 'ringing' call with no join flips to 'missed' after this (worker delayed
+// job, queue `timers`): missed-call system message + push (§2.9 guards).
+export const CALL_RING_TIMEOUT_S = 45;
+// Zod bounds on relayed signaling payloads (the gateway refuses bigger frames
+// before relaying — SDP offers with many candidates stay well under this).
+export const CALL_SDP_MAX_CHARS = 64 * 1024;
+export const CALL_ICE_CANDIDATE_MAX_CHARS = 2048;
+
+// ---- TURN credentials (v0.6 — API.md §1.42, ADR-014) ----
+// coturn static-auth-secret (TURN REST API memo) format: username is
+// "<unix expiry>:<user_id>", credential is base64(HMAC-SHA1(TURN_SECRET,
+// username)) — minted by the api, verified by coturn, no shared DB.
+export const TURN_CRED_TTL_S = 3600;
+// Relay port range coturn publishes (the ONE exception to only-caddy-
+// publishes — UDP media cannot ride an HTTP proxy; ADR-014). Keep in sync
+// with docker-compose.yml and the firewall.
+export const TURN_PORT = 3478;
+export const TURN_RELAY_PORT_MIN = 49160;
+export const TURN_RELAY_PORT_MAX = 49200;
+
+// ---- Watch together (v0.6 — API.md §1.43 + §2.12) ----
+// Ephemeral ONLY: one active session per conversation in Redis
+// (`watch:{conversation_id}`), no table. The key's TTL is refreshed by every
+// host sync; the host client sends a keepalive sync at least every
+// WATCH_KEEPALIVE_S even while paused, so a vanished host ends the session
+// within the TTL and late joiners catch state from the next relayed sync.
+export const WATCH_SESSION_TTL_S = 60;
+export const WATCH_KEEPALIVE_S = 15;
+// Gateway drops host sync frames arriving faster than this (flood guard).
+export const WATCH_SYNC_MIN_INTERVAL_MS = 250;
+// YouTube video ids are exactly 11 chars of this alphabet. The id is parsed
+// SERVER-side from the URL the host pastes (shared parser in urls.ts — one
+// canonical implementation, like extractFirstUrl).
+export const YOUTUBE_VIDEO_ID_REGEX = /^[A-Za-z0-9_-]{11}$/;
+
+// ---- Bored Together: discovery opt-ins (v0.6 — API.md §1.44, ADR-015) ----
+export const DISCOVERY_SCOPES = ['area', 'public'] as const;
+// An opt-in lives exactly this long (expires_at = now() + 60 min); re-opting
+// extends. Being discoverable is a MOMENT, not a setting (ADR-015).
+export const DISCOVERY_OPTIN_TTL_S = 3600;
+export const DISCOVERY_NOTE_MAX_CHARS = 80;
+// Cards returned per read (newest opt-in first; no cursor — the pool is
+// whoever is bored RIGHT NOW, not a backlog to page through).
+export const DISCOVERY_CARDS_MAX = 50;
+export const DISCOVERY_WAVE_RATE_PER_HOUR = 30;
+// Rotating icebreaker for match DMs (discovery AND roulette), picked by
+// hash(conversation id) % length — the BEACON_ICEBREAKERS pattern.
+export const DISCOVERY_ICEBREAKERS = [
+  'You were both bored at the same time. That is basically fate.',
+  'Two strangers, one shared enemy: boredom. Go.',
+  'This chat exists because you both said "why not". Keep that energy.',
+  'Rule one: no small talk about the weather. Rule two: there are no other rules.',
+  'You waved, they waved. The hard part is over.',
+  'Boredom brought you here. Curiosity keeps it going.',
+] as const;
+
+// ---- Expectation feedback & encouragement (v0.6 — API.md §1.45, ADR-015,
+// PSYCHOLOGY finding #10) ----
+// PRIVATE one-tap after a discovery/roulette DM ends or persists. Never shown
+// to the other person, never on a profile — only the anonymous instance-wide
+// aggregate ("N% said better than expected"), and that only PRE-opt-in to
+// hesitant users.
+export const EXPECTATION_CONTEXTS = ['roulette', 'discovery'] as const;
+export const EXPECTATION_VERDICTS = ['better', 'same', 'worse'] as const;
+// The aggregate serializes null below this sample size (a 2-sample "100%"
+// is noise that reads like a promise).
+export const ENCOURAGEMENT_MIN_SAMPLES = 10;
+
+// ---- Bored Roulette (v0.6 — API.md §1.45, ADR-015) ----
+// Queue entries live in Redis (`roulette:queue`); joining requires an ACTIVE
+// discovery opt-in. An entry lapses after this long un-paired (re-join is one
+// tap; a stale queue must never match someone who wandered off).
+export const ROULETTE_QUEUE_TTL_S = 300;
+// Worker pairing cadence (queue `discovery`, repeatable).
+export const ROULETTE_PAIR_INTERVAL_S = 10;
+// The provisional DM window: conversations.expires_at = matched_at + 5 min.
+// Both parties POST keep within it → permanent; else the sweep HARD-DELETES
+// the conversation and its messages (no archive of awkward dead ends).
+export const ROULETTE_WINDOW_S = 300;
+export const ROULETTE_SWEEP_INTERVAL_S = 30;
+
+// ---- Rescue me (v0.6 — API.md §1.46) ----
+export const RESCUE_MAX_TARGETS = 3;
+export const RESCUE_NOTE_MAX_CHARS = 80;
+// Per user per UTC day (Redis fixed window). A rescue is an SOS, not a
+// broadcast channel — the cap keeps it meaning something.
+export const RESCUE_MAX_PER_DAY = 3;
+// Default message body when the rescuer sends no note (also the push copy —
+// "<display_name> needs a rescue call 📞").
+export const RESCUE_DEFAULT_BODY = 'needs a rescue call 📞';

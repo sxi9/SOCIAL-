@@ -4,7 +4,19 @@ import type { IncomingMessage, Server } from 'node:http';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { WebSocketServer, type WebSocket } from 'ws';
 import {
+  ClientCallAcceptEventSchema,
+  ClientCallAnswerEventSchema,
+  ClientCallEndEventSchema,
+  ClientCallIceEventSchema,
+  ClientCallInviteEventSchema,
+  ClientCallLeaveEventSchema,
+  ClientCallOfferEventSchema,
+  ClientCallRejectEventSchema,
+  ClientCallRingingEventSchema,
   ClientTypingEventSchema,
+  ClientWatchStartEventSchema,
+  ClientWatchStopEventSchema,
+  ClientWatchSyncEventSchema,
   DeliveredEventSchema,
   OFFLINE_GRACE_S,
   PRESENCE_SUB_MAX,
@@ -15,17 +27,22 @@ import {
   ReadEventSchema,
   type ServerEvent,
   TYPING_TTL_S,
+  WATCH_SESSION_TTL_S,
+  WATCH_SYNC_MIN_INTERVAL_MS,
   WS_CLOSE_CODES,
   WS_IDLE_CLOSE_S,
   WS_PING_S,
+  extractYoutubeVideoId,
+  type CallKind,
   type ReadEvent,
   type DeliveredEvent,
 } from '@socialchat/shared';
 import { db, schema } from '../db/index.js';
 import { createRedis, presenceKey, redis } from '../redis.js';
 import { authenticateToken, SESSION_COOKIE } from '../modules/auth/service.js';
-import { filterBlockedFrom } from '../lib/blocks.js';
+import { filterBlockedFrom, isBlockedPair } from '../lib/blocks.js';
 import { activeParticipantUserIds } from '../lib/dto.js';
+import { callMembersKey, isCallMember, loadCall, type CallRow } from '../modules/calls/service.js';
 import { EVENTS_CHANNEL, type EventEnvelope, publishPresence, publishToUsers, queueReceipt } from './events.js';
 import { registry, type SocketMeta } from './registry.js';
 
@@ -304,6 +321,127 @@ function drainReceiptGates(meta: SocketMeta): void {
   meta.receiptGates.clear();
 }
 
+// ---------------------------------------------------------------------------
+// v0.6 §2.12 — ephemeral call & watch signaling. Every frame here is
+// validated, authorized PER FRAME (active participant of the call's
+// conversation; live call member past the invite stage), relayed to specific
+// recipients with from_user stamped server-side, and DROPPED — never written
+// to Postgres or Redis, never replayed. Blocked pairs never exchange relayed
+// frames (§2.11); violations answer 404-shaped codes where a block could
+// otherwise be confirmed.
+// ---------------------------------------------------------------------------
+
+// Per-socket signaling flood guards (fixer r1 — the audit's "per-socket
+// signaling rate limit" covers EVERY relayed frame, not just ICE). One fixed
+// 10 s window per (socket, kind, call|conversation); budgets sized so no real
+// client ever hits them, while line-rate spam is dropped BEFORE the per-frame
+// loadCall/SISMEMBER work and before any fan-out (a 64 KiB offer loop and a
+// call.invite re-ring storm both die here at ~zero cost per frame).
+const SIGNAL_RELAY_WINDOW_MS = 10_000;
+const CALL_ICE_RELAY_MAX = 50; // trickle ICE for ≤7 mesh peers
+const CALL_SDP_RELAY_MAX = 30; // offers+answers: join to 7 peers + glare + ICE restarts
+const CALL_INVITE_RELAY_MAX = 2; // the client sends exactly one per call
+const CALL_CTL_RELAY_MAX = 20; // ringing/accept/reject/leave/end combined
+const WATCH_START_RELAY_MAX = 5; // retries after watch_active/bad-URL errors
+// window/interval = 10_000/250: the budget a host obeying the 250ms
+// min-interval exactly fills, so no real client ever hits it.
+const WATCH_SYNC_RELAY_MAX = SIGNAL_RELAY_WINDOW_MS / WATCH_SYNC_MIN_INTERVAL_MS;
+const WATCH_STOP_RELAY_MAX = 5; // one real stop + retries after watch_not_host
+// A socket holding this many live gate windows is scanning call/conversation
+// ids, not calling; expired windows are evicted first, then frames drop.
+const SIG_GATES_PER_SOCKET_MAX = 64;
+
+/** Authorization anchor for call.* frames: the call exists and the sender is
+ * an active participant of its conversation; past the invite stage also a
+ * live member of the call (the Redis set). Errors reply on the socket and
+ * return null (the frame is dropped). */
+async function authorizeCallFrame(
+  ws: WebSocket,
+  meta: SocketMeta,
+  callId: string,
+  requireMember: boolean,
+): Promise<CallRow | null> {
+  const call = await loadCall(callId);
+  if (!call || !(await isActiveParticipant(meta.userId, call.conversationId))) {
+    sendError(ws, 'not_found', 'unknown call');
+    return null;
+  }
+  if (requireMember && !(await isCallMember(call.id, meta.userId))) {
+    sendError(ws, 'call_not_member', 'not a live member of this call');
+    return null;
+  }
+  return call;
+}
+
+/** Point-to-point relay (offer/answer/ice): to_user is consumed here — the
+ * frame goes to that user's sockets only, and only while they are a live call
+ * member (else silently dropped: they just left, the call.updated catching
+ * the sender up is already in flight). Blocked pairs never exchange frames. */
+async function relayToCallPeer(
+  meta: SocketMeta,
+  call: CallRow,
+  toUser: string,
+  event: ServerEvent,
+): Promise<void> {
+  if (toUser === meta.userId) return;
+  if (!(await isCallMember(call.id, toUser))) return;
+  if (await isBlockedPair(meta.userId, toUser)) return;
+  await publishToUsers([toUser], event);
+}
+
+/** Signaling flood guard (fixer r1): at most `max` relays per (socket, key)
+ * per SIGNAL_RELAY_WINDOW_MS; excess dropped without error — well-formed
+ * frames never strike (strikes are for protocol violations), they just stop
+ * costing anything. Checked BEFORE authorization so dropped frames do no DB
+ * or Redis work; the key map is capped so made-up ids cannot grow it. */
+function sigGateAllows(meta: SocketMeta, key: string, max: number): boolean {
+  const now = Date.now();
+  const gate = meta.sigGates.get(key);
+  if (gate && now - gate.windowStart < SIGNAL_RELAY_WINDOW_MS) {
+    gate.count += 1;
+    return gate.count <= max;
+  }
+  if (!gate && meta.sigGates.size >= SIG_GATES_PER_SOCKET_MAX) {
+    for (const [k, g] of meta.sigGates) {
+      if (now - g.windowStart >= SIGNAL_RELAY_WINDOW_MS) meta.sigGates.delete(k);
+    }
+    if (meta.sigGates.size >= SIG_GATES_PER_SOCKET_MAX) return false;
+  }
+  meta.sigGates.set(key, { windowStart: now, count: 1 });
+  return true;
+}
+
+interface WatchState {
+  video_id: string;
+  host_id: string;
+  position_s: number;
+  playing: boolean;
+}
+
+const watchKey = (conversationId: string): string => `watch:${conversationId}`;
+
+async function readWatchState(conversationId: string): Promise<WatchState | null> {
+  const raw = await redis.get(watchKey(conversationId));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as WatchState;
+  } catch {
+    return null;
+  }
+}
+
+/** Watch-together recipients: all active participants minus blocked pairs
+ * w.r.t. the sender (§2.11) — the typing fan-out shape, sender's own other
+ * devices included so every surface of one user stays in sync. */
+async function watchRecipients(senderId: string, conversationId: string): Promise<string[]> {
+  const participants = await activeParticipantUserIds(conversationId);
+  const others = await filterBlockedFrom(
+    senderId,
+    participants.filter((id) => id !== senderId),
+  );
+  return [senderId, ...others];
+}
+
 async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promise<void> {
   let parsed: unknown;
   try {
@@ -421,6 +559,226 @@ async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promis
       registry.unsubscribePresence(ws, result.data.d.user_ids);
       return;
     }
+
+    // ---- v0.6 §2.12: relayed call signaling (ephemeral, never persisted) ----
+
+    case 'call.invite': {
+      const result = ClientCallInviteEventSchema.safeParse(parsed);
+      if (!result.success) return strike(ws, meta, 'bad_payload', 'invalid call.invite frame');
+      // Flood guard first: a re-sent invite fans an enriched frame to up to
+      // 255 participants — the cheapest amplification here, so the tightest cap.
+      if (!sigGateAllows(meta, `inv:${result.data.d.call_id}`, CALL_INVITE_RELAY_MAX)) return;
+      const call = await authorizeCallFrame(ws, meta, result.data.d.call_id, false);
+      if (!call) return;
+      // Only the initiator invites, and only while the call rings — anything
+      // else is 404-shaped (no leak about the call's life).
+      if (call.initiatorId !== meta.userId || call.status !== 'ringing') {
+        return sendError(ws, 'not_found', 'unknown call');
+      }
+      const others = await filterBlockedFrom(
+        meta.userId,
+        (await activeParticipantUserIds(call.conversationId)).filter((id) => id !== meta.userId),
+      );
+      // Enriched so callees ring with zero fetches (§2.12).
+      await publishToUsers(others, {
+        t: 'call.invite',
+        d: {
+          call_id: call.id,
+          conversation_id: call.conversationId,
+          kind: call.kind as CallKind,
+          from_user: meta.userId,
+        },
+      });
+      return;
+    }
+    case 'call.ringing':
+    case 'call.accept':
+    case 'call.reject': {
+      const schema2 =
+        t === 'call.ringing'
+          ? ClientCallRingingEventSchema
+          : t === 'call.accept'
+            ? ClientCallAcceptEventSchema
+            : ClientCallRejectEventSchema;
+      const result = schema2.safeParse(parsed);
+      if (!result.success) return strike(ws, meta, 'bad_payload', `invalid ${t} frame`);
+      if (!sigGateAllows(meta, `ctl:${result.data.d.call_id}`, CALL_CTL_RELAY_MAX)) return;
+      const call = await authorizeCallFrame(ws, meta, result.data.d.call_id, false);
+      if (!call) return;
+      // ringing → initiator; accept/reject → initiator + the sender's own
+      // other sockets (which stop ringing). Blocked pairs never relayed.
+      const recipients: string[] = t === 'call.ringing' ? [] : [meta.userId];
+      if (
+        call.initiatorId &&
+        call.initiatorId !== meta.userId &&
+        !(await isBlockedPair(meta.userId, call.initiatorId))
+      ) {
+        recipients.push(call.initiatorId);
+      }
+      if (recipients.length === 0) return;
+      await publishToUsers(recipients, {
+        t,
+        d: { call_id: call.id, from_user: meta.userId },
+      } as ServerEvent);
+      return;
+    }
+    case 'call.offer':
+    case 'call.answer': {
+      const schema2 = t === 'call.offer' ? ClientCallOfferEventSchema : ClientCallAnswerEventSchema;
+      const result = schema2.safeParse(parsed);
+      if (!result.success) return strike(ws, meta, 'bad_payload', `invalid ${t} frame`);
+      const { call_id, to_user, sdp } = result.data.d;
+      // Each offer/answer is up to 64 KiB of SDP relayed verbatim — gate
+      // before the loadCall/member queries (drop silently, like ICE).
+      if (!sigGateAllows(meta, `sdp:${call_id}`, CALL_SDP_RELAY_MAX)) return;
+      const call = await authorizeCallFrame(ws, meta, call_id, true);
+      if (!call) return;
+      await relayToCallPeer(meta, call, to_user, {
+        t,
+        d: { call_id: call.id, from_user: meta.userId, sdp },
+      } as ServerEvent);
+      return;
+    }
+    case 'call.ice': {
+      const result = ClientCallIceEventSchema.safeParse(parsed);
+      if (!result.success) return strike(ws, meta, 'bad_payload', 'invalid call.ice frame');
+      const { call_id, to_user, candidate } = result.data.d;
+      if (!sigGateAllows(meta, `ice:${call_id}`, CALL_ICE_RELAY_MAX)) return; // drop, no error
+      const call = await authorizeCallFrame(ws, meta, call_id, true);
+      if (!call) return;
+      await relayToCallPeer(meta, call, to_user, {
+        t: 'call.ice',
+        d: { call_id: call.id, from_user: meta.userId, candidate },
+      });
+      return;
+    }
+    case 'call.leave':
+    case 'call.end': {
+      const schema2 = t === 'call.leave' ? ClientCallLeaveEventSchema : ClientCallEndEventSchema;
+      const result = schema2.safeParse(parsed);
+      if (!result.success) return strike(ws, meta, 'bad_payload', `invalid ${t} frame`);
+      if (!sigGateAllows(meta, `ctl:${result.data.d.call_id}`, CALL_CTL_RELAY_MAX)) return;
+      const call = await authorizeCallFrame(ws, meta, result.data.d.call_id, true);
+      if (!call) return;
+      // leave → all live call members (tiles drop instantly); end → members +
+      // every ringing callee (stop ringing everywhere): the conversation's
+      // active participants are exactly that superset. Minus blocks (§2.11).
+      const pool =
+        t === 'call.leave'
+          ? await redis.smembers(callMembersKey(call.id))
+          : await activeParticipantUserIds(call.conversationId);
+      const others = await filterBlockedFrom(
+        meta.userId,
+        pool.filter((id) => id !== meta.userId),
+      );
+      const recipients = [meta.userId, ...others]; // own other devices too
+      await publishToUsers(recipients, {
+        t,
+        d: { call_id: call.id, from_user: meta.userId },
+      } as ServerEvent);
+      return;
+    }
+
+    // ---- v0.6 §1.43/§2.12: watch together (Redis-TTL ephemera) ----
+
+    case 'watch.start': {
+      const result = ClientWatchStartEventSchema.safeParse(parsed);
+      if (!result.success) return strike(ws, meta, 'bad_payload', 'invalid watch.start frame');
+      const { conversation_id, url } = result.data.d;
+      // Flood guard (fixer r1): each attempt costs a participant query and a
+      // Redis SET NX — cap it like the other signaling frames.
+      if (!sigGateAllows(meta, `wst:${conversation_id}`, WATCH_START_RELAY_MAX)) return;
+      // Participant-gated like typing: non-participants are silently dropped.
+      if (!(await isActiveParticipant(meta.userId, conversation_id))) return;
+      const videoId = extractYoutubeVideoId(url);
+      if (!videoId) return sendError(ws, 'watch_bad_url', 'not a recognizable YouTube URL');
+      const state: WatchState = {
+        video_id: videoId,
+        host_id: meta.userId,
+        position_s: 0,
+        playing: false,
+      };
+      // One active session per conversation: NX claims it atomically.
+      const claimed = await redis.set(
+        watchKey(conversation_id),
+        JSON.stringify(state),
+        'EX',
+        WATCH_SESSION_TTL_S,
+        'NX',
+      );
+      if (claimed !== 'OK') return sendError(ws, 'watch_active', 'a watch session is already live');
+      await publishToUsers(await watchRecipients(meta.userId, conversation_id), {
+        t: 'watch.start',
+        d: {
+          conversation_id,
+          video_id: videoId,
+          host: meta.userId,
+          position_s: 0,
+          playing: false,
+        },
+      });
+      return;
+    }
+    case 'watch.sync': {
+      const result = ClientWatchSyncEventSchema.safeParse(parsed);
+      if (!result.success) return strike(ws, meta, 'bad_payload', 'invalid watch.sync frame');
+      const { conversation_id, position_s, playing } = result.data.d;
+      // Flood guards (fixer r2): the 250ms min-interval alone is bypassable
+      // with made-up conversation ids (each unique UUID is a fresh key), so
+      // the frame must ALSO pass the shared capped sigGate before any DB
+      // work — made-up ids die on the 64-key cap, and even real ids cannot
+      // exceed the window budget. The min-interval read costs nothing; its
+      // stamp is written only after authorization, at relay time, so
+      // watchSyncAt holds entries only for conversations the sender actually
+      // hosts a live session in (bounded by real state, never by spam).
+      const last = meta.watchSyncAt.get(conversation_id) ?? 0;
+      const now = Date.now();
+      if (now - last < WATCH_SYNC_MIN_INTERVAL_MS) return;
+      if (!sigGateAllows(meta, `wsy:${conversation_id}`, WATCH_SYNC_RELAY_MAX)) return;
+      if (!(await isActiveParticipant(meta.userId, conversation_id))) return;
+      const state = await readWatchState(conversation_id);
+      if (!state) return; // session lapsed — TTL expiry behaves as a stop
+      if (state.host_id !== meta.userId) {
+        return sendError(ws, 'watch_not_host', 'only the host syncs');
+      }
+      meta.watchSyncAt.set(conversation_id, now); // authorized relay — start the 250ms window
+      const next: WatchState = { ...state, position_s, playing };
+      // Every host sync refreshes the TTL (the §1.43 keepalive contract).
+      await redis.set(watchKey(conversation_id), JSON.stringify(next), 'EX', WATCH_SESSION_TTL_S);
+      await publishToUsers(await watchRecipients(meta.userId, conversation_id), {
+        t: 'watch.sync',
+        d: {
+          conversation_id,
+          video_id: next.video_id,
+          host: next.host_id,
+          position_s,
+          playing,
+        },
+      });
+      return;
+    }
+    case 'watch.stop': {
+      const result = ClientWatchStopEventSchema.safeParse(parsed);
+      if (!result.success) return strike(ws, meta, 'bad_payload', 'invalid watch.stop frame');
+      const { conversation_id } = result.data.d;
+      // Flood guard (fixer r2): watch.stop had none — each well-formed frame
+      // with an arbitrary id cost a DB query + Redis GET at line rate.
+      if (!sigGateAllows(meta, `wsp:${conversation_id}`, WATCH_STOP_RELAY_MAX)) return;
+      if (!(await isActiveParticipant(meta.userId, conversation_id))) return;
+      const state = await readWatchState(conversation_id);
+      if (!state) return; // already gone — idempotent
+      // Host stops; anyone may stop once the host has no live socket (§1.43).
+      if (state.host_id !== meta.userId && registry.userHasSockets(state.host_id)) {
+        return sendError(ws, 'watch_not_host', 'only the host stops a live session');
+      }
+      await redis.del(watchKey(conversation_id));
+      await publishToUsers(await watchRecipients(meta.userId, conversation_id), {
+        t: 'watch.stop',
+        d: { conversation_id },
+      });
+      return;
+    }
+
     default:
       // Unknown `t` values MUST be ignored (forward compatibility, API.md §2.2).
       return;
@@ -534,6 +892,8 @@ export function setupGateway(server: Server): void {
       strikes: 0,
       presenceSubs: new Set(),
       receiptGates: new Map(),
+      sigGates: new Map(),
+      watchSyncAt: new Map(),
     };
     const { firstSocketForUser } = registry.add(ws, meta);
     lastAlive.set(ws, Date.now());

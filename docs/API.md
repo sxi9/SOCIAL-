@@ -311,6 +311,50 @@ AdminLogEntry = { ts, level: 'warn'|'error'|'admin', msg,
   data?: object }                 // structured remainder of the log line
 
 InstanceSettings = { invites_enabled: boolean }
+
+// ---- v0.6 (§1.42–§1.46 + §2.12; ADR-014/ADR-015) ----
+
+// v0.6 changes to existing DTOs:
+//  Conversation += { origin: 'discovery'|'roulette'|null,  // how this DM came
+//    to exist; drives the client's one-time PRIVATE expectation-feedback
+//    prompt (§1.45). Zod default null keeps pre-v0.6 payloads parsing clean.
+//                    roulette: {expires_at, kept: boolean}|null }  // non-null
+//    ONLY while a roulette DM is provisional; kept is the VIEWER's own keep —
+//    the other party's keep state is never serialized (no pressure surface).
+//  Message.metadata += { call_ref?: CallRef,   // §1.42, SERVER-written on the
+//                                              // missed-call system message
+//                        rescue?: true }       // §1.46, SERVER-written SOS flag
+//  SystemEventMetadata.event gains 'call_missed', 'discovery_matched',
+//    'roulette_matched', 'roulette_kept' (event is an open string — no schema
+//    change; listed for renderers).
+
+// The durable call LOG row (§1.42). participant_ids = the CURRENT live mesh
+// members (Redis truth, ids only — clients resolve faces from participants
+// they already hold); [] once terminal. Signaling is NEVER in here (§2.12).
+Call = { id, conversation_id, initiator_id: string|null, kind: 'audio'|'video',
+  is_group: boolean,
+  status: 'ringing'|'ongoing'|'completed'|'missed'|'rejected'|'failed',
+  participant_ids: string[], started_at,
+  answered_at: string|null, ended_at: string|null }
+
+// coturn static-auth-secret format (ADR-014): username "<unix expiry>:<user_id>",
+// credential base64(HMAC-SHA1(TURN_SECRET, username)). TTL 1 h (TURN_CRED_TTL_S).
+TurnCredentials = { username, credential, uris: string[], expires_at }
+
+CallRef = { call_id, kind, status, duration_s: number|null }  // §1.42 snapshot
+  // on the missed-call system message (the forwarded_from pattern)
+
+// §1.44. My own opt-in — owner-only, never serialized to others.
+DiscoveryOptin = { scope: 'area'|'public', note: string(≤80), created_at, expires_at }
+
+// §1.44. A stranger's card: UserLite ONLY (no last_seen, no area text — the
+// area MATCH is server-side; FEATURES #30). waved = I already waved at them;
+// who waved at THEM is never serialized (a single wave notifies nobody).
+DiscoveryCard = { user: UserLite, scope, note, expires_at, waved: boolean }
+
+// §1.45, PSYCHOLOGY finding #10. The anonymous instance-wide aggregate —
+// better_percent is null under ENCOURAGEMENT_MIN_SAMPLES (10).
+Encouragement = { sample_size: number, better_percent: number|null }
 ```
 
 Avatar URLs are content-hashed media-proxy URLs (`/api/media/:key`), immutable-cacheable;
@@ -1368,6 +1412,156 @@ users remain **publicly visible** (profiles, old listings) — suspension stops
 the account, not its record; ban hides the public surfaces too (§0 table
 above). Neither deletes anything.
 
+### 1.42 Calls (v0.6 — ADR-014, FEATURES #49–#50)
+
+1:1 and group voice/video. **The split is the house rule taken literally:**
+REST writes the durable call LOG (the `calls` row — who called whom, when,
+how it ended) and mints TURN credentials; everything live is ephemeral —
+WebRTC media flows peer-to-peer (mesh), signaling rides the existing WS
+gateway as relayed frames that are **never persisted** (§2.12), and the
+in-call member set lives in Redis (`call:{id}:members`, deleted on any
+terminal status). Group calls are **mesh**, hard-capped at `CALL_MESH_MAX=8`
+in-call participants — the LiveKit SFU upgrade seam for bigger rooms is
+documented in ADR-014, deliberately not built. Calls exist for `dm` and
+`group` conversations only (`channel` → `400 call_bad_conversation`); a
+group's conversation may hold up to 256 members — the cap bounds who is *in
+the call*, not who may be invited to join it. Every surface respects §1.14
+blocks (a frozen DM cannot be called into — `404 not_found`, the §1.14
+shape), suspension/ban (no sockets, no push, excluded from fan-out) and the
+existing push guards (§2.9).
+
+**Status machine** (every durable transition fans out `call.updated`):
+`ringing → ongoing` (first join) · `ringing → rejected` (DM callee reject) ·
+`ringing → missed` (ring timeout `CALL_RING_TIMEOUT_S=45` via a delayed
+`timers` job + `calls_ringing_idx` safety sweep, or the initiator hanging up
+before an answer) · `ongoing → completed` (last member leaves, or an end) ·
+`ongoing → failed` (end with `reason:'failed'` — media never (re)connected).
+One live call per conversation, enforced by the partial unique index
+`calls_live_idx` (the dm_key pattern).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/conversations/:id/calls` | `{kind: 'audio'\|'video'}` | `201 {call, turn}` — inserts the row (`status:'ringing'`, `is_group` snapshotted from the conversation type), adds the initiator to the Redis member set, schedules the ring-timeout job, and returns coturn credentials inline (`turn: null` when no `TURN_SECRET` is configured — local dev connects on host candidates). The initiator then sends the WS `call.invite` frame (§2.12). Must be an active participant; frozen DM (blocked pair) → `404 not_found`; `channel` → `400 call_bad_conversation`; a live call already exists → `409 call_active` (join it instead). Rate **20/hour/user** (`CONVERSATION_CREATE_RATE_PER_HOUR` style fixed window). |
+| `POST /api/calls/:id/join` | — | `200 {call, turn}` — the DM **accept** and the group **join** are the same durable transition. First join: guarded `UPDATE … SET status='ongoing', answered_at=now() WHERE id=$1 AND status='ringing'`; later group joins require `status='ongoing'`. Adds me to the Redis member set via an atomic check-and-add (Lua): `SCARD ≥ CALL_MESH_MAX` → `409 call_full`, nothing added. `404 not_found` (not a participant of the conversation / blocked-pair DM), `410 call_ended` (terminal status). Idempotent re-join (already a member) → `200`, no event. Fans `call.updated`; the joiner then **offers to every existing member** (§2.12 mesh rule). |
+| `POST /api/calls/:id/end` | `{reason?: 'completed'\|'failed'}` (default `completed`) | `200 {call}` — hang up. From `ringing`, initiator only: the call becomes `missed` (cancel-before-answer reads as missed for callees; missed-call machinery below runs). From `ongoing`: removes me from the member set; when ≤ 1 live member remains the call becomes `completed` (or `failed` iff `reason:'failed'` and **no** join other than the initiator ever answered media — client-reported, coherence-checked). Group members who leave without ending just stop being members (the WS `call.leave` frame is the instant signal; this REST call is the durable one). Idempotent on terminal calls → `200`. |
+| `POST /api/calls/:id/reject` | — | `200 {call}` — **DM callee only**, while `ringing`: status `rejected`, `ended_at=now()`. No system message is posted (a decline is not an archive entry — the liking-gap rule; the caller's UI just stops). In groups, declining is personal and ephemeral: use the WS `call.reject` frame; the call keeps ringing for others → this endpoint answers `400 call_bad_reject` for group calls. |
+| `GET /api/conversations/:id/calls?before=&limit=` | — | `200 {calls: Call[], next_cursor}` — the call log, `started_at DESC` (participants only; the §1.5 visibility floor does not apply — calls are conversation-level facts, but members who joined later still only see the conversation at all once they are participants). |
+| `GET /api/turn-credentials?call_id=` | — | `200 {turn: TurnCredentials}` — **participant-gated**: the caller must be an active participant of the named call's conversation and the call must be live (`ringing`/`ongoing`), else `404 not_found`. Mints a fresh time-limited credential (`TURN_CRED_TTL_S=3600`): `username = "<unix now+3600>:<user_id>"`, `credential = base64(HMAC-SHA1(TURN_SECRET, username))` — coturn's static-auth-secret verification, no shared DB (ADR-014). `uris`: `stun:<DOMAIN>:3478`, `turn:<DOMAIN>:3478?transport=udp`, `turn:<DOMAIN>:3478?transport=tcp`. Long calls refresh before expiry and call `setConfiguration` on the peer connection. `503 turn_unconfigured` when the instance has no `TURN_SECRET`. |
+
+**Missed-call machinery** (ring timeout and initiator cancel): in one
+transaction the call flips to `missed`, and a **system message** is inserted
+in the conversation — `metadata.system = {event:'call_missed', actor_id:
+<initiator>}`, `metadata.call_ref = {call_id, kind, status:'missed',
+duration_s: null}` (server-written snapshot) — so the missed call rides the
+seq log, sync and unread counts like any message. Fan-out after commit:
+`call.updated` + `msg.new`, and a **missed-call push** to every callee who
+never joined, through the existing §2.9 guards unchanged (offline-only,
+read-elsewhere suppression, `muted_until`, debounce; blocked pairs
+structurally excluded). Push payload: `{title: caller or group title, body:
+"Missed <audio|video> call", tag: conversation_id, data: {url: /c/:id}}`.
+
+### 1.43 Watch together (v0.6 — FEATURES #51)
+
+YouTube co-watching in any conversation. **Ephemeral only — no table, no
+REST:** the whole feature is three WS frame types (`watch.start`,
+`watch.sync`, `watch.stop`, §2.12) plus one Redis key
+`watch:{conversation_id}` holding `{video_id, host_id, position_s, playing}`
+with `WATCH_SESSION_TTL_S=60`, refreshed by every host sync. One active
+session per conversation (a second `watch.start` while one is live →
+`error watch_active`). The **host** is whoever started the session; only host
+`watch.sync` frames are honored (`error watch_not_host` otherwise) and
+non-host clients follow — seek/pause locally snaps back on the next sync.
+The video id is parsed **server-side** from the URL the host pastes
+(`extractYoutubeVideoId` in `packages/shared/src/urls.ts`; bad URL →
+`error watch_bad_url`). Host keepalive: a sync at least every
+`WATCH_KEEPALIVE_S=15` even while paused — a vanished host ends the session
+within the TTL, and any participant's `watch.stop` is accepted once the host
+has no live socket. Participant-gated like typing; playback itself is the
+YouTube IFrame embed client-side (same-origin CSP carve-out is the embed
+iframe, no server fetch of YouTube ever happens).
+
+### 1.44 Bored Together — discovery (v0.6 — ADR-015, FEATURES #52)
+
+Opt-in stranger discovery, gated on the v0.3 safety bundle (blocks, reports,
+privacy, suspension) being live. **Being discoverable is a moment, not a
+setting:** an opt-in lives 60 minutes (`DISCOVERY_OPTIN_TTL_S`) and lapses
+silently; there is no ambient "discoverable" state to forget about. This
+surface is for **meeting** people: the existing friends-of set (accepted
+connections ∪ DM partners, §1.28) is excluded from cards, waves and roulette
+— you cannot "discover" someone you already know.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `PUT /api/discovery/optin` | `{scope: 'area'\|'public', note?≤80}` | `200 {optin}` — upsert; `expires_at = now()+60min` (re-PUT extends/re-scopes). `400 area_required` when `scope:'area'` and my `area` is null. Suspended/banned accounts cannot opt in (session machinery already blocks them). |
+| `DELETE /api/discovery/optin` | — | `204` — immediate: my card vanishes, my parked waves die with the opt-in (reads join live opt-ins). Idempotent. |
+| `GET /api/discovery/optin` | — | `200 {optin: DiscoveryOptin\|null}` — my own state (null = not opted in / lapsed). |
+| `GET /api/discovery/cards` | — | `200 {cards: DiscoveryCard[]}` — requires **my own live opt-in** (`403 discovery_not_opted_in`): visibility is symmetric — you are seen while you see, no lurking. Cards are users U with a live opt-in where **each reaches the other**: U's scope reaches me (`public`, or `area` matching my `area` by citext equality) AND my scope reaches U. Excluded both ways: §1.14 blocks, the friends-of set, suspended/banned, me. Newest opt-in first, ≤ `DISCOVERY_CARDS_MAX=50`, no cursor (the pool is who is bored *now*, not a backlog). Cards carry `UserLite` + note only — no last-seen, no area text; the client renders the **animated** avatar (§5 motion hygiene applies). |
+| `POST /api/discovery/wave` | `{user_id}` | `200 {matched, conversation_id}`. Target must currently be a visible card for me (mutual reachability, live opt-ins) else `404 discovery_card_not_found` — unknown, lapsed, blocked and friends-of are all byte-identical. **Single wave: parked silently.** `matched:false`, the row sits in `discovery_waves`, and **nobody is notified** — no FoMO, no rejection surface, ever (ADR-015; the target's card for me shows my own `waved:true`, nothing shows on theirs). **Mutual wave** (the reciprocal row exists, both opt-ins live): in one transaction both wave rows are deleted and a DM is created (`metadata.origin = 'discovery'`) with a rotating **icebreaker system message** (`event:'discovery_matched'`, body = `DISCOVERY_ICEBREAKERS[hash(conversation_id) % len]`); `matched:true` + the id. Fan-out: `discovery.matched` WS to both (each frame stamped with the OTHER party) + ordinary `msg.new`; push to an offline party via §2.9 guards. Idempotent re-wave `200 {matched:false}` (no new row). Rate **30/hour/user** (`DISCOVERY_WAVE_RATE_PER_HOUR`). |
+| `GET /api/discovery/encouragement` | — | `200 {sample_size, better_percent}` — the §1.45 aggregate ("N% said better than expected"), instance-wide across both contexts, anonymous by construction. `better_percent: null` under `ENCOURAGEMENT_MIN_SAMPLES=10`. **Client rule (binding):** shown only PRE-opt-in — it exists to calibrate stranger fear for the hesitant (PSYCHOLOGY finding #10), never as a post-hoc scoreboard. |
+
+**Worker:** repeatable `discovery` sweep prunes lapsed opt-ins and waves older
+than `DISCOVERY_OPTIN_TTL_S` (reads filter live either way — the sweep is
+bookkeeping, the house pattern).
+
+### 1.45 Bored Roulette & expectation feedback (v0.6 — ADR-015, FEATURES #52)
+
+Random 1:1 matching with a built-in escape hatch: the match DM is
+**provisional for 5 minutes** and is **hard-deleted** unless both people
+choose to keep it — a dead-end chat with a stranger leaves no archive, no
+guilt object, no block-management chore.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/roulette/join` | — | `200 {status:'queued'}` — requires a live discovery opt-in (`403 discovery_not_opted_in`). Adds me to the Redis queue (`roulette:queue`, entry TTL `ROULETTE_QUEUE_TTL_S=300` — a stale queue never matches someone who wandered off). Idempotent re-join refreshes the entry. |
+| `DELETE /api/roulette/join` | — | `204` — leave the queue. Idempotent. |
+| `POST /api/roulette/keep` | `{conversation_id}` | `200 {conversation, permanent}` — guarded UPDATE appending me to `metadata.roulette.kept_by` `WHERE expires_at > now()`. Both kept → in the same transaction `expires_at` is cleared, the roulette rider collapses to `{origin:'roulette'}`, a `roulette_kept` system message lands, and `conv.updated` fans out: `permanent:true`. One keep → `permanent:false`; **the other party's keep state is never serialized** (the DTO's `roulette.kept` is the viewer's own) — waiting carries no pressure surface. `404 not_found` (not mine / already deleted), `410 roulette_expired` (window lapsed; the sweep will delete it). |
+| `POST /api/discovery/feedback` | `{context: 'roulette'\|'discovery', conversation_id, verdict: 'better'\|'same'\|'worse'}` | `204` — the **private** one-tap (PSYCHOLOGY finding #10). `conversation_id` is a dedupe key, not an FK (the conversation may already be hard-deleted); the caller must have been a party to it — for live conversations checked directly, for deleted ones against the match record in the Redis tombstone the sweep writes (`roulette:fb:{conversation_id}`, TTL 24 h, holding the two user ids). One row per `(user, conversation)` — repeat taps `204`, first verdict wins. Never notifies anyone; never appears on any profile; feeds only the §1.44 encouragement aggregate. |
+
+**Pairing (worker, queue `discovery`, every `ROULETTE_PAIR_INTERVAL_S=10`):**
+pops queued users whose opt-ins are still live and pairs them oldest-first,
+skipping pairs that are blocked either way, in each other's friends-of set,
+suspended/banned, **or that share any existing DM row** (`dm_key` exists —
+also what makes the create below collision-free). For each pair, one
+transaction creates a `dm` conversation with `metadata = {origin:'roulette',
+roulette:{kept_by:[]}}` and `expires_at = now() + ROULETTE_WINDOW_S (5 min)`,
+plus the rotating icebreaker system message (`event:'roulette_matched'`, body
+from `DISCOVERY_ICEBREAKERS`). Fan-out: `roulette.matched {conversation}` to
+both (viewer-stamped `roulette.kept:false`) — no push: both were in the queue
+seconds ago.
+
+**Expiry sweep (same queue, every `ROULETTE_SWEEP_INTERVAL_S=30`):**
+conversations with `expires_at <= now()` (partial index
+`conversations_expiry_idx`) are **hard-deleted** — messages, participants,
+receipts cascade; nothing is tombstoned. Before the delete it writes the
+24 h feedback tombstone (above) and fans `roulette.expired
+{conversation_id}` to both parties' sockets; offline clients reconcile via
+`GET /sync` (the conversation is simply absent, §2.8). The freed `dm_key`
+means a future *organic* DM between the two is unaffected.
+
+**Prompt rule (client, binding):** the one-tap feedback sheet shows exactly
+once per match — on `roulette.expired`, on `permanent:true`, or when leaving
+a `origin:'discovery'` DM for the first time. It is skippable and never
+re-surfaces; there is no reminder, badge or nag (PSYCHOLOGY rule 4).
+
+### 1.46 Rescue me (v0.6 — FEATURES #53)
+
+One tap pings up to three friends to call you out of a boring situation.
+Deliberately tiny: no new conversation kind, no acknowledgement state, no
+"rescued" tracking — a rescue is a message plus an urgent push.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/rescue` | `{user_ids: string[] (1..3, RESCUE_MAX_TARGETS), note?≤80}` | `201 {rescues: [{user_id, conversation_id}]}` — each target must be in my **friends-of** set (§1.28) and not blocked either way; any bad id → `404 not_found` for the whole request (byte-identical whether unknown, stranger or blocked — the §1.14 shape). Per target: create-or-dedupe the DM (`dm_key`), insert a **rescue message** — `sender_id = me`, `type:'text'`, `body` = my note or `RESCUE_DEFAULT_BODY`, `metadata.rescue: true` (server-written; renders as the rescue card with a one-tap call-back that starts a §1.42 call) — ordinary `msg.new` fan-out. Rate: `RESCUE_MAX_PER_DAY=3` per UTC day (Redis fixed window) → `429` + `Retry-After`. |
+
+**Rescue push (the one §2.9 exception, spelled out):** enqueued for **every**
+target — even with a live socket (the point is a buzzing phone, not an unread
+dot) — with the presence, read-elsewhere and debounce guards **skipped** and
+`muted_until` **overridden** (the §1.33 mention precedent: an SOS from a
+friend outranks a per-chat mute). Blocks remain structural — a blocked pair
+can never reach this code path (the 404 above). Payload: `{title:
+"<display_name> needs a rescue call 📞", body: note or '', tag:
+conversation_id, data: {url: /c/<conversation_id>}}`.
+
 ---
 
 ## 2. WebSocket protocol
@@ -1419,6 +1613,12 @@ close `1008`.
 | `connection.updated` | `{connection: Connection, removed: boolean}` | v0.5a (§1.28): **to the two parties only** — and not even both for every transition: request → addressee + requester's own sockets; accept → both; decline → addressee's own sockets only (the requester is never pinged about a rejection); remove → the actor's own sockets only. The DTO is viewer-specific (`user`/`direction` stamped per recipient at the gateway, the `beacon.*` pattern). `removed: true` means the row is gone (decline/remove) and the DTO is its last state. |
 | `story.new` | `{story: Story}` | v0.5a (§1.34): **only to sockets of the author's friends-of audience minus blocks** — never to anyone who cannot view it. `viewed` stamped `false` per recipient. No push. Expiry fans nothing — expired stories drop out of the next `GET`. |
 | `post.new` | `{post: Post}` | v0.5a (§1.36): **only to sockets of the author's friends-of audience minus blocks.** No push. Reactions/comments deliberately fan out NOTHING — viewers reconcile from `GET /api/feed` / `GET /api/posts/:id` when they return (no approval pings, PSYCHOLOGY rules 3/4). |
+| `call.updated` | `{call: Call}` | v0.6 (§1.42): SERVER-emitted on every durable call transition (create, first join, member join/leave, reject, end, ring timeout), to the conversation's active participants. Full-DTO replace by `call.id`; reconnect truth is `GET /api/conversations/:id/calls`, never frame replay. |
+| `call.invite` / `call.ringing` / `call.accept` / `call.reject` / `call.offer` / `call.answer` / `call.ice` / `call.leave` / `call.end` | relayed (§2.12) | v0.6: RELAYED ephemeral signaling — client frames validated, authorized and forwarded per recipient with `from_user` stamped server-side; **never persisted, never replayed**. Full shapes + recipient sets in §2.12. |
+| `watch.start` / `watch.sync` / `watch.stop` | relayed (§2.12) | v0.6 (§1.43): relayed watch-together state. start/sync carry the FULL state (`conversation_id, video_id, host, position_s, playing`) so mid-session joiners lock on from the next sync; stop carries `{conversation_id}`. |
+| `discovery.matched` | `{conversation_id, user: UserLite}` | v0.6 (§1.44): to BOTH parties of a mutual wave, each frame stamped with the OTHER party (the `connection.updated` pattern). A single wave fans out NOTHING to anyone, ever. |
+| `roulette.matched` | `{conversation: Conversation}` | v0.6 (§1.45): to both matched users — the provisional DM (viewer-stamped `roulette.kept`). The icebreaker arrives as ordinary `msg.new`. |
+| `roulette.expired` | `{conversation_id}` | v0.6 (§1.45): the keep window lapsed — the conversation is hard-deleted server-side; clients drop local state. Carries no "who didn't keep" (no rejection surface). Offline clients reconcile via §2.8 (absent from the snapshot). |
 | `error` | `{code, message}` | validation/permission errors on client frames |
 
 ### 2.4 Client → server events
@@ -1431,8 +1631,12 @@ close `1008`.
 | `presence.sub` | `{user_ids: string[]}` | subscribe to presence for on-screen users only. Cap 100 per socket; each must share a conversation with you, else silently dropped. Server replies with one immediate `presence` per id. |
 | `presence.unsub` | `{user_ids: string[]}` | stop receiving |
 
+| `call.invite`, `call.ringing`, `call.accept`, `call.reject`, `call.offer {sdp, to_user}`, `call.answer {sdp, to_user}`, `call.ice {candidate, to_user}`, `call.leave`, `call.end` | all carry `call_id` | v0.6 ephemeral call signaling — validated by Zod, authorized per frame, relayed to the recipients in §2.12, dropped. Never persisted. Durable call transitions stay REST (§1.42): these frames never write the `calls` row. |
+| `watch.start {conversation_id, url}` / `watch.sync {conversation_id, position_s, playing}` / `watch.stop {conversation_id}` | — | v0.6 watch together (§1.43): participant-gated; `sync` is host-only; the video id is parsed server-side from `url`. §2.12 has the rules. |
+
 Durable writes (messages, conversation ops, watermark-affecting sends) are **not** accepted
-over WS — REST only (§1.5).
+over WS — REST only (§1.5). The v0.6 `call.*`/`watch.*` frames are upstream **ephemeral
+signals** (the typing precedent), not writes: losing one loses a moment of UX, never state.
 
 ### 2.5 Send → delivered → read, end to end
 
@@ -1543,6 +1747,116 @@ gateway and REST serializers), where the recipient is known. Binding rules:
   `story.new` / `post.new` envelopes name the author — the gateway resolves
   the friends-of audience minus blocks and stamps viewer-specific fields
   (`viewed`, reaction `mine`) per socket, exactly like `beacon.*`.
-- Filtering is serialization-only: no stored watermark, presence key, or
-  beacon row is ever rewritten by a settings change, so toggles apply (and
-  un-apply) instantly and retroactively.
+- v0.6 (§2.12): `call.*` and `watch.*` frames are authorized per frame at the
+  gateway (active participant; live call member past the invite stage) and
+  never relayed between blocked pairs — in a group call a blocked pair simply
+  never exchanges offers, so no media path forms between them (ADR-014
+  documents the consequence honestly: they can still see each other's tiles
+  via common peers' presence in the member list, exactly as they can see each
+  other's messages in a shared group, §1.14). `discovery.matched` /
+  `roulette.*` recipients are the two parties only.
+
+### 2.12 Ephemeral call & watch signaling (v0.6 — ADR-014, §1.42/§1.43)
+
+The v0.3 design sentence "signaling = more ephemeral WS event types over the
+existing gateway" (ARCHITECTURE §8), cashed in. **Contract:** every frame in
+this section is validated by Zod (`packages/shared/src/ws.ts`), authorized
+per frame, **relayed to specific recipients, and dropped** — never written to
+Postgres or Redis, never replayed on reconnect. The durable truth is the
+`calls` row (REST, §1.42); a client that reconnects mid-call re-learns the
+world from `call.updated`/`GET …/calls` and re-negotiates peers (below). SDP
+and ICE payloads are **opaque bounded strings** to the server (≤ 64 KiB /
+≤ 2 KiB): relayed verbatim, never parsed, never logged.
+
+**Gateway rules (binding):**
+
+- **Authorization per frame:** sender must be an active participant of the
+  call's conversation; for every frame except `call.invite`/`call.ringing`/
+  `call.accept`/`call.reject`, also a live member of the call (Redis set).
+  Violations → `{"t":"error","d":{code:'call_not_member'|'not_found'}}`
+  (404-shaped codes where a block could otherwise be confirmed).
+- **Addressing:** `to_user` (on `offer`/`answer`/`ice`) is consumed by the
+  gateway — the frame goes to that user's sockets only, and only if they are
+  a live call member (else silently dropped — they just left; the
+  `call.updated` catching the sender up is already in flight). All other
+  call frames fan to the per-frame recipient sets below. `from_user` is
+  **stamped server-side** on every relayed frame; sender claims are ignored.
+- **Blocked pairs** never exchange relayed frames (§2.11). Suspended/banned
+  accounts have no sockets (4401 machinery) and are skipped in fan-out.
+- **Flood guards (every relayed frame):** per-socket fixed 10 s windows, keyed
+  by (kind, call) — `call.ice` ≤ 50, `call.offer`+`call.answer` ≤ 30 (each can
+  carry 64 KiB of SDP), `call.invite` ≤ 2 (it fans to every participant),
+  `call.ringing`/`accept`/`reject`/`leave`/`end` ≤ 20 combined,
+  `watch.start` ≤ 5, `watch.sync` ≤ 40, `watch.stop` ≤ 5 — the `watch.*`
+  gates keyed per (socket, conversation); `watch.sync` additionally honors at
+  most one frame per `WATCH_SYNC_MIN_INTERVAL_MS=250` (40 = 10 s window /
+  250 ms, so a host obeying the interval exactly fills the budget). Budgets
+  are sized so no real client ever hits them. Excess is dropped without error
+  (signaling degrades, nothing breaks), and the check runs BEFORE
+  authorization, so over-budget frames cost no DB/Redis work and the strike
+  system stays reserved for malformed frames. The per-socket gate map is
+  capped at 64 live windows (made-up ids cannot grow it); the `watch.sync`
+  min-interval stamp is recorded only when a sync is authorized and relayed,
+  so it too is bounded by real state, never by spam.
+
+**Relayed call frames and their recipients** (`d` shapes in `ws.ts`):
+
+| `t` | sender | relayed to |
+|---|---|---|
+| `call.invite {call_id}` | initiator, right after the `201` | every OTHER active participant's sockets (minus blocks/suspension); gateway enriches to `{call_id, conversation_id, kind, from_user}` so callees ring with zero fetches |
+| `call.ringing {call_id}` | a callee device that is ringing | initiator's sockets (caller UI: "Ringing…") |
+| `call.accept {call_id}` | the accepting callee (right before/with REST join) | initiator's sockets + the sender's OWN other sockets (which stop ringing) |
+| `call.reject {call_id}` | a declining callee | initiator's sockets + sender's own other sockets. In a DM the durable flip is REST §1.42; in a group this frame is ALL a decline is — personal, ephemeral, the call keeps ringing for others |
+| `call.offer {call_id, to_user, sdp}` | the JOINING peer | `to_user`'s sockets, as `{call_id, from_user, sdp}` |
+| `call.answer {call_id, to_user, sdp}` | the answering existing peer | `to_user`'s sockets |
+| `call.ice {call_id, to_user, candidate}` | either peer, trickled | `to_user`'s sockets |
+| `call.leave {call_id}` | a member hanging up (group) | all live call members (tiles drop instantly; REST end is the durable record) |
+| `call.end {call_id}` | the member whose REST end terminates the call | all live call members + all ringing callees (stop ringing everywhere) |
+
+**Offer direction — one rule everywhere:** *the joining peer offers.* In a DM
+the callee joins, so the callee offers to the initiator; on every group join
+the joiner offers to **each existing member** (≤ `CALL_MESH_MAX−1 = 7`
+offers), who each answer. Deterministic roles kill glare: an existing member
+never offers to a joiner. For mid-call renegotiation (track changes, ICE
+restart) the **lower user id is the impolite peer** (perfect-negotiation
+pattern, applied per pair).
+
+**1:1 handshake, end to end:**
+
+```
+caller                          server                          callee
+POST /conversations/:id/calls ─▶ calls row (ringing), timer,
+  ◀─ 201 {call, turn}            member set = {caller}
+ws call.invite ────────────────▶ relay (enriched) ─────────────▶ all callee devices ring
+  ◀────────────────────────────  relay ◀──────────────────────── ws call.ringing
+                                 ...callee taps accept...
+  ◀────────────────────────────  relay ◀──────────────────────── ws call.accept
+                                 POST /calls/:id/join ◀───────── (durable: ringing→ongoing)
+  ◀─ call.updated (ongoing) ───  fan-out ──────────────────────▶ other devices stop ringing
+  ◀────────────────────────────  relay ◀──────────────────────── ws call.offer {to_user: caller}
+ws call.answer {to: callee} ───▶ relay ────────────────────────▶
+ws call.ice ⇄ ─────────────────▶ relay (both directions) ⇄ ────▶ ws call.ice ⇄
+         ...media flows peer-to-peer (host candidates, else TURN relay)...
+either: POST /calls/:id/end ───▶ completed; call.updated + relay of ws call.end
+```
+
+No answer within `CALL_RING_TIMEOUT_S=45` → the `timers` job flips it to
+`missed` (§1.42 missed-call machinery). Reject (DM): callee POSTs reject →
+`rejected`, `call.updated`; the `call.reject` frame already stopped the UIs.
+
+**Group mesh join:** `POST /api/calls/:id/join` → `200 {call, turn}` with
+`participant_ids` = current members → joiner sends `call.offer` to **every**
+member, answers and ICE trickle back per pair → full mesh. `CALL_MESH_MAX=8`
+is enforced in the join's atomic Redis check-and-add (`409 call_full`) — by
+the time anyone can offer, the cap already held. Leave = `call.leave` frame
+(instant) + REST end (durable membership/row); peers close that
+`RTCPeerConnection` and keep the rest of the mesh. A reconnecting member
+re-joins (idempotent REST) and re-offers to everyone — the one rule again.
+
+**Watch together frames** (§1.43 has the semantics):
+
+| `t` | sender | relayed to |
+|---|---|---|
+| `watch.start {conversation_id, url}` | any active participant (becomes host) | all active participants, as the full state `{conversation_id, video_id, host, position_s: 0, playing: false}`. Errors: `watch_bad_url`, `watch_active`. |
+| `watch.sync {conversation_id, position_s, playing}` | HOST only (`watch_not_host` otherwise) | all active participants, enriched with `video_id` + `host`; refreshes the Redis TTL. Clients >2 s off the relayed position seek to it. |
+| `watch.stop {conversation_id}` | host — or anyone once the host has no live socket | all active participants; deletes the Redis key. TTL expiry behaves as a stop without the frame (clients also end on keepalive silence > TTL). |

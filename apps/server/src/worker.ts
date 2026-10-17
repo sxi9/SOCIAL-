@@ -8,10 +8,17 @@ import { processMediaJob } from './jobs/media.js';
 import { initWebPush, processPushJob } from './jobs/push.js';
 import { processTimersJob } from './jobs/timers.js';
 import { processUnfurlJob } from './jobs/unfurl.js';
-import { DISAPPEAR_SWEEP_INTERVAL_S, LISTING_SWEEP_INTERVAL_S, STORY_SWEEP_INTERVAL_S } from '@socialchat/shared';
+import {
+  DISAPPEAR_SWEEP_INTERVAL_S,
+  LISTING_SWEEP_INTERVAL_S,
+  ROULETTE_PAIR_INTERVAL_S,
+  ROULETTE_SWEEP_INTERVAL_S,
+  STORY_SWEEP_INTERVAL_S,
+} from '@socialchat/shared';
+import { processDiscoveryJob } from './jobs/discovery.js';
 import { ringError } from './lib/logring.js';
-import type { AvatarJob, BeaconsJob, MediaJob, PushJob, TimersJob, UnfurlJob } from './queues.js';
-import { beaconsQueue, gcQueue, timersQueue } from './queues.js';
+import type { AvatarJob, BeaconsJob, DiscoveryJob, MediaJob, PushJob, TimersJob, UnfurlJob } from './queues.js';
+import { beaconsQueue, discoveryQueue, gcQueue, timersQueue } from './queues.js';
 import { createRedis } from './redis.js';
 
 async function main(): Promise<void> {
@@ -45,9 +52,17 @@ async function main(): Promise<void> {
     }),
     // v0.4 (API.md §1.25/§1.26): disappear-sweep | scheduled-deliver |
     // scheduled-sweep. Delivery is claim-guarded, so concurrency is safe.
+    // v0.6 (§1.42) adds call-ring-timeout | call-ring-sweep (guarded flips).
     new Worker<TimersJob>('timers', async (job: Job<TimersJob>) => processTimersJob(job.name, job.data), {
       connection: createRedis(),
       concurrency: 4,
+    }),
+    // v0.6 (API.md §1.44/§1.45): discovery-sweep | roulette-pair |
+    // roulette-sweep. Concurrency 1 — the pairing pass owns the queue; two
+    // concurrent passes could double-pair one user.
+    new Worker<DiscoveryJob>('discovery', async (job: Job<DiscoveryJob>) => processDiscoveryJob(job.name, job.data), {
+      connection: createRedis(),
+      concurrency: 1,
     }),
   ];
 
@@ -133,7 +148,44 @@ async function main(): Promise<void> {
     },
   );
 
-  console.log('worker: consuming queues avatar | media | unfurl | push | gc | beacons | timers');
+  // v0.6 (API.md §1.42): the ring-timeout safety sweep backing the per-call
+  // delayed jobs (a Redis wipe must not leave calls ringing forever).
+  await timersQueue.add(
+    'call-ring-sweep',
+    {},
+    { repeat: { every: 60_000 }, jobId: 'call-ring-sweep', removeOnComplete: 10, removeOnFail: 10 },
+  );
+
+  // v0.6 (API.md §1.44/§1.45): discovery bookkeeping + the roulette loop.
+  await discoveryQueue.add(
+    'discovery-sweep',
+    {},
+    { repeat: { every: 10 * 60_000 }, jobId: 'discovery-sweep', removeOnComplete: 10, removeOnFail: 10 },
+  );
+  await discoveryQueue.add(
+    'roulette-pair',
+    {},
+    {
+      repeat: { every: ROULETTE_PAIR_INTERVAL_S * 1000 },
+      jobId: 'roulette-pair',
+      removeOnComplete: 10,
+      removeOnFail: 10,
+    },
+  );
+  await discoveryQueue.add(
+    'roulette-sweep',
+    {},
+    {
+      repeat: { every: ROULETTE_SWEEP_INTERVAL_S * 1000 },
+      jobId: 'roulette-sweep',
+      removeOnComplete: 10,
+      removeOnFail: 10,
+    },
+  );
+
+  console.log(
+    'worker: consuming queues avatar | media | unfurl | push | gc | beacons | timers | discovery',
+  );
 
   const shutdown = async () => {
     await Promise.allSettled(workers.map((w) => w.close()));

@@ -19,6 +19,7 @@ import {
   rawToMsgRow,
   type MsgRow,
 } from '../lib/dto.js';
+import { runCallRingSweep, runMissedCall } from '../modules/calls/service.js';
 import { deliverScheduledMessage } from '../modules/scheduled/service.js';
 import { publishMessageUpdated } from '../modules/messages/service.js';
 import { runListingSweep } from '../modules/listings/service.js';
@@ -176,6 +177,16 @@ export async function processTimersJob(name: string, job: TimersJob): Promise<vo
       if (id) await deliverScheduledMessage(id);
       return;
     }
+    // v0.6 (§1.42): the 45 s ring timeout (delayed per call) + its repeatable
+    // safety sweep over calls_ringing_idx. The flip is a guarded UPDATE, so
+    // job/sweep/cancel races can never double-run the missed-call machinery.
+    case 'call-ring-timeout': {
+      const id = (job as { call_id?: string }).call_id;
+      if (id) await runMissedCall(id);
+      return;
+    }
+    case 'call-ring-sweep':
+      return runCallRingSweep();
     default:
       throw new Error(`timers: unknown job ${name}`);
   }

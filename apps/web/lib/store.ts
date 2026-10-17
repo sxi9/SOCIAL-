@@ -5,10 +5,16 @@ import type {
   Attachment,
   Beacon,
   BeaconRole,
+  Call,
+  CallKind,
   Connection,
   Conversation,
   ConversationListItem,
   ConversationPrefs,
+  DiscoveryCard,
+  DiscoveryOptin,
+  EncouragementResponse,
+  ExpectationContext,
   KudosKind,
   LinkPreview,
   ListConnectionsResponse,
@@ -46,6 +52,70 @@ export interface KudosArrival {
   beacon_id: string;
   kind: KudosKind;
   from: UserLite;
+}
+
+// ---------------------------------------------------------------------------
+// v0.6 call state (API.md §1.42 + §2.12). MediaStreams and RTCPeerConnections
+// are NOT serializable store state — they live in lib/webrtc.ts; the store
+// holds only what the UI renders, and `media_version` bumps whenever a stream
+// appears/changes so components re-read them via the webrtc getters.
+// ---------------------------------------------------------------------------
+
+/** An incoming ring — the gateway-enriched call.invite frame (§2.12). */
+export interface IncomingCall {
+  call_id: string;
+  conversation_id: string;
+  kind: CallKind;
+  from_user: string;
+}
+
+export type CallPhase = 'ringing' | 'connecting' | 'ongoing' | 'ended';
+
+export interface CallUi {
+  call_id: string;
+  conversation_id: string;
+  kind: CallKind;
+  is_group: boolean;
+  /** I started this call (outgoing ring) vs joined/accepted it. */
+  outgoing: boolean;
+  phase: CallPhase;
+  /** Durable answer time from the call row — the duration timer's anchor. */
+  answered_at: string | null;
+  mic_on: boolean;
+  cam_on: boolean;
+  facing: 'user' | 'environment';
+  /** Remote peers with a live tile (mesh ≤ CALL_MESH_MAX−1). */
+  peer_ids: string[];
+  /** Peers currently mid-reconnect (tile shows "reconnecting…"). */
+  reconnecting_ids: string[];
+  /** Bumped when any MediaStream changes; tiles re-grab via lib/webrtc. */
+  media_version: number;
+  /** A callee device confirmed it is ringing (caller copy flips). */
+  ringing_heard: boolean;
+  /** In-call UI minimized to the floating pill (app stays usable). */
+  minimized: boolean;
+  error: string | null;
+  /** Set when phase === 'ended' — drives the end-card copy. */
+  ended_reason: string | null;
+}
+
+/** v0.6 (§1.43): the live watch-together session for a conversation —
+ * whatever the last relayed start/sync frame said, plus when we heard it
+ * (sessions go stale after WATCH_SESSION_TTL_S without a sync). */
+export interface WatchSession {
+  conversation_id: string;
+  video_id: string;
+  host: string;
+  position_s: number;
+  playing: boolean;
+  received_at: number;
+}
+
+/** v0.6 (§1.45): a pending PRIVATE expectation-feedback prompt. Shown exactly
+ * once per match (lib/discovery.ts guards with localStorage), skippable. */
+export interface FeedbackAsk {
+  context: ExpectationContext;
+  conversation_id: string;
 }
 
 export interface AppState {
@@ -93,6 +163,32 @@ export interface AppState {
   feedCursor: string | null;
   /** true once the hard "all caught up" end was reached — the client STOPS. */
   feedCaughtUp: boolean;
+  // ---- v0.6 (§1.42–§1.46) ----
+  /** Incoming ring (call.invite) — rendered anywhere via GlobalOverlays. */
+  callInvite: IncomingCall | null;
+  /** The ONE call I am in (UI state; media lives in lib/webrtc.ts). */
+  callUi: CallUi | null;
+  /** Live (ringing/ongoing) calls by conversation — powers "Join call". */
+  liveCalls: Map<string, Call>;
+  /** Live watch-together sessions by conversation (§1.43, ephemeral). */
+  watch: Map<string, WatchSession>;
+  /** My own discovery opt-in (null = not discoverable / lapsed). */
+  discoveryOptin: DiscoveryOptin | null;
+  discoveryLoaded: boolean;
+  /** The current card pool (null = not fetched; gated on my live opt-in). */
+  discoveryCards: DiscoveryCard[] | null;
+  /** The §1.44 encouragement aggregate — shown PRE-opt-in only (binding). */
+  encouragement: EncouragementResponse | null;
+  /** Mutual-wave celebration (discovery.matched) — viewer-stamped OTHER. */
+  discoveryMatch: { conversation_id: string; user: UserLite } | null;
+  /** I am in the roulette queue (optimistic; roulette.matched clears it). */
+  rouletteQueued: boolean;
+  /** A fresh roulette match to navigate to (GlobalOverlays routes + clears). */
+  rouletteMatchNav: string | null;
+  /** roulette.expired landed for this conversation — goodbye screen. */
+  rouletteGoodbye: string | null;
+  /** Pending one-tap expectation-feedback sheet (§1.45 prompt rule). */
+  feedbackAsk: FeedbackAsk | null;
 }
 
 const state: AppState = {
@@ -124,6 +220,19 @@ const state: AppState = {
   feedPosts: null,
   feedCursor: null,
   feedCaughtUp: false,
+  callInvite: null,
+  callUi: null,
+  liveCalls: new Map(),
+  watch: new Map(),
+  discoveryOptin: null,
+  discoveryLoaded: false,
+  discoveryCards: null,
+  encouragement: null,
+  discoveryMatch: null,
+  rouletteQueued: false,
+  rouletteMatchNav: null,
+  rouletteGoodbye: null,
+  feedbackAsk: null,
 };
 
 let version = 0;
@@ -727,6 +836,127 @@ export function applyPollUpdated(d: PollDelta): void {
   emit();
 }
 
+// ---------------------------------------------------------------------------
+// Calls (v0.6 — API.md §1.42 + §2.12). The store carries UI state only; the
+// media engine (lib/webrtc.ts) is the sole writer of callUi/callInvite.
+// ---------------------------------------------------------------------------
+
+export function setCallInvite(invite: IncomingCall | null): void {
+  state.callInvite = invite;
+  emit();
+}
+
+export function setCallUi(ui: CallUi | null): void {
+  state.callUi = ui;
+  emit();
+}
+
+export function patchCallUi(patch: Partial<CallUi>): void {
+  if (!state.callUi) return;
+  state.callUi = { ...state.callUi, ...patch };
+  emit();
+}
+
+/** call.updated / REST responses: live calls power the header "Join call". */
+export function upsertLiveCall(call: Call): void {
+  const next = new Map(state.liveCalls);
+  if (call.status === 'ringing' || call.status === 'ongoing') {
+    next.set(call.conversation_id, call);
+  } else {
+    const cur = next.get(call.conversation_id);
+    if (cur && cur.id !== call.id) {
+      // A different call is live in that conversation — leave it alone.
+      state.liveCalls = next;
+      emit();
+      return;
+    }
+    next.delete(call.conversation_id);
+  }
+  state.liveCalls = next;
+  emit();
+}
+
+// ---------------------------------------------------------------------------
+// Watch together (v0.6 — §1.43). Frames carry FULL state; stale sessions
+// (no sync within WATCH_SESSION_TTL_S) are dropped by the sheet/banner.
+// ---------------------------------------------------------------------------
+
+export function setWatchSession(ws: WatchSession): void {
+  state.watch = new Map(state.watch).set(ws.conversation_id, ws);
+  emit();
+}
+
+export function clearWatchSession(conversationId: string): void {
+  if (!state.watch.has(conversationId)) return;
+  const next = new Map(state.watch);
+  next.delete(conversationId);
+  state.watch = next;
+  emit();
+}
+
+// ---------------------------------------------------------------------------
+// Bored Together: discovery, roulette & feedback (v0.6 — §1.44/§1.45).
+// ---------------------------------------------------------------------------
+
+export function setDiscoveryOptin(optin: DiscoveryOptin | null): void {
+  state.discoveryOptin = optin;
+  state.discoveryLoaded = true;
+  // The card pool is gated on my own live opt-in — no opt-in, no cards.
+  if (!optin) state.discoveryCards = null;
+  emit();
+}
+
+export function setDiscoveryCards(cards: DiscoveryCard[] | null): void {
+  state.discoveryCards = cards;
+  emit();
+}
+
+/** Mark my own wave on a card (their side never learns of it — §1.44). */
+export function markCardWaved(userId: string): void {
+  if (!state.discoveryCards) return;
+  state.discoveryCards = state.discoveryCards.map((c) =>
+    c.user.id === userId ? { ...c, waved: true } : c
+  );
+  emit();
+}
+
+export function removeCard(userId: string): void {
+  if (!state.discoveryCards) return;
+  state.discoveryCards = state.discoveryCards.filter((c) => c.user.id !== userId);
+  emit();
+}
+
+export function setEncouragement(agg: EncouragementResponse | null): void {
+  state.encouragement = agg;
+  emit();
+}
+
+export function setDiscoveryMatch(match: { conversation_id: string; user: UserLite } | null): void {
+  state.discoveryMatch = match;
+  emit();
+}
+
+export function setRouletteQueued(queued: boolean): void {
+  if (state.rouletteQueued === queued) return;
+  state.rouletteQueued = queued;
+  emit();
+}
+
+export function setRouletteMatchNav(conversationId: string | null): void {
+  state.rouletteMatchNav = conversationId;
+  emit();
+}
+
+export function setRouletteGoodbye(conversationId: string | null): void {
+  state.rouletteGoodbye = conversationId;
+  emit();
+}
+
+export function setFeedbackAsk(ask: FeedbackAsk | null): void {
+  state.feedbackAsk = ask;
+  emit();
+}
+
 export function resetOnLogout(): void {
   state.authed = false;
   state.me = null;
@@ -754,6 +984,19 @@ export function resetOnLogout(): void {
   state.feedPosts = null;
   state.feedCursor = null;
   state.feedCaughtUp = false;
+  state.callInvite = null;
+  state.callUi = null;
+  state.liveCalls = new Map();
+  state.watch = new Map();
+  state.discoveryOptin = null;
+  state.discoveryLoaded = false;
+  state.discoveryCards = null;
+  state.encouragement = null;
+  state.discoveryMatch = null;
+  state.rouletteQueued = false;
+  state.rouletteMatchNav = null;
+  state.rouletteGoodbye = null;
+  state.feedbackAsk = null;
   emit();
 }
 

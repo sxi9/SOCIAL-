@@ -10,6 +10,7 @@ import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
 import ConnectionRequestsSheet from './ConnectionRequestsSheet';
 import { InviteButton } from './InviteSheet';
+import { RescueButton } from './RescueSheet';
 import StoriesStrip from './StoriesStrip';
 import styles from './list.module.css';
 import soc from './social.module.css';
@@ -52,6 +53,9 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
     <div className="page">
       <header className="topbar">
         <h1>Bored Chat</h1>
+        {/* v0.6 §1.46 (fixer r1): the one-tap SOS lives on the home tab too,
+            not only buried in Profile settings. */}
+        <RescueButton />
         <InviteButton className={`btn btn-ghost btn-icon ${styles.headerInvite}`} label="" />
         <button
           type="button"

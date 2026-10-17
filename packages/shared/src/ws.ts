@@ -2,9 +2,16 @@
 // Unknown `t` values MUST be ignored by both sides (forward compatibility), so
 // consumers should fall back to ignoring frames that fail the discriminated parse.
 import { z } from 'zod';
-import { PRESENCE_SUB_MAX } from './constants.js';
+import {
+  CALL_ICE_CANDIDATE_MAX_CHARS,
+  CALL_SDP_MAX_CHARS,
+  PRESENCE_SUB_MAX,
+  YOUTUBE_VIDEO_ID_REGEX,
+} from './constants.js';
 import {
   AttachmentSchema,
+  CallKindSchema,
+  CallSchema,
   BeaconRoleSchema,
   BeaconSchema,
   ConnectionSchema,
@@ -307,6 +314,169 @@ export const PostNewEventSchema = z.object({
 });
 export type PostNewEvent = z.infer<typeof PostNewEventSchema>;
 
+// ---------------------------------------------------------------------------
+// v0.6 call signaling (API.md §1.42 + §2.12, ADR-014). EPHEMERAL by contract:
+// these frames are relayed per recipient through the gateway and NEVER
+// persisted — no replay on reconnect, no table. The durable truth is the
+// calls row (REST); the gateway validates every inbound frame (sender must be
+// an active participant of the call's conversation and — past the invite
+// stage — a live member of the call), stamps from_user server-side (sender
+// claims are ignored), and relays. SDP/candidate payloads are opaque strings
+// to the server: bounded, validated for shape, never parsed.
+// ---------------------------------------------------------------------------
+
+// RTCIceCandidateInit, bounded. Opaque to the server.
+export const IceCandidateSchema = z.object({
+  candidate: z.string().max(CALL_ICE_CANDIDATE_MAX_CHARS),
+  sdpMid: z.string().nullable().optional(),
+  sdpMLineIndex: z.number().int().nonnegative().nullable().optional(),
+  usernameFragment: z.string().max(256).nullable().optional(),
+});
+export type IceCandidate = z.infer<typeof IceCandidateSchema>;
+
+// Relayed call.invite — to every OTHER active participant's sockets (minus
+// blocks, suspension; §2.12). The gateway enriches with conversation_id +
+// kind + from_user so callees can ring with zero extra fetches.
+export const CallInviteEventSchema = z.object({
+  t: z.literal('call.invite'),
+  d: z.object({
+    call_id: UuidSchema,
+    conversation_id: UuidSchema,
+    kind: CallKindSchema,
+    from_user: UuidSchema,
+  }),
+});
+export type CallInviteEvent = z.infer<typeof CallInviteEventSchema>;
+
+// Relayed point signals (ringing → initiator; accept/reject → initiator +
+// the sender's own other sockets, which stop ringing; leave/end → all live
+// call members). One schema per t, same tiny shape.
+const callSignalD = z.object({
+  call_id: UuidSchema,
+  from_user: UuidSchema,
+});
+export const CallRingingEventSchema = z.object({ t: z.literal('call.ringing'), d: callSignalD });
+export type CallRingingEvent = z.infer<typeof CallRingingEventSchema>;
+export const CallAcceptEventSchema = z.object({ t: z.literal('call.accept'), d: callSignalD });
+export type CallAcceptEvent = z.infer<typeof CallAcceptEventSchema>;
+export const CallRejectEventSchema = z.object({ t: z.literal('call.reject'), d: callSignalD });
+export type CallRejectEvent = z.infer<typeof CallRejectEventSchema>;
+export const CallLeaveEventSchema = z.object({ t: z.literal('call.leave'), d: callSignalD });
+export type CallLeaveEvent = z.infer<typeof CallLeaveEventSchema>;
+export const CallEndEventSchema = z.object({ t: z.literal('call.end'), d: callSignalD });
+export type CallEndEvent = z.infer<typeof CallEndEventSchema>;
+
+// Relayed SDP exchange — to the NAMED recipient's sockets only (to_user is
+// consumed by the gateway; from_user is stamped on the way out).
+export const CallOfferEventSchema = z.object({
+  t: z.literal('call.offer'),
+  d: z.object({
+    call_id: UuidSchema,
+    from_user: UuidSchema,
+    sdp: z.string().max(CALL_SDP_MAX_CHARS),
+  }),
+});
+export type CallOfferEvent = z.infer<typeof CallOfferEventSchema>;
+
+export const CallAnswerEventSchema = z.object({
+  t: z.literal('call.answer'),
+  d: z.object({
+    call_id: UuidSchema,
+    from_user: UuidSchema,
+    sdp: z.string().max(CALL_SDP_MAX_CHARS),
+  }),
+});
+export type CallAnswerEvent = z.infer<typeof CallAnswerEventSchema>;
+
+export const CallIceEventSchema = z.object({
+  t: z.literal('call.ice'),
+  d: z.object({
+    call_id: UuidSchema,
+    from_user: UuidSchema,
+    candidate: IceCandidateSchema,
+  }),
+});
+export type CallIceEvent = z.infer<typeof CallIceEventSchema>;
+
+// SERVER-emitted (not relayed) on every durable status change — create, first
+// join (ringing→ongoing), member join/leave, reject, end, ring timeout — to
+// all active participants of the conversation. Full-DTO replace by call.id;
+// reconnect truth is GET /api/conversations/:id/calls, never frame replay.
+export const CallUpdatedEventSchema = z.object({
+  t: z.literal('call.updated'),
+  d: z.object({
+    call: CallSchema,
+  }),
+});
+export type CallUpdatedEvent = z.infer<typeof CallUpdatedEventSchema>;
+
+// ---------------------------------------------------------------------------
+// v0.6 watch together (API.md §1.43 + §2.12). Ephemeral only: one active
+// session per conversation in Redis with a TTL the host's syncs refresh. The
+// relayed start/sync frames carry the FULL state (video_id + host included)
+// so a participant who opens the chat mid-session locks on from the next
+// sync — no replay, no REST read.
+// ---------------------------------------------------------------------------
+
+const watchStateD = z.object({
+  conversation_id: UuidSchema,
+  video_id: z.string().regex(YOUTUBE_VIDEO_ID_REGEX),
+  host: UuidSchema,
+  position_s: z.number().nonnegative(),
+  playing: z.boolean(),
+});
+export const WatchStartEventSchema = z.object({ t: z.literal('watch.start'), d: watchStateD });
+export type WatchStartEvent = z.infer<typeof WatchStartEventSchema>;
+export const WatchSyncEventSchema = z.object({ t: z.literal('watch.sync'), d: watchStateD });
+export type WatchSyncEvent = z.infer<typeof WatchSyncEventSchema>;
+
+export const WatchStopEventSchema = z.object({
+  t: z.literal('watch.stop'),
+  d: z.object({
+    conversation_id: UuidSchema,
+  }),
+});
+export type WatchStopEvent = z.infer<typeof WatchStopEventSchema>;
+
+// ---------------------------------------------------------------------------
+// v0.6 discovery & roulette (API.md §1.44/§1.45, ADR-015)
+// ---------------------------------------------------------------------------
+
+// To BOTH parties of a mutual wave, each frame stamped with the OTHER party
+// (viewer-specific, the connection.updated pattern). A single un-reciprocated
+// wave fans out NOTHING to anyone, ever (ADR-015).
+export const DiscoveryMatchedEventSchema = z.object({
+  t: z.literal('discovery.matched'),
+  d: z.object({
+    conversation_id: UuidSchema,
+    user: UserLiteSchema,
+  }),
+});
+export type DiscoveryMatchedEvent = z.infer<typeof DiscoveryMatchedEventSchema>;
+
+// To both matched users' sockets; carries the provisional DM (roulette rider
+// set, viewer-specific kept=false). The icebreaker arrives as normal msg.new.
+export const RouletteMatchedEventSchema = z.object({
+  t: z.literal('roulette.matched'),
+  d: z.object({
+    conversation: ConversationSchema,
+  }),
+});
+export type RouletteMatchedEvent = z.infer<typeof RouletteMatchedEventSchema>;
+
+// The window lapsed without both keeps: the conversation and its messages are
+// HARD-DELETED server-side; clients drop local state for it on this frame
+// (offline clients reconcile via GET /sync — the conversation is simply
+// absent, §2.8). Deliberately carries no "who didn't keep" (no rejection
+// surface; ADR-015).
+export const RouletteExpiredEventSchema = z.object({
+  t: z.literal('roulette.expired'),
+  d: z.object({
+    conversation_id: UuidSchema,
+  }),
+});
+export type RouletteExpiredEvent = z.infer<typeof RouletteExpiredEventSchema>;
+
 export const ErrorEventSchema = z.object({
   t: z.literal('error'),
   d: z.object({
@@ -339,6 +509,23 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
   ConnectionUpdatedEventSchema,
   StoryNewEventSchema,
   PostNewEventSchema,
+  // v0.6 (§2.12): relayed signaling + server-emitted call/discovery events.
+  CallInviteEventSchema,
+  CallRingingEventSchema,
+  CallAcceptEventSchema,
+  CallRejectEventSchema,
+  CallOfferEventSchema,
+  CallAnswerEventSchema,
+  CallIceEventSchema,
+  CallLeaveEventSchema,
+  CallEndEventSchema,
+  CallUpdatedEventSchema,
+  WatchStartEventSchema,
+  WatchSyncEventSchema,
+  WatchStopEventSchema,
+  DiscoveryMatchedEventSchema,
+  RouletteMatchedEventSchema,
+  RouletteExpiredEventSchema,
   ErrorEventSchema,
 ]);
 export type ServerEvent = z.infer<typeof ServerEventSchema>;
@@ -393,12 +580,138 @@ export const PresenceUnsubEventSchema = z.object({
 });
 export type PresenceUnsubEvent = z.infer<typeof PresenceUnsubEventSchema>;
 
+// ---------------------------------------------------------------------------
+// v0.6 client signaling frames (§2.12). All EPHEMERAL: validated by Zod at
+// the gateway, authorized per frame (active participant of the call's
+// conversation / the conversation; live call member past the invite stage),
+// relayed to the named recipients, and dropped — never persisted, never
+// replayed. from_user on the relayed frame is stamped by the gateway; to_user
+// here is consumed by it. Durable call-state transitions are REST (§1.42):
+// these frames never write the calls row.
+// ---------------------------------------------------------------------------
+
+// Sent by the initiator right after POST .../calls returns 201; relayed to
+// every other active participant (call_id is enriched with conversation_id +
+// kind from the call row on the way out).
+export const ClientCallInviteEventSchema = z.object({
+  t: z.literal('call.invite'),
+  d: z.object({ call_id: UuidSchema }),
+});
+export type ClientCallInviteEvent = z.infer<typeof ClientCallInviteEventSchema>;
+
+const clientCallSignalD = z.object({ call_id: UuidSchema });
+// Callee device → initiator: "ringing here" (caller UI flips to Ringing…).
+export const ClientCallRingingEventSchema = z.object({
+  t: z.literal('call.ringing'),
+  d: clientCallSignalD,
+});
+export type ClientCallRingingEvent = z.infer<typeof ClientCallRingingEventSchema>;
+// Accept/reject race ahead of the REST join/reject so UIs react instantly
+// (and the sender's OTHER devices stop ringing). The durable flip is REST.
+export const ClientCallAcceptEventSchema = z.object({
+  t: z.literal('call.accept'),
+  d: clientCallSignalD,
+});
+export type ClientCallAcceptEvent = z.infer<typeof ClientCallAcceptEventSchema>;
+export const ClientCallRejectEventSchema = z.object({
+  t: z.literal('call.reject'),
+  d: clientCallSignalD,
+});
+export type ClientCallRejectEvent = z.infer<typeof ClientCallRejectEventSchema>;
+// Leaving/ending mid-call (the REST end/leave is the durable record; these
+// make the remote tiles drop instantly).
+export const ClientCallLeaveEventSchema = z.object({
+  t: z.literal('call.leave'),
+  d: clientCallSignalD,
+});
+export type ClientCallLeaveEvent = z.infer<typeof ClientCallLeaveEventSchema>;
+export const ClientCallEndEventSchema = z.object({
+  t: z.literal('call.end'),
+  d: clientCallSignalD,
+});
+export type ClientCallEndEvent = z.infer<typeof ClientCallEndEventSchema>;
+
+// SDP exchange, addressed per peer (mesh rule: the JOINING peer offers to
+// every existing member — §2.12).
+export const ClientCallOfferEventSchema = z.object({
+  t: z.literal('call.offer'),
+  d: z.object({
+    call_id: UuidSchema,
+    to_user: UuidSchema,
+    sdp: z.string().max(CALL_SDP_MAX_CHARS),
+  }),
+});
+export type ClientCallOfferEvent = z.infer<typeof ClientCallOfferEventSchema>;
+export const ClientCallAnswerEventSchema = z.object({
+  t: z.literal('call.answer'),
+  d: z.object({
+    call_id: UuidSchema,
+    to_user: UuidSchema,
+    sdp: z.string().max(CALL_SDP_MAX_CHARS),
+  }),
+});
+export type ClientCallAnswerEvent = z.infer<typeof ClientCallAnswerEventSchema>;
+export const ClientCallIceEventSchema = z.object({
+  t: z.literal('call.ice'),
+  d: z.object({
+    call_id: UuidSchema,
+    to_user: UuidSchema,
+    candidate: IceCandidateSchema,
+  }),
+});
+export type ClientCallIceEvent = z.infer<typeof ClientCallIceEventSchema>;
+
+// Host starts a watch-together session; the server parses the video id out of
+// the URL (extractYoutubeVideoId — rejects with error watch_bad_url).
+export const ClientWatchStartEventSchema = z.object({
+  t: z.literal('watch.start'),
+  d: z.object({
+    conversation_id: UuidSchema,
+    url: z.string().max(2048),
+  }),
+});
+export type ClientWatchStartEvent = z.infer<typeof ClientWatchStartEventSchema>;
+
+// HOST-ONLY (others' sync frames are refused with error watch_not_host);
+// refreshes the session TTL. Send on every play/pause/seek and at least every
+// WATCH_KEEPALIVE_S as a keepalive.
+export const ClientWatchSyncEventSchema = z.object({
+  t: z.literal('watch.sync'),
+  d: z.object({
+    conversation_id: UuidSchema,
+    position_s: z.number().nonnegative(),
+    playing: z.boolean(),
+  }),
+});
+export type ClientWatchSyncEvent = z.infer<typeof ClientWatchSyncEventSchema>;
+
+// Host ends the session (any participant may stop it once the host has no
+// live socket — §1.43).
+export const ClientWatchStopEventSchema = z.object({
+  t: z.literal('watch.stop'),
+  d: z.object({ conversation_id: UuidSchema }),
+});
+export type ClientWatchStopEvent = z.infer<typeof ClientWatchStopEventSchema>;
+
 export const ClientEventSchema = z.discriminatedUnion('t', [
   DeliveredEventSchema,
   ReadEventSchema,
   ClientTypingEventSchema,
   PresenceSubEventSchema,
   PresenceUnsubEventSchema,
+  // v0.6 (§2.12)
+  ClientCallInviteEventSchema,
+  ClientCallRingingEventSchema,
+  ClientCallAcceptEventSchema,
+  ClientCallRejectEventSchema,
+  ClientCallOfferEventSchema,
+  ClientCallAnswerEventSchema,
+  ClientCallIceEventSchema,
+  ClientCallLeaveEventSchema,
+  ClientCallEndEventSchema,
+  ClientWatchStartEventSchema,
+  ClientWatchSyncEventSchema,
+  ClientWatchStopEventSchema,
 ]);
 export type ClientEvent = z.infer<typeof ClientEventSchema>;
 

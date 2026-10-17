@@ -22,3 +22,20 @@ export function extractFirstUrl(body: string): string | null {
     return null;
   }
 }
+
+/**
+ * v0.6 watch together (API.md §1.43 + §2.12): the YouTube video id from a
+ * pasted URL, or null. ONE canonical implementation for the same reason as
+ * extractFirstUrl — the server parses the host's `watch.start` URL with this,
+ * and the composer uses it to light the "watch together" affordance; a
+ * drifted client regex would offer sessions the server then refuses.
+ * Handles watch?v=, youtu.be/, shorts/, live/, embed/ (and the -nocookie
+ * host); the id is exactly 11 chars of [A-Za-z0-9_-]
+ * (YOUTUBE_VIDEO_ID_REGEX in constants.ts).
+ */
+export function extractYoutubeVideoId(url: string): string | null {
+  const match = url.match(
+    /(?:youtube(?:-nocookie)?\.com\/(?:watch\?(?:[^#\s]*&)?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])/i,
+  );
+  return match ? match[1] : null;
+}

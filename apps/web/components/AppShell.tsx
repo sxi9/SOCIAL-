@@ -4,6 +4,7 @@ import { useEffect, type ReactNode } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { startConnection } from '@/lib/connection';
 import { useAppState } from '@/lib/useStore';
+import GlobalOverlays from './GlobalOverlays';
 
 /** Boots the connection (WS + /api/sync) and gates authed pages. */
 export default function AppShell({ children }: { children: ReactNode }) {
@@ -28,5 +29,12 @@ export default function AppShell({ children }: { children: ReactNode }) {
       </div>
     );
   }
-  return <>{children}</>;
+  return (
+    <>
+      {children}
+      {/* v0.6: incoming-call overlay, in-call screen, match moment, roulette
+          goodbye and the one-tap feedback — on every page (§1.42/§1.44/§1.45). */}
+      <GlobalOverlays />
+    </>
+  );
 }

@@ -31,6 +31,10 @@ import { userRoutes } from './modules/users/routes.js';
 import { listingRoutes } from './modules/listings/routes.js';
 import { personReviewRoutes } from './modules/listings/reviews.js';
 import { adminRoutes } from './modules/admin/routes.js';
+import { callRoutes } from './modules/calls/routes.js';
+import { discoveryRoutes } from './modules/discovery/routes.js';
+import { rouletteRoutes } from './modules/discovery/roulette.js';
+import { rescueRoutes } from './modules/rescue/routes.js';
 import { ApiError } from './lib/errors.js';
 import { createRingLogStream } from './lib/logring.js';
 
@@ -114,6 +118,10 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
   await app.register(listingRoutes); // v0.5b §1.38/§1.39
   await app.register(personReviewRoutes); // v0.5b §1.40
   await app.register(adminRoutes); // v0.5b §1.41
+  await app.register(callRoutes); // v0.6 §1.42
+  await app.register(discoveryRoutes); // v0.6 §1.44/§1.45
+  await app.register(rouletteRoutes); // v0.6 §1.45
+  await app.register(rescueRoutes); // v0.6 §1.46
   await app.register(inviteRoutes);
   await app.register(uploadRoutes);
   await app.register(previewRoutes);

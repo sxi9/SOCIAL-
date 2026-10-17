@@ -20,9 +20,13 @@ import { api, ApiError, NetworkError } from './api';
 import { refreshBeacons } from './beacons';
 import { refreshConnections } from './connections';
 import * as db from './db';
+import { onRouletteExpired, refreshOptin } from './discovery';
 import { refreshFeed } from './feed';
+import { registerEventSender } from './signals';
 import * as store from './store';
 import { refreshStories } from './stories';
+import { handleWatchEvent } from './watch';
+import { handleCallEvent, teardownCall } from './webrtc';
 
 const BACKOFF_MIN_MS = 1000;
 const BACKOFF_MAX_MS = 30000;
@@ -50,6 +54,18 @@ function send(frame: ClientEvent): void {
     ws.send(JSON.stringify(frame));
   }
 }
+
+// v0.6 (§2.12): feature modules (lib/webrtc.ts, lib/watch.ts) send their
+// ephemeral call.*/watch.* frames through this registered sender — an
+// indirection instead of an import cycle. Losing a frame while the socket is
+// down loses a moment of UX, never state (the typing precedent).
+registerEventSender((frame: ClientEvent): boolean => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(frame));
+    return true;
+  }
+  return false;
+});
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -103,6 +119,7 @@ export async function logout(): Promise<void> {
   } catch {
     /* session may already be gone */
   }
+  teardownCall(); // stop mic/camera + close peer connections (v0.6 §1.42)
   ws?.close();
   await db.clearOutbox().catch(() => undefined);
   store.resetOnLogout();
@@ -313,8 +330,67 @@ function handleFrame(raw: string): void {
     case 'post.new':
       store.prependPost(ev.d.post);
       break;
+    // v0.6 calls (§1.42/§2.12): relayed signaling + the server-emitted
+    // call.updated all route to the media engine (lib/webrtc.ts).
+    case 'call.invite':
+    case 'call.ringing':
+    case 'call.accept':
+    case 'call.reject':
+    case 'call.offer':
+    case 'call.answer':
+    case 'call.ice':
+    case 'call.leave':
+    case 'call.end':
+    case 'call.updated':
+      handleCallEvent(ev);
+      break;
+    // v0.6 watch together (§1.43): full-state frames mirror into the store.
+    case 'watch.start':
+    case 'watch.sync':
+    case 'watch.stop':
+      handleWatchEvent(ev);
+      break;
+    // v0.6 (§1.44): a mutual wave — frame is stamped with the OTHER party.
+    // The new DM rides its own fan-out; adopt it eagerly so "Say hi" opens
+    // a live conversation even before the next sync.
+    case 'discovery.matched': {
+      store.setDiscoveryMatch(ev.d);
+      void adoptConversationById(ev.d.conversation_id);
+      void refreshConnections(); // they just became friends-of
+      break;
+    }
+    // v0.6 (§1.45): the provisional DM (viewer-stamped roulette.kept:false).
+    case 'roulette.matched':
+      store.upsertConversation(ev.d.conversation);
+      void db
+        .adoptConversation(ev.d.conversation.id, ev.d.conversation.last_seq, null)
+        .catch(() => undefined);
+      store.setRouletteQueued(false);
+      store.setRouletteMatchNav(ev.d.conversation.id);
+      break;
+    // v0.6 (§1.45): hard-deleted server-side — drop local state, goodbye.
+    case 'roulette.expired':
+      onRouletteExpired(ev.d.conversation_id);
+      break;
     case 'error':
       break;
+  }
+}
+
+/** Fetch + adopt a conversation the server just created for me (mutual wave):
+ * conv.new may race or be missed; GET is the reconcile (§2.8 doctrine). */
+async function adoptConversationById(conversationId: string): Promise<void> {
+  if (store.state.conversations.has(conversationId)) return;
+  try {
+    const res = await api.get<{ conversation: import('@socialchat/shared').Conversation }>(
+      `/api/conversations/${conversationId}`
+    );
+    store.upsertConversation(res.conversation);
+    await db
+      .adoptConversation(res.conversation.id, res.conversation.last_seq, null)
+      .catch(() => undefined);
+  } catch {
+    /* the next sync snapshot carries it */
   }
 }
 
@@ -485,6 +561,9 @@ async function runSync(): Promise<void> {
   void refreshConnections();
   void refreshStories();
   if (store.state.feedPosts !== null) void refreshFeed().catch(() => undefined);
+  // v0.6 (§1.44): my opt-in state reconciles from REST once the Local tab has
+  // looked at it (frames never carry it — it is owner-only state).
+  if (store.state.discoveryLoaded) void refreshOptin();
 
   let metas: Map<string, number>;
   try {

@@ -1,5 +1,11 @@
 # SocialChat — single-VPS deployment (ARCHITECTURE §3).
-# Eight services; ONLY caddy publishes host ports. One .env (copy .env.example).
+# Nine services; ONLY caddy publishes host ports — with ONE documented
+# exception: `turn` (coturn, v0.6 calls — ADR-014) publishes 3478/udp+tcp and
+# the relay range 49160-49200/udp itself, because TURN is UDP-first media
+# relay and cannot ride an HTTP reverse proxy. `turn` only starts under the
+# "turn" compose profile (COMPOSE_PROFILES=turn in .env, set together with
+# TURN_SECRET) and refuses an empty secret — see the service for why.
+# One .env (copy .env.example).
 # api / worker / migrate share the apps/server image with different commands.
 # Local dev (publish postgres/redis/minio on loopback for `pnpm dev`):
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres redis minio
@@ -94,6 +100,58 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+
+  # v0.6 calls (ADR-014; API.md §1.42): coturn in static-auth-secret mode. The
+  # api mints time-limited credentials from the SAME env TURN_SECRET —
+  # username "<unix expiry>:<user_id>", credential base64(HMAC-SHA1(secret,
+  # username)) — so api and coturn share only that secret, no DB wiring.
+  # THE ONE EXCEPTION to "only caddy publishes host ports": TURN is UDP-first
+  # media relay; an HTTP reverse proxy cannot carry it. Open these ports in
+  # the host firewall too (README "Deploy"). The relay range is deliberately
+  # small (~20 concurrent relayed streams); widen min/max + ports together.
+  # Local dev: leave TURN_SECRET (and COMPOSE_PROFILES) empty — the api then
+  # returns turn:null and same-network peers connect on host candidates
+  # without any relay, and no TURN port is ever published.
+  # Host behind NAT (not a plain VPS): add --external-ip=<public-ip> below.
+  #
+  # OPEN-RELAY GUARD (fixer r1): coturn in static-auth-secret mode with an
+  # EMPTY secret would accept any credential HMAC'd with "" — a public open
+  # relay on these published ports. Two independent locks:
+  #   1. profiles: the service only starts with the "turn" profile active —
+  #      set COMPOSE_PROFILES=turn next to TURN_SECRET in .env (README
+  #      "Deploy"); the default `docker compose up` never starts it.
+  #   2. the entrypoint refuses to start when TURN_SECRET is empty, so even
+  #      an explicitly-activated profile can never run an unauthenticated
+  #      relay.
+  turn:
+    image: coturn/coturn:4.6.2-alpine
+    restart: unless-stopped
+    profiles: ["turn"]
+    environment:
+      TURN_SECRET: ${TURN_SECRET:-}
+    ports:
+      - "3478:3478" # TURN_PORT (tcp)
+      - "3478:3478/udp" # TURN_PORT (udp)
+      - "49160-49200:49160-49200/udp" # TURN_RELAY_PORT_MIN..MAX
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ -z "$$TURN_SECRET" ]; then
+          echo "turn: TURN_SECRET is empty — refusing to start an open relay." >&2
+          echo "turn: set TURN_SECRET in .env (openssl rand -hex 32) or drop the 'turn' profile." >&2
+          exit 1
+        fi
+        exec turnserver \
+          --listening-port=3478 \
+          --min-port=49160 \
+          --max-port=49200 \
+          --realm=${DOMAIN:-localhost} \
+          --use-auth-secret \
+          --static-auth-secret="$$TURN_SECRET" \
+          --fingerprint \
+          --no-cli \
+          --no-tlsv1 \
+          --no-tlsv1_1
 
   postgres:
     image: postgres:17

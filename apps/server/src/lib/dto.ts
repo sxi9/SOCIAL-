@@ -229,12 +229,25 @@ export function participantDto(p: PartRow, u: UserRow, view?: ViewCtx | null): P
   };
 }
 
+// v0.6 (migration 0007, API.md §1.44/§1.45): the conversations.metadata
+// jsonb rider — shape authority is the shared contract; this is the server's
+// reading of it.
+export interface ConvMetadata {
+  origin?: 'discovery' | 'roulette';
+  roulette?: { kept_by?: string[] };
+}
+
+export function convMetadata(c: ConvRow): ConvMetadata {
+  return (c.metadata ?? {}) as ConvMetadata;
+}
+
 export function conversationDto(
   c: ConvRow,
   parts: { p: PartRow; u: UserRow }[],
   view?: ViewCtx | null,
   pins: ConversationPin[] = [],
 ): Conversation {
+  const meta = convMetadata(c);
   // v0.5a (§1.35): a channel's Conversation DTO carries ONLY the viewer's own
   // row + the owner + admins — never the member body, never a member COUNT
   // (PSYCHOLOGY rule 3). The full list is the paged §1.35 read.
@@ -255,6 +268,20 @@ export function conversationDto(
     pins,
     // v0.4 (§1.25): conversation-wide disappearing TTL (null = off).
     disappear_ttl_s: c.disappearTtlS,
+    // v0.6 (§1.44/§1.45): how this DM came to exist; null for ordinary ones.
+    origin: meta.origin ?? null,
+    // v0.6 (§1.45): the roulette rider, non-null ONLY while provisional.
+    // `kept` is the VIEWER's own keep — the other party's keep state is never
+    // serialized (no pressure surface); broadcast frames without a single
+    // viewer serialize kept:false and clients reconcile on the next
+    // viewer-scoped fetch (the reactions `mine` pattern).
+    roulette:
+      c.expiresAt && meta.origin === 'roulette'
+        ? {
+            expires_at: iso(c.expiresAt),
+            kept: view ? (meta.roulette?.kept_by ?? []).includes(view.viewerId) : false,
+          }
+        : null,
     created_at: iso(c.createdAt),
   };
 }

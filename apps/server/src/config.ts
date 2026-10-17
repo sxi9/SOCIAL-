@@ -35,6 +35,14 @@ const EnvSchema = z.object({
   VAPID_PUBLIC_KEY: z.string().optional(),
   VAPID_PRIVATE_KEY: z.string().optional(),
   VAPID_SUBJECT: z.string().optional(),
+
+  // v0.6 calls (API.md §1.42, ADR-014): the shared secret between the api
+  // (mints time-limited HMAC credentials) and the coturn service (verifies
+  // them, static-auth-secret mode). '' (a blank `TURN_SECRET=` .env line)
+  // counts as unset: the api then answers turn:null on create/join and
+  // 503 turn_unconfigured on GET /api/turn-credentials — local dev connects
+  // on host candidates without any relay.
+  TURN_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(16).optional()),
 });
 
 const env = EnvSchema.parse(process.env);
@@ -61,6 +69,9 @@ export const config = {
   // for free; setting PUZZLE_SECRET explicitly pins the word schedule so a
   // session-secret rotation doesn't reshuffle it mid-stream.
   puzzleSecret: env.PUZZLE_SECRET ?? `puzzle:${env.SESSION_SECRET}`,
+  // null = no TURN relay configured (ADR-014): calls still work on host
+  // candidates between same-network peers; the §1.42 responses carry turn:null.
+  turnSecret: env.TURN_SECRET ?? null,
   vapid:
     env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY
       ? {

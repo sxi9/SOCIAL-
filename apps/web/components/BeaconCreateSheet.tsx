@@ -304,7 +304,8 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
   );
 }
 
-/** The floating mascot-yellow "I'm bored" button (conversation list). */
+/** The floating mascot-yellow "I'm bored" button (Local tab) — docked
+ * bottom-right so it never stacks on the board's own controls (fixer r1). */
 export function BoredButton() {
   const [open, setOpen] = useState(false);
   return (

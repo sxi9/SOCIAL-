@@ -158,6 +158,17 @@ export const conversations = pgTable(
     // worker sweep tombstones (never deletes) expired rows — seqs are never
     // reused.
     disappearTtlS: integer('disappear_ttl_s'),
+    // v0.6 (migration 0007, API.md §1.44/§1.45): the house jsonb rider.
+    // Holds {"origin":"roulette","roulette":{"kept_by":[...]}} while a
+    // roulette DM is provisional ({"origin":"roulette"} once kept) and
+    // {"origin":"discovery"} on mutual-wave DMs. Shape authority is the
+    // shared Zod contract; the DB pins only the json type.
+    metadata: jsonb('metadata').notNull().default({}),
+    // v0.6 (migration 0007, API.md §1.45): non-null = this conversation
+    // self-destructs — the `discovery` worker sweep HARD-DELETES it (messages
+    // and participants cascade). Set on roulette provisional DMs (+5 min);
+    // cleared by the both-kept guarded UPDATE.
+    expiresAt: timestamptz('expires_at'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
   },
   (t) => ({
@@ -175,10 +186,19 @@ export const conversations = pgTable(
       'conversations_disappear_ttl_s_check',
       sql`${t.disappearTtlS} IN (3600, 86400, 604800, 2592000)`,
     ),
+    // v0.6 (migration 0007): jsonb rider shape pin.
+    metadataCheck: check(
+      'conversations_metadata_check',
+      sql`jsonb_typeof(${t.metadata}) = 'object'`,
+    ),
     activityIdx: index('conversations_activity_idx').on(sql`${t.lastMessageAt} DESC NULLS LAST`),
     disappearingIdx: index('conversations_disappearing_idx')
       .on(t.id)
       .where(sql`${t.disappearTtlS} IS NOT NULL`),
+    // v0.6 (migration 0007): the roulette hard-delete sweep walk.
+    expiryIdx: index('conversations_expiry_idx')
+      .on(t.expiresAt)
+      .where(sql`${t.expiresAt} IS NOT NULL`),
   }),
 );
 
@@ -1318,3 +1338,147 @@ export const instanceSettings = pgTable('instance_settings', {
   value: jsonb('value').notNull(),
   updatedAt: timestamptz('updated_at').notNull().defaultNow(),
 });
+
+// =================================== calls ===================================
+// v0.6 (migration 0007, API.md §1.42 + §2.12, ADR-014, FEATURES #49–#50). The
+// durable call LOG and the signaling authorization anchor — nothing live is
+// in here: mesh membership is Redis (`call:{id}:members`, deleted on any
+// terminal status) and SDP/ICE frames are relayed, never persisted (no such
+// columns exist anywhere, by contract). ONE live call per conversation is the
+// partial unique below — claimed atomically by the INSERT, the dm_key
+// pattern. Status reachability: ringing → ongoing | rejected | missed;
+// ongoing → completed | failed. is_group snapshots the conversation type at
+// start; initiator_id SET NULL — the log outlives the account.
+
+export const calls = pgTable(
+  'calls',
+  {
+    id: uuid('id').primaryKey(),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    initiatorId: uuid('initiator_id').references(() => users.id, { onDelete: 'set null' }),
+    kind: text('kind').notNull(),
+    isGroup: boolean('is_group').notNull().default(false),
+    status: text('status').notNull().default('ringing'),
+    startedAt: timestamptz('started_at').notNull().defaultNow(),
+    answeredAt: timestamptz('answered_at'),
+    endedAt: timestamptz('ended_at'),
+  },
+  (t) => ({
+    kindCheck: check('calls_kind_check', sql`${t.kind} IN ('audio','video')`),
+    statusCheck: check(
+      'calls_status_check',
+      sql`${t.status} IN ('ringing','ongoing','completed','missed','rejected','failed')`,
+    ),
+    // Terminal states carry ended_at; live states don't.
+    endedShapeCheck: check(
+      'calls_ended_shape_check',
+      sql`(${t.status} IN ('ringing','ongoing')) = (${t.endedAt} IS NULL)`,
+    ),
+    answeredShapeCheck: check(
+      'calls_answered_shape_check',
+      sql`(${t.status} IN ('ringing','missed','rejected') AND ${t.answeredAt} IS NULL)
+          OR (${t.status} IN ('ongoing','completed','failed') AND ${t.answeredAt} IS NOT NULL)`,
+    ),
+    // The §1.42 409 call_active guard.
+    liveIdx: uniqueIndex('calls_live_idx')
+      .on(t.conversationId)
+      .where(sql`${t.status} IN ('ringing','ongoing')`),
+    byConversationIdx: index('calls_by_conversation_idx').on(
+      t.conversationId,
+      sql`${t.startedAt} DESC`,
+    ),
+    // Ring-timeout safety sweep (the delayed `timers` job is primary).
+    ringingIdx: index('calls_ringing_idx')
+      .on(t.startedAt)
+      .where(sql`${t.status} = 'ringing'`),
+  }),
+);
+
+// ============================ discovery opt-ins ==============================
+// v0.6 (migration 0007, API.md §1.44, ADR-015, FEATURES #52). Being
+// discoverable is a MOMENT, not a setting: one row per user, upserted with
+// expires_at = now() + DISCOVERY_OPTIN_TTL_S; every read joins
+// `expires_at > now()` live. scope 'area' requires users.area (route-
+// enforced); the area TEXT is never serialized to other users — matching is
+// server-side citext equality (FEATURES #30).
+
+export const discoveryOptins = pgTable(
+  'discovery_optins',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    scope: text('scope').notNull(),
+    note: text('note').notNull().default(''),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+    expiresAt: timestamptz('expires_at').notNull(),
+  },
+  (t) => ({
+    scopeCheck: check('discovery_optins_scope_check', sql`${t.scope} IN ('area','public')`),
+    noteCheck: check('discovery_optins_note_check', sql`char_length(${t.note}) <= 80`),
+    expiryIdx: index('discovery_optins_expiry_idx').on(t.expiresAt),
+  }),
+);
+
+// ============================= discovery waves ===============================
+// v0.6 (migration 0007, API.md §1.44, ADR-015). One row per (waver, target).
+// DELIBERATELY no read model for the target: a single wave notifies NOBODY
+// and is visible to NOBODY but the matcher transaction (no FoMO, no rejection
+// surface). Mutuality is a PK lookup of the reciprocal row; on match both
+// rows are deleted in the DM-create transaction. Honored only while both
+// parties' opt-ins are live (route-joined); the sweep prunes stale rows.
+
+export const discoveryWaves = pgTable(
+  'discovery_waves',
+  {
+    fromUserId: uuid('from_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    toUserId: uuid('to_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.fromUserId, t.toUserId] }),
+    notSelfCheck: check('discovery_waves_not_self_check', sql`${t.fromUserId} <> ${t.toUserId}`),
+    sweepIdx: index('discovery_waves_sweep_idx').on(t.createdAt),
+  }),
+);
+
+// =========================== expectation feedback ============================
+// v0.6 (migration 0007, API.md §1.45, ADR-015; PSYCHOLOGY finding #10). The
+// PRIVATE better/worse-than-expected one-tap after a roulette/discovery DM
+// ends or persists. conversation_id is a plain uuid dedupe key, NOT an FK —
+// expired roulette DMs are hard-deleted and the tap often lands after the
+// deletion. The ONLY read is the anonymous instance-wide aggregate
+// (GET /api/discovery/encouragement, null under ENCOURAGEMENT_MIN_SAMPLES);
+// per-person verdicts are never serialized to anyone, the subject included.
+
+export const expectationFeedback = pgTable(
+  'expectation_feedback',
+  {
+    id: uuid('id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    conversationId: uuid('conversation_id').notNull(),
+    context: text('context').notNull(),
+    verdict: text('verdict').notNull(),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    contextCheck: check(
+      'expectation_feedback_context_check',
+      sql`${t.context} IN ('roulette','discovery')`,
+    ),
+    verdictCheck: check(
+      'expectation_feedback_verdict_check',
+      sql`${t.verdict} IN ('better','same','worse')`,
+    ),
+    onceIdx: uniqueIndex('expectation_feedback_once').on(t.userId, t.conversationId),
+    aggregateIdx: index('expectation_feedback_aggregate_idx').on(t.context, t.verdict),
+  }),
+);

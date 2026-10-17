@@ -17,6 +17,7 @@ import { setMe } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import Avatar from '@/components/Avatar';
 import ProfileEditor from '@/components/ProfileEditor';
+import { RescueCard } from '@/components/RescueSheet';
 import TabPage from '@/components/TabPage';
 
 function ProfileSettings() {
@@ -262,6 +263,10 @@ function ProfileSettings() {
             Open
           </Link>
         </div>
+
+        {/* v0.6 §1.46: one tap pings up to 3 friends to call you out of a
+            boring situation — the one push that cuts through mutes. */}
+        <RescueCard />
 
         <h2>Notifications</h2>
         <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>

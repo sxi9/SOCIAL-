@@ -53,6 +53,8 @@ cp .env.example .env
 #      MINIO_ACCESS_KEY / MINIO_SECRET_KEY=<something random>
 #      SESSION_SECRET=$(openssl rand -base64 32)
 #      VAPID keys (for web push):  npx web-push generate-vapid-keys
+#      TURN_SECRET=$(openssl rand -hex 32)      # voice/video calls (v0.6)
+#      COMPOSE_PROFILES=turn                    # starts coturn alongside the rest
 
 # 4. Up
 docker compose up -d --build
@@ -64,7 +66,27 @@ automatic HTTPS. Open `https://your-domain`, register the first account, and
 install the PWA from the browser menu.
 
 Only Caddy publishes host ports — Postgres, Redis, and MinIO are reachable
-solely on the internal compose network.
+solely on the internal compose network — with **one documented exception**
+(ADR-014): the `turn` service (coturn, for v0.6 voice/video calls) publishes
+`3478/udp+tcp` and the media relay range `49160-49200/udp` itself, because
+TURN is UDP-first media relay and cannot ride an HTTP reverse proxy. If the
+box runs a host firewall (ufw, cloud security groups), open those ports too:
+
+```bash
+ufw allow 3478/tcp && ufw allow 3478/udp && ufw allow 49160:49200/udp
+```
+
+Calls work without TURN between peers on the same network (host candidates)
+— `TURN_SECRET` left empty just disables the relay, nothing else — but two
+phones on different carrier NATs need it. The api mints time-limited HMAC
+credentials from `TURN_SECRET` (coturn static-auth-secret mode; API.md
+§1.42); api and coturn share only that env var. The `turn` service sits
+behind the `turn` compose profile (`COMPOSE_PROFILES=turn` in `.env`, set it
+together with `TURN_SECRET`) and refuses to start when `TURN_SECRET` is
+empty — coturn authenticating against an empty secret on public ports would
+be an open relay, so neither lock is optional. A box behind NAT (home server
+rather than VPS) additionally needs `--external-ip=<public-ip>` added to the
+`turn` service command in `docker-compose.yml`.
 
 ---
 

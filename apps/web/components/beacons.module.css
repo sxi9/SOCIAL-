@@ -25,9 +25,14 @@
   bottom: calc(14px + env(safe-area-inset-bottom));
   z-index: 15;
   display: flex;
-  justify-content: center;
+  /* Fixer r1: docked bottom-RIGHT like every other FAB. Centered, the pill
+     stacked on top of the board's left-aligned "+ Post to the board" button
+     and the middle of the filter-chip row on a 390px viewport (/local has no
+     new-chat FAB, so the right edge is free; board.module.css .cardList keeps
+     110px bottom clearance so everything scrolls out from under it). */
+  justify-content: flex-end;
   margin-top: auto;
-  padding: 10px 76px 0 16px; /* keep clear of the new-chat FAB on the right */
+  padding: 10px 16px 0;
   pointer-events: none;
 }
 

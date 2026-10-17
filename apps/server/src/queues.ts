@@ -56,7 +56,35 @@ export interface SocialPushJob {
   url: string;
 }
 
-export type PushJob = MessagePushJob | BeaconPushJob | SocialPushJob;
+// v0.6 (§1.42): the missed-call push — runs the UNCHANGED §2.9 guards at
+// execution (presence, read-elsewhere via `seq` = the missed-call system
+// message's seq, muted_until, per-(user, conversation) debounce; the block
+// belt re-checks initiator⊥target). Title/body are computed at execution.
+export interface CallPushJob {
+  kind: 'call';
+  user_id: string;
+  conversation_id: string;
+  /** seq of the missed-call system message (the read-elsewhere guard). */
+  seq: number;
+  initiator_id: string | null;
+  call_kind: 'audio' | 'video';
+}
+
+// v0.6 (§1.46): the ONE push that bypasses the §2.9 guards — presence,
+// read-elsewhere and debounce SKIPPED, muted_until OVERRIDDEN (the §1.33
+// mention precedent: an SOS from a friend outranks a per-chat mute). Blocks
+// stay structural: the route's friends-of gate excludes blocked pairs before
+// any enqueue; the worker re-checks as the belt.
+export interface RescuePushJob {
+  kind: 'rescue';
+  user_id: string;
+  sender_id: string;
+  conversation_id: string;
+  title: string;
+  body: string;
+}
+
+export type PushJob = MessagePushJob | BeaconPushJob | SocialPushJob | CallPushJob | RescuePushJob;
 
 export type GcJob = Record<string, never>;
 
@@ -72,7 +100,22 @@ export type BeaconsJob = BeaconAfterglowJob | Record<string, never>;
 export interface ScheduledDeliverJob {
   scheduled_id: string;
 }
-export type TimersJob = ScheduledDeliverJob | Record<string, never>;
+// v0.6 (§1.42): call-ring-timeout — one delayed job per ringing call
+// (CALL_RING_TIMEOUT_S), backed by the repeatable call-ring-sweep safety net
+// over calls_ringing_idx (the scheduled-deliver pattern; the flip is a
+// guarded UPDATE, so job/sweep races can never double-run the missed-call
+// machinery).
+export interface CallRingTimeoutJob {
+  call_id: string;
+}
+export type TimersJob = ScheduledDeliverJob | CallRingTimeoutJob | Record<string, never>;
+
+// v0.6 queue `discovery` (API.md §1.44/§1.45, ADR-015): discovery-sweep
+// (prunes lapsed opt-ins + stale waves — bookkeeping, reads filter live),
+// roulette-pair (every ROULETTE_PAIR_INTERVAL_S) and roulette-sweep (the
+// provisional-DM hard-delete, every ROULETTE_SWEEP_INTERVAL_S). All
+// repeatable, no per-item jobs.
+export type DiscoveryJob = Record<string, never>;
 
 export const queueConnection = createRedis();
 const connection = queueConnection;
@@ -84,6 +127,7 @@ export const pushQueue = new Queue<PushJob>('push', { connection });
 export const gcQueue = new Queue<GcJob>('gc', { connection });
 export const beaconsQueue = new Queue<BeaconsJob>('beacons', { connection });
 export const timersQueue = new Queue<TimersJob>('timers', { connection });
+export const discoveryQueue = new Queue<DiscoveryJob>('discovery', { connection });
 
 const defaultJobOpts = {
   removeOnComplete: 1000,
@@ -160,6 +204,37 @@ export function enqueueScheduledDelivery(scheduledId: string, delayMs: number) {
       jobId: `scheduled:${scheduledId}`,
     },
   );
+}
+
+/** v0.6 (§1.42): the 45 s ring-timeout job — one per ringing call (jobId
+ * dedupes retries); the repeatable call-ring-sweep remains the safety net
+ * against a Redis wipe. */
+export function enqueueCallRingTimeout(callId: string, delayMs: number) {
+  return timersQueue.add(
+    'call-ring-timeout',
+    { call_id: callId },
+    {
+      ...defaultJobOpts,
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 5_000 },
+      delay: Math.max(0, delayMs),
+      jobId: `callring:${callId}`,
+    },
+  );
+}
+
+/** v0.6 (§1.42): missed-call pushes — one addBulk round trip (hotspot H2). */
+export function enqueueCallPushBulk(jobs: CallPushJob[]) {
+  if (jobs.length === 0) return Promise.resolve([]);
+  return pushQueue.addBulk(
+    jobs.map((data) => ({ name: 'call-push', data, opts: { ...defaultJobOpts, attempts: 2 } })),
+  );
+}
+
+/** v0.6 (§1.46): the rescue SOS push — enqueued for EVERY target, online or
+ * not (the point is a buzzing phone); the worker skips the §2.9 guards. */
+export function enqueueRescuePush(job: RescuePushJob) {
+  return pushQueue.add('rescue-push', job, { ...defaultJobOpts, attempts: 2 });
 }
 
 /** Afterglow recap: delayed to expires_at + 2 h (plus a worker safety sweep). */
