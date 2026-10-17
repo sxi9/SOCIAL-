@@ -260,6 +260,149 @@ describe.runIf(infra)('v1.0a board photos + undecodable images', () => {
     expect(mutIds).toHaveLength(0); // x has no connections yet
   });
 
+  it('gallery (#94): bound media lists; story auto-saves on sweep; save delete re-orphans', async () => {
+    const g = await register(`va_gal_${run}`);
+    // A posted image is in the gallery (bound, saved=false).
+    const postAtt = await uploadPng(g);
+    const posted = await app.inject({
+      method: 'POST',
+      url: '/api/posts',
+      headers: CSRF,
+      cookies: { sid: g.sid },
+      payload: { kind: 'text', audience: 'friends_of', body: 'pic', attachment_ids: [postAtt] },
+    });
+    expect(posted.statusCode).toBe(201);
+
+    // A story that expires → auto-saved to the gallery, attachment survives.
+    const storyAtt = await uploadPng(g);
+    const story = await app.inject({
+      method: 'POST',
+      url: '/api/stories',
+      headers: CSRF,
+      cookies: { sid: g.sid },
+      payload: { attachment_id: storyAtt, caption: '' },
+    });
+    expect(story.statusCode).toBe(201);
+    const { db } = await import('../src/db/index.js');
+    const { sql } = await import('drizzle-orm');
+    await db.execute(sql`UPDATE stories SET expires_at = now() - interval '1 minute'
+      WHERE attachment_id = ${storyAtt}::uuid`);
+    const { runStorySweep } = await import('../src/modules/stories/service.js');
+    await runStorySweep();
+    const [attRow] = (await db.execute(
+      sql`SELECT id FROM attachments WHERE id = ${storyAtt}::uuid`,
+    )) as unknown as { id: string }[];
+    expect(attRow).toBeDefined(); // survived the sweep (#94)
+
+    const gal = await app.inject({
+      method: 'GET',
+      url: '/api/users/me/gallery',
+      cookies: { sid: g.sid },
+    });
+    expect(gal.statusCode).toBe(200);
+    const items = (gal.json() as { items: { attachment: { id: string }; saved: boolean }[] }).items;
+    const ids = items.map((i) => i.attachment.id);
+    expect(ids).toContain(postAtt);
+    expect(ids).toContain(storyAtt);
+    expect(items.find((i) => i.attachment.id === storyAtt)!.saved).toBe(true);
+    expect(items.find((i) => i.attachment.id === postAtt)!.saved).toBe(false);
+
+    // saved filter narrows; deleting the save removes it
+    const savedOnly = (
+      (await app.inject({
+        method: 'GET',
+        url: '/api/users/me/gallery?saved=1',
+        cookies: { sid: g.sid },
+      })).json() as { items: { attachment: { id: string } }[] }
+    ).items.map((i) => i.attachment.id);
+    expect(savedOnly).toEqual([storyAtt]);
+    const del = await app.inject({
+      method: 'DELETE',
+      url: `/api/users/me/gallery/${storyAtt}`,
+      headers: CSRF,
+      cookies: { sid: g.sid },
+    });
+    expect(del.statusCode).toBe(204);
+    const after = (
+      (await app.inject({ method: 'GET', url: '/api/users/me/gallery', cookies: { sid: g.sid } }))
+        .json() as { items: { attachment: { id: string } }[] }
+    ).items.map((i) => i.attachment.id);
+    expect(after).not.toContain(storyAtt);
+  });
+
+  it('shared chat background (#95): DM member sets for both; group non-admin 403; clear works', async () => {
+    const a = await register(`va_bga_${run}`);
+    const b = await register(`va_bgb_${run}`);
+    // DM
+    const dm = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: CSRF,
+      cookies: { sid: a.sid },
+      payload: { type: 'dm', user_id: b.userId },
+    });
+    expect(dm.statusCode).toBe(201);
+    const dmId = (dm.json() as { conversation: { id: string } }).conversation.id;
+    const att = await uploadPng(a);
+    const set = await app.inject({
+      method: 'PATCH',
+      url: `/api/conversations/${dmId}/background`,
+      headers: CSRF,
+      cookies: { sid: a.sid },
+      payload: { attachment_id: att },
+    });
+    expect(set.statusCode).toBe(200);
+    // BOTH sides see it through the prefs read
+    for (const who of [a, b]) {
+      const prefs = await app.inject({
+        method: 'GET',
+        url: `/api/conversations/${dmId}/prefs`,
+        cookies: { sid: who.sid },
+      });
+      expect(prefs.statusCode).toBe(200);
+      const got = (prefs.json() as { prefs: { shared_background: { id: string } | null } }).prefs;
+      expect(got.shared_background?.id).toBe(att);
+    }
+    // someone else's upload cannot be my shared background
+    const notMine = await app.inject({
+      method: 'PATCH',
+      url: `/api/conversations/${dmId}/background`,
+      headers: CSRF,
+      cookies: { sid: b.sid },
+      payload: { attachment_id: att }, // a's upload
+    });
+    expect(notMine.statusCode).toBe(400);
+    // clear
+    const clear = await app.inject({
+      method: 'PATCH',
+      url: `/api/conversations/${dmId}/background`,
+      headers: CSRF,
+      cookies: { sid: a.sid },
+      payload: { attachment_id: null },
+    });
+    expect(clear.statusCode).toBe(200);
+
+    // Group: plain member → 403 not_admin
+    const grp = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: CSRF,
+      cookies: { sid: a.sid },
+      payload: { type: 'group', title: 'bg test', user_ids: [b.userId] },
+    });
+    expect(grp.statusCode).toBe(201);
+    const grpId = (grp.json() as { conversation: { id: string } }).conversation.id;
+    const bAtt = await uploadPng(b);
+    const denied = await app.inject({
+      method: 'PATCH',
+      url: `/api/conversations/${grpId}/background`,
+      headers: CSRF,
+      cookies: { sid: b.sid },
+      payload: { attachment_id: bAtt },
+    });
+    expect(denied.statusCode).toBe(403);
+  });
+
   it('an undecodable image (HEVC HEIC) is rejected 415, never stored broken (#91)', async () => {
     // A sniff-valid HEIC header sharp cannot decode (no HEVC codec).
     const fake = Buffer.alloc(2048);

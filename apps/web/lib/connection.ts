@@ -309,6 +309,10 @@ function handleFrame(raw: string): void {
     }
     // v0.4 (§1.24): personal chat prefs — this frame only ever reaches MY own
     // sockets; full-prefs replace, reconcile from GET prefs on demand.
+    case 'conv.background':
+      // v1.0a (#95): the shared chat background changed — all members get it.
+      store.setSharedBackground(ev.d.conversation_id, ev.d.background);
+      break;
     case 'prefs.updated':
       store.setPrefs(ev.d.prefs);
       break;

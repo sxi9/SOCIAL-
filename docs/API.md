@@ -2387,6 +2387,7 @@ else, synced across my devices via `prefs.updated` (own sockets only).
 | Method & path | Request | Response |
 |---|---|---|
 | `PATCH /api/conversations/:id/prefs` | `{background_attachment_id?: uuid\|null}` (alongside the §1.24 fields; omitted = unchanged, `null` clears) | `200 {prefs}` — `prefs.background` resolves to the full `Attachment` (poster `thumb_url` included). Checks, in order, else `400 bad_background`: the attachment is **MINE** (`uploader_id = me` — own uploads only, ownership-checked), kind `image` (GIFs included, ≤ `MAX_IMAGE_BYTES`) or `video`, `status 'ready'` (a pending video has no probed duration yet — re-PATCH after `attachment.ready`), and for video: `size_bytes ≤ CHAT_BG_VIDEO_MAX_BYTES` (25 MB) **and** `duration_ms ≤ CHAT_BG_VIDEO_MAX_DURATION_S` (30 s). The upload itself rides the existing §1.6 pipeline unchanged (sniffed MIME, EXIF strip, worker poster). One attachment may back several of my chats. |
+| `PATCH /api/conversations/:id/background` | `{attachment_id: uuid\|null}` (v1.0a #95 — migration 0012) | `200 {background: Attachment\|null}` — the background **the whole conversation sees** (`conversations.shared_background_attachment_id`). DM/channel: any **active member**; group: admins only → else `403 not_admin`. Validation identical to the §1.60 personal background (`400 bad_background`). Served to everyone through the prefs read as `prefs.shared_background`; **my own `prefs.background` still overrides it for my view**. Fans WS `conv.background {conversation_id, background}` to every ACTIVE member (conversation-level state — deliberately NOT `prefs.updated`, which stays owner-only). GC: the orphan sweep anti-joins `conversations_shared_background_idx`, the 0009 pattern. |
 
 - **GC shield:** a referenced attachment cannot use the binding-column
   pattern (`attachments_orphan_idx`) — the reference points the other way
@@ -2971,6 +2972,7 @@ close `1008`.
 | `beacon.kudos` | `{beacon_id, kind, from: UserLite}` | v0.3 (§1.15): **to the recipient's sockets only.** Private by construction — never fanned to the group, never counted publicly. |
 | `plan.updated` | `{beacon_id, conversation_id, roles: BeaconRole[]}` | v0.3 (§1.16): full roles list on every role mutation, to the plan conversation's active participants. Idempotent replace; reconcile from `GET /api/beacons/:id/roles`, never frame replay. |
 | `poll.updated` | `{poll_id, conversation_id, seq, counts: number[], total_votes, user_id?, option_idx?: number\|null}` | v0.3 (§1.17): one delta per effective vote/unvote (`option_idx: null` = unvoted), to active participants — the `reaction.updated` pattern. `user_id`/`option_idx` ride **only the voter's own frame** (their other devices reconcile `my_vote`); frames to everyone else carry aggregates only (no per-voter lists, §1.17). Reconnect truth is `message.poll`. |
+| `conv.background` | `{conversation_id, background: Attachment\|null}` | v1.0a (#95): the SHARED chat background changed — to **all active members'** sockets (conversation-level state, unlike `prefs.updated`). Full replace; reconnects reconcile from the prefs GET. |
 | `prefs.updated` | `{conversation_id, prefs: ConversationPrefs}` | v0.4 (§1.24): **to the owner's own sockets ONLY** — prefs are personal, my-view-only state; no other participant ever receives a frame about them. Full-prefs replace (idempotent, reorder-safe); reconnects reconcile from `GET /api/conversations/:id/prefs`. v0.8a (§1.60): `prefs.background` rides along, same owner-only rule — nobody else ever learns a background exists. |
 | `scheduled.updated` | `{scheduled: ScheduledMessage}` | v0.4 (§1.26): **to the author's own sockets ONLY** (a pending schedule is private until delivery), on every create/cancel/send — cross-device sync of the scheduled list. The delivery itself reaches everyone as an ordinary `msg.new`. |
 | `connection.updated` | `{connection: Connection, removed: boolean}` | v0.5a (§1.28): **to the two parties only** — and not even both for every transition: request → addressee + requester's own sockets; accept → both; decline → addressee's own sockets only (the requester is never pinged about a rejection); remove → the actor's own sockets only. The DTO is viewer-specific (`user`/`direction` stamped per recipient at the gateway, the `beacon.*` pattern). `removed: true` means the row is gone (decline/remove) and the DTO is its last state. |
@@ -3284,3 +3286,22 @@ re-joins (idempotent REST) and re-offers to everyone — the one rule again.
 | `watch.start {conversation_id, url}` | any active participant (becomes host) | all active participants, as the full state `{conversation_id, video_id, host, position_s: 0, playing: false}`. Errors: `watch_bad_url`, `watch_active`. |
 | `watch.sync {conversation_id, position_s, playing}` | HOST only (`watch_not_host` otherwise) | all active participants, enriched with `video_id` + `host`; refreshes the Redis TTL. Clients >2 s off the relayed position seek to it. |
 | `watch.stop {conversation_id}` | host — or anyone once the host has no live socket | all active participants; deletes the Redis key. TTL expiry behaves as a stop without the frame (clients also end on keepalive silence > TTL). |
+
+### 1.75 My gallery (v1.0a — #94, migration 0012)
+
+A PRIVATE view over MY OWN media: attachments I uploaded that are bound
+anywhere (messages, posts, listings, comments, stories, profile media, chat
+backgrounds) or kept alive by a `gallery_saves` row. The one save source
+today is the **story auto-saver**: the expiry sweep moves the author's story
+media into their gallery (insert + skip the attachment hard-delete) instead
+of destroying it; an author's explicit `DELETE /api/stories/:id` remains a
+full delete. Nothing here changes who can SEE anything — it is the uploader
+reading their own uploads through the §1.6 auth-checked proxy.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/users/me/gallery` | `?kind=image\|video&saved=&cursor=&limit=` (≤100, default 50) | `200 {items: GalleryItem[], next_cursor}` — newest first, keyset `(created_at, id)`. `GalleryItem = {attachment, saved, source}`; `saved=true` rows are kept by a save (deletable here), others live where they are bound. `saved=1` narrows to saves only. |
+| `DELETE /api/users/me/gallery/:attachmentId` | — | `204` idempotent — removes MY save row; the attachment re-orphans into the ordinary 24 h GC unless something else still binds it. Never deletes bound media. |
+
+- **GC:** the orphan sweep anti-joins `gallery_saves_attachment_idx` —
+  deleting the save re-orphans; the sweep stays the only destroyer.

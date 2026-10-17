@@ -592,7 +592,8 @@ export default function ChatView({ conversationId }: { conversationId: string })
   // layered UNDER the scroll content. Rain shows while someone in the round
   // has a visible 'sad' chip (per-viewer resolution already happened
   // server-side), gated by my mood_effects toggle and reduced motion.
-  const background = prefs?.background ?? null;
+  // v1.0a (#95): my own §1.60 pref overrides; else the shared background.
+  const background = prefs?.background ?? prefs?.shared_background ?? null;
   const moodEffectsOn = (state.settings?.mood_effects ?? true) && !reducedMotion;
   const rainActive =
     moodEffectsOn &&

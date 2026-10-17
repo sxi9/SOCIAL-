@@ -120,6 +120,12 @@ export async function runGc(): Promise<void> {
         // reference re-orphans the attachment for the normal 24 h GC. The
         // one documented exception to the binding-column rule (ADR-018).
         sql`NOT EXISTS (SELECT 1 FROM conversation_prefs p WHERE p.background_attachment_id = ${schema.attachments.id})`,
+        // v1.0a (#95): the conversation-level shared background — same
+        // anti-join pattern as prefs (partial index 0012).
+        sql`NOT EXISTS (SELECT 1 FROM conversations cb WHERE cb.shared_background_attachment_id = ${schema.attachments.id})`,
+        // v1.0a (#94): gallery saves keep an attachment alive owner-private;
+        // deleting the save re-orphans it into this very sweep.
+        sql`NOT EXISTS (SELECT 1 FROM gallery_saves gs WHERE gs.attachment_id = ${schema.attachments.id})`,
         // v0.8b (§1.69, the 0009 pattern): support-ticket screenshots also
         // reference ticket→attachment — the sweep ANTI-JOINS
         // support_tickets_attachment_idx; SET NULL keeps the ticket when the

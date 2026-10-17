@@ -17,6 +17,7 @@ import { feedRoutes } from './modules/feed/routes.js';
 import { pinRoutes } from './modules/pins/routes.js';
 import { profileRoutes } from './modules/profiles/routes.js';
 import { storyRoutes } from './modules/stories/routes.js';
+import { galleryRoutes } from './modules/gallery/routes.js';
 import { gameRoutes } from './modules/games/routes.js';
 import { inviteRoutes } from './modules/invites/routes.js';
 import { messageRoutes } from './modules/messages/routes.js';
@@ -113,7 +114,8 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
   await app.register(loginLinkRoutes); // v0.9 §1.71
   await app.register(recoveryRoutes); // v0.9 §1.72
   await app.register(totpRoutes); // v0.9 §1.73
-  await app.register(profileRoutes); // v0.5a §1.37 (/users/me/profile before userRoutes' :username is path-distinct)
+  await app.register(profileRoutes);
+  await app.register(galleryRoutes); // v0.5a §1.37 (/users/me/profile before userRoutes' :username is path-distinct)
   await app.register(moodRoutes); // v0.8a §1.57 (/users/me/mood — path-distinct from :username)
   await app.register(activityRoutes); // v0.8a §1.59 (/users/:username/activity)
   await app.register(releaseRoutes); // v0.8a §1.61 (/api/releases)

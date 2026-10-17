@@ -571,3 +571,85 @@ select.input {
 .avatarZoomTap:disabled {
   cursor: default;
 }
+
+/* v1.0a (#94): My gallery grid. */
+.galleryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 6px;
+}
+.galleryCell {
+  position: relative;
+  display: block;
+}
+.galleryTap {
+  appearance: none;
+  border: none;
+  padding: 0;
+  background: var(--panel-2);
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: zoom-in;
+  width: 100%;
+  aspect-ratio: 1;
+  position: relative;
+  display: block;
+}
+.galleryTap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.galleryBadge {
+  position: absolute;
+  bottom: 4px;
+  right: 6px;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  font-size: 13px;
+}
+.galleryBadgeLeft {
+  right: auto;
+  left: 6px;
+}
+.galleryDelete {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  appearance: none;
+  border: none;
+  border-radius: 50%;
+  width: 26px;
+  height: 26px;
+  font-size: 13px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+}
+.galleryVideoBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(8, 8, 16, 0.95);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.galleryVideoBackdrop video {
+  max-width: 100vw;
+  max-height: 100dvh;
+}
+.galleryVideoClose {
+  position: absolute;
+  top: calc(8px + env(safe-area-inset-top));
+  right: calc(8px + env(safe-area-inset-right));
+  appearance: none;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 14px;
+  min-height: 40px;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  cursor: pointer;
+}

@@ -11,12 +11,13 @@ import {
   CHAT_BG_VIDEO_MAX_BYTES,
   CHAT_BG_VIDEO_MAX_DURATION_S,
   MAX_IMAGE_BYTES,
+  SetSharedBackgroundRequestSchema,
   UpdatePrefsRequestSchema,
   type ConversationPrefs,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { attachmentDto } from '../../lib/dto.js';
-import { badRequest } from '../../lib/errors.js';
+import { badRequest, forbidden } from '../../lib/errors.js';
 import { publishToUsers } from '../../ws/events.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant, requireActiveParticipant } from '../conversations/routes.js';
@@ -48,13 +49,53 @@ async function loadPrefs(convId: string, userId: string): Promise<ConversationPr
       .limit(1);
     if (att) background = attachmentDto(att);
   }
+  // v1.0a (#95): the conversation-level shared background, served through
+  // the same read clients already use for backgrounds.
+  let sharedBackground: ConversationPrefs['shared_background'] = null;
+  const [conv] = await db
+    .select({ bg: schema.conversations.sharedBackgroundAttachmentId })
+    .from(schema.conversations)
+    .where(eq(schema.conversations.id, convId))
+    .limit(1);
+  if (conv?.bg) {
+    const [att] = await db
+      .select()
+      .from(schema.attachments)
+      .where(eq(schema.attachments.id, conv.bg))
+      .limit(1);
+    if (att) sharedBackground = attachmentDto(att);
+  }
   return {
     conversation_id: convId,
     theme: (row?.theme ?? null) as ConversationPrefs['theme'],
     wallpaper: (row?.wallpaper ?? null) as ConversationPrefs['wallpaper'],
     nicknames,
     background,
+    shared_background: sharedBackground,
   };
+}
+
+/** v1.0a (#95): the §1.60 background validation, shared by the personal and
+ * the conversation-wide setter — mine, image/video, ready, video caps. */
+async function validateBackgroundAttachment(
+  attachmentId: string,
+  userId: string,
+): Promise<void> {
+  const [att] = await db
+    .select()
+    .from(schema.attachments)
+    .where(eq(schema.attachments.id, attachmentId))
+    .limit(1);
+  const ok =
+    att !== undefined &&
+    att.uploaderId === userId &&
+    att.status === 'ready' &&
+    ((att.kind === 'image' && att.sizeBytes <= MAX_IMAGE_BYTES) ||
+      (att.kind === 'video' &&
+        att.sizeBytes <= CHAT_BG_VIDEO_MAX_BYTES &&
+        att.durationMs !== null &&
+        att.durationMs <= CHAT_BG_VIDEO_MAX_DURATION_S * 1000));
+  if (!ok) throw badRequest('bad_background');
 }
 
 export async function prefsRoutes(fastify: FastifyInstance): Promise<void> {
@@ -96,21 +137,7 @@ export async function prefsRoutes(fastify: FastifyInstance): Promise<void> {
       // and for video within the §1.60 size/duration caps. One attachment may
       // back several of my chats; clearing is an explicit null.
       if (b.background_attachment_id !== undefined && b.background_attachment_id !== null) {
-        const [att] = await db
-          .select()
-          .from(schema.attachments)
-          .where(eq(schema.attachments.id, b.background_attachment_id))
-          .limit(1);
-        const ok =
-          att !== undefined &&
-          att.uploaderId === user.id &&
-          att.status === 'ready' &&
-          ((att.kind === 'image' && att.sizeBytes <= MAX_IMAGE_BYTES) ||
-            (att.kind === 'video' &&
-              att.sizeBytes <= CHAT_BG_VIDEO_MAX_BYTES &&
-              att.durationMs !== null &&
-              att.durationMs <= CHAT_BG_VIDEO_MAX_DURATION_S * 1000));
-        if (!ok) throw badRequest('bad_background');
+        await validateBackgroundAttachment(b.background_attachment_id, user.id);
       }
 
       if (b.theme !== undefined || b.wallpaper !== undefined || b.background_attachment_id !== undefined) {
@@ -157,6 +184,62 @@ export async function prefsRoutes(fastify: FastifyInstance): Promise<void> {
         d: { conversation_id: convId, prefs: dto },
       });
       return { prefs: dto };
+    },
+  );
+
+  // v1.0a (#95) PATCH /api/conversations/:id/background — the background the
+  // WHOLE conversation sees. DM/channel: any active member; group: admins
+  // (403 not_admin). Validation = §1.60; null clears. Fans conv.background
+  // to every ACTIVE member (conversation-level state, unlike prefs.updated).
+  app.patch(
+    '/api/conversations/:id/background',
+    {
+      preHandler: requireAuth,
+      schema: { params: IdParams, body: SetSharedBackgroundRequestSchema },
+    },
+    async (req) => {
+      const { user } = authed(req);
+      const convId = req.params.id;
+      const part = await requireActiveParticipant(convId, user.id);
+      const [conv] = await db
+        .select()
+        .from(schema.conversations)
+        .where(eq(schema.conversations.id, convId))
+        .limit(1);
+      if (!conv) throw badRequest('bad_conversation');
+      if (conv.type === 'group' && part.role !== 'owner' && part.role !== 'admin') {
+        throw forbidden('not_admin');
+      }
+      const attId = req.body.attachment_id;
+      if (attId !== null) await validateBackgroundAttachment(attId, user.id);
+      await db
+        .update(schema.conversations)
+        .set({ sharedBackgroundAttachmentId: attId })
+        .where(eq(schema.conversations.id, convId));
+
+      let background: ConversationPrefs['shared_background'] = null;
+      if (attId !== null) {
+        const [att] = await db
+          .select()
+          .from(schema.attachments)
+          .where(eq(schema.attachments.id, attId))
+          .limit(1);
+        if (att) background = attachmentDto(att);
+      }
+      const members = await db
+        .select({ userId: schema.conversationParticipants.userId })
+        .from(schema.conversationParticipants)
+        .where(
+          and(
+            eq(schema.conversationParticipants.conversationId, convId),
+            sql`${schema.conversationParticipants.leftAt} IS NULL`,
+          ),
+        );
+      await publishToUsers(
+        members.map((m) => m.userId),
+        { t: 'conv.background', d: { conversation_id: convId, background } },
+      );
+      return { background };
     },
   );
 }

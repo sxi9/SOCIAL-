@@ -166,8 +166,12 @@ export async function fanStoryNew(row: StoryRow, author: UserRow, att: AttRow): 
 
 /** Hard-delete one story: views AND overlays cascade with the row; the
  * attachment row goes too, its objects refcount-guarded. The story's §1.67
- * share token (author-minted) dies with it. Shared by DELETE /:id + sweep. */
-export async function hardDeleteStory(row: StoryRow): Promise<void> {
+ * share token (author-minted) dies with it. Shared by DELETE /:id + sweep.
+ * v1.0a (#94): the SWEEP passes saveToGallery — the author's media moves to
+ * their private gallery (gallery_saves row keeps the attachment alive; the
+ * GC anti-joins it) instead of being destroyed. An explicit author DELETE
+ * stays a full delete: deleting a story is a choice to destroy it. */
+export async function hardDeleteStory(row: StoryRow, saveToGallery = false): Promise<void> {
   const [att] = await db
     .select()
     .from(schema.attachments)
@@ -179,6 +183,15 @@ export async function hardDeleteStory(row: StoryRow): Promise<void> {
     UPDATE share_tokens SET revoked_at = now()
     WHERE object_type = 'story' AND object_id = ${row.id} AND revoked_at IS NULL
   `);
+  if (saveToGallery && att && att.status === 'ready') {
+    await db.execute(sql`
+      INSERT INTO gallery_saves (user_id, attachment_id, source)
+      VALUES (${row.authorId}, ${att.id}, 'story')
+      ON CONFLICT DO NOTHING
+    `);
+    await db.delete(schema.stories).where(eq(schema.stories.id, row.id)); // views + overlays cascade
+    return; // the attachment lives on, owner-private (#94)
+  }
   await db.delete(schema.stories).where(eq(schema.stories.id, row.id)); // views + overlays cascade
   if (att) {
     await db.delete(schema.attachments).where(eq(schema.attachments.id, att.id));
@@ -196,7 +209,7 @@ export async function runStorySweep(): Promise<void> {
     .orderBy(asc(schema.stories.expiresAt))
     .limit(500);
   for (const row of expired) {
-    await hardDeleteStory(row);
+    await hardDeleteStory(row, true); // v1.0a #94: expiry saves to the gallery
   }
 }
 

@@ -833,6 +833,17 @@ export function setSettings(settings: UserSettings): void {
 
 export function setPrefs(prefs: ConversationPrefs): void {
   state.prefs = new Map(state.prefs).set(prefs.conversation_id, prefs);
+}
+
+/** v1.0a (#95): conv.background patches the shared background in place when
+ * the prefs entry is loaded; otherwise the next prefs GET carries it. */
+export function setSharedBackground(
+  conversationId: string,
+  background: ConversationPrefs['shared_background'],
+): void {
+  const cur = state.prefs.get(conversationId);
+  if (!cur) return;
+  state.prefs = new Map(state.prefs).set(conversationId, { ...cur, shared_background: background });
   emit();
 }
 

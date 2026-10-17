@@ -414,6 +414,19 @@ function ProfileSettings() {
             boring situation — the one push that cuts through mutes. */}
         <RescueCard />
 
+        {/* v1.0a (#94): the private gallery — my media + story auto-saves. */}
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <strong>🖼 My gallery</strong>
+            <p className="muted small" style={{ margin: '4px 0 0' }}>
+              Everything you’ve shared, plus auto-saved stories — only you see it.
+            </p>
+          </div>
+          <Link href="/gallery" className="btn">
+            Open
+          </Link>
+        </div>
+
         {/* v0.8a §1.61: the feature directory — search + Try-it deep links. */}
         <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>

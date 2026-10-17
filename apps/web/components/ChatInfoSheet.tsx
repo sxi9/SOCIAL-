@@ -67,10 +67,30 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
   const [bgError, setBgError] = useState<string | null>(null);
   const [bgPendingId, setBgPendingId] = useState<string | null>(null);
   const bgFileRef = useRef<HTMLInputElement | null>(null);
+  // v1.0a (#95): where the NEXT uploaded background lands — me or everyone.
+  const bgTargetShared = useRef(false);
 
   const bgLimits = `Images and GIFs up to ${Math.round(MAX_IMAGE_BYTES / (1024 * 1024))} MB, clips up to ${Math.round(
     CHAT_BG_VIDEO_MAX_BYTES / (1024 * 1024)
   )} MB and ${CHAT_BG_VIDEO_MAX_DURATION_S} s.`;
+
+  // v1.0a (#95): the background EVERYONE sees — DM: either side; group:
+  // admins. My own pref (below) still overrides my view.
+  async function applySharedBackground(attachmentId: string | null): Promise<void> {
+    setBgError(null);
+    try {
+      await api.patch(`/api/conversations/${conv.id}/background`, { attachment_id: attachmentId });
+      // conv.background echoes to everyone incl. me; nothing else to do.
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'bad_background') {
+        setBgError(`That file can’t be a background. ${bgLimits}`);
+      } else if (err instanceof ApiError && err.status === 403) {
+        setBgError('Only group admins can set the shared background.');
+      } else {
+        setBgError('Could not update the shared background — try again.');
+      }
+    }
+  }
 
   async function applyBackground(attachmentId: string | null): Promise<void> {
     setBgError(null);
@@ -92,8 +112,9 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
   useEffect(() => {
     if (!bgPendingId || !readyBg) return;
     setBgPendingId(null);
-    if (readyBg.status === 'ready') void applyBackground(readyBg.id);
-    else setBgError('That clip failed to process — try another one.');
+    if (readyBg.status === 'ready') {
+      void (bgTargetShared.current ? applySharedBackground(readyBg.id) : applyBackground(readyBg.id));
+    } else setBgError('That clip failed to process — try another one.');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bgPendingId, readyBg]);
 
@@ -117,7 +138,9 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
       // The ordinary §1.6 pipeline — sniffed MIME, EXIF strip, worker poster.
       const res = await api.postForm<UploadResponse>('/api/uploads', form);
       if (res.attachment.status === 'ready') {
-        await applyBackground(res.attachment.id);
+        await (bgTargetShared.current
+          ? applySharedBackground(res.attachment.id)
+          : applyBackground(res.attachment.id));
       } else {
         setBgPendingId(res.attachment.id);
       }
@@ -317,6 +340,50 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
           ))}
         </div>
 
+        {/* v1.0a (#95): the background EVERYONE in this chat sees. DM: either
+            side sets it; group: admins. A personal background below still
+            overrides it for you alone. */}
+        <div className={sheetStyles.sheetLabel}>Shared background 🌏 everyone sees this</div>
+        <div className={idm.bgRow}>
+          {prefs?.shared_background ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              className={idm.bgPreview}
+              src={prefs.shared_background.thumb_url ?? prefs.shared_background.url}
+              alt="Current shared chat background"
+            />
+          ) : null}
+          {conv.type === 'dm' || myRole === 'admin' || myRole === 'owner' ? (
+            <>
+              <button
+                type="button"
+                className="btn"
+                disabled={bgBusy || bgPendingId !== null}
+                onClick={() => {
+                  bgTargetShared.current = true;
+                  bgFileRef.current?.click();
+                }}
+              >
+                {prefs?.shared_background ? 'Replace for everyone' : 'Set for everyone'}
+              </button>
+              {prefs?.shared_background ? (
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  disabled={bgBusy}
+                  onClick={() => void applySharedBackground(null)}
+                >
+                  Remove
+                </button>
+              ) : null}
+            </>
+          ) : (
+            <p className="muted small" style={{ margin: 0 }}>
+              {prefs?.shared_background ? 'Set by a group admin.' : 'Group admins can set one.'}
+            </p>
+          )}
+        </div>
+
         {/* v0.8a §1.60: GIF/video background — personal like every pref; it
             paints behind the bubbles under a scrim, visually replacing the
             wallpaper while set (both survive in prefs). */}
@@ -347,7 +414,10 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
             type="button"
             className="btn"
             disabled={bgBusy || bgPendingId !== null}
-            onClick={() => bgFileRef.current?.click()}
+            onClick={() => {
+              bgTargetShared.current = false;
+              bgFileRef.current?.click();
+            }}
           >
             {bgBusy
               ? 'Uploading…'

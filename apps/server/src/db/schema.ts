@@ -288,6 +288,13 @@ export const conversations = pgTable(
     // and participants cascade). Set on roulette provisional DMs (+5 min);
     // cleared by the both-kept guarded UPDATE.
     expiresAt: timestamptz('expires_at'),
+    // v1.0a (migration 0012, #95): a background the WHOLE conversation sees
+    // (DM: either side sets; group: admins). Per-user prefs still override
+    // locally. GC anti-joins the partial index (the 0009 prefs pattern).
+    sharedBackgroundAttachmentId: uuid('shared_background_attachment_id').references(
+      (): AnyPgColumn => attachments.id,
+      { onDelete: 'set null' },
+    ),
     // v0.8b (migration 0010, API.md §1.68, ADR-020): group visibility mode —
     // GROUPS ONLY (DMs/channels stay 'private', shape CHECK below). 'public'
     // and 'invite_only' power the §1.67 share pages; 'ghost' is unlisted
@@ -1260,6 +1267,29 @@ export const conversationPins = pgTable(
 // The worker sweep (queue `timers`) HARD-deletes expired stories: rows, views
 // (cascade), the attachment row and its MinIO objects (refcount-guarded —
 // recap shares re-reference objects). story.new fans to the audience only.
+
+// v1.0a (migration 0012, #94): "My gallery" saves — a save row keeps the
+// attachment alive past its binding (the GC anti-joins it). Today's one
+// source: the story auto-saver (sweep expiry moves the author's media here
+// instead of hard-deleting). Owner-private; deleting the save re-orphans.
+export const gallerySaves = pgTable(
+  'gallery_saves',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    attachmentId: uuid('attachment_id')
+      .notNull()
+      .references(() => attachments.id, { onDelete: 'cascade' }),
+    source: text('source').notNull().default('story'),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.attachmentId] }),
+    sourceCheck: check('gallery_saves_source_check', sql`${t.source} IN ('story')`),
+    attachmentIdx: index('gallery_saves_attachment_idx').on(t.attachmentId),
+  }),
+);
 
 export const stories = pgTable(
   'stories',

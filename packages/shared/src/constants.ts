@@ -1051,6 +1051,7 @@ export const FEATURE_DIRECTORY = [
   { id: 'watch_together', title: 'Watch together', one_liner: 'Synced videos in any chat.', href: '/', since: 'v0.6' },
   { id: 'discovery', title: 'Bored Together', one_liner: 'Find people who are bored right now.', href: '/local', since: 'v0.6' },
   { id: 'people', title: 'Find people', one_liner: 'People you may know, with filters.', href: '/people', since: 'v1.0' },
+  { id: 'gallery', title: 'My gallery', one_liner: 'Your media + auto-saved stories, private.', href: '/gallery', since: 'v1.0' },
   { id: 'rescue', title: 'Rescue me', one_liner: 'One tap asks a friend to call you out of anywhere.', href: '/', since: 'v0.6' },
   { id: 'locations', title: 'Location drops', one_liner: '"Join me here" pins with map links.', href: '/', since: 'v0.7' },
   { id: 'moods', title: 'Moods', one_liner: 'Set a chip that says how you are — it fades on its own.', href: '/settings', since: 'v0.8' },

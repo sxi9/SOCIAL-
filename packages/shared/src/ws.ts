@@ -256,6 +256,19 @@ export const PollUpdatedEventSchema = z.object({
 });
 export type PollUpdatedEvent = z.infer<typeof PollUpdatedEventSchema>;
 
+// v1.0a (API.md §1.60, #95): the SHARED chat background changed — to ALL
+// active members' sockets (unlike prefs.updated, which is owner-only: this
+// is conversation-level state everyone renders). Full replace; reconnects
+// reconcile from the prefs GET.
+export const ConvBackgroundEventSchema = z.object({
+  t: z.literal('conv.background'),
+  d: z.object({
+    conversation_id: UuidSchema,
+    background: AttachmentSchema.nullable(),
+  }),
+});
+export type ConvBackgroundEvent = z.infer<typeof ConvBackgroundEventSchema>;
+
 // v0.4 (API.md §1.24): a chat-prefs change (theme / wallpaper / nicknames) —
 // to the OWNER's own sockets ONLY (prefs are personal, my-view-only state; no
 // other participant ever learns them). Full prefs replace: idempotent and
@@ -573,6 +586,7 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
   PlanUpdatedEventSchema,
   PollUpdatedEventSchema,
   PrefsUpdatedEventSchema,
+  ConvBackgroundEventSchema,
   ScheduledUpdatedEventSchema,
   ConnectionUpdatedEventSchema,
   StoryNewEventSchema,

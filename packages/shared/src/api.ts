@@ -1592,6 +1592,12 @@ export const ConversationPrefsSchema = z.object({
   // serialized to anyone else. null = the §1.24 wallpaper/theme (or default).
   // default(null) keeps pre-v0.8 payloads parsing clean.
   background: AttachmentSchema.nullable().default(null),
+  // v1.0a (#95): the background the WHOLE conversation sees (DM: either side
+  // sets; group: admins) — conversation-level state served through the prefs
+  // read because that is where clients already resolve backgrounds. My own
+  // `background` above still overrides it locally. default(null) keeps old
+  // payloads parsing clean.
+  shared_background: AttachmentSchema.nullable().default(null),
 });
 export type ConversationPrefs = z.infer<typeof ConversationPrefsSchema>;
 
@@ -3526,6 +3532,41 @@ export const SuggestionsResponseSchema = z.object({
   suggestions: z.array(SuggestionSchema), // best-evidence first, ≤ SUGGESTIONS_MAX
 });
 export type SuggestionsResponse = z.infer<typeof SuggestionsResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// v1.0a (#94): "My gallery" — a private view over MY OWN media (bound
+// anywhere, or saved — e.g. the story auto-saver). Nothing here grants
+// anyone else access; it is the uploader reading their uploads.
+export const GalleryItemSchema = z.object({
+  attachment: AttachmentSchema,
+  // true = kept alive by a gallery save (deletable here); false = lives
+  // wherever it is bound (delete it there).
+  saved: z.boolean(),
+  source: z.enum(['story']).nullable(),
+});
+export type GalleryItem = z.infer<typeof GalleryItemSchema>;
+
+export const GalleryQuerySchema = z.object({
+  kind: z.enum(['image', 'video']).optional(),
+  saved: z.coerce.boolean().optional(), // true → only saved items
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+export type GalleryQuery = z.infer<typeof GalleryQuerySchema>;
+
+export const GalleryResponseSchema = z.object({
+  items: z.array(GalleryItemSchema),
+  next_cursor: z.string().nullable(),
+});
+export type GalleryResponse = z.infer<typeof GalleryResponseSchema>;
+
+// v1.0a (#95): PATCH /api/conversations/:id/background — the shared chat
+// background. Validation mirrors §1.60 (mine, image/video, ready, video
+// caps); null clears. DM: any active member; group: admins (403 otherwise).
+export const SetSharedBackgroundRequestSchema = z.object({
+  attachment_id: UuidSchema.nullable(),
+});
+export type SetSharedBackgroundRequest = z.infer<typeof SetSharedBackgroundRequestSchema>;
 
 // ---------------------------------------------------------------------------
 // Canvas stories — requests (v0.8b — API.md §1.66, FEATURES #79a, ADR-020)
