@@ -3,12 +3,13 @@
 .backdrop {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: 40; /* --z-sheet (globals.css scale) */
   background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: flex-end;
   justify-content: center;
   animation: backdrop-in 160ms ease;
+  pointer-events: auto; /* never inherit a wrapper's pointer-events: none */
 }
 
 @keyframes backdrop-in {

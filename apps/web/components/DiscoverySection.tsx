@@ -29,6 +29,7 @@ import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
 import Avatar from './Avatar';
 import Mascot from './Mascot';
+import Portal from './Portal';
 import ReportSheet from './ReportSheet';
 import bcn from './beacons.module.css';
 import styles from './discovery.module.css';
@@ -113,7 +114,18 @@ export default function DiscoverySection() {
       {live ? <CardStack cards={state.discoveryCards} /> : null}
 
       {optinOpen ? <OptinSheet onClose={() => setOptinOpen(false)} /> : null}
-      {rouletteOpen ? <RouletteSheet onClose={() => setRouletteOpen(false)} /> : null}
+      {rouletteOpen ? (
+        <RouletteSheet
+          onClose={() => setRouletteOpen(false)}
+          // BUG-5 fix: roulette needs the discoverable hour, so the sheet
+          // offers the opt-in itself instead of dead-ending on a disabled
+          // Spin button — one tap swaps it for the opt-in sheet.
+          onOptin={() => {
+            setRouletteOpen(false);
+            setOptinOpen(true);
+          }}
+        />
+      ) : null}
     </section>
   );
 }
@@ -161,6 +173,7 @@ function OptinSheet({ onClose }: { onClose: () => void }) {
   }
 
   return (
+    <Portal>
     <div
       className={bcn.sheetBackdrop}
       role="presentation"
@@ -229,6 +242,7 @@ function OptinSheet({ onClose }: { onClose: () => void }) {
         </button>
       </div>
     </div>
+    </Portal>
   );
 }
 
@@ -328,7 +342,7 @@ function StackCard({ card, onReport }: { card: DiscoveryCard; onReport: () => vo
 // Roulette sheet — explainer, queue state, leave
 // ---------------------------------------------------------------------------
 
-function RouletteSheet({ onClose }: { onClose: () => void }) {
+function RouletteSheet({ onClose, onOptin }: { onClose: () => void; onOptin: () => void }) {
   const state = useAppState();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -368,6 +382,7 @@ function RouletteSheet({ onClose }: { onClose: () => void }) {
   }
 
   return (
+    <Portal>
     <div
       className={bcn.sheetBackdrop}
       role="presentation"
@@ -421,22 +436,40 @@ function RouletteSheet({ onClose }: { onClose: () => void }) {
             </ul>
             {!live ? (
               <p className={bcn.sheetNote}>
-                Roulette needs your discoverable hour to be on — flip it on first.
+                Roulette draws from the bored pool, so it needs your discoverable hour to be on
+                first.
               </p>
             ) : null}
             {error ? <p className="error-text">{error}</p> : null}
+            {!live ? (
+              // The actionable path when Spin would be dead: one tap opens the
+              // opt-in sheet instead of leaving a mystery-disabled button.
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ marginTop: 12, width: '100%' }}
+                onClick={onOptin}
+              >
+                👋 Make me discoverable first
+              </button>
+            ) : null}
             <button
               type="button"
-              className="btn btn-primary"
-              style={{ marginTop: 12, width: '100%' }}
+              className={live ? 'btn btn-primary' : 'btn'}
+              style={{ marginTop: live ? 12 : 8, width: '100%' }}
               disabled={busy || !live}
               onClick={() => void spin()}
             >
-              {busy ? 'Joining…' : `Spin (${Math.round(ROULETTE_WINDOW_S / 60)} min chat)`}
+              {busy
+                ? 'Joining…'
+                : live
+                  ? `Spin (${Math.round(ROULETTE_WINDOW_S / 60)} min chat)`
+                  : 'Spin — needs your hour on'}
             </button>
           </>
         )}
       </div>
     </div>
+    </Portal>
   );
 }

@@ -1,5 +1,22 @@
 /* Bored Chat — hand-rolled, mobile-first, dark-first. */
 
+/* ---- z-index scale (keep every overlay on this ladder) ----
+   10  sticky topbars (.topbar, chat/admin headers)
+   15  in-page FABs (new-chat FAB, "I'm bored" pill)
+   20  tab bar (social.module.css .tabbar)
+   30  transparent menu backdrops, 31 popover menus (kebabs, reaction picker)
+   40  modal sheets + their dimmed backdrops (beacons/invite .sheetBackdrop)
+   55  watch-together dock
+   60  full-screen viewers, effect overlays, call end-card
+   69  minimized call pill
+   70  in-call screen, 71 incoming-call ring
+   72  match moment / roulette goodbye (always wins — it navigates)
+   NOTE: overlays only hold these ranks because they render through
+   components/Portal.tsx into <body>. A position:fixed element inside ANY
+   ancestor with transform / filter / backdrop-filter (the blurred .topbar!)
+   is positioned against that ancestor, not the viewport — never mount a
+   sheet inline under one. */
+
 :root {
   color-scheme: dark;
   --bg: #0b0e14;
@@ -242,9 +259,19 @@ canvas {
   display: flex;
   align-items: center;
   gap: 10px;
+  /* min-width guards: a flex row inside another flex column can otherwise be
+     pushed wider than the viewport and shove trailing buttons (SOS) off the
+     right edge. The title shrinks (ellipsis); the actions never do. */
+  min-width: 0;
+  max-width: 100%;
   padding: 10px 16px;
   padding-top: calc(10px + env(safe-area-inset-top));
+  padding-right: calc(16px + env(safe-area-inset-right));
+  padding-left: calc(16px + env(safe-area-inset-left));
   background: color-mix(in srgb, var(--bg) 88%, transparent);
+  /* NB: backdrop-filter makes the topbar a containing block for
+     position:fixed descendants — overlays opened from here MUST portal to
+     <body> (components/Portal.tsx), or they pin to this bar off-screen. */
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
 }
@@ -253,9 +280,17 @@ canvas {
   font-size: 17px;
   margin: 0;
   flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Trailing header actions (SOS, invite, requests, settings) keep their size
+   and stay inside the viewport — the h1 is the only thing that gives way. */
+.topbar > button,
+.topbar > a {
+  flex: none;
 }
 
 .offline-banner {

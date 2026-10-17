@@ -23,6 +23,7 @@ import { createBeacon, fmtCountdown, presetWindow, VIBE_EMOJI, VIBE_LABEL, type 
 import { setMe, setSettings } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
+import Portal from './Portal';
 import styles from './beacons.module.css';
 
 const AUDIENCES: { value: BeaconAudience; label: string }[] = [
@@ -154,6 +155,11 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
   const maxSize = BEACON_SPARK_THRESHOLD_MAX + 1;
 
   return (
+    // Portaled to <body>: the BoredButton mounts this sheet inside the
+    // `.boredWrap` FAB shell, whose pointer-events:none inherited into the
+    // whole sheet (every tap fell through to the board) and whose z-index
+    // stacking context slid the sheet UNDER the tab bar, hiding "Light it".
+    <Portal>
     <div
       className={`${styles.sheetBackdrop} ${styles.beaconVars}`}
       role="presentation"
@@ -301,6 +307,7 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
         </button>
       </div>
     </div>
+    </Portal>
   );
 }
 

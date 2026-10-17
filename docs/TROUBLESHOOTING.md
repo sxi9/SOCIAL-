@@ -118,15 +118,27 @@ per-frame membership validation + size/rate caps in `ws/gateway.ts`).
 
 ## Web/UI patterns (the v0.6.1 class)
 
-**A sheet/overlay renders top-left / clipped / wrong place on desktop** [hit]
-→ the sheet component + `components/GlobalOverlays.tsx`. `position: fixed`
-inside ANY transformed/filtered ancestor behaves as absolute. Overlays
-portal to body (or live outside transformed containers).
+**A sheet/overlay renders top-left / clipped / off-screen** [hit ×2]
+→ `components/Portal.tsx` is the law: every sheet/overlay renders through it
+into `<body>`. Root cause class: `position: fixed` inside an ancestor with
+transform, filter, OR `backdrop-filter` (the `.topbar` blur made the topbar
+the containing block — sheets opened from it laid out against a 50px box and
+rose off-screen). Never mount a fixed overlay inline inside app chrome.
 
-**Whole app "unclickable", buttons dead** [hit]
-→ whichever overlay/backdrop is mounted invisible. `opacity: 0` still
-intercepts clicks — closed overlays need `display:none` / `visibility:hidden`
-/ `pointer-events:none`. Debug in DevTools: `document.elementFromPoint(x,y)`.
+**Whole app or one sheet "unclickable", buttons dead** [hit ×2]
+→ Two causes seen: (a) an invisible mounted overlay — `opacity: 0` still
+intercepts clicks; closed overlays need `display:none`/`visibility:hidden`/
+`pointer-events:none`; (b) `pointer-events` is INHERITED — a wrapper with
+`pointer-events:none` (e.g. a FAB shell) kills every descendant, including a
+sheet mounted inside it. Fix: Portal the sheet out; `.sheetBackdrop` sets
+`pointer-events:auto` explicitly as defense. Debug either case in DevTools:
+`document.elementFromPoint(x,y)`.
+
+**A sheet paints UNDER the tab bar / its button is covered** [hit]
+→ z-index scale documented in `app/globals.css`: tab bar < FAB < sheet
+backdrop < sheet < toast. A sheet mounted inside a lower stacking context
+(sticky/z-indexed wrapper) cannot win regardless of its own z-index —
+Portal to body puts it on the root context where the scale applies.
 
 **Bottom sheet's submit button off-screen on phones** [hit]
 → sheet CSS. Sheets: `max-height` (prefer `100dvh`-based) + internal

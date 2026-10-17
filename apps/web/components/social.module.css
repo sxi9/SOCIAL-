@@ -535,6 +535,7 @@
 
 /* Reactor FACES, never counts (PSYCHOLOGY rule 3). */
 .postReactRow {
+  position: relative; /* anchors the quick-reaction menu to the full-width row */
   display: flex;
   flex-wrap: wrap;
   align-items: center;

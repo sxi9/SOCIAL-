@@ -346,19 +346,36 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
           >
             <span aria-hidden>🙂+</span>
           </button>
-          {pickerOpen ? (
-            <>
-              <button type="button" className={bz.menuBackdrop} aria-label="Close picker" onClick={() => setPickerOpen(false)} />
-              <div className={bz.cardMenu} role="menu" style={{ left: 0, bottom: 38, display: 'flex' }}>
-                {QUICK_REACTIONS.map((emoji) => (
-                  <button key={emoji} type="button" role="menuitem" style={{ fontSize: 19 }} onClick={() => void react(emoji)}>
-                    {emoji}
-                  </button>
-                ))}
-              </div>
-            </>
-          ) : null}
         </span>
+        {pickerOpen ? (
+          <>
+            <button type="button" className={bz.menuBackdrop} aria-label="Close picker" onClick={() => setPickerOpen(false)} />
+            {/* Anchored to the reaction ROW (position:relative), not the tiny
+                .cardRel span: the row is as wide as the card, so left:0 +
+                bottom:100% always lands inside the viewport. The inline style
+                overrides .cardMenu's default top/right anchor — setting all
+                four would over-constrain the box and collapse it (v0.6.1). */}
+            <div
+              className={bz.cardMenu}
+              role="menu"
+              aria-label="React to this post"
+              style={{ left: 0, right: 'auto', top: 'auto', bottom: 'calc(100% + 4px)', display: 'flex', flexWrap: 'wrap', maxWidth: '100%' }}
+            >
+              {QUICK_REACTIONS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  role="menuitem"
+                  // .cardMenu buttons are block/full-width list rows; emoji sit in a compact row
+                  style={{ fontSize: 19, width: 'auto', padding: '9px 10px' }}
+                  onClick={() => void react(emoji)}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : null}
       </div>
       {error ? <p className="error-text">{error}</p> : null}
 

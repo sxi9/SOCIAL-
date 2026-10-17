@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CreateInviteResponse, InvitePrivate, ListInvitesResponse } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import Portal from './Portal';
 import styles from './invite.module.css';
 
 const SHARE_TEXT = 'Join me on Bored Chat 👋';
@@ -98,6 +99,10 @@ export default function InviteSheet({ onClose, conversationId }: InviteSheetProp
   }
 
   return (
+    // Portaled to <body>: InviteButton lives in the blurred `.topbar`, whose
+    // backdrop-filter would otherwise contain this fixed backdrop (BUG: sheet
+    // pinned to the topbar box, clipped off-screen).
+    <Portal>
     <div
       className={styles.backdrop}
       role="presentation"
@@ -144,6 +149,7 @@ export default function InviteSheet({ onClose, conversationId }: InviteSheetProp
         )}
       </div>
     </div>
+    </Portal>
   );
 }
 

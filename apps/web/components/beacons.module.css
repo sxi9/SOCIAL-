@@ -409,12 +409,16 @@
 .sheetBackdrop {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: 40; /* --z-sheet (globals.css scale) — above tab bar + FAB */
   background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: flex-end;
   justify-content: center;
   animation: bk-in 160ms ease;
+  /* pointer-events inherits; a sheet accidentally mounted under a
+     pointer-events:none wrapper (the FAB shell was one) must still catch
+     every tap, so the backdrop resets it explicitly. */
+  pointer-events: auto;
 }
 
 @keyframes bk-in {
@@ -459,10 +463,21 @@
 }
 
 .sheetHead {
+  /* v0.6.1: the sheet body scrolls (.sheet is the scroll container), so the
+     header must PIN to the top of the scrollport — otherwise tall forms
+     (Gig/Ride/Room) push the Close (X) off the top of the screen. Negative
+     margins cancel the sheet's 18px padding so the sticky box starts at
+     scroll offset 0; its own padding restores the visual inset. */
+  position: sticky;
+  top: -18px; /* the sticky inset tracks the MARGIN box — cancel the -18px margin so the border box pins flush */
+  z-index: 2;
+  margin: -18px -18px 6px;
+  padding: 14px 18px 8px;
+  background: var(--panel);
+  border-radius: 22px 22px 0 0;
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 6px;
 }
 
 .sheetHead h2 {

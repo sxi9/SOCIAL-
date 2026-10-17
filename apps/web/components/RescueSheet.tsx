@@ -19,6 +19,7 @@ import { sendRescue } from '@/lib/discovery';
 import { dmPeer } from '@/lib/format';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
+import Portal from './Portal';
 import bcn from './beacons.module.css';
 import styles from './discovery.module.css';
 
@@ -132,6 +133,10 @@ export default function RescueSheet({ onClose }: { onClose: () => void }) {
   const nameOf = (id: string) => candidates.find((c) => c.id === id)?.display_name ?? 'them';
 
   return (
+    // Portaled to <body>: this sheet is opened from inside the blurred
+    // `.topbar` (a backdrop-filter containing block), which otherwise pins
+    // the "fixed" backdrop to the topbar box and shoves the sheet off-screen.
+    <Portal>
     <div
       className={bcn.sheetBackdrop}
       role="presentation"
@@ -224,5 +229,6 @@ export default function RescueSheet({ onClose }: { onClose: () => void }) {
         )}
       </div>
     </div>
+    </Portal>
   );
 }

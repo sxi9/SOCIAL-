@@ -248,6 +248,15 @@
   cursor: default;
 }
 
+/* v0.6.1: fixed stand-in for the bubble's rect, portaled to <body> so the
+   picker/menu escape the chat scroll container's overflow clip (and any
+   transformed ancestor). .picker/.msgMenu keep their absolute offsets
+   against it; MessageActionsOverlay flips them to stay inside the viewport. */
+.msgOverlay {
+  position: fixed;
+  z-index: 31; /* popover rank on the globals.css ladder */
+}
+
 .picker {
   position: absolute;
   bottom: calc(100% + 6px);

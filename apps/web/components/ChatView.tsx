@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -69,6 +69,7 @@ import ListingReviewNudge from './ListingReviewNudge';
 import PinnedBar from './PinnedBar';
 import PlanHeader from './PlanHeader';
 import PollView from './PollView';
+import Portal from './Portal';
 import PreviewCard from './PreviewCard';
 import PuzzleResultView from './PuzzleResultView';
 import ReactionPicker from './ReactionPicker';
@@ -712,6 +713,91 @@ export default function ChatView({ conversationId }: { conversationId: string })
   );
 }
 
+// v0.6.1: the reaction picker + message menu render through Portal into
+// <body>, FIXED at the bubble's rect. Mounted inline they were clipped by the
+// chat scroll container's overflow and could extend past the bottom of the
+// viewport — a long-press on a bottom message left "Forward"/"Pin" hitting
+// the backdrop and "Message info" entirely off-screen. After paint the
+// overlay measures both panels and keeps them inside the viewport: the menu
+// flips above the picker when it would overflow the bottom edge, and the
+// picker drops below the bubble when it would poke past the top.
+function MessageActionsOverlay({
+  anchorRef,
+  own,
+  children,
+}: {
+  anchorRef: RefObject<HTMLDivElement | null>;
+  own: boolean;
+  children: ReactNode;
+}) {
+  // The bubble's rect, captured once at open. The modal backdrop blocks
+  // scrolling underneath, so it cannot go stale while open.
+  const [rect] = useState(() => {
+    const el = anchorRef.current;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: r.height };
+  });
+  const roRef = useRef<ResizeObserver | null>(null);
+
+  // Callback ref, NOT an effect: Portal mounts its children a frame after
+  // this component's effects run (it waits for its own mount), so an effect
+  // here would measure an empty box. The ref callback fires during the
+  // commit that actually attaches the panels — before paint.
+  const layoutBox = useCallback(
+    (box: HTMLDivElement | null) => {
+      roRef.current?.disconnect();
+      roRef.current = null;
+      if (!box || !rect) return;
+      const picker = box.querySelector<HTMLElement>('[data-overlay-part="picker"]');
+      const menu = box.querySelector<HTMLElement>('[data-overlay-part="menu"]');
+
+      const layout = () => {
+        for (const el of [picker, menu]) {
+          if (el) {
+            el.style.top = '';
+            el.style.bottom = '';
+          }
+        }
+        const pr = picker?.getBoundingClientRect() ?? null;
+        const mr = menu?.getBoundingClientRect() ?? null;
+        const ph = pr?.height ?? 0;
+        if (picker && pr && pr.top < 8) {
+          // Bubble near the top: picker drops below the bubble, menu below it.
+          picker.style.bottom = 'auto';
+          picker.style.top = `${rect.height + 6}px`;
+          if (menu) menu.style.top = `${rect.height + 12 + ph}px`;
+        } else if (menu && mr && mr.bottom > window.innerHeight - 8) {
+          // Bubble near the bottom: menu flips up, stacked above the picker.
+          menu.style.top = 'auto';
+          menu.style.bottom = `${rect.height + 12 + ph}px`;
+        }
+      };
+      layout();
+      // The picker grows when "more emoji" expands — re-run the flip math.
+      if (typeof ResizeObserver !== 'undefined' && picker) {
+        const ro = new ResizeObserver(layout);
+        ro.observe(picker);
+        roRef.current = ro;
+      }
+    },
+    [rect]
+  );
+
+  if (!rect) return null;
+  return (
+    <Portal>
+      <div
+        ref={layoutBox}
+        className={`${styles.msgOverlay}${own ? ` ${styles.own}` : ''}`}
+        style={{ left: rect.left, top: rect.top, width: rect.width, height: rect.height }}
+      >
+        {children}
+      </div>
+    </Portal>
+  );
+}
+
 function MessageRow({
   message,
   conv,
@@ -752,6 +838,7 @@ function MessageRow({
   const [rowError, setRowError] = useState<string | null>(null);
   const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const swipeRef = useRef<{ x: number; y: number; fired: boolean } | null>(null);
+  const bubbleWrapRef = useRef<HTMLDivElement | null>(null);
   const own = message.sender_id === meId;
 
   const cancelPress = useCallback(() => {
@@ -1198,7 +1285,7 @@ function MessageRow({
       }}
     >
       <div className={styles.msgCol}>
-        <div className={`${styles.bubbleWrap}${flash ? ` ${soc.flash}` : ''}`}>
+        <div ref={bubbleWrapRef} className={`${styles.bubbleWrap}${flash ? ` ${soc.flash}` : ''}`}>
           {bubbleContent}
           <button
             type="button"
@@ -1209,7 +1296,7 @@ function MessageRow({
             <SmileIcon />
           </button>
           {picker ? (
-            <>
+            <MessageActionsOverlay anchorRef={bubbleWrapRef} own={own}>
               <ReactionPicker
                 onPick={pick}
                 onClose={() => setPicker(false)}
@@ -1221,7 +1308,7 @@ function MessageRow({
                   forward / pin (§1.29–§1.32), edit & delete on own messages
                   (§1.30), seen-by info (§1.18 — never in channels, §1.35),
                   report on others' (§1.14). */}
-              <div className={styles.msgMenu} role="menu">
+              <div className={styles.msgMenu} role="menu" aria-label="Message actions" data-overlay-part="menu">
                 {onReply ? (
                   <button
                     type="button"
@@ -1307,7 +1394,7 @@ function MessageRow({
                   </button>
                 ) : null}
               </div>
-            </>
+            </MessageActionsOverlay>
           ) : null}
         </div>
         {rowError ? <p className="error-text" style={{ margin: '2px 0 0' }}>{rowError}</p> : null}

@@ -46,7 +46,7 @@ export default function ReactionPicker({ onPick, onClose, onStamp, stamped, myAv
   return (
     <>
       <button type="button" className={styles.pickerBackdrop} aria-label="Close reactions" onClick={onClose} />
-      <div className={styles.picker} role="menu" aria-label="React to this message">
+      <div className={styles.picker} role="menu" aria-label="React to this message" data-overlay-part="picker">
         {expanded ? (
           <div className={styles.emojiGrid}>
             {EMOJI_GRID.map((emoji) => (
