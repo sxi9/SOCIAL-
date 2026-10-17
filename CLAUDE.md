@@ -14,6 +14,7 @@ for any AI agent or developer: read it first, then the doc it points you to.
 | The database schema | `apps/server/src/db/schema.ts` + `src/db/migrations/` (append-only) |
 | Product rules that BIND all UX decisions | `docs/PSYCHOLOGY.md` (incl. the never-build list) |
 | What is shipped vs planned | `docs/FEATURES.md` |
+| FULL designs for queued releases + standing decisions from the owner | `docs/SPECS.md` (the conversation memory — build from here, not from the one-line roadmap items) |
 | A bug/symptom to fix — where to look, cause, fix pattern | `docs/TROUBLESHOOTING.md` (symptom-indexed; check here BEFORE searching code) |
 | Why a decision was made | `docs/adr/ADR-001 … ADR-015` |
 | Capacity numbers + scaling runbook | `docs/SCALING.md` |
@@ -107,11 +108,9 @@ enforcement, race conditions) with fix/recheck rounds. Hold that bar.
 
 ## Current state
 
-Shipped through v0.6 (see `docs/FEATURES.md` for the item-level list and
-`git log` for the release commits). In flight / next: v0.6.1 overlay &
-placement fixes; v0.7 interactivity pack (clickable beacon joiners →
-profiles with connect/message, beacon & listing editing with joiner
-notifications, early spark "start with whoever joined", public feed posts,
-GIF comments + stamp reactions on comments, location chips with map links).
-Backlog: LiveKit SFU for >8-person calls, listen-together, E2EE, native
-wrappers, make-it-yours kit, federation.
+`docs/FEATURES.md` is the always-current source of truth for shipped vs
+queued (release commits in `git log`). Queued releases build from the full
+designs in `docs/SPECS.md`, which also records the owner's standing
+decisions (no private-chat monitor, no payments, no login-page user cards,
+invisible single waves, mesh-call cap). Backlog: LiveKit SFU, listen-
+together, E2EE, native wrappers, make-it-yours kit, federation.
