@@ -210,7 +210,7 @@ function ProfileSettings() {
   if (!me) return null;
 
   return (
-    <div className="page">
+    <div className="page pageFadeUp">
       <header className="topbar">
         <Link href="/" className="btn btn-ghost btn-icon" aria-label="Back">
           ←
@@ -225,46 +225,70 @@ function ProfileSettings() {
       </header>
 
       <div className="settings-section">
-        <h2>Avatar</h2>
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          {/* Profile page: the animated WebP renders here (motion-gated, §5.4). */}
-          <Avatar avatar={me.avatar} name={me.display_name} size={72} animated />
-          <div style={{ flex: 1 }}>
-            {me.avatar.status === 'processing' ? (
-              <p className="muted small" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span className="spinner" /> Processing — it will pop in when ready.
-              </p>
-            ) : me.avatar.status === 'failed' ? (
-              <p className="error-text">Processing failed. The previous avatar is kept.</p>
+        {/* v1.1 Royal: identity header — the silver live ring, serif display
+            name and the "@username · mood" line (a reskin: editing lives in
+            the cards below, reached by the outline Edit-profile pill). */}
+        <section className={idm.idHead} aria-label="My profile">
+          <span className={idm.idRing}>
+            {/* Profile page: the animated WebP renders here (motion-gated, §5.4). */}
+            <Avatar avatar={me.avatar} name={me.display_name} size={96} animated />
+          </span>
+          <div className={idm.idName}>{me.display_name}</div>
+          <p className={idm.idLine}>
+            @{me.username}
+            {state.moodState?.mood ? (
+              <>
+                {' · '}
+                <span className={idm.idMood}>
+                  <span aria-hidden>{state.moodState.mood.emoji}</span> {state.moodState.mood.label}
+                </span>
+              </>
             ) : null}
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <input
-                ref={fileRef}
-                type="file"
-                hidden
-                accept="image/gif,image/webp,image/apng,image/png,image/jpeg,video/mp4"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) pickAvatar(f);
-                  e.target.value = '';
-                }}
-              />
-              <button type="button" className="btn" onClick={() => fileRef.current?.click()}>
-                Upload new
+          </p>
+          <a href="#pf-details" className={idm.editBtn}>
+            Edit profile
+          </a>
+        </section>
+
+        <h2 className={idm.sectionLabel}>Avatar</h2>
+        <div className="card">
+          {me.avatar.status === 'processing' ? (
+            <p className="muted small" style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 0 }}>
+              <span className="spinner" /> Processing — it will pop in when ready.
+            </p>
+          ) : me.avatar.status === 'failed' ? (
+            <p className="error-text">Processing failed. The previous avatar is kept.</p>
+          ) : null}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <input
+              ref={fileRef}
+              type="file"
+              hidden
+              accept="image/gif,image/webp,image/apng,image/png,image/jpeg,video/mp4"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) pickAvatar(f);
+                e.target.value = '';
+              }}
+            />
+            <button type="button" className="btn" onClick={() => fileRef.current?.click()}>
+              Upload new
+            </button>
+            {me.avatar.status === 'ready' ? (
+              <button type="button" className="btn btn-danger" onClick={() => void removeAvatar()}>
+                Remove
               </button>
-              {me.avatar.status === 'ready' ? (
-                <button type="button" className="btn btn-danger" onClick={() => void removeAvatar()}>
-                  Remove
-                </button>
-              ) : null}
-            </div>
-            {avatarError ? <p className="error-text">{avatarError}</p> : null}
-            <p className="muted small">GIF, WebP, APNG, PNG, JPEG or MP4 — animated sources become a live avatar.</p>
+            ) : null}
           </div>
+          {avatarError ? <p className="error-text">{avatarError}</p> : null}
+          <p className="muted small" style={{ marginBottom: 0 }}>
+            GIF, WebP, APNG, PNG, JPEG or MP4 — animated sources become a live avatar.
+          </p>
         </div>
 
-        <h2>Details</h2>
-        <div className="card">
+        <h2 className={idm.sectionLabel}>Details</h2>
+        {/* id: the identity header's Edit-profile pill jumps here. */}
+        <div className="card" id="pf-details" style={{ scrollMarginTop: 72 }}>
           <div className="field">
             <label htmlFor="pf-name">Display name</label>
             <input
@@ -362,7 +386,7 @@ function ProfileSettings() {
 
         {/* v0.8a §1.57: the mood picker entry point — the chip auto-expires
             (~4 h); the fade time shows inside the sheet, owner-only. */}
-        <h2>Mood</h2>
+        <h2 className={idm.sectionLabel}>Mood</h2>
         <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             {state.moodState?.mood ? (
@@ -397,50 +421,51 @@ function ProfileSettings() {
         {/* v0.5a §1.37: interests, work/skills, the 3-GIF strip. */}
         <ProfileEditor />
 
-        <h2>Friends</h2>
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ flex: 1 }}>
-            <strong>Connections</strong>
-            <p className="muted small" style={{ margin: '4px 0 0' }}>
+        <h2 className={idm.sectionLabel}>Friends</h2>
+        {/* v1.1 Royal: navigation cards become chevron settings rows. */}
+        <Link href="/connections" className={idm.settingsRow}>
+          <span className={idm.rowText}>
+            Connections
+            <span className={idm.rowHint}>
               Friend requests and your people — friends also include everyone you DM.
-            </p>
-          </div>
-          <Link href="/connections" className="btn">
-            Open
-          </Link>
-        </div>
+            </span>
+          </span>
+          <span className={idm.rowChevron} aria-hidden>
+            ›
+          </span>
+        </Link>
 
         {/* v0.6 §1.46: one tap pings up to 3 friends to call you out of a
             boring situation — the one push that cuts through mutes. */}
         <RescueCard />
 
         {/* v1.0a (#94): the private gallery — my media + story auto-saves. */}
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ flex: 1 }}>
-            <strong>🖼 My gallery</strong>
-            <p className="muted small" style={{ margin: '4px 0 0' }}>
+        <Link href="/gallery" className={idm.settingsRow}>
+          <span className={idm.rowText}>
+            🖼 My gallery
+            <span className={idm.rowHint}>
               Everything you’ve shared, plus auto-saved stories — only you see it.
-            </p>
-          </div>
-          <Link href="/gallery" className="btn">
-            Open
-          </Link>
-        </div>
+            </span>
+          </span>
+          <span className={idm.rowChevron} aria-hidden>
+            ›
+          </span>
+        </Link>
 
         {/* v0.8a §1.61: the feature directory — search + Try-it deep links. */}
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ flex: 1 }}>
-            <strong>✨ Things you can do</strong>
-            <p className="muted small" style={{ margin: '4px 0 0' }}>
+        <Link href="/things" className={idm.settingsRow}>
+          <span className={idm.rowText}>
+            ✨ Things you can do
+            <span className={idm.rowHint}>
               Every feature on this server, one line each, with a Try-it link.
-            </p>
-          </div>
-          <Link href="/things" className="btn">
-            Browse
-          </Link>
-        </div>
+            </span>
+          </span>
+          <span className={idm.rowChevron} aria-hidden>
+            ›
+          </span>
+        </Link>
 
-        <h2>Notifications</h2>
+        <h2 className={idm.sectionLabel}>Notifications</h2>
         <div className="card">
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
@@ -502,78 +527,79 @@ function ProfileSettings() {
         </div>
 
         {/* v0.7.1 (§1.55, FEATURES #89): find out BEFORE a call fails. */}
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ flex: 1 }}>
-            <strong>Call self-test</strong>
-            <p className="muted small" style={{ margin: '4px 0 0' }}>
+        <Link href="/settings/calls" className={idm.settingsRow}>
+          <span className={idm.rowText}>
+            Call self-test
+            <span className={idm.rowHint}>
               Checks mic &amp; camera permission, secure context, and whether this server&rsquo;s
               call relay is reachable from your network — in plain words.
-            </p>
-          </div>
-          <Link href="/settings/calls" className="btn">
-            Run
-          </Link>
-        </div>
+            </span>
+          </span>
+          <span className={idm.rowChevron} aria-hidden>
+            ›
+          </span>
+        </Link>
 
-        <h2>Privacy &amp; safety</h2>
+        <h2 className={idm.sectionLabel}>Privacy &amp; safety</h2>
         {/* v0.9 (§1.70–§1.73): passkeys, two-factor, recovery codes, QR
             phone-approvals and the device list, one page. */}
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ flex: 1 }}>
-            <strong>🔑 Security</strong>
-            <p className="muted small" style={{ margin: '4px 0 0' }}>
+        <Link href="/settings/security" className={idm.settingsRow}>
+          <span className={idm.rowText}>
+            🔑 Security
+            <span className={idm.rowHint}>
               Passkeys, two-factor codes, recovery codes, signing a laptop in from your phone —
               and every device you&rsquo;re signed in on.
-            </p>
-          </div>
-          <Link href="/settings/security" className="btn">
-            Open
-          </Link>
-        </div>
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ flex: 1 }}>
-            <strong>Privacy settings</strong>
-            <p className="muted small" style={{ margin: '4px 0 0' }}>
+            </span>
+          </span>
+          <span className={idm.rowChevron} aria-hidden>
+            ›
+          </span>
+        </Link>
+        <Link href="/settings/privacy" className={idm.settingsRow}>
+          <span className={idm.rowText}>
+            Privacy settings
+            <span className={idm.rowHint}>
               Read receipts, last seen, typing, invites, beacon audience, groups — plus your
               blocked list.
-            </p>
-          </div>
-          <Link href="/settings/privacy" className="btn">
-            Open
-          </Link>
-        </div>
+            </span>
+          </span>
+          <span className={idm.rowChevron} aria-hidden>
+            ›
+          </span>
+        </Link>
 
         {/* v0.8b §1.69: Help & feedback — tickets to the operator; answers
             arrive as the 🛟 Bored Chat Support conversation. */}
-        <h2>Help</h2>
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ flex: 1 }}>
-            <strong>🛟 Help &amp; feedback</strong>
-            <p className="muted small" style={{ margin: '4px 0 0' }}>
+        <h2 className={idm.sectionLabel}>Help</h2>
+        <Link href="/settings/help" className={idm.settingsRow}>
+          <span className={idm.rowText}>
+            🛟 Help &amp; feedback
+            <span className={idm.rowHint}>
               A bug, a question, an idea, or a safety worry — straight to whoever runs this server.
-            </p>
-          </div>
-          <Link href="/settings/help" className="btn">
-            Open
-          </Link>
-        </div>
+            </span>
+          </span>
+          <span className={idm.rowChevron} aria-hidden>
+            ›
+          </span>
+        </Link>
 
-        <h2>Account</h2>
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <h2 className={idm.sectionLabel}>Account</h2>
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
           <div style={{ flex: 1 }}>
             <strong>@{me.username}</strong>
             <p className="muted small" style={{ margin: '4px 0 0' }}>{me.email}</p>
           </div>
-          <button
-            type="button"
-            className="btn btn-danger"
-            onClick={() => {
-              void logout().then(() => router.replace('/login'));
-            }}
-          >
-            Sign out
-          </button>
         </div>
+        {/* Royal: sign out is a danger-text row, not a filled button. */}
+        <button
+          type="button"
+          className={`${idm.settingsRow} ${idm.rowDanger}`}
+          onClick={() => {
+            void logout().then(() => router.replace('/login'));
+          }}
+        >
+          Sign out
+        </button>
       </div>
     </div>
   );

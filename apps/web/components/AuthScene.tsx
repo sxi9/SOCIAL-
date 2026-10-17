@@ -282,9 +282,9 @@ export default function AuthScene({ children }: { children: ReactNode }) {
           <span className={`${styles.blob} ${styles.b1}`} />
           <span className={`${styles.blob} ${styles.b2}`} />
           <span className={`${styles.blob} ${styles.b3}`} />
-          <FloatingFace className={`${styles.face} ${styles.f1}`} hue="#6f8cff" />
-          <FloatingFace className={`${styles.face} ${styles.f2}`} hue="#4cd4a0" />
-          <FloatingFace className={`${styles.face} ${styles.f3}`} hue="#ff6b96" />
+          <FloatingFace className={`${styles.face} ${styles.f1}`} hue="#c7cdda" />
+          <FloatingFace className={`${styles.face} ${styles.f2}`} hue="#8f96a8" />
+          <FloatingFace className={`${styles.face} ${styles.f3}`} hue="#e4e8f1" />
         </div>
         {/* v1.1 Royal: per-mood ambient layer — none under reduced motion. */}
         {!reduced ? <MoodBackdrop kind={WORD_BG[word]} /> : null}

@@ -100,7 +100,7 @@
   width: min(78vw, 250px);
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: var(--radius);
   padding: 18px 16px 14px;
   display: flex;
   flex-direction: column;
@@ -156,8 +156,8 @@
   gap: 8px;
   border: none;
   border-radius: 999px;
-  background: var(--accent-strong);
-  color: #fff;
+  background: var(--accent-grad); /* Royal: white/silver primary, ink text */
+  color: var(--accent-ink);
   font-size: 14px;
   font-weight: 600;
   padding: 9px 20px;
@@ -331,8 +331,8 @@
   margin-left: auto;
   border: none;
   border-radius: 999px;
-  background: var(--accent-strong);
-  color: #fff;
+  background: var(--accent-grad); /* Royal: white/silver primary, ink text */
+  color: var(--accent-ink);
   font-size: 13px;
   font-weight: 600;
   padding: 7px 14px;
@@ -450,6 +450,19 @@
 }
 
 /* ---- rescue picker (§1.46) ---- */
+
+/* Royal: the topbar SOS trigger reads as quiet danger text. The sheet itself
+   portals to <body>, so this descendant rule only ever hits the trigger. */
+.sosTrigger {
+  flex: none;
+  display: inline-flex;
+}
+
+.sosTrigger button {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--danger);
+}
 
 .rescueRow {
   display: flex;

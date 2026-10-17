@@ -56,7 +56,7 @@ function TabIcon({ tab }: { tab: TabKey }) {
   switch (tab) {
     case 'chats':
       return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <svg width="23" height="23" viewBox="0 0 24 24" fill="none" aria-hidden>
           <path
             d="M12 4 c5.4 0 9 3.1 9 7.2 c0 4.1 -3.6 7.2 -9 7.2 c-1 0 -2 -0.1 -2.9 -0.4 L5 20.5 l1.1 -3.6 C4.2 15.5 3 13.5 3 11.2 C3 7.1 6.6 4 12 4 Z"
             stroke="currentColor"
@@ -68,7 +68,7 @@ function TabIcon({ tab }: { tab: TabKey }) {
     case 'local':
       // Map-pin: the board is about where you are (beacons + listings).
       return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <svg width="23" height="23" viewBox="0 0 24 24" fill="none" aria-hidden>
           <path
             d="M12 21 C8 16.6 5.5 13.4 5.5 10.2 a6.5 6.5 0 0 1 13 0 C18.5 13.4 16 16.6 12 21 Z"
             stroke="currentColor"
@@ -80,14 +80,14 @@ function TabIcon({ tab }: { tab: TabKey }) {
       );
     case 'feed':
       return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <svg width="23" height="23" viewBox="0 0 24 24" fill="none" aria-hidden>
           <rect x="4" y="4" width="16" height="7" rx="2.4" stroke="currentColor" strokeWidth="1.7" />
           <rect x="4" y="14" width="16" height="6" rx="2.4" stroke="currentColor" strokeWidth="1.7" opacity="0.65" />
         </svg>
       );
     case 'profile':
       return (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <svg width="23" height="23" viewBox="0 0 24 24" fill="none" aria-hidden>
           <circle cx="12" cy="8.4" r="3.6" stroke="currentColor" strokeWidth="1.7" />
           <path d="M5 19.5 c1.4 -3.4 4 -5 7 -5 s5.6 1.6 7 5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
         </svg>

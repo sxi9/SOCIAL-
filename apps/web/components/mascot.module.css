@@ -94,6 +94,14 @@
 
 .blush {
   fill: var(--m-blush);
+  /* v1.1 Royal: blush belongs to the tipsy/festive faces only. */
+  opacity: 0;
+}
+
+.drunk .blush,
+.party .blush,
+.celebrate .blush {
+  opacity: 1;
 }
 
 .limb {

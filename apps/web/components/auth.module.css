@@ -19,14 +19,19 @@
      scroll mechanism; `hidden` stays first as the old-engine fallback. */
   overflow: hidden;
   overflow: clip;
-  background: linear-gradient(135deg, #0b0e14 0%, #16123a 28%, #0b2a3d 55%, #2a1034 80%, #0b0e14 100%);
+  /* v1.1 Royal: charcoal with the top glow — the mood layer paints on top. */
+  background:
+    radial-gradient(420px 320px at 50% -5%, rgba(255, 255, 255, 0.1), transparent 60%),
+    var(--bg);
   background-size: 320% 320%;
   animation: scene-drift 20s ease-in-out infinite;
 }
 
 @media (prefers-color-scheme: light) {
   .scene {
-    background: linear-gradient(135deg, #e8ecfb 0%, #dce9ff 30%, #e4dcff 55%, #d7f3ec 80%, #e8ecfb 100%);
+    background:
+      radial-gradient(420px 320px at 50% -5%, rgba(18, 20, 28, 0.06), transparent 60%),
+      var(--bg);
     background-size: 320% 320%;
   }
 }
@@ -63,19 +68,14 @@
 .meshA {
   top: -4%;
   left: -6%;
-  background: radial-gradient(circle at 35% 35%, rgba(111, 140, 255, 0.5), rgba(111, 140, 255, 0) 70%);
+  background: radial-gradient(circle at 35% 35%, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0) 70%);
   transform: translate3d(calc(var(--mx, 0) * 28px), calc(var(--my, 0) * 22px), 0);
 }
 
 .meshB {
   bottom: -4%;
   right: -6%;
-  background: radial-gradient(
-    circle at 60% 60%,
-    rgba(255, 107, 150, 0.38),
-    rgba(76, 212, 160, 0.18) 55%,
-    rgba(76, 212, 160, 0) 78%
-  );
+  background: radial-gradient(circle at 65% 60%, rgba(199, 205, 218, 0.12), rgba(199, 205, 218, 0) 70%);
   transform: translate3d(calc(var(--mx, 0) * -38px), calc(var(--my, 0) * -28px), 0);
 }
 
@@ -249,16 +249,15 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.26em;
+  gap: 0.06em; /* v1.1 Royal: the dot hugs the word */
   font: inherit;
   letter-spacing: inherit;
   border: 0;
   padding: 0;
   cursor: pointer;
-  background: linear-gradient(100deg, var(--accent) 10%, #b78cff 55%, var(--ok) 95%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  background: none; /* the old gradient-clip covered the UA button bg */
+  /* v1.1 Royal: solid accent (white on dark, ink on light). */
+  color: var(--accent);
 }
 
 /* ---- v0.7 flipping wordmark (§1.54) ---- */
@@ -274,13 +273,7 @@
   line-height: 1.2;
   text-align: right;
   vertical-align: baseline;
-  /* The roll column is TRANSFORMED, which breaks out of the logoBtn's
-     background-clip:text — so the slot (static fallback) and each word item
-     carry their own gradient clip instead. */
-  background: linear-gradient(100deg, var(--accent) 10%, #b78cff 55%, var(--ok) 95%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--accent); /* v1.1 Royal: solid accent */
 }
 
 /* Hidden measurer: every word rendered once, same font, zero layout. */
@@ -309,12 +302,7 @@
   height: 1.2em;
   line-height: 1.2;
   white-space: nowrap;
-  /* Own gradient per word: the text and its clipped background live on the
-     SAME un-transformed element, so the roll moves them together. */
-  background: linear-gradient(100deg, var(--accent) 10%, #b78cff 55%, var(--ok) 95%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--accent); /* v1.1 Royal: solid accent */
 }
 
 @media (prefers-reduced-motion: no-preference) {

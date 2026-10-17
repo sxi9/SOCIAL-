@@ -12,6 +12,7 @@ import BoardView from '@/components/BoardView';
 import DiscoverySection from '@/components/DiscoverySection';
 import { RescueButton } from '@/components/RescueSheet';
 import TabPage from '@/components/TabPage';
+import dsc from '@/components/discovery.module.css';
 
 function LocalContent() {
   const router = useRouter();
@@ -21,9 +22,13 @@ function LocalContent() {
   return (
     <div className="page">
       <header className="topbar">
+        {/* The h1 carries no class, so the global Royal display serif applies. */}
         <h1>Local</h1>
-        {/* v0.6 §1.46 (fixer r1): one-tap SOS on the boredom tab itself. */}
-        <RescueButton />
+        {/* v0.6 §1.46 (fixer r1): one-tap SOS on the boredom tab itself.
+            Royal: the wrapper re-tones the trigger (13px/600, danger). */}
+        <span className={dsc.sosTrigger}>
+          <RescueButton />
+        </span>
       </header>
       <KudosBanner />
       <BeaconStrip />

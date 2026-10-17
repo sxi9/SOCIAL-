@@ -54,7 +54,7 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
   return (
     <div className="page">
       <header className="topbar">
-        <h1>Bored Chat</h1>
+        <h1 className={styles.pageTitle}>Chats</h1>
         {/* v0.6 §1.46 (fixer r1): the one-tap SOS lives on the home tab too,
             not only buried in Profile settings. */}
         <RescueButton />
@@ -151,14 +151,20 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
                         {title}
                       </span>
                       {item.last_message_at ? (
-                        <span className={styles.time}>{formatTime(item.last_message_at)}</span>
+                        <span
+                          className={`${styles.time}${item.unread_count > 0 ? ` ${styles.timeUnread}` : ''}`}
+                        >
+                          {formatTime(item.last_message_at)}
+                        </span>
                       ) : null}
                     </span>
                     <span className={styles.snippetLine}>
                       <span className={`${styles.snippet}${item.unread_count > 0 ? ` ${styles.unread}` : ''}`}>
                         {messageSnippet(item.last_message)}
                       </span>
-                      {item.unread_count > 0 ? <span className="badge">{item.unread_count}</span> : null}
+                      {item.unread_count > 0 ? (
+                        <span className={`badge ${styles.unreadBadge}`}>{item.unread_count}</span>
+                      ) : null}
                     </span>
                   </span>
                 </Link>

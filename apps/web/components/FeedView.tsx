@@ -114,7 +114,7 @@ export default function FeedView() {
   return (
     <div className="page">
       <header className="topbar">
-        <h1>Feed</h1>
+        <h1 className={st.feedTitle}>Feed</h1>
         <button type="button" className="btn btn-ghost" onClick={refresh} disabled={loading}>
           {loading ? 'Checking…' : 'Check for new posts'}
         </button>
@@ -185,8 +185,16 @@ export default function FeedView() {
               // The HARD end, per lane. No wraparound, no "keep scrolling" —
               // a visit has a bottom, and this is it (PSYCHOLOGY rule 5).
               <div className={st.endCard} role="status">
-                <span className={st.endEmoji} aria-hidden>
-                  🎉
+                <span className={st.endCheck} aria-hidden>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                    <path
+                      d="M5 12.5 10 17.5 19 7"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
                 </span>
                 <h3>You&rsquo;re all caught up</h3>
                 <p>
@@ -831,6 +839,10 @@ function PostPollView({ post }: { post: Post }) {
     }
   }
 
+  // Royal: before MY vote the options read as plain outline buttons; once I
+  // vote they become result rows with the soft fill bar at the percent width.
+  const voted = poll.my_vote !== null;
+
   return (
     <div className={st.postPoll}>
       <p className={st.postPollQ}>📊 {poll.question}</p>
@@ -849,10 +861,10 @@ function PostPollView({ post }: { post: Post }) {
             aria-label={`${opt} — ${count} ${count === 1 ? 'vote' : 'votes'}${mine ? '. Your vote — tap to remove' : '. Tap to vote'}`}
             onClick={() => void vote(i)}
           >
-            <span className={st.postPollBar} aria-hidden />
+            {voted ? <span className={st.postPollBar} aria-hidden /> : null}
             <span className={st.postPollLabel}>
-              {mine ? '✓ ' : ''}
               {opt}
+              {mine ? <span className={st.pollYourVote}> · your vote</span> : null}
             </span>
             <span className={st.postPollCount} aria-hidden>
               {count}

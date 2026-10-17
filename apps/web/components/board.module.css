@@ -2,7 +2,16 @@
    soft rounded cards, dark-first, playful accents, reduced-motion guarded.
    PULL-BASED surface: nothing in here blinks, badges or counts unprompted. */
 
-/* ============================ filter rail ============================ */
+/* ============================ heading + filter rail ============================ */
+
+/* Royal: the board gets a display-serif section heading. */
+.boardHead {
+  margin: 14px 16px 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 18px;
+  letter-spacing: 0.01em;
+}
 
 .chipRow {
   display: flex;
@@ -17,29 +26,31 @@
 }
 
 .kindChip {
+  /* Royal: inactive chips are quiet outlines. */
   flex: none;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   border: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--text);
+  background: transparent;
+  color: var(--muted);
   border-radius: 999px;
   padding: 7px 13px;
   font-size: 13.5px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 120ms ease, border-color 120ms ease;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .kindChip:hover {
-  border-color: var(--accent);
+  border-color: var(--border-accent);
 }
 
 .kindChipOn {
-  background: var(--accent-soft);
+  /* Active chip: solid white, ink text. */
+  background: var(--accent);
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .controlRow {
@@ -110,7 +121,7 @@
 }
 
 .lCard:hover {
-  border-color: var(--accent);
+  border-color: var(--border-accent);
 }
 
 .lCard:active {
@@ -131,17 +142,21 @@
   gap: 8px;
 }
 
-.lKindEmoji {
+/* Royal: typographic kind tag (RIDE / GIG / ROOM / PLACE). */
+.lKindTag {
   flex: none;
-  font-size: 17px;
-  line-height: 1.2;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .lTitle {
   flex: 1;
   min-width: 0;
-  font-weight: 700;
-  font-size: 15px;
+  font-weight: 600;
+  font-size: 14.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -186,6 +201,15 @@
   font-weight: 700;
 }
 
+/* Royal listing rows: plain right-aligned price (the chip stays for sheets). */
+.lPrice {
+  flex: none;
+  margin-left: auto;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
 .tagRow {
   display: flex;
   flex-wrap: wrap;
@@ -204,9 +228,9 @@
 
 .lThumb {
   flex: none;
-  width: 64px;
-  height: 64px;
-  border-radius: 10px;
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
   overflow: hidden;
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -263,8 +287,9 @@
 .stars {
   display: inline-flex;
   gap: 1px;
-  color: #f2b24c;
-  font-size: 14px;
+  color: var(--accent); /* Royal: silver-white ratings, no gold */
+  font-size: 13.5px;
+  font-weight: 600;
   line-height: 1;
 }
 
@@ -279,7 +304,7 @@
   font-size: 30px;
   line-height: 1;
   padding: 2px 4px;
-  color: #f2b24c;
+  color: var(--accent);
   transition: transform 100ms ease;
 }
 

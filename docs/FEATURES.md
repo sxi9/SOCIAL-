@@ -161,6 +161,12 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 78c. ✅ (shipped v1.0, with the quick-wins round) Find-people page (/people): suggestion grid with narrowing filters (mutuals/groups/area/shared public interests), refresh, honest empty state; strips link to it ("See more")
 110. Share everywhere: OG/Twitter-card unfurls for other social media, standalone profile share link, non-users can view posts and PLAY videos on share pages — login only gates interaction (never viewing public content)
 
+## ✅ v1.1 — "Royal" UI redesign (shipped on branch; from the owner's design drop)
+
+111. Royal theme: charcoal-navy + white/silver accent system, Marcellus display serif + Instrument Sans body (self-hosted woff2), pill buttons with press feedback, silver story/avatar rings, soft top glow — token-level, so every screen/sheet inherits it
+112. Animated mood login: wordmark cycles bored./happy./sad./drunk. with synced taglines, mascot faces (ivory blob; drunk = squiggle+blush+wobble, sad = tear) and mood backdrops (star twinkle / rain / drifting blobs); static under reduced motion
+113. Screen treatments: edge-to-edge feed posts + silver story rings + serif poll questions + royal end card; Local beacon cards with outline join pills + dashed "I'm bored" pill + board kind-tags; chats list with pulse-glow unread badges; conversation with white-gradient outgoing bubbles (ink text) + plan-card bolt pulse + blinking typing dots; profile with conic-ring avatar + serif name; story viewer scrims + segment bars; tab bar active/inactive states with press feedback
+
 ## 📋 Backlog — operator & platform
 
 54. ✅ (shipped v0.5b — API §1.41, ADR-013) Admin dashboard (operator-only): user list with registration/last-login IPs and sessions, reports queue with actions (warn/suspend/ban), server log viewer (api/worker), metrics (DAU, messages/day, storage), invite on/off, data export. Boundaries: metadata only — no private message contents in the UI; IP retention window (default 90 days) documented in the instance's privacy note

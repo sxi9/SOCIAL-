@@ -11,8 +11,8 @@
   align-items: stretch;
   justify-content: space-around;
   gap: 2px;
-  background: color-mix(in srgb, var(--panel) 92%, var(--bg));
-  border-top: 1px solid var(--border);
+  background: var(--bg);
+  border-top: 1px solid var(--border); /* Royal: top hairline */
   padding: 4px 8px calc(4px + env(safe-area-inset-bottom));
   z-index: 20;
 }
@@ -26,23 +26,28 @@
   gap: 2px;
   padding: 6px 4px;
   border-radius: 12px;
-  color: var(--muted);
-  font-size: 11px;
+  color: var(--inactive);
+  font-size: 10.5px;
   font-weight: 600;
   line-height: 1;
   text-decoration: none;
   position: relative;
-  transition: color 120ms ease, background 120ms ease;
+  transition: color 120ms ease, background 120ms ease, transform 120ms ease;
 }
 
 .tab:hover {
   color: var(--text);
 }
 
+/* Royal: press feedback (guarded under reduced motion below). */
+.tab:active {
+  transform: scale(0.93);
+}
+
 .tabOn,
 .tabOn:hover {
   color: var(--accent);
-  background: var(--accent-soft);
+  background: none;
 }
 
 .tabIcon {
@@ -57,8 +62,8 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--accent-strong);
-  border: 2px solid var(--panel);
+  background: var(--accent); /* Royal: white dot, bg-colored ring */
+  border: 2px solid var(--bg);
 }
 
 /* Mobile: hide the whole bar while a chat is open (full-screen chat). */
@@ -161,25 +166,27 @@
   font: inherit;
 }
 
+/* Royal: 58px avatars; the ring is a 2.5px padded circle around them.
+   Default (all viewed) = the quiet seen ring. */
 .storyRing {
   position: relative;
-  width: 58px;
-  height: 58px;
+  width: 63px;
+  height: 63px;
   border-radius: 50%;
-  padding: 3px;
-  background: var(--border);
+  padding: 2.5px;
+  background: var(--ring-seen);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .storyRing > :global(.avatar) {
-  border: 2px solid var(--panel);
+  border: 2px solid var(--bg);
 }
 
-/* Unviewed: the glow ring (static gradient under reduced motion). */
+/* Unviewed: the live silver conic ring (glow is static under reduced motion). */
 .ringUnviewed {
-  background: conic-gradient(from 20deg, var(--accent), var(--ok), var(--accent-strong), var(--accent));
+  background: var(--ring-live);
   animation: ring-glow 2.6s ease-in-out infinite;
 }
 
@@ -193,8 +200,11 @@
   }
 }
 
+/* Royal: the leading "add story" circle — a dashed invite, not a ring. */
 .ringMine {
-  background: var(--border);
+  background: none;
+  border: 1.5px dashed #4a5060;
+  padding: 1px;
 }
 
 .storyName {
@@ -206,6 +216,11 @@
   text-overflow: ellipsis;
 }
 
+/* Unseen authors get the white label under the live ring. */
+.storyNameNew {
+  color: var(--text);
+}
+
 .storyAdd {
   position: absolute;
   bottom: -2px;
@@ -213,9 +228,9 @@
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: var(--accent-strong);
-  color: #fff;
-  border: 2px solid var(--panel);
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: 2px solid var(--bg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -245,6 +260,17 @@
   flex-direction: column;
   overflow: hidden;
   background: #0a0d14;
+  /* Royal: the viewer rises in (none under reduced motion, guarded below).
+     The transform lives on the stage, NOT the fixed backdrop — a transformed
+     backdrop would re-anchor position:fixed descendants (sheets). */
+  animation: viewer-in 220ms ease;
+}
+
+@keyframes viewer-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
 }
 
 @media (min-width: 600px) {
@@ -253,6 +279,29 @@
     border-radius: 18px;
     border: 1px solid var(--border);
   }
+}
+
+/* Royal: black gradient scrims so the chrome stays legible on any photo —
+   24% bands top and bottom, under the header/progress (z 4) and tap zones. */
+.viewerStage::before,
+.viewerStage::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 24%;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.viewerStage::before {
+  top: 0;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.6), transparent);
+}
+
+.viewerStage::after {
+  bottom: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.6), transparent);
 }
 
 .progressRow {
@@ -269,7 +318,7 @@
   flex: 1;
   height: 3px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.35);
   overflow: hidden;
 }
 
@@ -304,9 +353,9 @@
 }
 
 .viewerExpiry {
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 400;
-  opacity: 0.75;
+  color: rgba(255, 255, 255, 0.65);
   display: block;
 }
 
@@ -372,7 +421,7 @@
 
 .viewerBtn {
   background: rgba(0, 0, 0, 0.45);
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.55); /* Royal: white pill chrome */
   color: #fff;
   border-radius: 999px;
   padding: 7px 14px;
@@ -444,12 +493,33 @@
   cursor: pointer;
 }
 
-.composerCard,
-.postCard {
+/* Royal: the Feed topbar title in the display serif (outweighs .topbar h1). */
+:global(.topbar) .feedTitle {
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 400;
+}
+
+.composerCard {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius);
   padding: 12px 14px;
+}
+
+/* Royal: posts are edge-to-edge rows on the page — no per-post card chrome,
+   a 1px hairline BETWEEN posts only. */
+.postCard {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 16px 20px;
+  margin: 0 -16px; /* bleed across .feedWrap's 16px side padding */
+}
+
+.postCard + .postCard {
+  margin-top: -12px; /* collapse the feed column's gap so the divider sits snug */
+  border-top: 1px solid var(--border);
 }
 
 .composerCard textarea {
@@ -491,7 +561,8 @@
 
 .postHeadName strong {
   display: block;
-  font-size: 14.5px;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .postHeadName span {
@@ -503,13 +574,14 @@
   margin: 0 0 6px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 14.5px;
+  font-size: 15px;
+  line-height: 1.5;
 }
 
 .postImages {
   display: grid;
   gap: 4px;
-  border-radius: 12px;
+  border-radius: 16px;
   overflow: hidden;
   margin-bottom: 6px;
 }
@@ -667,9 +739,11 @@
 }
 
 .endCard h3 {
-  margin: 8px 0 4px;
+  margin: 10px 0 4px;
   color: var(--text);
-  font-size: 17px;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 16px;
 }
 
 .endCard p {
@@ -680,6 +754,18 @@
 .endEmoji {
   font-size: 34px;
   display: block;
+}
+
+/* Royal: the caught-up check — a centered soft white disc. */
+.endCheck {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 /* ============================ rich profile ============================ */
@@ -1255,20 +1341,23 @@
 }
 
 .postPollQ {
-  font-weight: 700;
-  font-size: 14px;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 17px;
   margin: 0;
 }
 
+/* Royal: unvoted options read as quiet outline buttons; after MY vote the
+   bar (rendered only then) turns them into result rows. */
 .postPollOpt {
   position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 11px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  background: var(--panel-2);
+  padding: 8px 12px;
+  border: 1px solid #3a4052;
+  border-radius: 12px;
+  background: none;
   color: var(--text);
   font: inherit;
   font-size: 13.5px;
@@ -1277,15 +1366,22 @@
   text-align: left;
 }
 
-.postPollOptMine {
+.postPollOpt:hover:not(:disabled) {
   border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* The chosen row. (color-mix on --accent = rgba(255,255,255,0.4) in dark,
+   and stays visible in the light theme.) */
+.postPollOptMine {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 .postPollBar {
   position: absolute;
   inset: 0;
   width: var(--w, 0%);
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   transition: width 260ms ease;
   pointer-events: none;
 }
@@ -1309,6 +1405,13 @@
 
 .postPollOptMine .postPollCount {
   color: var(--accent);
+}
+
+/* The "· your vote" marker on the chosen row. */
+.pollYourVote {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .postPollMeta {
@@ -1683,5 +1786,13 @@
 
   .tab {
     transition: none;
+  }
+
+  .tab:active {
+    transform: none;
+  }
+
+  .viewerStage {
+    animation: none;
   }
 }

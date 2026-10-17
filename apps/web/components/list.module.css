@@ -4,13 +4,45 @@
   padding: 0;
 }
 
+/* Royal: the Chats topbar title in the display serif (outweighs .topbar h1). */
+:global(.topbar) .pageTitle {
+  font-family: var(--font-display);
+  font-size: 23px;
+  font-weight: 400;
+  min-width: 0;
+  overflow: visible;
+}
+
+/* Desktop: the 360px sidebar topbar holds the title + 6 actions — a hair
+   smaller stops the serif title truncating to "Ch…". */
+@media (min-width: 900px) {
+  :global(.topbar) .pageTitle {
+    font-size: 19px;
+  }
+}
+
 .row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 10px 16px;
   color: var(--text);
-  border-bottom: 1px solid var(--border);
+}
+
+/* Royal: hairline divider inset past the avatar (16px pad + 48px + 12px gap). */
+.row::after {
+  content: '';
+  position: absolute;
+  left: 76px;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--border);
+}
+
+.list > li:last-child .row::after {
+  display: none;
 }
 
 .row:active {
@@ -36,6 +68,12 @@
   position: absolute;
   bottom: 0;
   right: 0;
+}
+
+/* Royal: the presence dot wears a bg-colored ring over the avatar's corner
+   (the --ok fill comes from the global .presence-dot.online). */
+.avatarWrap .dot {
+  border: 2px solid var(--bg);
 }
 
 .main {
@@ -64,6 +102,11 @@
   flex: none;
 }
 
+/* Royal: unread rows carry a white timestamp. */
+.time.timeUnread {
+  color: var(--accent);
+}
+
 .snippetLine {
   display: flex;
   align-items: center;
@@ -82,6 +125,20 @@
 .snippet.unread {
   color: var(--text);
   font-weight: 500;
+}
+
+/* Royal: the unread badge — an 18px white circle with the ink number, pulsing
+   softly (global pulseGlow keyframes; stilled under reduced motion below). */
+.snippetLine .unreadBadge {
+  min-width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  padding: 0 5px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 11.5px;
+  font-weight: 700;
+  animation: pulseGlow 2.4s ease-in-out infinite;
 }
 
 .empty {
@@ -132,8 +189,8 @@
   width: 54px;
   height: 54px;
   border-radius: 50%;
-  background: var(--accent-strong);
-  color: #fff;
+  background: var(--accent-grad); /* Royal: white gradient, ink glyph */
+  color: var(--accent-ink);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -223,4 +280,11 @@
 .pickerRow.selected {
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+/* Royal rule: every motion effect in this file dies under reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .snippetLine .unreadBadge {
+    animation: none;
+  }
 }

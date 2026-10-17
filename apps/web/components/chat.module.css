@@ -15,6 +15,10 @@
      ttt board, long unbreakable strings) must clip, never inflate the page
      past the viewport into sideways scrolling on phones. */
   overflow-x: hidden;
+  /* Royal: the message pane reads var(--chat-bg). It lives HERE (not on
+     .scroll) so a §1.60 custom background and the §1.58 rain layer — which
+     paint between .chatPage and the transparent .scroll — still show. */
+  background: var(--chat-bg);
 }
 
 .header {
@@ -35,6 +39,9 @@
 
 .headerText h1 {
   margin: 0;
+  /* Royal: chat titles wear the display serif at 16px. */
+  font-family: var(--font-display);
+  font-weight: 400;
   font-size: 16px;
   white-space: nowrap;
   overflow: hidden;
@@ -51,6 +58,11 @@
 
 .headerSub.online {
   color: var(--ok);
+}
+
+/* Royal: header action icons (call / gear) in plain white-on-navy. */
+.header :global(.btn-icon) {
+  color: var(--text);
 }
 
 .back {
@@ -132,16 +144,39 @@
   max-width: 100%;
   background: var(--bubble-in);
   border-radius: 16px;
-  border-bottom-left-radius: 6px;
+  /* Royal: 5px tail corner on the incoming bottom-left. */
+  border-bottom-left-radius: 5px;
   padding: 7px 11px;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
 .own .bubble {
-  background: var(--bubble-out);
+  /* Royal: outgoing = the white→silver gradient with ink text. */
+  background: var(--accent-grad);
+  color: var(--accent-ink);
   border-radius: 16px;
-  border-bottom-right-radius: 6px;
+  border-bottom-right-radius: 5px;
+}
+
+/* Ink-appropriate accents INSIDE the gradient bubble: links (incl. @mention
+   Links), the clock/meta row, and the sent/delivered/read ticks — the global
+   white accents would vanish on the silver. */
+.own .bubble a {
+  color: var(--accent-ink);
+  text-decoration: underline;
+}
+
+.own .bubble .meta {
+  color: color-mix(in srgb, var(--accent-ink) 62%, transparent);
+}
+
+.own .bubble :global(.ticks) {
+  color: color-mix(in srgb, var(--accent-ink) 55%, transparent);
+}
+
+.own .bubble :global(.ticks.read) {
+  color: var(--accent-ink);
 }
 
 .sender {
@@ -200,6 +235,67 @@
 .emptyChat p {
   margin: 0 0 10px;
   font-size: 13.5px;
+}
+
+/* ---- Royal: sparked-beacon plan header card ---- */
+/* ChatView wraps <PlanHeader> (its markup/behavior untouched) in this card:
+   panel surface, accent hairline, 14px radius, and a pulsing bolt. The inner
+   overrides neutralize the old full-bleed bar so the card surface wins. */
+
+.planCard {
+  display: flex;
+  align-items: flex-start;
+  margin: 8px 12px 4px;
+  background: var(--panel);
+  border: 1px solid var(--border-accent);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.planBolt {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  margin: 8px 0 8px 12px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  animation: pulseGlow 2.4s ease-in-out infinite;
+}
+
+.planCardBody {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The PlanHeader root (beacons.module .plan): drop its own bar chrome. */
+.planCardBody > div {
+  background: none;
+  border-bottom: none;
+}
+
+/* The collapsed bar's title span ("IT'S ON · …") — the sparked state reads
+   in var(--ok); the rest of the bar (roles tag, caret) stays muted. */
+.planCardBody > div > button > span:nth-of-type(2) {
+  color: var(--ok);
+}
+
+/* Role rows keep their exact behavior; only the check colors move: done ✓ in
+   var(--ok) on a clear circle, the open ○ ring in var(--faint). Selected by
+   their stable aria-labels (contract-fixed) — the classes live in another
+   module. */
+.planCardBody [aria-label='Done'] {
+  border-color: var(--ok);
+  background: transparent;
+  color: var(--ok);
+}
+
+.planCardBody [aria-label='Mark done'],
+.planCardBody [aria-label='Not done yet'] {
+  border-color: var(--faint);
 }
 
 /* ---- reactions (v0.2) ---- */
@@ -454,7 +550,9 @@
   .composerEmojiPop,
   .msgMenu,
   .reactionChip,
-  .reactionCount {
+  .reactionCount,
+  .typingDots span,
+  .planBolt {
     animation: none;
   }
 
@@ -489,7 +587,8 @@
 
 .mediaBox {
   position: relative;
-  border-radius: 10px;
+  /* Royal: image/video bubbles at 14px. */
+  border-radius: 14px;
   overflow: hidden;
   margin: 2px 0 4px;
   background: var(--panel-2);
@@ -625,9 +724,43 @@
 
 .typing {
   min-height: 18px;
-  padding: 0 16px 2px;
+  padding: 0 6px 2px 16px;
   font-size: 12.5px;
   color: var(--accent);
+}
+
+/* Royal: three 5px dots blink beside the names (global blinkDots keyframe,
+   0/.2s/.4s delays). CSS-only gate — the dots render ONLY while the
+   TypingIndicator div actually holds text, so no behavior moved. */
+.typingRow {
+  display: flex;
+  align-items: center;
+}
+
+.typingDots {
+  display: none;
+  gap: 3px;
+  padding-bottom: 2px;
+}
+
+.typing:not(:empty) + .typingDots {
+  display: inline-flex;
+}
+
+.typingDots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: blinkDots 1.2s infinite;
+}
+
+.typingDots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typingDots span:nth-child(3) {
+  animation-delay: 0.4s;
 }
 
 /* composer */
@@ -658,8 +791,9 @@
   background: var(--panel-2);
   border: 1px solid var(--border);
   color: var(--text);
-  border-radius: 12px;
-  padding: 9px 12px;
+  /* Royal: pill input (half the 40px min-height; multiline stays rounded). */
+  border-radius: 20px;
+  padding: 9px 14px;
   font: inherit;
   /* 16px minimum (body is 15px): iOS Safari auto-zooms — and stays zoomed —
      when focusing any form control whose font-size is below 16px. */
@@ -669,6 +803,26 @@
 
 .composerInput:focus {
   border-color: var(--accent);
+}
+
+/* Royal: the plus/emoji/attach/mic icons sit bare in var(--text); the send
+   button is a 38px gradient circle with the ink glyph. (.micRecording keeps
+   its !important danger state; ScheduleSheet portals to <body>, so the
+   direct-child send rule can't reach any sheet button.) */
+.composerRow :global(.btn-icon) {
+  color: var(--text);
+  background: transparent;
+  border-color: transparent;
+}
+
+.composerRow > :global(.btn-primary) {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent-grad);
+  color: var(--accent-ink);
 }
 
 .attachBtn {

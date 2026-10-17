@@ -71,7 +71,7 @@ export default function StoriesStrip() {
           aria-label={mine.length > 0 ? 'Your story — tap to watch' : 'Add to your story'}
         >
           <span className={`${st.storyRing} ${st.ringMine}`}>
-            <Avatar avatar={me.avatar} name={me.display_name} size={50} />
+            <Avatar avatar={me.avatar} name={me.display_name} size={58} />
             <span
               className={st.storyAdd}
               aria-hidden
@@ -97,9 +97,11 @@ export default function StoriesStrip() {
               aria-label={`${g.author.display_name}'s story${unviewed ? ' — new' : ''}`}
             >
               <span className={`${st.storyRing}${unviewed ? ` ${st.ringUnviewed}` : ''}`}>
-                <Avatar avatar={g.author.avatar} name={g.author.display_name} size={50} />
+                <Avatar avatar={g.author.avatar} name={g.author.display_name} size={58} />
               </span>
-              <span className={st.storyName}>{g.author.display_name}</span>
+              <span className={`${st.storyName}${unviewed ? ` ${st.storyNameNew}` : ''}`}>
+                {g.author.display_name}
+              </span>
             </button>
           );
         })}

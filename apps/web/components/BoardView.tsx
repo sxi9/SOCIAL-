@@ -14,6 +14,7 @@ import {
   getListing,
   KIND_CHIP_LABEL,
   KIND_EMOJI,
+  KIND_LABEL,
   listBoard,
   listingKindLine,
   listMine,
@@ -150,6 +151,8 @@ export default function BoardView({
 
   return (
     <div>
+      {/* Royal: the board announces itself in the display serif. */}
+      <h2 className={st.boardHead}>The board</h2>
       <div className={st.chipRow} role="radiogroup" aria-label="Board filter">
         {chips.map((c) => (
           <button
@@ -361,9 +364,8 @@ function ListingCard({
     <button type="button" className={st.lCard} onClick={onOpen}>
       <div className={st.lCardMain}>
         <div className={st.lCardTop}>
-          <span className={st.lKindEmoji} aria-hidden>
-            {KIND_EMOJI[listing.kind]}
-          </span>
+          {/* Royal: typographic kind tag instead of the emoji glyph. */}
+          <span className={st.lKindTag}>{KIND_LABEL[listing.kind]}</span>
           <span className={st.lTitle}>{listing.title}</span>
           {mineView && listing.status !== 'active' ? (
             <span className={st.statusTag}>{listing.status}</span>
@@ -374,9 +376,12 @@ function ListingCard({
 
         {listing.kind === 'place_review' ? (
           <span className={st.lLine} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Stars value={listing.details.rating} />
             {/* Fixer r1: don't print the place name twice when the title IS the place name. */}
             {listing.details.place_name !== listing.title ? <span>{listing.details.place_name}</span> : null}
+            {/* Royal: rating sits right-aligned on the row. */}
+            <span style={{ marginLeft: 'auto', flex: 'none' }}>
+              <Stars value={listing.details.rating} />
+            </span>
           </span>
         ) : (
           <span className={st.lLine}>
@@ -401,10 +406,10 @@ function ListingCard({
           <span aria-hidden>·</span>
           <span>{listing.area}</span>
           {listing.kind !== 'room' && listing.price_text ? (
-            <span className={st.priceTag}>{listing.price_text}</span>
+            <span className={st.lPrice}>{listing.price_text}</span>
           ) : null}
           {listing.kind === 'room' && listing.details.monthly_price_text ? (
-            <span className={st.priceTag}>{listing.details.monthly_price_text}</span>
+            <span className={st.lPrice}>{listing.details.monthly_price_text}</span>
           ) : null}
           {listing.my_contacted ? <span>· messaged ✓</span> : null}
         </span>

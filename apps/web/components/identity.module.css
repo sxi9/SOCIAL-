@@ -662,6 +662,143 @@ a.actRow:hover {
 }
 
 /* ---------------------------------------------------------------------------
+   v1.1 Royal — Profile & settings reskin (app/settings/profile/page.tsx).
+--------------------------------------------------------------------------- */
+
+/* Identity header: avatar + serif name + "@username · mood", centered. */
+.idHead {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 2px;
+  padding: 18px 16px 8px;
+}
+
+/* The silver live ring: var(--ring-live) as a 3px padded circle; the avatar's
+   own 3px var(--bg) border is the gap ring inside (same construction as the
+   story rings in social.module.css). */
+.idRing {
+  display: inline-flex;
+  border-radius: 50%;
+  padding: 3px;
+  background: var(--ring-live);
+}
+
+.idRing :global(.avatar) {
+  border: 3px solid var(--bg);
+}
+
+.idName {
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+  color: var(--text);
+  margin-top: 10px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.idLine {
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* The mood word rides the line in white/600 (never a timestamp, never a count). */
+.idMood {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Royal outline pill: hairline white outline, transparent fill, white text —
+   1px rgba(255,255,255,0.55) in dark, mixed from --accent so light stays legible. */
+.editBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 12px;
+  padding: 8px 18px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  background: transparent;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.editBtn:hover {
+  background: var(--accent-soft);
+}
+
+.editBtn:active {
+  transform: scale(0.94); /* Royal press feedback (stilled below) */
+}
+
+/* Section labels in the RECENTLY/SETTINGS register — outweighs the global
+   .settings-section h2 rule. */
+:global(.settings-section) h2.sectionLabel {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Tappable settings rows: 14.5px/500 text, trailing › chevron in --faint. */
+.settingsRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 16px;
+  margin: 0 0 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 14.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settingsRow:hover {
+  background: var(--panel-2);
+}
+
+.rowText {
+  flex: 1;
+  min-width: 0;
+}
+
+.rowHint {
+  display: block;
+  margin-top: 2px;
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.rowChevron {
+  flex: none;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--faint);
+}
+
+/* Sign out: the danger row. */
+.rowDanger {
+  color: var(--danger);
+}
+
+/* ---------------------------------------------------------------------------
    Reduced motion: EVERYTHING in this release goes still (§1.58/§1.60/§1.61).
    Names keep their static tint (the gradient/color fallback stays), chips
    stop wobbling/morphing, bubbles render in place, rain never shows, the
@@ -682,7 +819,8 @@ a.actRow:hover {
   }
 
   .fxCrooked,
-  .fxCrookedOwn {
+  .fxCrookedOwn,
+  .editBtn:active {
     transform: none;
   }
 

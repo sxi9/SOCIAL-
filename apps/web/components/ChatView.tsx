@@ -664,7 +664,19 @@ export default function ChatView({ conversationId }: { conversationId: string })
         </button>
       </header>
 
-      {planBeacon && meId ? <PlanHeader beacon={planBeacon} meId={meId} /> : null}
+      {planBeacon && meId ? (
+        /* Royal: the sparked-plan card — panel surface, accent hairline, and
+           a pulsing bolt. Pure wrapper: PlanHeader's markup, roles and
+           handlers are untouched (chat.module.css restyles around them). */
+        <div className={styles.planCard}>
+          <span className={styles.planBolt} aria-hidden>
+            <BoltIcon />
+          </span>
+          <div className={styles.planCardBody}>
+            <PlanHeader beacon={planBeacon} meId={meId} />
+          </div>
+        </div>
+      ) : null}
 
       {/* v0.6 (§1.45): the provisional roulette window — countdown + KEEP. */}
       {conv.origin === 'roulette' ? <RouletteBanner conv={conv} /> : null}
@@ -789,8 +801,19 @@ export default function ChatView({ conversationId }: { conversationId: string })
       ) : null}
 
       {/* Typing is gateway-dropped in channels (§2.11) and suppressed
-          entirely in ghost groups (§1.68 — an identity side channel). */}
-      {!isChannel && !ghost ? <TypingIndicator conversation={conv} /> : null}
+          entirely in ghost groups (§1.68 — an identity side channel).
+          Royal: three blinking dots ride beside the names — CSS shows them
+          only while the indicator div holds text (decorative, aria-hidden). */}
+      {!isChannel && !ghost ? (
+        <div className={styles.typingRow}>
+          <TypingIndicator conversation={conv} />
+          <span className={styles.typingDots} aria-hidden>
+            <span />
+            <span />
+            <span />
+          </span>
+        </div>
+      ) : null}
 
       {/* v0.8a §1.57: live 10 s undo pills on my drunk-mode sends — tap and
           the message vanishes (no "deleted" stub, no trace). */}
@@ -1989,6 +2012,15 @@ function SmileIcon() {
       <circle cx="7.4" cy="8.4" r="1" fill="currentColor" />
       <circle cx="12.6" cy="8.4" r="1" fill="currentColor" />
       <path d="M6.8 12 a3.6 3.6 0 0 0 6.4 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/* Royal: the plan card's bolt glyph (decorative). */
+function BoltIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden>
+      <path d="M11.2 1.8 L4.2 11.4 H9 L8.2 18.2 L15.6 8.4 H10.4 Z" fill="currentColor" />
     </svg>
   );
 }
