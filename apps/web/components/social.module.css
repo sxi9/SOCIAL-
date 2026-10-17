@@ -352,6 +352,13 @@
   pointer-events: none;
 }
 
+/* v0.8b §1.66: canvas stories — the Draw/Emoji/Note toolbar (.canvasBar,
+   community.module.css) occupies the bottom ~44-90px band, so the caption
+   lifts clear of it whenever the tools render. */
+.viewerCaptionLifted {
+  bottom: calc(100px + env(safe-area-inset-bottom));
+}
+
 .viewerFooter {
   position: absolute;
   bottom: calc(10px + env(safe-area-inset-bottom));

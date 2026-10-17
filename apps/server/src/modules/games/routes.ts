@@ -18,7 +18,14 @@ import {
 import { db, schema } from '../../db/index.js';
 import { recordActivity } from '../../lib/activity.js';
 import { isBlockedPair } from '../../lib/blocks.js';
-import { activeParticipantUserIds, messageDtos, rawToMsgRow, type MsgRow } from '../../lib/dto.js';
+import { ghostMessageDto, pseudoIdFor, type GhostCtx } from '../../lib/ghost.js';
+import {
+  activeParticipantUserIds,
+  ghostCtxFor,
+  messageDtos,
+  rawToMsgRow,
+  type MsgRow,
+} from '../../lib/dto.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant } from '../conversations/routes.js';
@@ -45,6 +52,21 @@ function winnerOf(board: (TttSymbol | null)[]): TttSymbol | 'draw' | null {
   }
   if (board.every((c) => c !== null)) return 'draw';
   return null;
+}
+
+/** v0.8b (§1.68): the non-admin viewer's GhostCtx for a conversation — null
+ * for anything that is not a 👻 ghost group, and for group admins (they see
+ * real identities). Game DTO paths must mask like every other message path:
+ * metadata.game.players carries user ids. */
+async function ghostViewOf(convId: string, viewerId: string): Promise<GhostCtx | null> {
+  const [conv] = await db
+    .select({ id: schema.conversations.id, visibility: schema.conversations.visibility })
+    .from(schema.conversations)
+    .where(eq(schema.conversations.id, convId))
+    .limit(1);
+  if (!conv) return null;
+  const ctx = await ghostCtxFor(conv, viewerId);
+  return ctx && !ctx.viewerIsAdmin ? ctx : null;
 }
 
 async function findByClientMsgId(convId: string, senderId: string, clientMsgId: string) {
@@ -80,7 +102,7 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       if (!part || part.leftAt !== null) throw notFound('conversation_not_found');
 
       const [conv] = await db
-        .select({ type: schema.conversations.type })
+        .select({ type: schema.conversations.type, visibility: schema.conversations.visibility })
         .from(schema.conversations)
         .where(eq(schema.conversations.id, convId))
         .limit(1);
@@ -89,6 +111,11 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       // v0.5a §1.35: games are not startable in channels — challenges need
       // peers, not audiences.
       if (conv.type === 'channel') throw badRequest('bad_opponent');
+
+      // v0.8b (§1.68): 👻 ghost groups serialize MASKS to non-admin members —
+      // every message DTO leaving this route must ride the same transform.
+      const ghost =
+        conv.visibility === 'ghost' ? await ghostViewOf(convId, user.id) : null;
 
       const participants = await activeParticipantUserIds(convId);
       let opponentId: string;
@@ -100,7 +127,18 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
         if (await isBlockedPair(user.id, peer)) throw notFound('conversation_not_found');
         opponentId = peer;
       } else {
-        const target = req.body.opponent_id;
+        let target = req.body.opponent_id;
+        // §1.68: in a 👻 ghost group the client only ever SEES pseudo-ids —
+        // resolve a pseudo opponent back to the real participant server-side
+        // (the mapping never leaves the server).
+        if (
+          conv.visibility === 'ghost' &&
+          target &&
+          !participants.includes(target)
+        ) {
+          const real = participants.find((p) => pseudoIdFor(convId, p) === target);
+          if (real) target = real;
+        }
         if (!target || target === user.id || !participants.includes(target)) {
           throw badRequest('bad_opponent');
         }
@@ -110,7 +148,9 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       const replay = await findByClientMsgId(convId, user.id, req.body.client_msg_id);
-      if (replay) return reply.status(200).send({ message: replay });
+      if (replay) {
+        return reply.status(200).send({ message: ghost ? ghostMessageDto(replay, ghost) : replay });
+      }
 
       const game: GameTttState = {
         board: new Array(TTT_BOARD_CELLS).fill(null),
@@ -131,14 +171,18 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
       } catch (err) {
         if ((err as { code?: string }).code === '23505') {
           const raced = await findByClientMsgId(convId, user.id, req.body.client_msg_id);
-          if (raced) return reply.status(200).send({ message: raced });
+          if (raced) {
+            return reply
+              .status(200)
+              .send({ message: ghost ? ghostMessageDto(raced, ghost) : raced });
+          }
         }
         throw err;
       }
 
       await fanOutNewMessage(msg);
       const [dto] = await messageDtos([msg], user.id);
-      return reply.status(201).send({ message: dto });
+      return reply.status(201).send({ message: ghost ? ghostMessageDto(dto!, ghost) : dto });
     },
   );
 
@@ -202,18 +246,30 @@ export async function gameRoutes(fastify: FastifyInstance): Promise<void> {
         if (next.winner === 'x' || next.winner === 'o') {
           const winnerId = next.winner === 'x' ? game.players.x : game.players.o;
           const loserId = next.winner === 'x' ? game.players.o : game.players.x;
-          await recordActivity(tx, {
-            user_id: winnerId,
-            kind: 'game_won',
-            ref: { conversation_id: row.conversationId, seq: row.seq, opponent_id: loserId },
-          });
+          // v0.8b (§1.68): recordActivity SKIPS 👻 ghost conversations
+          // entirely — a game_won strip item would leak masked membership.
+          const ghostRows = (await tx.execute(sql`
+            SELECT 1 AS one FROM conversations
+            WHERE id = ${row.conversationId} AND visibility = 'ghost'
+            LIMIT 1
+          `)) as unknown as { one: number }[];
+          if (ghostRows.length === 0) {
+            await recordActivity(tx, {
+              user_id: winnerId,
+              kind: 'game_won',
+              ref: { conversation_id: row.conversationId, seq: row.seq, opponent_id: loserId },
+            });
+          }
         }
         return after!;
       });
 
       await publishMessageUpdated(updated);
       const [dto] = await messageDtos([updated], user.id);
-      return { message: dto };
+      // v0.8b (§1.68): the move response is a message DTO path too — mask it
+      // for non-admin 👻 ghost-group members (players see their OWN id real).
+      const ghost = await ghostViewOf(updated.conversationId, user.id);
+      return { message: ghost ? ghostMessageDto(dto!, ghost) : dto };
     },
   );
 }

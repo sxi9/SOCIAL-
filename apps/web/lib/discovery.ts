@@ -10,6 +10,7 @@ import type {
   DiscoveryCardsResponse,
   DiscoveryOptinResponse,
   DiscoveryScope,
+  DiscoveryVibe,
   EncouragementResponse,
   ExpectationContext,
   ExpectationVerdict,
@@ -36,8 +37,14 @@ export async function refreshOptin(): Promise<void> {
   }
 }
 
-export async function optIn(scope: DiscoveryScope, note: string): Promise<void> {
-  const res = await api.put<DiscoveryOptinResponse>('/api/discovery/optin', { scope, note });
+export async function optIn(
+  scope: DiscoveryScope,
+  note: string,
+  vibe: DiscoveryVibe | null = null
+): Promise<void> {
+  // v0.8b §1.65: the optional what-for chip rides the same PUT; re-PUT
+  // re-scopes it (and refreshes the hour — which also clears the nudge claim).
+  const res = await api.put<DiscoveryOptinResponse>('/api/discovery/optin', { scope, note, vibe });
   store.setDiscoveryOptin(res.optin);
 }
 
@@ -51,9 +58,26 @@ export async function optOut(): Promise<void> {
   store.setRouletteQueued(false);
 }
 
-export async function refreshCards(): Promise<void> {
+/** v0.8b §1.65: the card-stack filters — each only ever NARROWS the pool. */
+export interface CardFilters {
+  vibe: DiscoveryVibe | null;
+  interests: boolean;
+  area: boolean;
+}
+
+const NO_FILTERS: CardFilters = { vibe: null, interests: false, area: false };
+let lastFilters: CardFilters = NO_FILTERS;
+
+export async function refreshCards(filters?: CardFilters): Promise<void> {
+  if (filters) lastFilters = filters;
+  const f = filters ?? lastFilters;
+  const params = new URLSearchParams();
+  if (f.vibe) params.set('vibe', f.vibe);
+  if (f.interests) params.set('interests', '1');
+  if (f.area) params.set('area', '1');
+  const qs = params.toString();
   try {
-    const res = await api.get<DiscoveryCardsResponse>('/api/discovery/cards');
+    const res = await api.get<DiscoveryCardsResponse>(`/api/discovery/cards${qs ? `?${qs}` : ''}`);
     store.setDiscoveryCards(res.cards);
   } catch (err) {
     if (err instanceof ApiError && err.code === 'discovery_not_opted_in') {

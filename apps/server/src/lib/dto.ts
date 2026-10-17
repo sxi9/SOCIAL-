@@ -25,6 +25,7 @@ import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { blockedSetOf, blockPairsAmong } from './blocks.js';
 import { acceptedPairsBetween, connectionIdsOf } from './connections.js';
+import { ghostMessageDto, loadMasks, maskUserPublic, pseudoIdFor, type GhostCtx } from './ghost.js';
 import { mediaUrl } from './media.js';
 import { publishToUsers } from '../ws/events.js';
 
@@ -190,6 +191,9 @@ export function userLiteDto(u: UserRow, view?: ViewCtx | null): UserLite {
     avatar: avatarDto(u),
     mood: moodDto(u, view),
     name_style: nameStyleOf(u),
+    // v0.8b (§1.68): non-null ONLY on ghost-group MASK serializations
+    // (lib/ghost.ts builds those); a real identity never carries it.
+    mask_emoji: null,
   };
 }
 
@@ -288,7 +292,33 @@ export function messageDto(
  * setting alone decides) remains only as a conservative default for callers
  * that genuinely have no single recipient.
  */
-export function participantDto(p: PartRow, u: UserRow, view?: ViewCtx | null): Participant {
+export function participantDto(
+  p: PartRow,
+  u: UserRow,
+  view?: ViewCtx | null,
+  ghost?: GhostCtx | null,
+): Participant {
+  // v0.8b (§1.68): 👻 ghost groups suppress the identity side channels for
+  // EVERYONE (admins included): others' last_read_seq serializes as the §1.13
+  // receipts-off shape (0) and last_seen_at as null; non-admin members get
+  // the MASK UserPublic in place of the real identity (own row stays real).
+  if (ghost) {
+    const self = u.id === ghost.viewerId;
+    const user =
+      self || ghost.viewerIsAdmin
+        ? { ...userPublicDto(u, view), last_seen_at: self ? isoOrNull(u.lastSeenAt) : null, mood: null }
+        : maskUserPublic(ghost, u.id);
+    return {
+      user,
+      role: p.role as Participant['role'],
+      joined_at: iso(p.joinedAt),
+      join_seq: p.joinSeq,
+      left_at: isoOrNull(p.leftAt),
+      last_delivered_seq: self ? p.lastDeliveredSeq : 0,
+      last_read_seq: self ? p.lastReadSeq : 0,
+      muted_until: self ? isoOrNull(p.mutedUntil) : null,
+    };
+  }
   const readVisible = view
     ? u.id === view.viewerId || (u.readReceipts && view.viewerReadReceipts)
     : u.readReceipts;
@@ -321,8 +351,21 @@ export function conversationDto(
   parts: { p: PartRow; u: UserRow }[],
   view?: ViewCtx | null,
   pins: ConversationPin[] = [],
+  ghost?: GhostCtx | null,
 ): Conversation {
   const meta = convMetadata(c);
+  // v0.8b (§1.68): a 👻 ghost conversation is ALWAYS serialized through a
+  // GhostCtx — a caller that failed to load masks still never leaks real
+  // identities (fallback masks + empty map, the conservative over-filter).
+  const g: GhostCtx | null =
+    c.visibility === 'ghost'
+      ? (ghost ?? {
+          convId: c.id,
+          masks: new Map(),
+          viewerId: view?.viewerId ?? null,
+          viewerIsAdmin: false,
+        })
+      : null;
   // v0.5a (§1.35): a channel's Conversation DTO carries ONLY the viewer's own
   // row + the owner + admins — never the member body, never a member COUNT
   // (PSYCHOLOGY rule 3). The full list is the paged §1.35 read.
@@ -338,9 +381,18 @@ export function conversationDto(
     created_by: c.createdBy,
     last_seq: c.lastSeq,
     last_message_at: isoOrNull(c.lastMessageAt),
-    participants: serialized.map(({ p, u }) => participantDto(p, u, view)),
+    participants: serialized.map(({ p, u }) => participantDto(p, u, view, g)),
     // v0.5a (§1.32): pinned messages, created_at ASC — a stable board.
-    pins,
+    // §1.68: in ghost groups pinned_by is an identity — pseudo-id for masks.
+    pins: g
+      ? pins.map((pin) => ({
+          ...pin,
+          pinned_by:
+            pin.pinned_by && pin.pinned_by !== g.viewerId && !g.viewerIsAdmin
+              ? pseudoIdFor(c.id, pin.pinned_by)
+              : pin.pinned_by,
+        }))
+      : pins,
     // v0.4 (§1.25): conversation-wide disappearing TTL (null = off).
     disappear_ttl_s: c.disappearTtlS,
     // v0.6 (§1.44/§1.45): how this DM came to exist; null for ordinary ones.
@@ -357,7 +409,48 @@ export function conversationDto(
             kept: view ? (meta.roulette?.kept_by ?? []).includes(view.viewerId) : false,
           }
         : null,
+    // v0.8b (§1.68): group visibility mode + description + the public floor.
+    // public_since_seq non-null iff visibility='public' (DB CHECK); its
+    // presence IS the member banner flag.
+    visibility: c.visibility as Conversation['visibility'],
+    description: c.description,
+    public_since_seq: c.publicSinceSeq,
+    // v0.8b (§1.68): MY mask — the explicit own-mask read. The viewer's own
+    // participant row serializes REAL (a client must find itself), so this is
+    // the one field that tells a ghost-group member the pseudonym+emoji the
+    // other members see them as (the banner and the mask editor read it).
+    my_mask: (() => {
+      if (!g || !g.viewerId) return null;
+      const mine = g.masks.get(g.viewerId);
+      return mine ? { name: mine.name, emoji: mine.emoji } : null;
+    })(),
     created_at: iso(c.createdAt),
+  };
+}
+
+/** v0.8b (§1.68): the GhostCtx for one viewer of one conversation — null for
+ * everything that is not a 👻 ghost group. */
+export async function ghostCtxFor(
+  c: Pick<ConvRow, 'id' | 'visibility'>,
+  viewerId: string | null | undefined,
+  viewerRole?: string | null,
+): Promise<GhostCtx | null> {
+  if (c.visibility !== 'ghost') return null;
+  let isAdmin = viewerRole === 'admin';
+  if (viewerRole === undefined && viewerId) {
+    const rows = (await db.execute(sql`
+      SELECT 1 AS one FROM conversation_participants
+      WHERE conversation_id = ${c.id} AND user_id = ${viewerId}
+        AND left_at IS NULL AND role = 'admin'
+      LIMIT 1
+    `)) as unknown as { one: number }[];
+    isAdmin = rows.length > 0;
+  }
+  return {
+    convId: c.id,
+    masks: await loadMasks(c.id),
+    viewerId: viewerId ?? null,
+    viewerIsAdmin: isAdmin,
   };
 }
 
@@ -600,6 +693,7 @@ export async function loadVibesFor(
           // viewer-scoped reads (§1.57 conservative null); style is identity.
           mood: null,
           name_style: (r.name_style ?? 'none') as NameStyle,
+          mask_emoji: null,
         },
         kind,
         // Stamps tile with user.avatar — thumb_url is null by construction.
@@ -682,6 +776,7 @@ export async function loadReplyContextsFor(rows: MsgRow[]): Promise<Map<string, 
             }),
             mood: null, // §1.57 conservative null (no single viewer here)
             name_style: (t.name_style ?? 'none') as NameStyle,
+            mask_emoji: null,
           }
         : null,
       type: t.type as ReplyContext['type'],
@@ -792,7 +887,9 @@ export async function loadConversationDto(
   if (!c) return null;
   const parts = await loadActiveParticipantsWithUsers([convId]);
   const pins = await loadPinsFor([convId]);
-  return conversationDto(c, parts.get(convId) ?? [], view, pins.get(convId) ?? []);
+  const mine = (parts.get(convId) ?? []).find(({ u }) => u.id === view?.viewerId);
+  const ghost = await ghostCtxFor(c, view?.viewerId, mine ? mine.p.role : null);
+  return conversationDto(c, parts.get(convId) ?? [], view, pins.get(convId) ?? [], ghost);
 }
 
 /**
@@ -831,6 +928,35 @@ export async function publishConversationToUsers(
     const rows = await db.select().from(schema.users).where(inArray(schema.users.id, missing));
     for (const u of rows) userById.set(u.id, u);
   }
+  // v0.8b (§1.68): 👻 ghost conversations fan PER RECIPIENT — each non-admin
+  // member's serialization differs (own row real, everyone else masked), so
+  // the signature grouping below never applies. Ghost groups are direct-
+  // invite-only and small; per-recipient envelopes are fine.
+  if (c.visibility === 'ghost') {
+    const masks = await loadMasks(convId);
+    const roleById = new Map(parts.map(({ p, u }) => [u.id, p.role]));
+    for (const r of uniqueRecipients) {
+      const ctx: ViewCtx = {
+        viewerId: r,
+        viewerReadReceipts: userById.get(r)?.readReceipts ?? true,
+        dmPartnerIds: new Set(),
+        blockedIds: new Set(),
+        connectionIds: new Set(),
+      };
+      const ghost: GhostCtx = {
+        convId,
+        masks,
+        viewerId: r,
+        viewerIsAdmin: roleById.get(r) === 'admin',
+      };
+      await publishToUsers([r], {
+        t,
+        d: { conversation: conversationDto(c, parts, ctx, pins, ghost) },
+      });
+    }
+    return;
+  }
+
   const pairs = await blockPairsAmong([...new Set([...participantIds, ...uniqueRecipients])]);
   // v0.8a (§1.57): participants with a LIVE 'connections'-visibility mood
   // need one accepted-connection lookup, batched like the dm_partners one —
@@ -974,13 +1100,18 @@ export async function activeParticipantUserIds(convId: string): Promise<string[]
   return rows.map((r) => r.userId);
 }
 
-/** Distinct users sharing at least one active conversation with `userId` (self included). */
+/** Distinct users sharing at least one active NON-GHOST conversation with
+ * `userId` (self included). v0.8b (§1.68): a peer reachable ONLY through a
+ * 👻 ghost group never receives this user's user.updated frames — "user X
+ * changed their avatar" arriving at a masked co-member is an identity side
+ * channel (a one-conversation member could link frame to mask). */
 export async function coParticipantUserIds(userId: string): Promise<string[]> {
   const cp = schema.conversationParticipants;
   const rows = await db.execute(sql`
     SELECT DISTINCT other.user_id AS user_id
     FROM ${cp} AS mine
     JOIN ${cp} AS other ON other.conversation_id = mine.conversation_id
+    JOIN conversations gc ON gc.id = mine.conversation_id AND gc.visibility <> 'ghost'
     WHERE mine.user_id = ${userId} AND mine.left_at IS NULL AND other.left_at IS NULL
   `);
   const ids = (rows as unknown as { user_id: string }[]).map((r) => r.user_id);
@@ -1060,10 +1191,17 @@ export async function loadListItems(
   for (const c of convs) {
     const mine = myPartByConv.get(c.id);
     if (!mine) continue;
+    // v0.8b (§1.68): 👻 ghost conversations serialize masked for non-admin
+    // viewers — participants AND the last-message preview.
+    const ghost = await ghostCtxFor(c, userId, mine.role);
+    let lastMessage = lastByConv.get(c.id) ?? null;
+    if (ghost && !ghost.viewerIsAdmin && lastMessage) {
+      lastMessage = ghostMessageDto(lastMessage, ghost);
+    }
     items.push({
-      ...conversationDto(c, partsByConv.get(c.id) ?? [], ctx, pinsByConv.get(c.id) ?? []),
+      ...conversationDto(c, partsByConv.get(c.id) ?? [], ctx, pinsByConv.get(c.id) ?? [], ghost),
       unread_count: Math.max(0, c.lastSeq - mine.lastReadSeq),
-      last_message: lastByConv.get(c.id) ?? null,
+      last_message: lastMessage,
     });
   }
   items.sort((a, b) => {

@@ -20,6 +20,12 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg \
   && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
+# v0.8b (API.md §1.69, ADR-020): the running build's git commit, baked at
+# build time (docker build --build-arg GIT_COMMIT=$(git rev-parse HEAD) …).
+# Empty in dev builds — the admin update banner then says "dev build". The
+# container never gets .git or docker.sock; updates run on the host.
+ARG GIT_COMMIT=
+ENV GIT_COMMIT=$GIT_COMMIT
 WORKDIR /app
 # Workspace node_modules carry the pnpm symlink layout — copy the whole tree.
 COPY --from=build /app /app

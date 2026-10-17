@@ -467,6 +467,21 @@ function ProfileSettings() {
           </Link>
         </div>
 
+        {/* v0.8b §1.69: Help & feedback — tickets to the operator; answers
+            arrive as the 🛟 Bored Chat Support conversation. */}
+        <h2>Help</h2>
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <strong>🛟 Help &amp; feedback</strong>
+            <p className="muted small" style={{ margin: '4px 0 0' }}>
+              A bug, a question, an idea, or a safety worry — straight to whoever runs this server.
+            </p>
+          </div>
+          <Link href="/settings/help" className="btn">
+            Open
+          </Link>
+        </div>
+
         <h2>Account</h2>
         <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>

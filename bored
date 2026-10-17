@@ -69,7 +69,9 @@ cmd_update() {
   git stash push -m "bored-update-autostash" >/dev/null 2>&1 || true
   git pull --ff-only || fail "Pull failed — paste this output to Claude."
   say "Rebuilding (this takes a few minutes — do NOT Ctrl+C)…"
-  docker compose up -d --build
+  # v0.8b (API.md §1.69): bake the running commit into both images so the
+  # admin update banner can compare it against the remote (compose build arg).
+  GIT_COMMIT="$(git rev-parse HEAD)" docker compose up -d --build
   docker compose ps --format "table {{.Name}}\t{{.Status}}"
   say "✓ Updated to: $(git log --oneline -1)"
 }
@@ -203,7 +205,7 @@ To overwrite it anyway (DESTROYS this machine's data): ./bored import $archive -
   docker run --rm -v "$(vol minio_data):/data" -v "$(pwd)/$tmp:/in:ro" alpine tar -C /data -xzf /in/media.tar.gz
   rm -rf "$tmp"
   say "Building and starting the full stack…"
-  docker compose up -d --build
+  GIT_COMMIT="$(git rev-parse HEAD)" docker compose up -d --build
   docker compose ps --format "table {{.Name}}\t{{.Status}}"
   say "✓ Migration complete — same users, chats, media, logins and push subscriptions."
 }

@@ -107,6 +107,36 @@ import {
   RELEASE_NOTE_ITEM_MAX_CHARS,
   RELEASE_NOTE_ITEMS_MAX,
   RELEASE_VERSION_MAX_CHARS,
+  // ---- v0.8b (API.md §1.62–§1.69, ADR-019 / ADR-020) ----
+  ANON_BODY_MAX_CHARS,
+  ANON_OPTIN_VALUES,
+  ANON_RIDDLE_MAX_CHARS,
+  ANON_TIMER_PRESETS_S,
+  ADMIN_CONTENT_TYPES,
+  DISCOVERY_SHARED_INTERESTS_MAX,
+  DISCOVERY_VIBES,
+  GROUP_DESCRIPTION_MAX_CHARS,
+  GROUP_VISIBILITIES,
+  MASK_EMOJI_MAX_LEN,
+  MASK_NAME_MAX_CHARS,
+  OVERLAY_EMOJI_SCALE_MAX,
+  OVERLAY_EMOJI_SCALE_MIN,
+  OVERLAY_STROKE_POINTS_MAX,
+  OVERLAY_STROKE_POINTS_MIN,
+  OVERLAY_STROKE_WIDTH_MAX,
+  OVERLAY_STROKE_WIDTH_MIN,
+  OVERLAY_TEXT_MAX_CHARS,
+  REPORT_CONTEXT_RADIUS,
+  SHARE_GROUP_PAGE_MESSAGES_MAX,
+  SHARE_OBJECT_TYPES,
+  STORY_CANVAS_MODES,
+  STORY_OVERLAY_KINDS,
+  STORY_OVERLAY_STATUSES,
+  SUGGESTION_MUTUALS_PREVIEW_MAX,
+  SUPPORT_BODY_MAX_CHARS,
+  SUPPORT_CATEGORIES,
+  SUPPORT_TICKET_STATUSES,
+  TAKEDOWN_REASON_MAX_CHARS,
 } from './constants.js';
 
 // ---------------------------------------------------------------------------
@@ -182,6 +212,14 @@ export const UserLiteSchema = z.object({
   // v0.8a (§1.58): animated-name style — viewer-independent, rides every
   // identity the name renders from (headers, sender names, piles).
   name_style: NameStyleSchema.default('none'),
+  // v0.8b (§1.68): non-null ONLY inside 👻 ghost-group serializations to
+  // non-admin members — the identity is a MASK: id is the per-(group, member)
+  // pseudo-id, username is '', display_name is the mask name, avatar is the
+  // empty shell, and this field carries the emoji the client renders as the
+  // avatar glyph. Real identities never ride a masked frame (mood/name_style
+  // serialize null/'none' with it — both are identity tells). default(null)
+  // keeps every pre-v0.8b payload parsing clean.
+  mask_emoji: z.string().max(MASK_EMOJI_MAX_LEN).nullable().default(null),
 });
 export type UserLite = z.infer<typeof UserLiteSchema>;
 
@@ -504,6 +542,12 @@ export const MessageMetadataSchema = z.object({
   // NOTHING — the bubble vanishes entirely, unlike an ordinary §1.30
   // tombstone's "message deleted" stub. The seq survives (golden rule 2).
   undone: z.literal(true).optional(),
+  // ---- v0.8b (§1.69) ----
+  // SERVER-written on operator messages in the per-user Support conversation
+  // (admin ticket replies and takedown notices; sender_id is NULL). Clients
+  // render the "Bored Chat Support" brand identity — never a named admin, and
+  // never the system-event chrome. ticket_id links back to the user's ticket.
+  support: z.object({ ticket_id: UuidSchema.nullable() }).optional(),
 });
 export type MessageMetadata = z.infer<typeof MessageMetadataSchema>;
 
@@ -683,6 +727,32 @@ export const ConversationSchema = z.object({
     .object({
       expires_at: IsoDateTimeSchema,
       kept: z.boolean(),
+    })
+    .nullable()
+    .default(null),
+  // ---- v0.8b (§1.68, ADR-020). Defaults keep pre-v0.8b payloads clean. ----
+  // Group visibility mode (groups only — DMs/channels are always 'private',
+  // DB CHECK). 'public' and 'invite_only' power the §1.67 share pages;
+  // 'ghost' is unlisted everywhere and serializes member MASKS to non-admins.
+  visibility: z.enum(GROUP_VISIBILITIES).default('private'),
+  // Group description — rendered on the group card and its share page.
+  description: z.string().max(GROUP_DESCRIPTION_MAX_CHARS).default(''),
+  // Non-null iff visibility='public': conversations.last_seq at the
+  // admin-confirmed switch. ONLY messages with seq > this ever render
+  // publicly (history is never retro-exposed), and its presence IS the
+  // persistent member banner flag ("new messages here are publicly
+  // readable") — clients render the banner from it, nothing extra ships.
+  public_since_seq: SeqSchema.nullable().default(null),
+  // v0.8b (§1.68): MY current mask in a 👻 ghost group — the explicit
+  // own-mask read. The viewer's OWN participant row serializes with their
+  // real identity (a client must find itself for bubble alignment/"my role"),
+  // so this field is the ONE place a member learns the pseudonym+emoji the
+  // others see them as (incl. after a 409 mask_taken left an auto-mask on).
+  // null outside ghost groups. default(null) keeps pre-v0.8b payloads clean.
+  my_mask: z
+    .object({
+      name: z.string().max(MASK_NAME_MAX_CHARS),
+      emoji: z.string().max(MASK_EMOJI_MAX_LEN),
     })
     .nullable()
     .default(null),
@@ -1160,6 +1230,15 @@ export const UserSettingsSchema = z.object({
   activity_posts: z.enum(ACTIVITY_VISIBILITIES).default('connections'),
   activity_listings: z.enum(ACTIVITY_VISIBILITIES).default('connections'),
   activity_games: z.enum(ACTIVITY_VISIBILITIES).default('connections'),
+  // ---- v0.8b (§1.62/§1.63). Defaults keep pre-v0.8b payloads parsing clean. ----
+  // Who may open an anonymous thread to me (§1.62). Enforced INVISIBLY at
+  // send: 'nobody', an unmet 'connections', and a §1.14 block all answer the
+  // same 404 anon_unavailable — the setting is never confirmable from outside.
+  anon_messages: z.enum(ANON_OPTIN_VALUES).default('connections'),
+  // Anonymous wave-nudge toggle (§1.63): may the worker send me the batched
+  // "someone in the pool waved" line during a live opt-in. Never any identity
+  // either way; off kills the push AND the in-app frame.
+  wave_nudges: z.boolean().default(true),
 });
 export type UserSettings = z.infer<typeof UserSettingsSchema>;
 
@@ -1176,7 +1255,16 @@ export type SettingsResponse = z.infer<typeof SettingsResponseSchema>;
 export const BlockedListResponseSchema = z.object({ users: z.array(UserLiteSchema) });
 export type BlockedListResponse = z.infer<typeof BlockedListResponseSchema>;
 
-export const ReportKindSchema = z.enum(['user', 'message', 'beacon']);
+// v0.8b (§1.62/§1.66/§1.67) adds 'anon_message', 'story_overlay' and the
+// non-user 'share_page' kind (stored with reporter_id NULL — migration 0010).
+export const ReportKindSchema = z.enum([
+  'user',
+  'message',
+  'beacon',
+  'anon_message',
+  'story_overlay',
+  'share_page',
+]);
 export type ReportKind = z.infer<typeof ReportKindSchema>;
 
 // Message identity is (conversation_id, seq) — the messages PK, same as
@@ -1193,14 +1281,48 @@ export const CreateReportRequestSchema = z.discriminatedUnion('kind', [
     conversation_id: UuidSchema,
     seq: z.number().int().positive(),
     reason: z.string().max(REPORT_REASON_MAX_CHARS).default(''),
+    // v0.8b (§1.69, FEATURES #81): the reporter's EXPLICIT consent to also
+    // disclose the REPORT_CONTEXT_RADIUS messages either side of this one to
+    // the admin context viewer. Default false; the report sheet renders
+    // REPORT_CONTEXT_CONSENT_COPY beside the checkbox, unchecked (binding UX
+    // contract). Without it the context viewer answers 404 for this report.
+    include_context: z.boolean().default(false),
   }),
   z.object({
     kind: z.literal('beacon'),
     beacon_id: UuidSchema,
     reason: z.string().max(REPORT_REASON_MAX_CHARS).default(''),
   }),
+  // v0.8b (§1.62): reporting an anonymous message ATTACHES the reported
+  // message author's real identity SERVER-side (FEATURES #77) — anonymity is
+  // to the recipient, never to the server. The reporter must be a party of
+  // the thread; the message must be the other party's.
+  z.object({
+    kind: z.literal('anon_message'),
+    thread_id: UuidSchema,
+    message_id: UuidSchema,
+    reason: z.string().max(REPORT_REASON_MAX_CHARS).default(''),
+  }),
+  // v0.8b (§1.66): reporting a canvas overlay attaches the overlay author
+  // server-side. The story must be visible to the reporter (audience rules);
+  // removed overlays stay reportable while the story lives (the tombstone).
+  z.object({
+    kind: z.literal('story_overlay'),
+    story_id: UuidSchema,
+    overlay_id: UuidSchema,
+    reason: z.string().max(REPORT_REASON_MAX_CHARS).default(''),
+  }),
 ]);
 export type CreateReportRequest = z.infer<typeof CreateReportRequestSchema>;
+
+// v0.8b (§1.67): the NON-USER report from a public share page — its own
+// unauthenticated endpoint (POST /api/share/:token/report), hard rate-limited
+// per IP, reason REQUIRED (an anonymous empty report is noise). Stored as an
+// ordinary reports row with reporter_id NULL + the resolved share target.
+export const SharePageReportRequestSchema = z.object({
+  reason: z.string().min(1).max(REPORT_REASON_MAX_CHARS),
+});
+export type SharePageReportRequest = z.infer<typeof SharePageReportRequestSchema>;
 
 export const CreateReportResponseSchema = z.object({ id: UuidSchema });
 export type CreateReportResponse = z.infer<typeof CreateReportResponseSchema>;
@@ -1695,6 +1817,61 @@ export type PinMessageRequest = z.infer<typeof PinMessageRequestSchema>;
 export const StoryAudienceSchema = z.enum(['friends_of']);
 export type StoryAudience = z.infer<typeof StoryAudienceSchema>;
 
+// ---- v0.8b canvas stories (§1.66, FEATURES #79a, ADR-020) ----
+
+// Per-story author mode: 'off' (just viewing — the DEFAULT; being drawable is
+// always the author's invitation), 'open' (viewer overlays go live at once),
+// 'approve' (viewer overlays hold as 'pending' until the author approves).
+export const StoryCanvasModeSchema = z.enum(STORY_CANVAS_MODES);
+export type StoryCanvasMode = z.infer<typeof StoryCanvasModeSchema>;
+
+// VECTOR overlay payloads — stored as data, NEVER burned into the image, so
+// removal is total and attribution survives. Coordinates are normalized 0..1
+// of the story frame (x right, y down); stroke width is px at a 512 reference
+// edge. Shape authority is HERE (the house jsonb pattern — the DB pins only
+// jsonb_typeof).
+export const StoryOverlayPayloadSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('stroke'), // the v0.4 doodle brush, as points
+    points: z
+      .array(z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) }))
+      .min(OVERLAY_STROKE_POINTS_MIN)
+      .max(OVERLAY_STROKE_POINTS_MAX),
+    color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    width: z.number().min(OVERLAY_STROKE_WIDTH_MIN).max(OVERLAY_STROKE_WIDTH_MAX),
+  }),
+  z.object({
+    kind: z.literal('emoji'), // draggable stamp
+    emoji: z.string().min(1).max(REACTION_EMOJI_MAX_LEN),
+    x: z.number().min(0).max(1),
+    y: z.number().min(0).max(1),
+    scale: z.number().min(OVERLAY_EMOJI_SCALE_MIN).max(OVERLAY_EMOJI_SCALE_MAX).default(1),
+  }),
+  z.object({
+    kind: z.literal('text'), // short text bubble
+    text: z.string().min(1).max(OVERLAY_TEXT_MAX_CHARS),
+    x: z.number().min(0).max(1),
+    y: z.number().min(0).max(1),
+  }),
+]);
+export type StoryOverlayPayload = z.infer<typeof StoryOverlayPayloadSchema>;
+
+// One attributed layer. Every overlay wears its contributor's username chip
+// and is tappable → "drawn by @x" → profile (binding render contract, §1.66).
+// status 'pending' serializes ONLY to the overlay author and the story author
+// (everyone else's DTO simply omits it); 'removed' serializes to NOBODY —
+// the tombstone exists for reports alone.
+export const StoryOverlaySchema = z.object({
+  id: UuidSchema,
+  story_id: UuidSchema,
+  author: UserLiteSchema,
+  kind: z.enum(STORY_OVERLAY_KINDS),
+  payload: StoryOverlayPayloadSchema,
+  status: z.enum(STORY_OVERLAY_STATUSES),
+  created_at: IsoDateTimeSchema,
+});
+export type StoryOverlay = z.infer<typeof StoryOverlaySchema>;
+
 // viewed is viewer-specific. NO view counts anywhere on the DTO.
 export const StorySchema = z.object({
   id: UuidSchema,
@@ -1705,12 +1882,22 @@ export const StorySchema = z.object({
   created_at: IsoDateTimeSchema,
   expires_at: IsoDateTimeSchema,
   viewed: z.boolean(),
+  // ---- v0.8b (§1.66). Defaults keep pre-v0.8b payloads parsing clean. ----
+  canvas_mode: StoryCanvasModeSchema.default('off'),
+  // Live overlays (plus the viewer's own / the author's pending ones),
+  // created_at ASC — layers paint in arrival order. The contributor strip
+  // ("🎨 maya, arjun +3") derives client-side from these FACES; no contributor
+  // count is ever serialized on its own (PSYCHOLOGY rule 3).
+  overlays: z.array(StoryOverlaySchema).default([]),
 });
 export type Story = z.infer<typeof StorySchema>;
 
 export const CreateStoryRequestSchema = z.object({
   attachment_id: UuidSchema, // mine, kind image|video, unbound
   caption: z.string().max(STORY_CAPTION_MAX_CHARS).default(''),
+  // v0.8b (§1.66): the canvas invitation — DEFAULT OFF, always the author's
+  // choice. Switchable later via PATCH /api/stories/:id.
+  canvas_mode: StoryCanvasModeSchema.default('off'),
 });
 export type CreateStoryRequest = z.infer<typeof CreateStoryRequestSchema>;
 
@@ -2447,15 +2634,17 @@ export type AdminActionRequest = z.infer<typeof AdminActionRequestSchema>;
 // reporter's submission, not a counterparty's private words).
 export const AdminReportSchema = z.object({
   id: UuidSchema,
-  kind: z.enum(['user', 'message', 'beacon']),
-  reporter: UserLiteSchema.nullable(), // null = account deleted since
+  kind: ReportKindSchema, // v0.8b widens to the full §1.14 kind set
+  // null = account deleted since — or, v0.8b (§1.67), a NON-USER share-page
+  // report (kind 'share_page' stores reporter_id NULL by design).
+  reporter: UserLiteSchema.nullable(),
   reason: z.string(),
   status: z.enum(['open', 'closed']),
   created_at: IsoDateTimeSchema,
   closed_at: IsoDateTimeSchema.nullable(),
   closed_by: UserLiteSchema.nullable().default(null),
   close_note: z.string().default(''),
-  // Exactly one of these three is non-null, matching `kind` (unless the
+  // Exactly one target preview is non-null, matching `kind` (unless the
   // target has been deleted since — reports outlive their targets).
   target_user: UserLiteSchema.nullable().default(null),
   target_message: z
@@ -2466,6 +2655,9 @@ export const AdminReportSchema = z.object({
       type: MessageTypeSchema,
       created_at: IsoDateTimeSchema,
       deleted: z.boolean(), // tombstoned since the report
+      // v0.8b (§1.69): the reporter consented at report time to the context
+      // viewer — GET /api/admin/reports/:id/context exists for this report.
+      context_available: z.boolean().default(false),
     })
     .nullable()
     .default(null),
@@ -2475,6 +2667,41 @@ export const AdminReportSchema = z.object({
       vibe: BeaconVibeSchema,
       status: z.enum(['open', 'sparked', 'expired', 'cancelled']),
       creator: UserLiteSchema.nullable(),
+    })
+    .nullable()
+    .default(null),
+  // ---- v0.8b target previews (§1.62/§1.66/§1.67). Defaults keep pre-v0.8b
+  // payloads parsing clean. Identity attachment is the point: anon_message
+  // and story_overlay previews carry the REAL author (the reported party),
+  // and ghost-group message reports resolve sender unmasked here — the admin
+  // surface answers to the server, where nobody was ever anonymous. ----
+  target_anon_message: z
+    .object({
+      thread_id: UuidSchema,
+      message_id: UuidSchema,
+      author: UserLiteSchema.nullable(), // the ATTACHED identity; null = deleted
+      body: z.string(), // the reporter-disclosed anon message text (≤500)
+      created_at: IsoDateTimeSchema,
+    })
+    .nullable()
+    .default(null),
+  target_overlay: z
+    .object({
+      story_id: UuidSchema,
+      overlay_id: UuidSchema,
+      author: UserLiteSchema.nullable(), // the ATTACHED identity; null = deleted
+      kind: z.enum(STORY_OVERLAY_KINDS),
+      payload: StoryOverlayPayloadSchema.nullable(), // null = story expired since
+      status: z.enum(STORY_OVERLAY_STATUSES),
+    })
+    .nullable()
+    .default(null),
+  target_share_page: z
+    .object({
+      object_type: z.enum(SHARE_OBJECT_TYPES),
+      object_id: UuidSchema,
+      author: UserLiteSchema.nullable(), // object author/owner; null = gone
+      gone: z.boolean(), // the object or its token no longer resolves
     })
     .nullable()
     .default(null),
@@ -2677,10 +2904,17 @@ export type TurnCredentialsResponse = z.infer<typeof TurnCredentialsResponseSche
 export const DiscoveryScopeSchema = z.enum(DISCOVERY_SCOPES);
 export type DiscoveryScope = z.infer<typeof DiscoveryScopeSchema>;
 
+// v0.8b (§1.65): the optional what-for chip on an opt-in ("looking to: walk/
+// food/game…"). Opt-in data the owner chose to share — filters only narrow.
+export const DiscoveryVibeSchema = z.enum(DISCOVERY_VIBES);
+export type DiscoveryVibe = z.infer<typeof DiscoveryVibeSchema>;
+
 // My own opt-in state (owner-only — nobody else ever sees this DTO).
 export const DiscoveryOptinSchema = z.object({
   scope: DiscoveryScopeSchema,
   note: z.string().max(DISCOVERY_NOTE_MAX_CHARS),
+  // v0.8b (§1.65): default(null) keeps pre-v0.8b payloads parsing clean.
+  vibe: DiscoveryVibeSchema.nullable().default(null),
   created_at: IsoDateTimeSchema,
   expires_at: IsoDateTimeSchema,
 });
@@ -2689,6 +2923,8 @@ export type DiscoveryOptin = z.infer<typeof DiscoveryOptinSchema>;
 export const DiscoveryOptinRequestSchema = z.object({
   scope: DiscoveryScopeSchema,
   note: z.string().max(DISCOVERY_NOTE_MAX_CHARS).default(''),
+  // v0.8b (§1.65): optional; null/omitted = no chip. Re-PUT re-scopes it.
+  vibe: DiscoveryVibeSchema.nullable().default(null),
 });
 export type DiscoveryOptinRequest = z.infer<typeof DiscoveryOptinRequestSchema>;
 
@@ -2707,8 +2943,29 @@ export const DiscoveryCardSchema = z.object({
   note: z.string().max(DISCOVERY_NOTE_MAX_CHARS),
   expires_at: IsoDateTimeSchema,
   waved: z.boolean(),
+  // ---- v0.8b (§1.65). Defaults keep pre-v0.8b payloads parsing clean. ----
+  // The card owner's what-for chip (their own opt-in choice).
+  vibe: DiscoveryVibeSchema.nullable().default(null),
+  // Viewer-specific: the overlap of the two PUBLIC §1.37 interest lists
+  // ("you both like X"), first DISCOVERY_SHARED_INTERESTS_MAX by the owner's
+  // tag order. Already-public data, intersected — nothing new is revealed.
+  shared_interests: z
+    .array(z.string())
+    .max(DISCOVERY_SHARED_INTERESTS_MAX)
+    .default([]),
 });
 export type DiscoveryCard = z.infer<typeof DiscoveryCardSchema>;
+
+// v0.8b (§1.65): GET /api/discovery/cards filters — each only ever NARROWS
+// the §1.44 mutual-reachability pool. vibe = cards wearing that chip;
+// interests = cards sharing ≥1 public interest tag with me; area = cards
+// whose owner's area matches mine (citext), whatever their scope.
+export const DiscoveryCardsQuerySchema = z.object({
+  vibe: DiscoveryVibeSchema.optional(),
+  interests: z.coerce.boolean().optional(),
+  area: z.coerce.boolean().optional(),
+});
+export type DiscoveryCardsQuery = z.infer<typeof DiscoveryCardsQuerySchema>;
 
 export const DiscoveryCardsResponseSchema = z.object({
   cards: z.array(DiscoveryCardSchema),
@@ -3019,3 +3276,516 @@ export const ReleaseSeenRequestSchema = z.object({
   version: z.string().min(1).max(RELEASE_VERSION_MAX_CHARS),
 });
 export type ReleaseSeenRequest = z.infer<typeof ReleaseSeenRequestSchema>;
+
+// ===========================================================================
+// v0.8b — community pack (API.md §1.62–§1.69; ADR-019 / ADR-020)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Anonymous reveal game (v0.8b — API.md §1.62, FEATURES #77, ADR-019)
+// ---------------------------------------------------------------------------
+
+export const AnonOptinSchema = z.enum(ANON_OPTIN_VALUES);
+export type AnonOptin = z.infer<typeof AnonOptinSchema>;
+
+export const AnonRevealModeSchema = z.enum(['none', 'timer', 'riddle']);
+export type AnonRevealMode = z.infer<typeof AnonRevealModeSchema>;
+
+// One anonymous message. TEXT ONLY — no attachments, no previews, no
+// reactions (ADR-019: the game is words first). from_sender tells the two
+// parties apart without naming either; the viewer knows their own role.
+export const AnonMessageSchema = z.object({
+  id: UuidSchema,
+  thread_id: UuidSchema,
+  from_sender: z.boolean(),
+  body: z.string().min(1).max(ANON_BODY_MAX_CHARS),
+  // true on the recipient's formal riddle answer (POST .../answer-riddle) —
+  // the sender's client renders the "that's right ✓" confirm on these.
+  is_riddle_answer: z.boolean().default(false),
+  created_at: IsoDateTimeSchema,
+});
+export type AnonMessage = z.infer<typeof AnonMessageSchema>;
+
+// VIEWER-SPECIFIC thread DTO — the whole game lives in how this serializes:
+// role is the viewer's side; counterpart is the OTHER party's identity and is
+// NULL for the recipient until revealed (live rule: revealed_at set, or
+// reveal_at <= now()); the sender always sees the recipient (they chose
+// them). The recipient's view of the sender's avatar rides ONLY the gated
+// blur proxy (§1.62) until reveal — no UserLite, no media URL, nothing
+// derivable. reveal_timer_s + reveal_at let the client animate the un-blur
+// (factor = clamp((reveal_at - now)/reveal_timer_s, 0, 1)); the server
+// renders the actual pixels.
+export const AnonThreadSchema = z.object({
+  id: UuidSchema,
+  role: z.enum(['sender', 'recipient']),
+  counterpart: UserLiteSchema.nullable(),
+  reveal_mode: AnonRevealModeSchema,
+  reveal_timer_s: z.number().int().positive().nullable(), // an ANON_TIMER_PRESETS_S entry, iff mode='timer'
+  reveal_at: IsoDateTimeSchema.nullable(), // iff mode='timer'
+  riddle_q: z.string().max(ANON_RIDDLE_MAX_CHARS).nullable(), // iff mode='riddle'
+  reveal_requested: z.boolean(), // the recipient asked; shown to both sides
+  revealed_at: IsoDateTimeSchema.nullable(),
+  last_message: AnonMessageSchema.nullable(),
+  created_at: IsoDateTimeSchema,
+});
+export type AnonThread = z.infer<typeof AnonThreadSchema>;
+
+// POST /api/anon/threads — opens (or appends to) MY open thread to user_id.
+// Refusals are INVISIBLE and byte-identical (404 anon_unavailable): unknown
+// user, 'nobody', an unmet 'connections', blocked either way, banned, self.
+export const CreateAnonThreadRequestSchema = z.object({
+  user_id: UuidSchema,
+  body: z.string().min(1).max(ANON_BODY_MAX_CHARS),
+});
+export type CreateAnonThreadRequest = z.infer<typeof CreateAnonThreadRequestSchema>;
+
+export const AnonMessageRequestSchema = z.object({
+  body: z.string().min(1).max(ANON_BODY_MAX_CHARS),
+});
+export type AnonMessageRequest = z.infer<typeof AnonMessageRequestSchema>;
+
+// POST /api/anon/threads/:id/set-reveal — SENDER only, pick the game.
+export const SetRevealRequestSchema = z.discriminatedUnion('mode', [
+  z.object({
+    mode: z.literal('timer'),
+    timer_s: z.union([
+      z.literal(ANON_TIMER_PRESETS_S[0]),
+      z.literal(ANON_TIMER_PRESETS_S[1]),
+      z.literal(ANON_TIMER_PRESETS_S[2]),
+    ]),
+  }),
+  z.object({
+    mode: z.literal('riddle'),
+    riddle_q: z.string().min(1).max(ANON_RIDDLE_MAX_CHARS),
+  }),
+]);
+export type SetRevealRequest = z.infer<typeof SetRevealRequestSchema>;
+
+export const AnswerRiddleRequestSchema = z.object({
+  answer: z.string().min(1).max(ANON_RIDDLE_MAX_CHARS),
+});
+export type AnswerRiddleRequest = z.infer<typeof AnswerRiddleRequestSchema>;
+
+export const AnonThreadResponseSchema = z.object({ thread: AnonThreadSchema });
+export type AnonThreadResponse = z.infer<typeof AnonThreadResponseSchema>;
+
+export const AnonThreadsResponseSchema = z.object({
+  threads: z.array(AnonThreadSchema),
+});
+export type AnonThreadsResponse = z.infer<typeof AnonThreadsResponseSchema>;
+
+export const AnonMessagesResponseSchema = z.object({
+  messages: z.array(AnonMessageSchema), // created_at ASC
+  next_cursor: z.string().nullable(),
+});
+export type AnonMessagesResponse = z.infer<typeof AnonMessagesResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Suggestions & find-your-people (v0.8b — API.md §1.64, FEATURES #78, ADR-019)
+// ---------------------------------------------------------------------------
+
+// One people-you-may-know card. The signals are relationship evidence about
+// MY network — mutual FACES first (the §1.36 rule), mutual_count carrying the
+// rest; same_area is a boolean (the area TEXT stays owner-private, FEATURES
+// #30); shared_groups counts non-ghost groups we are both in (ghost groups
+// are unlisted EVERYWHERE, §1.68). Excluded entirely: me, blocked pairs,
+// friends-of, pending connection requests either way, dismissed, banned.
+export const SuggestionSchema = z.object({
+  user: UserLiteSchema,
+  mutual_count: z.number().int().nonnegative(),
+  mutuals: z.array(UserLiteSchema).max(SUGGESTION_MUTUALS_PREVIEW_MAX),
+  same_area: z.boolean(),
+  shared_groups: z.number().int().nonnegative(),
+});
+export type Suggestion = z.infer<typeof SuggestionSchema>;
+
+export const SuggestionsResponseSchema = z.object({
+  suggestions: z.array(SuggestionSchema), // best-evidence first, ≤ SUGGESTIONS_MAX
+});
+export type SuggestionsResponse = z.infer<typeof SuggestionsResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Canvas stories — requests (v0.8b — API.md §1.66, FEATURES #79a, ADR-020)
+// ---------------------------------------------------------------------------
+
+// PATCH /api/stories/:id — author only; today only the canvas switch.
+export const UpdateStoryRequestSchema = z.object({
+  canvas_mode: StoryCanvasModeSchema,
+});
+export type UpdateStoryRequest = z.infer<typeof UpdateStoryRequestSchema>;
+
+// POST /api/stories/:id/overlays. kind rides inside the payload union.
+export const CreateOverlayRequestSchema = z.object({
+  payload: StoryOverlayPayloadSchema,
+});
+export type CreateOverlayRequest = z.infer<typeof CreateOverlayRequestSchema>;
+
+export const OverlayResponseSchema = z.object({ overlay: StoryOverlaySchema });
+export type OverlayResponse = z.infer<typeof OverlayResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Public share pages (v0.8b — API.md §1.67, FEATURES #79c, ADR-020)
+// ---------------------------------------------------------------------------
+
+export const ShareObjectTypeSchema = z.enum(SHARE_OBJECT_TYPES);
+export type ShareObjectType = z.infer<typeof ShareObjectTypeSchema>;
+
+// POST /api/share-links — mint-or-return the object's ONE open token.
+export const CreateShareLinkRequestSchema = z.object({
+  type: ShareObjectTypeSchema,
+  id: UuidSchema,
+});
+export type CreateShareLinkRequest = z.infer<typeof CreateShareLinkRequestSchema>;
+
+// url is the app-origin PATH (/p/<token>, or /s/<token> for stories) — the
+// web layer prefixes PUBLIC_ORIGIN (the §1.53 publicOrigin() rule governs
+// every absolute URL and OG tag).
+export const ShareLinkSchema = z.object({
+  token: z.string(),
+  url: z.string(),
+  object: z.object({ type: ShareObjectTypeSchema, id: UuidSchema }),
+  created_at: IsoDateTimeSchema,
+});
+export type ShareLink = z.infer<typeof ShareLinkSchema>;
+
+export const ShareLinkResponseSchema = z.object({ share_link: ShareLinkSchema });
+export type ShareLinkResponse = z.infer<typeof ShareLinkResponseSchema>;
+
+// The author chip on a share page: NO id, NO UserLite — username +
+// display_name + the token-gated avatar path (/api/share/:token/avatar/
+// <user_id>?v=static), null while not 'ready'. Unauthenticated viewers get
+// exactly what the OG unfurler gets, nothing more.
+export const ShareAuthorChipSchema = z.object({
+  username: z.string(),
+  display_name: z.string(),
+  avatar_url: z.string().nullable(),
+  name_style: NameStyleSchema.default('none'),
+});
+export type ShareAuthorChip = z.infer<typeof ShareAuthorChipSchema>;
+
+// A share-page media descriptor: the token-gated proxy path
+// (/api/share/:token/media/<attachment_id>), never /api/media/:key.
+export const ShareMediaSchema = z.object({
+  attachment_id: UuidSchema,
+  kind: AttachmentKindSchema,
+  url: z.string(),
+  thumb_url: z.string().nullable(),
+  width: z.number().int().nullable(),
+  height: z.number().int().nullable(),
+  blurhash: z.string().nullable(),
+});
+export type ShareMedia = z.infer<typeof ShareMediaSchema>;
+
+// One rendered message on a PUBLIC group's live page (seq > public_since_seq
+// only; tombstones and system noise dropped). Senders show real identity —
+// the switch was admin-confirmed and every member wears the banner (§1.68).
+export const ShareMessageSchema = z.object({
+  seq: SeqSchema,
+  sender: ShareAuthorChipSchema.nullable(), // null = deleted account
+  type: MessageTypeSchema,
+  body: z.string().nullable(),
+  media: z.array(ShareMediaSchema).default([]),
+  created_at: IsoDateTimeSchema,
+});
+export type ShareMessage = z.infer<typeof ShareMessageSchema>;
+
+// GET /api/share/:token/public — the SSR page's one read. Every variant
+// resolves LIVE: object still exists, still public (audience / visibility /
+// expiry / ban re-checked), token unrevoked — else 404 share_not_found,
+// byte-identical for every cause. Interaction is NOT here: any action on the
+// page routes to /register?next=<deep link> (the ?next gate).
+export const SharePageSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('post'),
+    author: ShareAuthorChipSchema,
+    kind: z.enum(POST_KINDS),
+    body: z.string(),
+    media: z.array(ShareMediaSchema),
+    // Poll options + counts render read-only (counts on OPTIONS are a
+    // decision tool — the §1.50 rule); voting gates to signup.
+    poll: z
+      .object({ question: z.string(), options: z.array(z.string()), counts: z.array(z.number().int()) })
+      .nullable(),
+    location_label: z.string().nullable(), // label only — never lat/lng to strangers
+    created_at: IsoDateTimeSchema,
+  }),
+  z.object({
+    type: z.literal('beacon'),
+    creator: ShareAuthorChipSchema,
+    vibe: z.enum(BEACON_VIBE_VALUES),
+    custom_vibe_emoji: z.string().nullable(),
+    custom_vibe_label: z.string().nullable(),
+    note: z.string(),
+    status: z.enum(['open', 'sparked', 'expired', 'cancelled']),
+    starts_at: IsoDateTimeSchema,
+    expires_at: IsoDateTimeSchema,
+    // needs is the §1.15 utility number ("2 more and it's a plan") — NO
+    // joiner faces and NO joiner identities to logged-out strangers, ever.
+    needs: z.number().int().nonnegative(),
+    location_label: z.string().nullable(),
+    created_at: IsoDateTimeSchema,
+  }),
+  z.object({
+    type: z.literal('listing'),
+    author: ShareAuthorChipSchema,
+    kind: z.enum(LISTING_KINDS),
+    title: z.string(),
+    body: z.string(),
+    price_text: z.string().nullable(), // display text — no payments exist
+    area: z.string(),
+    status: z.enum(['active', 'closed', 'expired']),
+    media: z.array(ShareMediaSchema),
+    location_label: z.string().nullable(),
+    created_at: IsoDateTimeSchema,
+  }),
+  z.object({
+    type: z.literal('story'),
+    author: ShareAuthorChipSchema,
+    caption: z.string(),
+    media: ShareMediaSchema,
+    // Canvas overlays render read-only with their contributor chips (public
+    // attribution is the §1.66 contract); drawing gates to signup.
+    overlays: z.array(
+      z.object({
+        kind: z.enum(STORY_OVERLAY_KINDS),
+        payload: StoryOverlayPayloadSchema,
+        author_username: z.string(),
+      }),
+    ),
+    expires_at: IsoDateTimeSchema, // the page dies with the story
+    created_at: IsoDateTimeSchema,
+  }),
+  // visibility='invite_only': the CARD ONLY — never messages (§1.68).
+  z.object({
+    type: z.literal('group_card'),
+    title: z.string(),
+    description: z.string(),
+    avatar_url: z.string().nullable(), // token-gated group-avatar proxy
+    // Group size is join-decision utility (the ADR-012 trust-info argument,
+    // re-made in ADR-020) — it never ranks, compares or rewards anyone.
+    member_count: z.number().int().positive(),
+    created_at: IsoDateTimeSchema,
+  }),
+  // visibility='public': the card + the read-only live tail. ONLY messages
+  // with seq > public_since_seq, newest page first; older pages by cursor,
+  // floored at public_since_seq ALWAYS (history is never retro-exposed).
+  z.object({
+    type: z.literal('group_live'),
+    title: z.string(),
+    description: z.string(),
+    avatar_url: z.string().nullable(),
+    member_count: z.number().int().positive(),
+    messages: z.array(ShareMessageSchema), // ≤ SHARE_GROUP_PAGE_MESSAGES_MAX, seq ASC
+    next_cursor: z.string().nullable(), // older messages; null at the floor
+    created_at: IsoDateTimeSchema,
+  }),
+]);
+export type SharePage = z.infer<typeof SharePageSchema>;
+
+export const SharePageResponseSchema = z.object({ page: SharePageSchema });
+export type SharePageResponse = z.infer<typeof SharePageResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Group visibility modes (v0.8b — API.md §1.68, FEATURES #79d, ADR-020)
+// ---------------------------------------------------------------------------
+
+export const GroupVisibilitySchema = z.enum(GROUP_VISIBILITIES);
+export type GroupVisibility = z.infer<typeof GroupVisibilitySchema>;
+
+// PATCH /api/conversations/:id/visibility — group admins only. Switching TO
+// 'public' demands confirm:true (400 confirm_required otherwise) and stamps
+// public_since_seq = last_seq in the same transaction. A GHOST group can
+// never switch away (400 ghost_is_forever — members spoke under masks;
+// ADR-020). description edits ride the same PATCH.
+export const UpdateGroupVisibilityRequestSchema = z.object({
+  visibility: GroupVisibilitySchema.optional(),
+  description: z.string().max(GROUP_DESCRIPTION_MAX_CHARS).optional(),
+  confirm: z.boolean().default(false),
+});
+export type UpdateGroupVisibilityRequest = z.infer<typeof UpdateGroupVisibilityRequestSchema>;
+
+// POST /api/conversations/:id/join — 'public' joins at once (200 + the
+// conversation); 'invite_only' parks a request (202 {status:'requested'});
+// 'private'/'ghost' answer 404 not_found, byte-identical to an unknown id
+// (unlisted means unlisted).
+export const GroupJoinResponseSchema = z.union([
+  z.object({ status: z.literal('joined'), conversation: ConversationSchema }),
+  z.object({ status: z.literal('requested') }),
+]);
+export type GroupJoinResponse = z.infer<typeof GroupJoinResponseSchema>;
+
+export const GroupJoinRequestRowSchema = z.object({
+  user: UserLiteSchema,
+  created_at: IsoDateTimeSchema,
+});
+export type GroupJoinRequestRow = z.infer<typeof GroupJoinRequestRowSchema>;
+
+export const GroupJoinRequestsResponseSchema = z.object({
+  requests: z.array(GroupJoinRequestRowSchema), // oldest first — a queue
+});
+export type GroupJoinRequestsResponse = z.infer<typeof GroupJoinRequestsResponseSchema>;
+
+// PUT /api/conversations/:id/mask — MY mask in a ghost group (members pick;
+// join/switch auto-assigns from the GHOST_MASK_* pools first). Unique per
+// group → 409 mask_taken.
+export const SetMaskRequestSchema = z.object({
+  mask_name: z.string().min(1).max(MASK_NAME_MAX_CHARS),
+  mask_emoji: z.string().min(1).max(MASK_EMOJI_MAX_LEN),
+});
+export type SetMaskRequest = z.infer<typeof SetMaskRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// Support inbox (v0.8b — API.md §1.69, FEATURES #81, ADR-020)
+// ---------------------------------------------------------------------------
+
+export const SupportCategorySchema = z.enum(SUPPORT_CATEGORIES);
+export type SupportCategory = z.infer<typeof SupportCategorySchema>;
+
+export const SupportTicketStatusSchema = z.enum(SUPPORT_TICKET_STATUSES);
+export type SupportTicketStatus = z.infer<typeof SupportTicketStatusSchema>;
+
+// The user's own ticket row. The dialogue itself lives in the per-user
+// "Bored Chat Support" conversation (§1.69) — ordinary messages, ordinary
+// push/receipts; the ticket is the admin inbox's index card.
+export const SupportTicketSchema = z.object({
+  id: UuidSchema,
+  category: SupportCategorySchema,
+  body: z.string().max(SUPPORT_BODY_MAX_CHARS),
+  attachment: AttachmentSchema.nullable(), // the optional screenshot
+  status: SupportTicketStatusSchema,
+  created_at: IsoDateTimeSchema,
+  updated_at: IsoDateTimeSchema,
+});
+export type SupportTicket = z.infer<typeof SupportTicketSchema>;
+
+export const CreateSupportTicketRequestSchema = z.object({
+  category: SupportCategorySchema,
+  body: z.string().min(1).max(SUPPORT_BODY_MAX_CHARS),
+  attachment_id: UuidSchema.optional(), // mine, kind image, ready
+});
+export type CreateSupportTicketRequest = z.infer<typeof CreateSupportTicketRequestSchema>;
+
+export const SupportTicketResponseSchema = z.object({ ticket: SupportTicketSchema });
+export type SupportTicketResponse = z.infer<typeof SupportTicketResponseSchema>;
+
+export const SupportTicketsResponseSchema = z.object({
+  tickets: z.array(SupportTicketSchema), // mine, created_at DESC
+});
+export type SupportTicketsResponse = z.infer<typeof SupportTicketsResponseSchema>;
+
+// Admin inbox row: the ticket + who filed it.
+export const AdminSupportTicketSchema = SupportTicketSchema.extend({
+  user: UserLiteSchema.nullable(), // null = account deleted since
+});
+export type AdminSupportTicket = z.infer<typeof AdminSupportTicketSchema>;
+
+export const AdminSupportTicketsResponseSchema = z.object({
+  tickets: z.array(AdminSupportTicketSchema), // open first, then created_at DESC
+  next_cursor: z.string().nullable(),
+});
+export type AdminSupportTicketsResponse = z.infer<typeof AdminSupportTicketsResponseSchema>;
+
+export const AdminSupportReplyRequestSchema = z.object({
+  body: z.string().min(1).max(SUPPORT_BODY_MAX_CHARS),
+});
+export type AdminSupportReplyRequest = z.infer<typeof AdminSupportReplyRequestSchema>;
+
+export const AdminSupportTicketResponseSchema = z.object({
+  ticket: AdminSupportTicketSchema,
+  // The support-conversation dialogue for THIS user (the user is talking TO
+  // the operator — consent is structural, unlike private chats; ADR-020).
+  messages: z.array(MessageSchema),
+});
+export type AdminSupportTicketResponse = z.infer<typeof AdminSupportTicketResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Admin: content moderation, report context, update banner (v0.8b — API.md
+// §1.69, FEATURES #81, ADR-020)
+// ---------------------------------------------------------------------------
+
+export const AdminContentTypeSchema = z.enum(ADMIN_CONTENT_TYPES);
+export type AdminContentType = z.infer<typeof AdminContentTypeSchema>;
+
+// One row of the content tab: PUBLIC surfaces only (public posts, public
+// beacons, all board listings). These are things anyone on the instance can
+// already read — showing excerpts here crosses no privacy line (unlike
+// messages, which never appear).
+export const AdminContentRowSchema = z.object({
+  type: AdminContentTypeSchema,
+  id: UuidSchema,
+  author: UserLiteSchema.nullable(),
+  // type-appropriate glance data: post → body excerpt; beacon → vibe+note;
+  // listing → kind+title.
+  title: z.string(), // listing title / beacon vibe label / '' for posts
+  excerpt: z.string(), // first 80 chars of the public text
+  status: z.string(), // the object's own status enum, as stored
+  created_at: IsoDateTimeSchema,
+});
+export type AdminContentRow = z.infer<typeof AdminContentRowSchema>;
+
+export const AdminContentQuerySchema = z.object({
+  type: AdminContentTypeSchema.optional(), // omitted = all three
+  q: z.string().max(80).optional(), // ILIKE over title/body
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(PAGE_SIZE_DEFAULT),
+});
+export type AdminContentQuery = z.infer<typeof AdminContentQuerySchema>;
+
+export const AdminContentResponseSchema = z.object({
+  items: z.array(AdminContentRowSchema), // created_at DESC
+  next_cursor: z.string().nullable(),
+});
+export type AdminContentResponse = z.infer<typeof AdminContentResponseSchema>;
+
+// POST /api/admin/content/:type/:id/takedown — reason REQUIRED: it is shown
+// to the author (neutrally, via their Support conversation) and ring-logged.
+export const TakedownRequestSchema = z.object({
+  reason: z.string().min(1).max(TAKEDOWN_REASON_MAX_CHARS),
+});
+export type TakedownRequest = z.infer<typeof TakedownRequestSchema>;
+
+// GET /api/admin/reports/:id/context — THE one admin surface that shows
+// message bodies, and only because the REPORTER consented at report time
+// (include_context; REPORT_CONTEXT_CONSENT_COPY is the exact copy they saw).
+// The slice is the reported message ± REPORT_CONTEXT_RADIUS by seq, resolved
+// LIVE (tombstones show as deleted); attachments are kind/mime metadata only
+// — no admin media URLs exist. Ghost masks do NOT apply here (the server was
+// never anonymous; §1.68). Every view is ring-logged.
+export const AdminContextMessageSchema = z.object({
+  seq: SeqSchema,
+  sender: UserLiteSchema.nullable(),
+  type: MessageTypeSchema,
+  body: z.string().nullable(), // the consented disclosure; null for body-less kinds
+  attachments: z.array(z.object({ kind: AttachmentKindSchema, mime: z.string() })),
+  created_at: IsoDateTimeSchema,
+  deleted: z.boolean(),
+  reported: z.boolean(), // true on the reported seq itself
+});
+export type AdminContextMessage = z.infer<typeof AdminContextMessageSchema>;
+
+export const ReportContextResponseSchema = z.object({
+  context: z.object({
+    conversation_id: UuidSchema,
+    messages: z.array(AdminContextMessageSchema), // seq ASC, ≤ 2×radius+1
+  }),
+});
+export type ReportContextResponse = z.infer<typeof ReportContextResponseSchema>;
+
+// GET /api/admin/update — the "update available" banner's read. running_commit
+// is baked at image build (GIT_COMMIT build arg; null in dev). latest_commit
+// comes from the worker's cached HTTPS smart-protocol peek at the instance
+// repo remote's HEAD; update_available is NULL when the remote is unreachable
+// or no commit is baked (documented honesty — never a guess). The update
+// itself runs on the HOST (./bored update / autoupdate): the container never
+// gets docker.sock, so the banner instructs, it never executes.
+export const AdminUpdateStatusSchema = z.object({
+  running_commit: z.string().nullable(),
+  running_version: z.string().nullable(), // newest instance release_notes version
+  latest_commit: z.string().nullable(),
+  update_available: z.boolean().nullable(),
+  checked_at: IsoDateTimeSchema.nullable(),
+});
+export type AdminUpdateStatus = z.infer<typeof AdminUpdateStatusSchema>;
+
+export const AdminUpdateResponseSchema = z.object({ update: AdminUpdateStatusSchema });
+export type AdminUpdateResponse = z.infer<typeof AdminUpdateResponseSchema>;

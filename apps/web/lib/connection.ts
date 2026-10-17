@@ -378,6 +378,22 @@ function handleFrame(raw: string): void {
     case 'roulette.expired':
       onRouletteExpired(ev.d.conversation_id);
       break;
+    // v0.8b (§1.62): viewer-stamped anon-thread update — to the two parties
+    // only. Reconnect truth is GET /api/anon/threads, never frame replay.
+    case 'anon.updated':
+      store.applyAnonUpdated(ev.d.thread, ev.d.message);
+      break;
+    // v0.8b (§1.66): full-story replace on canvas changes (overlay add /
+    // remove / approve, canvas_mode switch) — audience sockets only.
+    case 'story.updated':
+      store.replaceStoryLocal(ev.d.story);
+      break;
+    // v0.8b (§1.63): the anonymous wave nudge — DELIBERATELY empty (no
+    // identity, no count, no per-card link). Rendered as a quiet line on the
+    // discovery surface, never a toast (toasts confirm MY actions only).
+    case 'discovery.nudge':
+      store.setDiscoveryNudge(Date.now());
+      break;
     case 'error':
       break;
   }

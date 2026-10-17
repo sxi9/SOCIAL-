@@ -29,6 +29,7 @@ import {
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { blockedSetOf, isBlockedPair } from '../../lib/blocks.js';
+import { deleteAttachmentObjects } from '../../jobs/gc.js';
 import { attachmentDto, userLiteDto, type AttRow, type UserRow } from '../../lib/dto.js';
 import { isBeaconVisibleTo, loadBeacon } from '../beacons/service.js';
 import {
@@ -482,6 +483,39 @@ function rawUser(o: Record<string, unknown>): UserRow {
     // conservative rule serializes mood null without a per-viewer ctx.
     nameStyle: ((o.name_style as string | undefined) ?? 'none'),
   } as UserRow;
+}
+
+/**
+ * v0.8b (§1.69): the §1.36 delete cascade as a helper — the owning module's
+ * own semantics, reused by the admin takedown. Reactions, comments, polls and
+ * votes cascade; the post's AND its comments' attachments go (objects
+ * refcount-guarded, §1.31); the §1.67 share token revokes in the same tx.
+ */
+export async function hardDeletePost(row: PostRow): Promise<void> {
+  const atts = await db
+    .select()
+    .from(schema.attachments)
+    .where(eq(schema.attachments.postId, row.id));
+  const commentAtts = await db
+    .select()
+    .from(schema.attachments)
+    .where(
+      sql`${schema.attachments.commentId} IN (SELECT id FROM post_comments WHERE post_id = ${row.id})`,
+    );
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`DELETE FROM attachments WHERE post_id = ${row.id}`);
+    await tx.execute(sql`
+      DELETE FROM attachments
+      WHERE comment_id IN (SELECT id FROM post_comments WHERE post_id = ${row.id})
+    `);
+    await tx.execute(sql`
+      UPDATE share_tokens SET revoked_at = now()
+      WHERE object_type = 'post' AND object_id = ${row.id} AND revoked_at IS NULL
+    `);
+    await tx.execute(sql`DELETE FROM posts WHERE id = ${row.id}`);
+  });
+  for (const att of atts) await deleteAttachmentObjects(att);
+  for (const att of commentAtts) await deleteAttachmentObjects(att);
 }
 
 export async function loadPost(id: string): Promise<PostRow | null> {

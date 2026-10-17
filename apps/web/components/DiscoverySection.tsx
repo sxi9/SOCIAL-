@@ -9,11 +9,14 @@
 import { useEffect, useState } from 'react';
 import {
   DISCOVERY_NOTE_MAX_CHARS,
+  DISCOVERY_VIBES,
   ROULETTE_WINDOW_S,
   type DiscoveryCard,
   type DiscoveryScope,
+  type DiscoveryVibe,
 } from '@socialchat/shared';
 import { ApiError } from '@/lib/api';
+import { VIBE_EMOJI, VIBE_LABEL } from '@/lib/beacons';
 import {
   blockUser,
   joinRoulette,
@@ -24,7 +27,9 @@ import {
   refreshEncouragement,
   refreshOptin,
   waveAt,
+  type CardFilters,
 } from '@/lib/discovery';
+import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
 import Avatar from './Avatar';
@@ -32,6 +37,7 @@ import Mascot from './Mascot';
 import Portal from './Portal';
 import ReportSheet from './ReportSheet';
 import bcn from './beacons.module.css';
+import cm from './community.module.css';
 import styles from './discovery.module.css';
 
 export default function DiscoverySection() {
@@ -75,6 +81,23 @@ export default function DiscoverySection() {
             </p>
           </div>
         </div>
+
+        {/* v0.8b §1.63: the wave nudge — one anonymous fact, dismissible,
+            NEVER a toast (toasts confirm my own actions only). */}
+        {state.discoveryNudgeAt !== null ? (
+          <p className={cm.nudgeLine} role="status">
+            <span aria-hidden>👀</span>
+            <span>Someone in the pool waved at you… wave around and see what happens.</span>
+            <button
+              type="button"
+              className={cm.nudgeDismiss}
+              aria-label="Dismiss"
+              onClick={() => store.setDiscoveryNudge(null)}
+            >
+              ×
+            </button>
+          </p>
+        ) : null}
 
         {/* Binding client rule (§1.44): the aggregate shows PRE-opt-in only. */}
         {!live && agg && agg.better_percent !== null ? (
@@ -139,6 +162,8 @@ function OptinSheet({ onClose }: { onClose: () => void }) {
   const existing = state.discoveryOptin;
   const [scope, setScope] = useState<DiscoveryScope>(existing?.scope ?? 'area');
   const [note, setNote] = useState(existing?.note ?? '');
+  // v0.8b §1.65: the optional what-for chip on MY card.
+  const [vibe, setVibe] = useState<DiscoveryVibe | null>(existing?.vibe ?? null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const hasArea = (state.me?.area ?? null) !== null && (state.me?.area ?? '') !== '';
@@ -158,7 +183,7 @@ function OptinSheet({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      await optIn(scope, note.trim());
+      await optIn(scope, note.trim(), vibe);
       void refreshCards();
       onClose();
     } catch (err) {
@@ -219,6 +244,26 @@ function OptinSheet({ onClose }: { onClose: () => void }) {
             🌍 Anyone
           </button>
         </div>
+        {/* v0.8b §1.65: optional vibe chips — "looking to: 🚶 walk". Tap the
+            active one again to clear it; a card without a vibe simply never
+            matches a vibe filter. */}
+        <div className={bcn.sheetLabel} style={{ marginTop: 12 }}>
+          Looking to… (optional)
+        </div>
+        <div className={cm.filterRow} role="radiogroup" aria-label="What are you up for?">
+          {DISCOVERY_VIBES.map((v) => (
+            <button
+              key={v}
+              type="button"
+              role="radio"
+              aria-checked={vibe === v}
+              className={`${cm.filterChip}${vibe === v ? ` ${cm.filterOn}` : ''}`}
+              onClick={() => setVibe((cur) => (cur === v ? null : v))}
+            >
+              <span aria-hidden>{VIBE_EMOJI[v]}</span> {VIBE_LABEL[v]}
+            </button>
+          ))}
+        </div>
         <div className="field" style={{ marginTop: 12, marginBottom: 0 }}>
           <label htmlFor="disc-note">A note for your card (optional)</label>
           <input
@@ -252,20 +297,73 @@ function OptinSheet({ onClose }: { onClose: () => void }) {
 
 function CardStack({ cards }: { cards: DiscoveryCard[] | null }) {
   const [reporting, setReporting] = useState<string | null>(null);
+  // v0.8b §1.65: filters only ever NARROW the mutual-reachability pool —
+  // area match, ≥1 shared public interest, or a what-for vibe. No age/gender
+  // filters exist because no such fields exist.
+  const [filters, setFilters] = useState<CardFilters>({ vibe: null, interests: false, area: false });
+
+  function apply(next: CardFilters): void {
+    setFilters(next);
+    void refreshCards(next);
+  }
+
+  const anyFilter = filters.vibe !== null || filters.interests || filters.area;
+
+  const filterRow = (
+    <div className={cm.filterRow} aria-label="Narrow the pool">
+      <button
+        type="button"
+        className={`${cm.filterChip}${filters.area ? ` ${cm.filterOn}` : ''}`}
+        aria-pressed={filters.area}
+        onClick={() => apply({ ...filters, area: !filters.area })}
+      >
+        📍 My area
+      </button>
+      <button
+        type="button"
+        className={`${cm.filterChip}${filters.interests ? ` ${cm.filterOn}` : ''}`}
+        aria-pressed={filters.interests}
+        onClick={() => apply({ ...filters, interests: !filters.interests })}
+      >
+        🤝 Shared interests
+      </button>
+      {DISCOVERY_VIBES.map((v) => (
+        <button
+          key={v}
+          type="button"
+          className={`${cm.filterChip}${filters.vibe === v ? ` ${cm.filterOn}` : ''}`}
+          aria-pressed={filters.vibe === v}
+          onClick={() => apply({ ...filters, vibe: filters.vibe === v ? null : v })}
+        >
+          <span aria-hidden>{VIBE_EMOJI[v]}</span> {VIBE_LABEL[v]}
+        </button>
+      ))}
+    </div>
+  );
 
   if (cards === null) {
-    return <p className={styles.emptyPool}>Looking around…</p>;
+    return (
+      <>
+        {filterRow}
+        <p className={styles.emptyPool}>Looking around…</p>
+      </>
+    );
   }
   if (cards.length === 0) {
     return (
-      <p className={styles.emptyPool}>
-        Nobody else is bored right now — your card is up, so someone may wave at you. Try Roulette
-        meanwhile?
-      </p>
+      <>
+        {filterRow}
+        <p className={styles.emptyPool}>
+          {anyFilter
+            ? 'Nobody matches those filters right now — loosen them, or just scroll the whole pool.'
+            : 'Nobody else is bored right now — your card is up, so someone may wave at you. Try Roulette meanwhile?'}
+        </p>
+      </>
     );
   }
   return (
     <>
+      {filterRow}
       <div className={styles.stack} aria-label="Bored people near you">
         {cards.map((card) => (
           <StackCard key={card.user.id} card={card} onReport={() => setReporting(card.user.id)} />
@@ -311,6 +409,21 @@ function StackCard({ card, onReport }: { card: DiscoveryCard; onReport: () => vo
       <h3 className={styles.cardName}>{card.user.display_name}</h3>
       <span className={styles.cardUser}>@{card.user.username}</span>
       <p className={styles.cardNote}>{card.note || 'Bored. That’s the whole bio.'}</p>
+      {/* v0.8b §1.65: their what-for chip + the already-public interest overlap. */}
+      {card.vibe ? (
+        <span className={cm.vibeTag}>
+          <span aria-hidden>{VIBE_EMOJI[card.vibe]}</span> looking to: {VIBE_LABEL[card.vibe].toLowerCase()}
+        </span>
+      ) : null}
+      {card.shared_interests.length > 0 ? (
+        <span className={cm.sharedTags} aria-label="You both like">
+          {card.shared_interests.map((tag) => (
+            <span key={tag} className={cm.sharedTag}>
+              you both like {tag}
+            </span>
+          ))}
+        </span>
+      ) : null}
       {card.waved ? (
         <span className={styles.wavedChip}>
           <span aria-hidden>👋</span> Waved

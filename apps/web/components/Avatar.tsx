@@ -18,9 +18,12 @@ interface AvatarProps {
    * chat header pass animated; lists, bubbles and search stay static.
    */
   animated?: boolean;
+  /** v0.8b §1.68 ghost masks: a UserLite serialized as a MASK carries an
+   * empty avatar shell + mask_emoji — render the emoji glyph, never a photo. */
+  maskEmoji?: string | null;
 }
 
-export default function Avatar({ avatar, name, size = 40, animated = false }: AvatarProps) {
+export default function Avatar({ avatar, name, size = 40, animated = false, maskEmoji = null }: AvatarProps) {
   const state = useAppState();
   const ref = useRef<HTMLSpanElement | null>(null);
   const [reducedMotion, setReducedMotion] = useState(false);
@@ -66,7 +69,11 @@ export default function Avatar({ avatar, name, size = 40, animated = false }: Av
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {src ? (
+      {maskEmoji ? (
+        <span aria-hidden style={{ fontSize: Math.round(size * 0.55) }}>
+          {maskEmoji}
+        </span>
+      ) : src ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={src} alt="" width={size} height={size} draggable={false} />
       ) : (

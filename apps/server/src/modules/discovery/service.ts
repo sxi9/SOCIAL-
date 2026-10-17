@@ -37,6 +37,8 @@ export function optinDto(row: OptinRow): DiscoveryOptin {
   return {
     scope: row.scope as DiscoveryOptin['scope'],
     note: row.note,
+    // v0.8b (§1.65): the optional what-for chip the owner chose to share.
+    vibe: (row.vibe ?? null) as DiscoveryOptin['vibe'],
     created_at: row.createdAt.toISOString(),
     expires_at: row.expiresAt.toISOString(),
   };

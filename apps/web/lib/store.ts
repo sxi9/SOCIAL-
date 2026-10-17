@@ -3,6 +3,8 @@
 // may arrive duplicated or out of order without harm (API.md §2.5).
 import { TOAST_MAX_VISIBLE } from '@socialchat/shared';
 import type {
+  AnonMessage,
+  AnonThread,
   Attachment,
   Beacon,
   BeaconRole,
@@ -240,6 +242,16 @@ export interface AppState {
   moodState: MoodState | null;
   /** §1.61 releases + my last-seen marker (null = not fetched yet). */
   releases: ReleasesResponse | null;
+  // ---- v0.8b (§1.62/§1.63/§1.66) ----
+  /** My anonymous reveal-game threads (§1.62), newest activity first;
+   * null = not fetched. Viewer-stamped DTOs — counterpart is null for the
+   * recipient until reveal. */
+  anonThreads: AnonThread[] | null;
+  /** Loaded message windows per anon thread, created_at ASC. */
+  anonMessages: Map<string, AnonMessage[]>;
+  /** §1.63: when the in-app wave nudge last landed (epoch ms; null = none).
+   * Deliberately carries NOTHING else — no identity, no count. */
+  discoveryNudgeAt: number | null;
 }
 
 const state: AppState = {
@@ -286,6 +298,9 @@ const state: AppState = {
   feedbackAsk: null,
   moodState: null,
   releases: null,
+  anonThreads: null,
+  anonMessages: new Map(),
+  discoveryNudgeAt: null,
 };
 
 let version = 0;
@@ -585,13 +600,13 @@ export function applyReactionLocal(conversationId: string, seq: number, emoji: s
 function userLiteFor(conversationId: string, userId: string): UserLite | null {
   if (state.me && state.me.id === userId) {
     const { id, username, display_name, avatar, mood, name_style } = state.me;
-    return { id, username, display_name, avatar, mood, name_style };
+    return { id, username, display_name, avatar, mood, name_style, mask_emoji: null };
   }
   const conv = state.conversations.get(conversationId);
   const p = conv?.participants.find((x) => x.user.id === userId);
   if (!p) return null;
   const { id, username, display_name, avatar, mood, name_style } = p.user;
-  return { id, username, display_name, avatar, mood, name_style };
+  return { id, username, display_name, avatar, mood, name_style, mask_emoji: null };
 }
 
 function patchStamps(msg: Message, userId: string, user: UserLite | null, removed: boolean): Message {
@@ -1057,6 +1072,127 @@ export function resetOnLogout(): void {
   state.feedbackAsk = null;
   state.moodState = null;
   state.releases = null;
+  state.anonThreads = null;
+  state.anonMessages = new Map();
+  state.discoveryNudgeAt = null;
+  emit();
+}
+
+// ---------------------------------------------------------------------------
+// Anonymous reveal game (v0.8b — API.md §1.62). Threads are viewer-stamped
+// DTOs patched live by anon.updated frames; reconnect truth is the GET.
+// Messages live OFF the seq log — ordered by created_at, deduped by id.
+// ---------------------------------------------------------------------------
+
+function anonSortKey(t: AnonThread): number {
+  return new Date(t.last_message?.created_at ?? t.created_at).getTime();
+}
+
+export function setAnonThreads(list: AnonThread[]): void {
+  state.anonThreads = [...list].sort((a, b) => anonSortKey(b) - anonSortKey(a));
+  // Drop message windows for threads that no longer exist (hard-deleted).
+  const ids = new Set(list.map((t) => t.id));
+  for (const id of [...state.anonMessages.keys()]) {
+    if (!ids.has(id)) state.anonMessages.delete(id);
+  }
+  emit();
+}
+
+export function upsertAnonThread(thread: AnonThread): void {
+  const cur = state.anonThreads ?? [];
+  const next = [thread, ...cur.filter((t) => t.id !== thread.id)].sort(
+    (a, b) => anonSortKey(b) - anonSortKey(a)
+  );
+  state.anonThreads = next;
+  emit();
+}
+
+export function removeAnonThread(threadId: string): void {
+  if (state.anonThreads) {
+    state.anonThreads = state.anonThreads.filter((t) => t.id !== threadId);
+  }
+  const msgs = new Map(state.anonMessages);
+  msgs.delete(threadId);
+  state.anonMessages = msgs;
+  emit();
+}
+
+export function setAnonMessages(threadId: string, messages: AnonMessage[]): void {
+  const sorted = [...messages].sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  );
+  state.anonMessages = new Map(state.anonMessages).set(threadId, sorted);
+  emit();
+}
+
+export function appendAnonMessage(threadId: string, message: AnonMessage): void {
+  const list = state.anonMessages.get(threadId) ?? [];
+  if (list.some((m) => m.id === message.id)) return;
+  const next = [...list, message].sort(
+    (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  );
+  state.anonMessages = new Map(state.anonMessages).set(threadId, next);
+  emit();
+}
+
+/** anon.updated frame: viewer-stamped thread replace + optional new message. */
+export function applyAnonUpdated(thread: AnonThread, message: AnonMessage | null): void {
+  upsertAnonThread(thread);
+  if (message) appendAnonMessage(thread.id, message);
+}
+
+// ---------------------------------------------------------------------------
+// Wave nudge (v0.8b — API.md §1.63). One anonymous fact, nothing else.
+// ---------------------------------------------------------------------------
+
+export function setDiscoveryNudge(at: number | null): void {
+  state.discoveryNudgeAt = at;
+  emit();
+}
+
+// ---------------------------------------------------------------------------
+// Canvas stories (v0.8b — API.md §1.66). story.updated is a full-story
+// replace to the audience; reconnect truth stays GET /api/stories.
+// ---------------------------------------------------------------------------
+
+export function replaceStoryLocal(story: Story): void {
+  const cur = state.stories;
+  if (!cur) {
+    // Nothing loaded yet — adopt it through the story.new path instead.
+    applyStoryNew(story);
+    return;
+  }
+  if (state.me && story.author.id === state.me.id) {
+    if (!cur.mine.some((s) => s.id === story.id)) {
+      state.stories = { ...cur, mine: [...cur.mine, story] };
+    } else {
+      state.stories = {
+        ...cur,
+        mine: cur.mine.map((s) => (s.id === story.id ? { ...story, viewed: s.viewed } : s)),
+      };
+    }
+    emit();
+    return;
+  }
+  let found = false;
+  const groups = cur.groups.map((g) =>
+    g.stories.some((s) => s.id === story.id)
+      ? {
+          ...g,
+          stories: g.stories.map((s) => {
+            if (s.id !== story.id) return s;
+            found = true;
+            // Keep the local viewed bit if the frame raced my own view POST.
+            return { ...story, viewed: story.viewed || s.viewed };
+          }),
+        }
+      : g
+  );
+  if (!found) {
+    applyStoryNew(story);
+    return;
+  }
+  state.stories = { ...cur, groups };
   emit();
 }
 

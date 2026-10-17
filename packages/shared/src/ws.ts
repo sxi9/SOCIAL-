@@ -9,6 +9,8 @@ import {
   YOUTUBE_VIDEO_ID_REGEX,
 } from './constants.js';
 import {
+  AnonMessageSchema,
+  AnonThreadSchema,
   AttachmentSchema,
   CallConnStateSchema,
   CallKindSchema,
@@ -498,6 +500,51 @@ export const RouletteExpiredEventSchema = z.object({
 });
 export type RouletteExpiredEvent = z.infer<typeof RouletteExpiredEventSchema>;
 
+// ---------------------------------------------------------------------------
+// v0.8b community pack (API.md §1.62–§1.68, ADR-019 / ADR-020)
+// ---------------------------------------------------------------------------
+
+// §1.62: to the TWO parties of an anonymous thread only, each frame
+// VIEWER-STAMPED (the beacon.*/connection.updated pattern): role/counterpart
+// resolve per recipient, so the recipient's frame carries counterpart null
+// until reveal while the sender's names the recipient — one envelope never
+// ships one party's view to the other. Fired on new messages (message
+// non-null), reveal-mode changes, reveal requests, and the reveal itself
+// (timer sweep or sender tap). Reconnect truth is GET /api/anon/threads —
+// never frame replay.
+export const AnonUpdatedEventSchema = z.object({
+  t: z.literal('anon.updated'),
+  d: z.object({
+    thread: AnonThreadSchema,
+    message: AnonMessageSchema.nullable(),
+  }),
+});
+export type AnonUpdatedEvent = z.infer<typeof AnonUpdatedEventSchema>;
+
+// §1.66: full-story replace on canvas changes (overlay add/remove/approve,
+// canvas_mode switch) — to the story's AUDIENCE sockets only (friends-of
+// minus blocks, the story.new set), viewer-stamped (viewed; pending overlays
+// serialize only to their author and the story author). A pending-only change
+// fans only to those two. Reconnect truth is GET /api/stories.
+export const StoryUpdatedEventSchema = z.object({
+  t: z.literal('story.updated'),
+  d: z.object({
+    story: StorySchema,
+  }),
+});
+export type StoryUpdatedEvent = z.infer<typeof StoryUpdatedEventSchema>;
+
+// §1.63: the in-app wave nudge — to the recipient's own sockets, at most once
+// per opt-in hour (worker-claimed), ONLY when the visible pool ≥ NUDGE_MIN_POOL
+// and the recipient's wave_nudges setting is on. Carries NOTHING but the fact:
+// no identity, no count, no deep link to a specific card (ADR-019; the
+// no-rejection rule). The offline counterpart is the §2.9 nudge push.
+export const DiscoveryNudgeEventSchema = z.object({
+  t: z.literal('discovery.nudge'),
+  d: z.object({}),
+});
+export type DiscoveryNudgeEvent = z.infer<typeof DiscoveryNudgeEventSchema>;
+
 export const ErrorEventSchema = z.object({
   t: z.literal('error'),
   d: z.object({
@@ -549,6 +596,11 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
   DiscoveryMatchedEventSchema,
   RouletteMatchedEventSchema,
   RouletteExpiredEventSchema,
+  // v0.8b (§1.62/§1.63/§1.66, ADR-019/ADR-020): anonymous threads, wave
+  // nudges, canvas stories.
+  AnonUpdatedEventSchema,
+  StoryUpdatedEventSchema,
+  DiscoveryNudgeEventSchema,
   ErrorEventSchema,
 ]);
 export type ServerEvent = z.infer<typeof ServerEventSchema>;

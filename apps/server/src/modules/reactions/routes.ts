@@ -25,9 +25,38 @@ import { db, schema } from '../../db/index.js';
 import { isBlockedPair } from '../../lib/blocks.js';
 import { activeParticipantUserIds } from '../../lib/dto.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
+import { pseudoIdFor } from '../../lib/ghost.js';
 import { publishReactionUpdated } from '../../ws/events.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant } from '../conversations/routes.js';
+import type { ReactionUpdatedEvent } from '@socialchat/shared';
+
+/** v0.8b (§1.68): reaction.updated deltas carry user_id — inside a 👻 ghost
+ * group that is an identity, so non-admin members (except the reactor on
+ * their own frame) receive the PSEUDO-ID instead. */
+async function fanReactionUpdated(convId: string, d: ReactionUpdatedEvent['d']): Promise<void> {
+  const [conv] = await db
+    .select({ visibility: schema.conversations.visibility })
+    .from(schema.conversations)
+    .where(eq(schema.conversations.id, convId))
+    .limit(1);
+  if (conv?.visibility !== 'ghost') {
+    return publishReactionUpdated(await activeParticipantUserIds(convId), d);
+  }
+  const rows = (await db.execute(sql`
+    SELECT user_id, role FROM conversation_participants
+    WHERE conversation_id = ${convId} AND left_at IS NULL
+  `)) as unknown as { user_id: string; role: string }[];
+  const masked = { ...d, user_id: pseudoIdFor(convId, d.user_id) };
+  const realTo = rows
+    .filter((r) => r.role === 'admin' || r.user_id === d.user_id)
+    .map((r) => r.user_id);
+  const maskedTo = rows
+    .filter((r) => r.role !== 'admin' && r.user_id !== d.user_id)
+    .map((r) => r.user_id);
+  if (realTo.length > 0) await publishReactionUpdated(realTo, d);
+  if (maskedTo.length > 0) await publishReactionUpdated(maskedTo, masked);
+}
 
 const mr = schema.messageReactions;
 const m = schema.messages;
@@ -162,7 +191,7 @@ export async function reactionRoutes(fastify: FastifyInstance): Promise<void> {
 
       // Effective add → one reaction.updated delta to all active participants.
       const count = await emojiCount(convId, seq, emoji);
-      await publishReactionUpdated(await activeParticipantUserIds(convId), {
+      await fanReactionUpdated(convId, {
         conversation_id: convId,
         seq,
         kind,
@@ -196,7 +225,7 @@ export async function reactionRoutes(fastify: FastifyInstance): Promise<void> {
       if (deleted.length > 0) {
         // Effective remove; count 0 removes the chip (or the stamp face).
         const count = await emojiCount(convId, seq, emoji);
-        await publishReactionUpdated(await activeParticipantUserIds(convId), {
+        await fanReactionUpdated(convId, {
           conversation_id: convId,
           seq,
           kind: deleted[0]!.kind,

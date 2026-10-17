@@ -39,6 +39,7 @@ import { fixedWindow } from '../../lib/ratelimit.js';
 import { deleteAttachmentObjects } from '../../jobs/gc.js';
 import { publishToUsers } from '../../ws/events.js';
 import { authed, requireAuth } from '../auth/guard.js';
+import { revokeShareTokensFor } from '../sharepages/service.js';
 import { fanOutNewMessage } from '../messages/service.js';
 import { isListingLive, loadListingWithAuthor } from '../listings/service.js';
 import { loadBeacon } from '../beacons/service.js';
@@ -254,6 +255,9 @@ export async function feedRoutes(fastify: FastifyInstance): Promise<void> {
           DELETE FROM attachments
           WHERE comment_id IN (SELECT id FROM post_comments WHERE post_id = ${row.id})
         `);
+        // v0.8b (§1.67): deleting the object revokes its share token in the
+        // SAME transaction — the page and every gated media URL die with it.
+        await revokeShareTokensFor(tx, 'post', row.id);
         await tx.delete(posts).where(eq(posts.id, row.id)); // reactions/comments/polls cascade
       });
       for (const att of atts) await deleteAttachmentObjects(att);

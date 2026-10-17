@@ -91,9 +91,15 @@ function RegisterForm() {
       // Invite accepted during registration → land straight in that chat.
       // Same destinations as ever — confetti + happy bounce + card lift run
       // first (skipped entirely under reduced motion).
+      // v0.8b §1.64: a fresh sign-up with nowhere specific to go lands on the
+      // one-time "find your people" step (skippable; marks itself seen).
+      // Invites and explicit ?next deep links always win.
+      const next = safeNext(search.get('next'));
       const dest = res.invite?.conversation_id
         ? `/c/${res.invite.conversation_id}`
-        : safeNext(search.get('next'));
+        : next !== '/'
+          ? next
+          : '/welcome';
       setMascot('celebrate');
       fx.burst();
       fx.lift();

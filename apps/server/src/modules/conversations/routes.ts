@@ -25,6 +25,7 @@ import {
   viewCtxFor,
   type PartRow,
 } from '../../lib/dto.js';
+import { assignMasksTx } from '../../lib/ghost.js';
 import { badRequest, forbidden, notFound, rateLimited } from '../../lib/errors.js';
 import { parseMultipart } from '../../lib/multipart.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
@@ -474,6 +475,11 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
               last_delivered_seq = GREATEST(conversation_participants.last_delivered_seq, ${joinSeq}::bigint),
               last_read_seq = GREATEST(conversation_participants.last_read_seq, ${joinSeq}::bigint)
           `);
+        }
+        // v0.8b (§1.68): members added to a 👻 ghost group wear masks from
+        // the moment they exist in it.
+        if (conv.visibility === 'ghost') {
+          await assignMasksTx(db, req.params.id, toAdd);
         }
         // ONE system message per add operation (API.md §1.4: "inserts a
         // system message", singular) — one seq bump, one msg.new fan-out,

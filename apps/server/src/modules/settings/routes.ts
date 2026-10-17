@@ -32,6 +32,11 @@ export function settingsDto(u: UserRow): UserSettings {
     activity_posts: u.activityPosts as UserSettings['activity_posts'],
     activity_listings: u.activityListings as UserSettings['activity_listings'],
     activity_games: u.activityGames as UserSettings['activity_games'],
+    // v0.8b (§1.62): who may open an anonymous thread to me — enforced
+    // INVISIBLY at POST /api/anon/threads (every refusal is the same 404).
+    anon_messages: u.anonMessages as UserSettings['anon_messages'],
+    // v0.8b (§1.63): may the worker send me the batched anonymous wave nudge.
+    wave_nudges: u.waveNudges,
   };
 }
 
@@ -67,6 +72,10 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
       if (b.activity_posts !== undefined) patch.activityPosts = b.activity_posts;
       if (b.activity_listings !== undefined) patch.activityListings = b.activity_listings;
       if (b.activity_games !== undefined) patch.activityGames = b.activity_games;
+      // v0.8b (§1.62/§1.63): both enforced at their surfaces, never stored
+      // state rewrites (the §1.13 doctrine).
+      if (b.anon_messages !== undefined) patch.anonMessages = b.anon_messages;
+      if (b.wave_nudges !== undefined) patch.waveNudges = b.wave_nudges;
       const [updated] = await db
         .update(schema.users)
         .set(patch)

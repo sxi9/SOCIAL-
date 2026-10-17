@@ -194,6 +194,7 @@ function rawUserLite(o: Record<string, unknown> | null): UserLite | null {
     // admin is not in anyone's visibility set); name_style is identity.
     mood: null,
     name_style: (((o.name_style as string | undefined) ?? 'none') as UserLite['name_style']),
+    mask_emoji: null,
   };
 }
 
@@ -205,6 +206,7 @@ export interface AdminReportRaw {
   created_at: string | Date;
   closed_at: string | Date | null;
   close_note: string;
+  context_consent: boolean;
   reporter: Record<string, unknown> | null;
   closed_by_user: Record<string, unknown> | null;
   target_user: Record<string, unknown> | null;
@@ -218,10 +220,25 @@ export interface AdminReportRaw {
   tb_vibe: string | null;
   tb_status: string | null;
   tb_creator: Record<string, unknown> | null;
+  // v0.8b previews (§1.62/§1.66/§1.67)
+  target_anon_thread_id: string | null;
+  target_anon_message_id: string | null;
+  am_body: string | null;
+  am_created_at: string | Date | null;
+  target_object_type: string | null;
+  target_object_id: string | null;
+  target_overlay_id: string | null;
+  so_kind: string | null;
+  so_payload: unknown;
+  so_status: string | null;
+  sp_live: boolean | null;
 }
 
 export const ADMIN_REPORT_SELECT = sql`
   SELECT r.id, r.kind, r.reason, r.status, r.created_at, r.closed_at, r.close_note,
+    r.context_consent,
+    r.target_anon_thread_id, r.target_anon_message_id,
+    r.target_object_type, r.target_object_id, r.target_overlay_id,
     row_to_json(rep.*) AS reporter,
     row_to_json(cb.*) AS closed_by_user,
     row_to_json(tu.*) AS target_user,
@@ -229,7 +246,14 @@ export const ADMIN_REPORT_SELECT = sql`
     tm.created_at AS tm_created_at, (tm.deleted_at IS NOT NULL) AS tm_deleted,
     row_to_json(ms.*) AS tm_sender,
     tb.id AS tb_id, tb.vibe AS tb_vibe, tb.status AS tb_status,
-    row_to_json(bc.*) AS tb_creator
+    row_to_json(bc.*) AS tb_creator,
+    am.body AS am_body, am.created_at AS am_created_at,
+    so.kind AS so_kind, so.payload AS so_payload, so.status AS so_status,
+    EXISTS (
+      SELECT 1 FROM share_tokens st
+      WHERE st.object_type = r.target_object_type AND st.object_id = r.target_object_id
+        AND st.revoked_at IS NULL
+    ) AS sp_live
   FROM reports r
   LEFT JOIN users rep ON rep.id = r.reporter_id
   LEFT JOIN users cb ON cb.id = r.closed_by
@@ -237,12 +261,15 @@ export const ADMIN_REPORT_SELECT = sql`
   LEFT JOIN messages tm ON tm.conversation_id = r.target_conversation_id AND tm.seq = r.target_seq
   LEFT JOIN users ms ON ms.id = tm.sender_id
   LEFT JOIN beacons tb ON tb.id = r.target_beacon_id
-  LEFT JOIN users bc ON bc.id = tb.creator_id`;
+  LEFT JOIN users bc ON bc.id = tb.creator_id
+  LEFT JOIN anon_messages am ON am.id = r.target_anon_message_id
+  LEFT JOIN story_overlays so ON so.id = r.target_overlay_id`;
 
 export function adminReportFromRaw(r: AdminReportRaw): AdminReport {
+  const kind = r.kind as AdminReport['kind'];
   return {
     id: r.id,
-    kind: r.kind as AdminReport['kind'],
+    kind,
     reporter: rawUserLite(r.reporter),
     reason: r.reason,
     status: r.status as AdminReport['status'],
@@ -250,7 +277,9 @@ export function adminReportFromRaw(r: AdminReportRaw): AdminReport {
     closed_at: r.closed_at ? new Date(r.closed_at).toISOString() : null,
     closed_by: rawUserLite(r.closed_by_user),
     close_note: r.close_note,
-    target_user: rawUserLite(r.target_user),
+    // Exactly one preview matches the kind — target_user doubles as the
+    // ATTACHED identity on anon/overlay/share rows and rides THEIR previews.
+    target_user: kind === 'user' ? rawUserLite(r.target_user) : null,
     target_message: r.tm_conversation_id
       ? {
           conversation_id: r.tm_conversation_id,
@@ -259,6 +288,9 @@ export function adminReportFromRaw(r: AdminReportRaw): AdminReport {
           type: r.tm_type as MessageType,
           created_at: new Date(r.tm_created_at!).toISOString(),
           deleted: r.tm_deleted === true,
+          // v0.8b (§1.69): the reporter consented at report time — the
+          // context viewer exists for this report.
+          context_available: r.context_consent === true,
         }
       : null,
     target_beacon: r.tb_id
@@ -269,5 +301,43 @@ export function adminReportFromRaw(r: AdminReportRaw): AdminReport {
           creator: rawUserLite(r.tb_creator),
         }
       : null,
+    // v0.8b (§1.62): the reported anon message — the ATTACHED identity plus
+    // the reported words (the recipient was always allowed to show them).
+    // Null once the thread was hard-deleted (reports outlive their targets;
+    // the identity survives in close notes / the ring either way).
+    target_anon_message:
+      kind === 'anon_message' && r.target_anon_thread_id && r.target_anon_message_id && r.am_body !== null
+        ? {
+            thread_id: r.target_anon_thread_id,
+            message_id: r.target_anon_message_id,
+            author: rawUserLite(r.target_user),
+            body: r.am_body,
+            created_at: new Date(r.am_created_at!).toISOString(),
+          }
+        : null,
+    // v0.8b (§1.66): the reported overlay — vector payload + ATTACHED author.
+    target_overlay:
+      kind === 'story_overlay' && r.target_object_id && r.target_overlay_id && r.so_kind
+        ? {
+            story_id: r.target_object_id,
+            overlay_id: r.target_overlay_id,
+            author: rawUserLite(r.target_user),
+            kind: r.so_kind as NonNullable<AdminReport['target_overlay']>['kind'],
+            payload: (r.so_payload ?? null) as NonNullable<AdminReport['target_overlay']>['payload'],
+            status: r.so_status as NonNullable<AdminReport['target_overlay']>['status'],
+          }
+        : null,
+    // v0.8b (§1.67): the non-user share-page report's resolved target.
+    target_share_page:
+      kind === 'share_page' && r.target_object_type && r.target_object_id
+        ? {
+            object_type: r.target_object_type as NonNullable<
+              AdminReport['target_share_page']
+            >['object_type'],
+            object_id: r.target_object_id,
+            author: rawUserLite(r.target_user),
+            gone: r.sp_live !== true,
+          }
+        : null,
   };
 }

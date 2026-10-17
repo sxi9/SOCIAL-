@@ -10,6 +10,7 @@ import {
 } from '@socialchat/shared';
 import { db, schema } from '../db/index.js';
 import { deleteObject, listKeys } from '../s3.js';
+import { pruneDeadShareTokens } from '../modules/sharepages/service.js';
 import type { AttRow } from '../lib/dto.js';
 
 /** Content-hashed keys can be shared across rows — delete only unreferenced
@@ -108,9 +109,18 @@ export async function runGc(): Promise<void> {
         // reference re-orphans the attachment for the normal 24 h GC. The
         // one documented exception to the binding-column rule (ADR-018).
         sql`NOT EXISTS (SELECT 1 FROM conversation_prefs p WHERE p.background_attachment_id = ${schema.attachments.id})`,
+        // v0.8b (§1.69, the 0009 pattern): support-ticket screenshots also
+        // reference ticket→attachment — the sweep ANTI-JOINS
+        // support_tickets_attachment_idx; SET NULL keeps the ticket when the
+        // attachment eventually ages away.
+        sql`NOT EXISTS (SELECT 1 FROM support_tickets t WHERE t.attachment_id = ${schema.attachments.id})`,
       ),
     );
   await deleteAttachmentsFully(orphans);
+
+  // 1b. v0.8b (§1.67): prune share tokens whose object is gone (dead uuid) or
+  //     whose story expired — bookkeeping only; reads already 404 live.
+  await pruneDeadShareTokens();
 
   // 2. Share imports older than 7 days: expire the open ones, drop their
   //    still-unbound attachments, then prune non-open rows.

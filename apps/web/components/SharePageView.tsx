@@ -1,0 +1,367 @@
+// Public share pages (v0.8b — API.md §1.67, FEATURES #79c, ADR-020).
+// SERVER component: renders every SharePage variant for logged-out strangers.
+// Viewing is free; ANY interaction routes to /register?next=<deep link>.
+// Author chips carry username + display_name + the token-gated avatar path —
+// no ids, no UserLite. All media URLs are token-gated proxy paths.
+import Link from 'next/link';
+import type { SharePage, ShareAuthorChip, ShareMedia } from '@socialchat/shared';
+import ShareReportLink from './ShareReportLink';
+import cm from './community.module.css';
+
+const VIBE_EMOJI: Record<string, string> = {
+  food: '🍜',
+  chai: '☕',
+  walk: '🚶',
+  game: '🎮',
+  movie: '🎬',
+  study: '📚',
+  sport: '🏸',
+  chill: '🛋️',
+  custom: '✨',
+};
+
+function gate(next: string): string {
+  return `/register?next=${encodeURIComponent(next)}`;
+}
+
+function AuthorChip({ chip, label }: { chip: ShareAuthorChip; label?: string }) {
+  return (
+    <div className={cm.shareAuthor}>
+      {chip.avatar_url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img className={cm.shareAvatar} src={chip.avatar_url} alt="" width={42} height={42} />
+      ) : (
+        <span className={cm.shareAvatarFallback} aria-hidden>
+          {chip.display_name.trim() ? chip.display_name.trim()[0].toUpperCase() : '?'}
+        </span>
+      )}
+      <span className={cm.shareAuthorText}>
+        <strong>{chip.display_name}</strong>
+        <span>
+          @{chip.username}
+          {label ? ` · ${label}` : ''}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+function MediaGrid({ media }: { media: ShareMedia[] }) {
+  if (media.length === 0) return null;
+  return (
+    <div className={cm.shareMediaGrid}>
+      {media.map((m) =>
+        m.kind === 'video' ? (
+          <video key={m.attachment_id} src={m.url} poster={m.thumb_url ?? undefined} controls playsInline preload="metadata" />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img key={m.attachment_id} src={m.url} alt="" loading="lazy" />
+        )
+      )}
+    </div>
+  );
+}
+
+function fmt(iso: string): string {
+  return new Date(iso).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+export default function SharePageView({
+  page,
+  token,
+  path,
+}: {
+  page: SharePage;
+  token: string;
+  path: string;
+}) {
+  return (
+    <main className={cm.sharePage}>
+      <header className={cm.shareHead}>
+        <Link href="/" className={cm.shareBrand}>
+          Bored Chat
+        </Link>
+        <span className="muted small">chat for when the group chat is dead</span>
+        <Link href={gate(deepLink(page, path))} className={`btn btn-primary ${cm.shareJoin}`}>
+          Join free
+        </Link>
+      </header>
+
+      <PageBody page={page} path={path} />
+
+      <p className={cm.shareFootnote}>
+        Shared from a self-hosted Bored Chat. Viewing is free; joining takes a minute.{' '}
+        <ShareReportLink token={token} />
+      </p>
+    </main>
+  );
+}
+
+function deepLink(page: SharePage, path: string): string {
+  // The §1.67 ?next deep-link-back: land signups where the object lives.
+  switch (page.type) {
+    case 'post':
+      return '/feed';
+    case 'beacon':
+    case 'listing':
+      return '/local';
+    case 'story':
+      return '/';
+    default:
+      return path; // group pages: back here, where the join CTA lives in-app
+  }
+}
+
+function PageBody({ page, path }: { page: SharePage; path: string }) {
+  const next = gate(deepLink(page, path));
+  switch (page.type) {
+    case 'post':
+      return (
+        <article className={cm.shareCard}>
+          <AuthorChip chip={page.author} label={fmt(page.created_at)} />
+          {page.body ? <p className={cm.shareBody}>{page.body}</p> : null}
+          <MediaGrid media={page.media} />
+          {page.poll ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <p className={cm.shareBody} style={{ fontWeight: 600 }}>
+                📊 {page.poll.question}
+              </p>
+              {page.poll.options.map((opt, i) => {
+                const count = page.poll!.counts[i] ?? 0;
+                const total = page.poll!.counts.reduce((a, b) => a + b, 0);
+                const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+                return (
+                  <div key={i} className={cm.sharePollOpt}>
+                    <span className={cm.sharePollBar} style={{ width: `${pct}%` }} aria-hidden />
+                    <span className={cm.sharePollLabel}>
+                      <span>{opt}</span>
+                      <span>{count}</span>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+          <div className={cm.shareMetaRow}>{page.location_label ? <span>📍 {page.location_label}</span> : null}</div>
+          <div className={cm.shareGate}>
+            <Link href={next} className="btn btn-primary">
+              React or comment — join free
+            </Link>
+            <Link href={next} className="btn">
+              See more from @{page.author.username}
+            </Link>
+          </div>
+        </article>
+      );
+    case 'beacon': {
+      const live = page.status === 'open';
+      return (
+        <article className={cm.shareCard}>
+          <AuthorChip chip={page.creator} label="lit a beacon" />
+          <p className={cm.shareBody} style={{ fontSize: 18, fontWeight: 700 }}>
+            {page.vibe === 'custom' && page.custom_vibe_emoji ? page.custom_vibe_emoji : VIBE_EMOJI[page.vibe] ?? '🔥'}{' '}
+            {page.vibe === 'custom' && page.custom_vibe_label ? page.custom_vibe_label : page.vibe}
+            {page.note ? ` — ${page.note}` : ''}
+          </p>
+          <div className={cm.shareMetaRow}>
+            <span>
+              {live
+                ? page.needs > 0
+                  ? `needs ${page.needs} more and it's a plan 🔥`
+                  : 'about to spark'
+                : page.status === 'sparked'
+                  ? 'it sparked 🎉'
+                  : page.status === 'cancelled'
+                    ? 'called off'
+                    : 'wrapped up'}
+            </span>
+            <span>starts {fmt(page.starts_at)}</span>
+            {page.location_label ? <span>📍 {page.location_label}</span> : null}
+          </div>
+          <div className={cm.shareGate}>
+            <Link href={next} className="btn btn-primary">
+              {live ? 'Join this plan — sign up free' : 'See what else is on — join free'}
+            </Link>
+          </div>
+        </article>
+      );
+    }
+    case 'listing':
+      return (
+        <article className={cm.shareCard}>
+          <AuthorChip chip={page.author} label={fmt(page.created_at)} />
+          <p className={cm.shareBody} style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>
+            {page.title}
+          </p>
+          {page.body ? <p className={cm.shareBody}>{page.body}</p> : null}
+          <MediaGrid media={page.media} />
+          <div className={cm.shareMetaRow}>
+            <span>📍 {page.area}</span>
+            {page.price_text ? <span>{page.price_text}</span> : null}
+            {page.location_label ? <span>🗺 {page.location_label}</span> : null}
+            <span>{page.status === 'active' ? 'still up' : page.status}</span>
+          </div>
+          <div className={cm.shareGate}>
+            <Link href={next} className="btn btn-primary">
+              Message the poster — join free
+            </Link>
+          </div>
+        </article>
+      );
+    case 'story':
+      return (
+        <article className={cm.shareCard}>
+          <AuthorChip chip={page.author} label={`story · gone ${fmt(page.expires_at)}`} />
+          <div className={`${cm.shareStoryFrame} ${cm.shareStoryMedia}`}>
+            {page.media.kind === 'video' ? (
+              <video src={page.media.url} poster={page.media.thumb_url ?? undefined} controls playsInline preload="metadata" />
+            ) : (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={page.media.url} alt={page.caption || 'Story'} />
+            )}
+            {/* §1.66 overlays render read-only with public attribution. */}
+            {page.overlays.length > 0 ? (
+              <div className={cm.overlayLayer} aria-hidden>
+                <svg viewBox="0 0 512 512" preserveAspectRatio="none">
+                  {page.overlays.map((o, i) =>
+                    o.payload.kind === 'stroke' ? (
+                      <path
+                        key={i}
+                        d={o.payload.points
+                          .map((p, j) => `${j === 0 ? 'M' : 'L'}${(p.x * 512).toFixed(1)} ${(p.y * 512).toFixed(1)}`)
+                          .join(' ')}
+                        stroke={o.payload.color}
+                        strokeWidth={o.payload.width}
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    ) : null
+                  )}
+                </svg>
+                {page.overlays.map((o, i) =>
+                  o.payload.kind === 'emoji' ? (
+                    <span
+                      key={i}
+                      className={cm.overlayEmoji}
+                      style={{ left: `${o.payload.x * 100}%`, top: `${o.payload.y * 100}%`, fontSize: `${Math.round(34 * o.payload.scale)}px`, pointerEvents: 'none' }}
+                    >
+                      {o.payload.emoji}
+                    </span>
+                  ) : o.payload.kind === 'text' ? (
+                    <span
+                      key={i}
+                      className={cm.overlayText}
+                      style={{ left: `${o.payload.x * 100}%`, top: `${o.payload.y * 100}%`, pointerEvents: 'none' }}
+                    >
+                      {o.payload.text}
+                    </span>
+                  ) : null
+                )}
+              </div>
+            ) : null}
+          </div>
+          {page.caption ? <p className={cm.shareBody}>{page.caption}</p> : null}
+          {page.overlays.length > 0 ? (
+            <p className={cm.shareMetaRow} style={{ margin: 0 }}>
+              🎨 drawn on by {[...new Set(page.overlays.map((o) => `@${o.author_username}`))].join(', ')}
+            </p>
+          ) : null}
+          <div className={cm.shareGate}>
+            <Link href={next} className="btn btn-primary">
+              Draw back — join free
+            </Link>
+          </div>
+        </article>
+      );
+    case 'group_card':
+      return (
+        <article className={cm.shareCard}>
+          <div className={cm.shareAuthor}>
+            {page.avatar_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img className={cm.shareAvatar} src={page.avatar_url} alt="" width={42} height={42} />
+            ) : (
+              <span className={cm.shareAvatarFallback} aria-hidden>
+                {page.title.trim() ? page.title.trim()[0].toUpperCase() : '?'}
+              </span>
+            )}
+            <span className={cm.shareAuthorText}>
+              <strong>{page.title}</strong>
+              {/* member_count is join-decision utility (ADR-020) — it never
+                  appears on any in-app surface. */}
+              <span>group · {page.member_count} members</span>
+            </span>
+          </div>
+          {page.description ? <p className={cm.shareBody}>{page.description}</p> : null}
+          <p className="muted small" style={{ margin: 0 }}>
+            Invite-only: messages stay between members. Ask to join and an admin decides.
+          </p>
+          <div className={cm.shareGate}>
+            <Link href={next} className="btn btn-primary">
+              Ask to join — sign up free
+            </Link>
+          </div>
+        </article>
+      );
+    case 'group_live':
+      return (
+        <article className={cm.shareCard}>
+          <div className={cm.shareAuthor}>
+            {page.avatar_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img className={cm.shareAvatar} src={page.avatar_url} alt="" width={42} height={42} />
+            ) : (
+              <span className={cm.shareAvatarFallback} aria-hidden>
+                {page.title.trim() ? page.title.trim()[0].toUpperCase() : '?'}
+              </span>
+            )}
+            <span className={cm.shareAuthorText}>
+              <strong>{page.title}</strong>
+              <span>public group · {page.member_count} members · read-only here</span>
+            </span>
+          </div>
+          {page.description ? <p className={cm.shareBody}>{page.description}</p> : null}
+          <div>
+            {page.next_cursor ? (
+              <Link className="btn" href={`${path}?cursor=${encodeURIComponent(page.next_cursor)}`} style={{ marginBottom: 8 }}>
+                ← Older messages
+              </Link>
+            ) : null}
+            {page.messages.length === 0 ? (
+              <p className="muted small">Nothing public yet — only messages sent after the group went public show here.</p>
+            ) : (
+              page.messages.map((m) => (
+                <div key={m.seq} className={cm.shareMsg}>
+                  {m.sender?.avatar_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img className={cm.shareAvatar} style={{ width: 30, height: 30 }} src={m.sender.avatar_url} alt="" width={30} height={30} />
+                  ) : (
+                    <span className={cm.shareAvatarFallback} style={{ width: 30, height: 30, fontSize: 13 }} aria-hidden>
+                      {m.sender ? m.sender.display_name.trim()[0]?.toUpperCase() ?? '?' : '?'}
+                    </span>
+                  )}
+                  <span className={cm.shareMsgBody}>
+                    <strong>{m.sender ? m.sender.display_name : 'deleted account'}</strong>
+                    {m.body ? <p>{m.body}</p> : null}
+                    {m.media.length > 0 ? <MediaGrid media={m.media} /> : null}
+                  </span>
+                  <span className={cm.shareMsgTime}>{fmt(m.created_at)}</span>
+                </div>
+              ))
+            )}
+          </div>
+          <div className={cm.shareGate}>
+            <Link href={next} className="btn btn-primary">
+              Reply in the group — join free
+            </Link>
+          </div>
+        </article>
+      );
+  }
+}

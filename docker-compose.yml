@@ -71,6 +71,10 @@ services:
     build:
       context: .
       dockerfile: apps/server/Dockerfile
+      # v0.8b (API.md §1.69): the baked build identity for the admin update
+      # banner — ./bored update passes GIT_COMMIT=$(git rev-parse HEAD).
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-}
     image: socialchat-server
     command: ["node", "dist/api.js"]
     restart: unless-stopped

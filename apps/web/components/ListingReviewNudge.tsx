@@ -68,7 +68,7 @@ export default function ListingReviewNudge({
     const p = conv.participants.find((x) => x.user.id !== meId && x.left_at === null);
     if (!p) return null;
     const { id, username, display_name, avatar, mood, name_style } = p.user;
-    return { id, username, display_name, avatar, mood, name_style };
+    return { id, username, display_name, avatar, mood, name_style, mask_emoji: null };
   })();
   if (!peer) return null;
 

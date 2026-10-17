@@ -15,6 +15,9 @@ const NAV: { href: string; label: string }[] = [
   { href: '/admin', label: 'Overview' },
   { href: '/admin/users', label: 'Users' },
   { href: '/admin/reports', label: 'Reports' },
+  // v0.8b §1.69: public-content moderation + the support inbox.
+  { href: '/admin/content', label: 'Content' },
+  { href: '/admin/support', label: 'Support' },
   { href: '/admin/logs', label: 'Logs' },
   { href: '/admin/settings', label: 'Settings' },
 ];

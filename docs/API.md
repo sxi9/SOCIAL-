@@ -476,6 +476,114 @@ Activity = { id, kind: 'beacon_lit'|'beacon_sparked'|'post_created'|
 // newest first; seeded/appended by migrations).
 ReleaseNote = { version: string(≤20), date: 'YYYY-MM-DD', title: string(≤80),
   items: string[1..12](each ≤200) }
+
+// ---- v0.8b (§1.62–§1.69; ADR-019 / ADR-020) ----
+
+// v0.8b changes to existing DTOs (every new field has a Zod default, so
+// pre-v0.8b payloads — IndexedDB rows, old fixtures — parse clean):
+//  UserLite += { mask_emoji: string|null }   // §1.68 — non-null ONLY inside
+//    ghost-group serializations to non-admin members: the whole UserLite is
+//    then the MASK (pseudo-id, username '', display_name = mask name, empty
+//    avatar shell, mood null, name_style 'none', this emoji as the glyph).
+//  UserSettings += { anon_messages: 'nobody'|'connections'|'everyone',
+//                      // §1.62, default 'connections'
+//                    wave_nudges: boolean }  // §1.63, default true
+//  Conversation += { visibility: 'private'|'invite_only'|'public'|'ghost',
+//                      // §1.68, groups only, default 'private'
+//                    description: string(≤300),          // §1.68
+//                    public_since_seq: number|null,      // §1.68 — non-null
+//    iff visibility='public'; its presence IS the member banner flag, and
+//    ONLY messages with seq > it ever render publicly.
+//                    my_mask: {name, emoji}|null }       // §1.68 — the
+//    viewer's OWN current mask in a 👻 ghost group (their own participant row
+//    serializes REAL so clients can find themselves; this field is the one
+//    place a member reads the pseudonym+emoji the others see them as — incl.
+//    the auto-mask a 409 mask_taken left in place). null outside ghost groups.
+//  Story += { canvas_mode: 'off'|'open'|'approve',       // §1.66, default 'off'
+//             overlays: StoryOverlay[] }                 // §1.66, default []
+//  Message.metadata += { support?: {ticket_id} }         // §1.69 — operator
+//    messages in the per-user Support conversation (sender_id NULL).
+//  CreateReport gains kinds 'anon_message' (§1.62) and 'story_overlay'
+//    (§1.66); message reports gain include_context (§1.69); non-user
+//    share-page reports are their own endpoint (§1.67).
+//  DiscoveryOptin/DiscoveryCard += { vibe: DiscoveryVibe|null }; DiscoveryCard
+//    += { shared_interests: string[] ≤3 }; GET /api/discovery/cards gains
+//    filters (§1.65).
+//  AdminReport.kind widens; AdminReport gains target_anon_message /
+//    target_overlay / target_share_page previews and
+//    target_message.context_available (§1.69).
+
+// §1.62 — one anonymous message. TEXT ONLY (no attachments, by design).
+AnonMessage = { id, thread_id, from_sender: boolean, body: string(1..500),
+  is_riddle_answer: boolean, created_at }
+
+// §1.62 — VIEWER-SPECIFIC: role is the viewer's side; counterpart is the
+// OTHER party and is NULL for the recipient until revealed (live rule:
+// revealed_at set OR reveal_at <= now()); the sender always sees the
+// recipient. The recipient's view of the sender's avatar rides ONLY the
+// token-of-the-thread blur proxy (§1.62) until reveal.
+AnonThread = { id, role: 'sender'|'recipient', counterpart: UserLite|null,
+  reveal_mode: 'none'|'timer'|'riddle',
+  reveal_timer_s: 3600|21600|86400|null,  // iff mode='timer'
+  reveal_at: string|null,                 // iff mode='timer'
+  riddle_q: string(≤200)|null,            // iff mode='riddle'
+  reveal_requested: boolean, revealed_at: string|null,
+  last_message: AnonMessage|null, created_at }
+
+// §1.64 — one people-you-may-know card. Mutual FACES first, count carries the
+// rest (relationship evidence about MY network, not public approval —
+// ADR-019); same_area is a boolean (the area TEXT stays owner-private);
+// shared_groups counts non-ghost groups only.
+Suggestion = { user: UserLite, mutual_count, mutuals: UserLite[](≤3),
+  same_area: boolean, shared_groups: number }
+
+// §1.66 — one attributed VECTOR overlay layer (never burned into the image).
+// payload is a per-kind union (shape authority: packages/shared):
+//   stroke {points: {x,y}[2..256] (normalized 0..1), color: #rrggbb, width: 1..24}
+//   emoji  {emoji ≤16, x, y, scale: 0.5..3}
+//   text   {text: 1..80, x, y}
+// status 'pending' serializes only to the overlay author + story author;
+// 'removed' serializes to NOBODY (the tombstone exists for reports).
+StoryOverlay = { id, story_id, author: UserLite, kind: 'stroke'|'emoji'|'text',
+  payload: <per kind>, status: 'live'|'pending'|'removed', created_at }
+
+// §1.67 — a minted share link. url is the app-origin PATH (/p/<token>;
+// /s/<token> for stories); PUBLIC_ORIGIN prefixes it everywhere absolute.
+ShareLink = { token, url, object: {type: 'post'|'beacon'|'listing'|'story'|'group', id},
+  created_at }
+
+// §1.67 — the unauthenticated page read (GET /api/share/:token/public).
+// Author chips carry NO ids and NO UserLite (username, display_name,
+// token-gated avatar_url, name_style); all media URLs are the token-gated
+// proxy paths, never /api/media/:key. Variants: post | beacon | listing |
+// story | group_card (invite_only: the card ONLY) | group_live (public:
+// card + read-only tail, seq > public_since_seq only). §1.67 has the shapes.
+SharePage = <discriminated union, §1.67>
+
+// §1.68 — one pending invite_only join request (admin read; oldest first).
+GroupJoinRequestRow = { user: UserLite, created_at }
+
+// §1.69 — a support ticket (the admin inbox's index card; the dialogue lives
+// in the per-user Support conversation).
+SupportTicket = { id, category: 'bug'|'question'|'idea'|'safety',
+  body: string(≤2000), attachment: Attachment|null,
+  status: 'open'|'answered'|'closed', created_at, updated_at }
+AdminSupportTicket = SupportTicket & { user: UserLite|null }
+
+// §1.69 — one row of the admin content tab (PUBLIC surfaces only).
+AdminContentRow = { type: 'post'|'beacon'|'listing', id, author: UserLite|null,
+  title, excerpt, status, created_at }
+
+// §1.69 — the consented report-context slice (the ONE admin surface with
+// message bodies; see the consent rule there).
+AdminContextMessage = { seq, sender: UserLite|null, type: MessageType,
+  body: string|null, attachments: {kind, mime}[], created_at,
+  deleted: boolean, reported: boolean }
+
+// §1.69 — the update banner's read.
+AdminUpdateStatus = { running_commit: string|null, running_version: string|null,
+  latest_commit: string|null, update_available: boolean|null,
+  checked_at: string|null }
 ```
 
 Avatar URLs are content-hashed media-proxy URLs (`/api/media/:key`), immutable-cacheable;
@@ -670,6 +778,8 @@ setting: `PATCH /api/users/me {area}` (`≤ 64` chars, `null` clears). It is
 | `group_add_policy` (default `everyone`) | Checked per **target** user T on `POST /api/conversations {type:'group'}` and `POST /api/conversations/:id/participants`: `nobody` denies; `dm_partners` denies unless the adder shares an active DM with T. Any denied target fails the whole request: `403 {error:'group_add_denied', user_ids:[denied]}`. Blocks produce the **same** response (§1.14) so a 403 never confirms a block. Joining via a group invite (§1.11) is the joiner's own action — the policy governs being *added*, not joining. |
 | `mood_effects` (v0.8a, default `true`) | None server-side — a per-VIEWER render toggle (§1.58): whether MY client performs other people's mood-reactive bubble effects. Stored here purely for cross-device sync. |
 | `activity_beacons` / `activity_posts` / `activity_listings` / `activity_games` (v0.8a, default `connections`) | Per-group visibility of my §1.59 activity strip, enforced at strip serialization and ALWAYS intersected with the underlying object's own audience (§1.59 table) — the toggle narrows, never widens. |
+| `anon_messages` (v0.8b, default `connections`) | Who may open a §1.62 anonymous thread to me (`nobody` / `connections` = accepted §1.28 connections literally / `everyone`). Enforced INVISIBLY at `POST /api/anon/threads`: an opt-out, an unmet `connections` and a §1.14 block all answer the same `404 anon_unavailable` — the setting is never confirmable from outside. |
+| `wave_nudges` (v0.8b, default `true`) | May the worker send me the §1.63 batched anonymous wave nudge during a live discovery opt-in. Off suppresses both the push and the in-app `discovery.nudge` frame; nothing else changes (waves still park silently). |
 
 ### 1.14 Blocks & reports (v0.3 — ADR-009)
 
@@ -1568,7 +1678,7 @@ One live call per conversation, enforced by the partial unique index
 
 | Method & path | Request | Response |
 |---|---|---|
-| `POST /api/conversations/:id/calls` | `{kind: 'audio'\|'video'}` | `201 {call, turn}` — inserts the row (`status:'ringing'`, `is_group` snapshotted from the conversation type), adds the initiator to the Redis member set, schedules the ring-timeout job, and returns coturn credentials inline (`turn: null` when no `TURN_SECRET` is configured — local dev connects on host candidates). The initiator then sends the WS `call.invite` frame (§2.12). Must be an active participant; frozen DM (blocked pair) → `404 not_found`; `channel` → `400 call_bad_conversation`; a live call already exists → `409 call_active` (join it instead). Rate **20/hour/user** (`CONVERSATION_CREATE_RATE_PER_HOUR` style fixed window). |
+| `POST /api/conversations/:id/calls` | `{kind: 'audio'\|'video'}` | `201 {call, turn}` — inserts the row (`status:'ringing'`, `is_group` snapshotted from the conversation type), adds the initiator to the Redis member set, schedules the ring-timeout job, and returns coturn credentials inline (`turn: null` when no `TURN_SECRET` is configured — local dev connects on host candidates). The initiator then sends the WS `call.invite` frame (§2.12). Must be an active participant; frozen DM (blocked pair) → `404 not_found`; `channel` → `400 call_bad_conversation`; 👻 ghost group (§1.68 — masks never ring) → `400 call_bad_conversation`; a live call already exists → `409 call_active` (join it instead). Rate **20/hour/user** (`CONVERSATION_CREATE_RATE_PER_HOUR` style fixed window). |
 | `POST /api/calls/:id/join` | — | `200 {call, turn}` — the DM **accept** and the group **join** are the same durable transition. First join: guarded `UPDATE … SET status='ongoing', answered_at=now() WHERE id=$1 AND status='ringing'`; later group joins require `status='ongoing'`. Adds me to the Redis member set via an atomic check-and-add (Lua): `SCARD ≥ CALL_MESH_MAX` → `409 call_full`, nothing added. `404 not_found` (not a participant of the conversation / blocked-pair DM), `410 call_ended` (terminal status). Idempotent re-join (already a member) → `200`, no event. Fans `call.updated`; the joiner then **offers to every existing member** (§2.12 mesh rule). |
 | `POST /api/calls/:id/end` | `{reason?: 'completed'\|'failed'}` (default `completed`) | `200 {call}` — hang up. From `ringing`, initiator only: the call becomes `missed` (cancel-before-answer reads as missed for callees; missed-call machinery below runs). From `ongoing`: removes me from the member set; when ≤ 1 live member remains the call becomes `completed` (or `failed` iff `reason:'failed'` and **no** join other than the initiator ever answered media — client-reported, coherence-checked). Group members who leave without ending just stop being members (the WS `call.leave` frame is the instant signal; this REST call is the durable one). Idempotent on terminal calls → `200`. |
 | `POST /api/calls/:id/reject` | — | `200 {call}` — **DM callee only**, while `ringing`: status `rejected`, `ended_at=now()`. No system message is posted (a decline is not an archive entry — the liking-gap rule; the caller's UI just stops). In groups, declining is personal and ephemeral: use the WS `call.reject` frame; the call keeps ringing for others → this endpoint answers `400 call_bad_reject` for group calls. |
@@ -2320,6 +2430,330 @@ server surface for the release markers.
   dots on tabs, no re-surfacing after dismissal (PSYCHOLOGY rules 4/5 —
   the user pulls, the app never guilts).
 
+### 1.62 Anonymous reveal game (v0.8b — ADR-019, FEATURES #77)
+
+A guessing game, not a mask for abuse: the sender is anonymous **to the
+recipient only, never to the server** — `anon_threads.sender_id` is an
+ordinary FK, anonymity is pure serialization, and reporting an anonymous
+message attaches the sender's real identity to the report. Text only (no
+attachments, no reactions, no receipts, no typing — the game is deliberately
+smaller than a chat and lives OFF the seq log). Recipient opt-in:
+`UserSettings.anon_messages` (`nobody`/`connections`/`everyone`, DEFAULT
+`connections` — §1.13 has the enforcement row).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/anon/threads` | `{user_id, body ≤ 500}` | `201 {thread: AnonThread}` — opens my open thread to that user (or `200` appending to it: ONE open thread per direction, the partial unique; migration 0010). **Refusals are invisible and byte-identical** — `404 anon_unavailable` for: unknown user, `anon_messages:'nobody'`, `'connections'` unmet, §1.14 blocked either way, banned target, self. Rates: `ANON_SEND_RATE_PER_HOUR` (20) on messages, `ANON_NEW_THREAD_RATE_PER_DAY` (5) on distinct new recipients → `429`. |
+| `GET /api/anon/threads` | — | `200 {threads: AnonThread[]}` — mine (both roles), newest activity first. VIEWER-STAMPED: the recipient's `counterpart` is `null` until revealed. |
+| `GET /api/anon/threads/:id/messages?cursor=&limit=` | — | `200 {messages: AnonMessage[], next_cursor}` — `created_at ASC`. Party-only, else `404 not_found`. |
+| `POST /api/anon/threads/:id/messages` | `{body ≤ 500}` | `201 {message}` — either party; the recipient's replies ride the same thread (their identity was never hidden from the sender). Fan-out + push below. |
+| `POST /api/anon/threads/:id/request-reveal` | — | `200 {thread}` — RECIPIENT only; stamps `reveal_requested_at` (idempotent). The sender sees `reveal_requested: true` and picks a game (or ignores it — no nag, no timer on the request). |
+| `POST /api/anon/threads/:id/set-reveal` | `{mode:'timer', timer_s: 3600\|21600\|86400}` \| `{mode:'riddle', riddle_q ≤ 200}` | `200 {thread}` — SENDER only. Timer: `reveal_at = now() + timer_s`. Riddle: the question serializes to both. Re-setting replaces (a riddle may become a timer); `409 already_revealed` after reveal. |
+| `POST /api/anon/threads/:id/answer-riddle` | `{answer ≤ 200}` | `201 {message}` — RECIPIENT, `reveal_mode:'riddle'` only (`400 not_a_riddle`). The answer lands as an ordinary `AnonMessage` with `is_riddle_answer: true` — the sender's client renders "that's right ✓" on it, which calls reveal below. Satisfying is the SENDER's call, by design. |
+| `POST /api/anon/threads/:id/reveal` | — | `200 {thread}` — SENDER only, anytime (the riddle confirm AND the reveal-anytime button are the same endpoint): stamps `revealed_at`; the recipient's next frame carries the full `counterpart` UserLite. Idempotent. |
+| `DELETE /api/anon/threads/:id` | — | `204` — either party; HARD-deletes the thread + messages (no archive of a game nobody wants). Frees the open-thread slot; `ANON_NEW_THREAD_RATE_PER_DAY` blunts delete-and-retry. |
+| `GET /api/anon/threads/:id/avatar?v=static` | party-only (authed) | The **blurred-avatar proxy** (the §1.11 token-gated pattern, thread-gated): streams a server-rendered image, Gaussian blur sigma = `ANON_BLUR_SIGMA_MAX` (24) × factor, factor = 1 under `reveal_mode` none/riddle, `clamp((reveal_at − now)/reveal_timer_s, 0, 1)` under a timer, 0 (clear) once revealed. **Pre-consent (reveal_mode none/riddle) the source is the MASCOT blob, never real pixels** — even a max-blurred real avatar is reversible to identity by replaying the resize→blur→encode pipeline over candidates' public avatars and matching bytes; the sender's real avatar enters the pipeline only once a timer is RUNNING (the sender picked the mechanism) or the thread is revealed. **The real avatar URL/pixels never reach the recipient early** — client-side blur would ship the answer. Static only (an animated avatar is identifiable by motion). `Cache-Control: private, max-age=60` (`ANON_AVATAR_CACHE_TTL_S` — the blur must keep moving). Sender/avatar-less → the mascot-blob fallback at every stage. |
+
+**Timer reveal (worker, queue `timers`, every `ANON_SWEEP_INTERVAL_S`):**
+stamps `revealed_at` where `reveal_at <= now()` (via `anon_threads_reveal_idx`)
+and fans `anon.updated`; reads ALSO resolve `reveal_at <= now()` as revealed
+live (the §1.44 pattern — sweep lag never shows a stale mask). The recipient
+watches the avatar un-blur progressively as the factor falls: the client
+re-fetches the proxy on a gentle cadence and animates between frames.
+
+**Fan-out & push.** Every mutation fans `anon.updated` (§2.3) to the two
+parties, viewer-stamped. New messages push through the §2.9 guards (offline,
+unread by the ANON read model, debounce) with **identity-free copy both
+ways**: `ANON_PUSH_BODY_RECIPIENT` ("Someone sent you an anonymous message
+🎭") / `ANON_PUSH_BODY_SENDER`. Blocks are structural: a block created
+mid-thread freezes it exactly like a §1.14 DM (`404` on further sends, both
+directions, no reason stated).
+
+**Reports (binding, FEATURES #77).** `POST /api/reports {kind:'anon_message',
+thread_id, message_id, reason?}` — reporter must be a party, the message the
+OTHER party's. The server stamps `target_user_id` = the reported message's
+author (migration 0010's shape CHECK makes an identity-less anon report
+unrepresentable) and copies the message body into the admin preview
+(`AdminReport.target_anon_message` — the reported words are what is being
+reported; the recipient was always allowed to show them). Anonymity never
+survives a report, and the UI says so in the report sheet.
+
+### 1.63 Wave nudges (v0.8b — ADR-019, FEATURES #78a)
+
+The §1.44 single-wave rule stands: a wave parks silently and **names nobody,
+ever**. The nudge adds exactly one anonymous fact — "someone in the pool
+waved at you" — and only when anonymity is arithmetically safe.
+
+- **Trigger:** on each parked (non-matching) wave insert, if the target's
+  `wave_nudges` setting is on and their opt-in's `wave_nudged_at` is null,
+  the api enqueues a nudge job (queue `discovery`).
+- **Worker, in order (binding):** (1) re-check the target's opt-in is live
+  and un-nudged; (2) compute the target's **visible pool** — the §1.44
+  mutual-reachability card set, minus blocks/friends-of/banned — and require
+  `≥ NUDGE_MIN_POOL` (4): below it the job drops silently and the claim stays
+  open (a later wave in the same hour retries); (3) claim atomically:
+  `UPDATE discovery_optins SET wave_nudged_at = now() WHERE user_id = $1 AND
+  expires_at > now() AND wave_nudged_at IS NULL` — zero rows = another job
+  won; (4) deliver: `discovery.nudge {}` to live sockets, else one §2.9 push
+  `{title: NUDGE_PUSH_BODY}` ("Someone in the pool waved at you 👀") with no
+  identity, no count, no per-card deep link (tap opens the discovery pool).
+- **Batching is the claim:** N waves in one opt-in hour = at most ONE nudge
+  (`wave_nudged_at` is cleared only by a fresh `PUT /api/discovery/optin`).
+  A nudge is never retroactive praise and never a rejection surface: it fires
+  at most once, says nothing about who or how many, and stops with the
+  setting (§1.13 row) or the opt-in.
+
+### 1.64 Suggestions & find-your-people (v0.8b — ADR-019, FEATURES #78)
+
+People-you-may-know for Feed-Discover and the connections page. Pull-only
+(no WS, no push — the §1.38 doctrine); dismissals are permanent and silent.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/suggestions` | — | `200 {suggestions: Suggestion[]}` — ≤ `SUGGESTIONS_MAX` (20), best evidence first (`mutual_count` DESC, then `shared_groups`, then `same_area`, then newest account). Candidates: connections-of-my-connections ∪ same-`area` users ∪ co-members of my **non-ghost** groups. **Excluded entirely:** me, §1.14 blocked pairs (both ways), the friends-of set, pending connection requests either direction, dismissed, banned, and anyone reachable ONLY through a 👻 ghost group (unlisted everywhere, §1.68). Signals per card: `mutuals` (≤ `SUGGESTION_MUTUALS_PREVIEW_MAX` faces — people I already know, so no new exposure) + `mutual_count`; `same_area` as a **boolean** (the area TEXT stays owner-private, FEATURES #30); `shared_groups` count. |
+| `POST /api/suggestions/:userId/dismiss` | — | `204` — idempotent, permanent (`suggestion_dismissals`, migration 0010). The dismissed user is NEVER told, and nothing re-surfaces them (PSYCHOLOGY rule 4). |
+
+**Find-your-people (client flow, binding):** one post-signup step — set your
+`area` (§1.13 PATCH, optional) → render `GET /api/suggestions` as dismissible
+cards with the §1.28 connect action → skippable, never re-shown
+(device-local seen key, the `TOUR_SEEN_KEY` pattern). **NEVER user cards on
+the login page** — unauthenticated member enumeration stays forbidden (the
+standing decision).
+
+### 1.65 Discovery filters & vibes (v0.8b — FEATURES #78b)
+
+`PUT /api/discovery/optin` gains `vibe?: DiscoveryVibe|null`
+(`DISCOVERY_VIBES` — the beacon chip vocabulary; migration 0010) — an
+optional what-for chip on my card ("looking to: 🚶 walk"). `DiscoveryCard`
+gains `vibe` and `shared_interests` (the overlap of the two **public** §1.37
+interest lists, ≤ `DISCOVERY_SHARED_INTERESTS_MAX` — already-public data,
+intersected, nothing new revealed).
+
+`GET /api/discovery/cards?vibe=&interests=&area=` — each filter only ever
+**narrows** the §1.44 mutual-reachability pool (never widens, never re-ranks):
+`vibe=<chip>` keeps cards wearing that chip; `interests=1` keeps cards
+sharing ≥ 1 public interest tag with me; `area=1` keeps cards whose owner's
+`area` equals mine (citext — the MATCH is computed server-side, the text
+never serialized). Filters are honest about their data: a card without a
+vibe simply never matches a vibe filter, and **no age/gender filters exist
+because no such fields exist** (FEATURES #78b). The §1.44 rules are otherwise
+verbatim (own live opt-in required, `DISCOVERY_CARDS_MAX`, no cursor).
+
+### 1.66 Canvas stories (v0.8b — ADR-020, FEATURES #79a)
+
+A story becomes a collaborative canvas **only by its author's invitation**:
+`stories.canvas_mode` (`off` DEFAULT / `open` / `approve`, migration 0010).
+Viewer contributions are **separate attributed vector overlay layers**
+(`story_overlays`) — never burned into the image: every overlay wears a
+username chip, is tappable → "drawn by @x" → profile, survives in its own
+row, and dies with the story (cascade under the §1.34 hard-delete sweep).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/stories` | (§1.34) + `canvas_mode?` (default `'off'`) | unchanged otherwise. |
+| `PATCH /api/stories/:id` | `{canvas_mode}` | `200 {story}` — author only (`404` otherwise). Switching to `'off'` keeps existing overlays visible (they were invited); it stops NEW ones. Fans `story.updated`. |
+| `POST /api/stories/:id/overlays` | `{payload}` — the per-kind vector union (§0 `StoryOverlay`; Zod shape authority) | `201 {overlay}` — viewer must be in the story's audience (else the §1.34 `404`). `403 canvas_closed` when `canvas_mode:'off'` **and, byte-identically, when the viewer is canvas-banned** (`story_canvas_bans` — a ban is never confirmable). Status: `'live'` under `open` (and always for the story author), `'pending'` under `approve`. Cap `OVERLAYS_PER_USER` (5) live+pending per (story, contributor), counted under the story row lock (the TROUBLESHOOTING counter-race pattern) → `409 overlay_limit`. Rate `OVERLAY_RATE_PER_HOUR` (60). |
+| `DELETE /api/stories/:id/overlays/:overlayId` | — | `204` — the STORY AUTHOR (any overlay — one-tap remove) or the OVERLAY AUTHOR (their own). Sets `status:'removed'` (tombstone: reports must outlive moderation; serializes to nobody, frees the cap). Idempotent. |
+| `POST /api/stories/:id/overlays/:overlayId/approve` | — | `200 {overlay}` — story author only; `pending` → `live`. `409 overlay_not_pending` otherwise. |
+| `PUT /api/users/:id/canvas-ban` / `DELETE` | — | `204` — ban/unban `:id` from ALL my canvases, present and future (idempotent; `400 block_self` shape for self). Existing overlays by the banned user stay until removed (the author already has one-tap remove). |
+| `GET /api/users/me/canvas-bans` | — | `200 {users: UserLite[]}` — my list (the §1.14 blocks-list pattern; no timestamps). |
+
+**Serialization (binding).** `Story.overlays` carries `live` overlays in
+`created_at ASC` (paint order), PLUS `pending` ones **only** to their author
+and the story author. Blocked pairs are invisible both ways: an overlay whose
+author is blocked w.r.t. the viewer is dropped from that viewer's DTO (and a
+blocked viewer never saw the story at all, §1.34). The contributor strip
+("🎨 maya, arjun +3") derives client-side from overlay FACES — no contributor
+counter is ever serialized alone (PSYCHOLOGY rule 3). Live updates ride
+`story.updated` (§2.3) to the story's audience; **no push, ever** (stories
+stay ambient, §1.34).
+
+**Reports:** `POST /api/reports {kind:'story_overlay', story_id, overlay_id,
+reason?}` — any viewer of the story; the server stamps the overlay author as
+`target_user_id` (identity attached — migration 0010's shape CHECK) and the
+admin preview carries the vector payload (`AdminReport.target_overlay`).
+Removed overlays stay reportable while the story lives.
+
+**Render contract (binding):** overlays draw above the media in normalized
+0..1 coordinates; tapping one highlights it + shows the chip; reduced-motion
+disables entrance animations (layers simply appear); the §1.21 doodle brush
+is the stroke tool. The client never rasterizes overlays into saved/shared
+media.
+
+### 1.67 Public share pages (v0.8b — ADR-020, FEATURES #79c)
+
+Every **PUBLIC-audience** post, beacon and listing can have ONE stable,
+revocable share token (`share_tokens`, migration 0010 — the ADR-007
+invite-token doctrine); stories only by the author's explicit mint, dying
+with the story; groups per §1.68. The web app serves SSR pages `/p/<token>`
+(`/s/<token>` for stories) with full OG/twitter tags; **`PUBLIC_ORIGIN`
+governs every absolute URL** (the §1.53 `publicOrigin()` rule + the
+TROUBLESHOOTING entry), and the SSR fetch re-sends `x-forwarded-for` (the
+house SSR-hop rule). **Friends-only content never gets a token** — and a
+token outlives nothing: every public read re-checks the object LIVE.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/share-links` | `{type: 'post'\|'beacon'\|'listing'\|'story'\|'group', id}` | `200 {share_link: ShareLink}` — mint-or-return the object's ONE open token. Authorization: post/beacon/listing → the object is PUBLIC (`audience:'public'` / `is_public`) AND visible to me → else `400 not_public` (invisible object → `404 not_found`, §1.14 shape); story → **author only** (`404` otherwise — "Create share link" is the author's act); group → owner/admin of a `public`\|`invite_only` group (`400 not_public` for private/ghost). |
+| `DELETE /api/share-links/:token` | — | `204` — revoke (idempotent): object author, or the group's owner/admins, or a §1.41 admin. The page and every gated media URL die instantly. Deleting the object, narrowing its audience, cancelling the beacon, or a group leaving `public`/`invite_only` revokes route-side in the same transaction. |
+| `GET /api/share/:token/public` | **UNAUTHENTICATED** | `200 {page: SharePage}` \| `404 share_not_found` — byte-identical for unknown, revoked, deleted, no-longer-public, expired-story, banned-author (no enumeration, no oracle). Live checks every read. Rate `SHARE_PUBLIC_RATE_PER_HOUR_PER_IP` (120). |
+| `GET /api/share/:token/media/:attachmentId?v=` | **UNAUTHENTICATED** | Streaming proxy (the §1.11 invite-avatar pattern) — serves the attachment **iff** the valid token's object owns it: post attachments, listing photos, the story attachment, or a public-group message attachment with `seq > public_since_seq`. Anything else `404`. `Cache-Control: private, max-age=300` (`SHARE_MEDIA_CACHE_TTL_S`). Rate `SHARE_MEDIA_RATE_PER_HOUR_PER_IP` (240). **No open media routes exist** — `/api/media/:key` stays authed. |
+| `GET /api/share/:token/avatar/:userId?v=static\|animated` | **UNAUTHENTICATED** | The author/sender avatar proxy, token-gated the same way (`:userId` must be the page's author or a rendered public message's sender — else `404`). |
+| `POST /api/share/:token/report` | **UNAUTHENTICATED** `{reason: 1..500}` | `204` — the non-user report: stored as a reports row with `reporter_id NULL`, `reporter_ip` (aged by the retention GC), kind `'share_page'`, and the resolved `{target_object_type, target_object_id}` + author snapshot → the §1.41 admin queue. Reason REQUIRED. **Hard rate limit** `SHARE_REPORT_RATE_PER_DAY_PER_IP` (5) → `429`. Unknown/revoked token → `404` (same shape as the page). |
+
+**Page contracts (binding).** Shapes in §0 `SharePage`. Author chips carry
+username + display_name + the token-gated avatar path — **no ids, no
+UserLite, no last-seen, no mood**. Beacon pages show `needs` (the §1.15
+utility number) and **no joiner faces or identities**; location renders the
+LABEL only (lat/lng never ship to strangers); poll options+counts render
+read-only (§1.50's counts-on-options rule). Viewing is free; **ANY
+interaction** (react, comment, join, wave, profile, "see more") routes to
+`/register?next=<deep-link>` — after signup/login the client completes the
+deep link back to the object in-app. OG tags: og:title/description from the
+content (author display name + excerpt), og:image = the first gated media /
+avatar proxy URL (absolute via `PUBLIC_ORIGIN` — unfurlers get exactly what
+any stranger gets).
+
+**GC (worker, queue `gc`, nightly):** prune tokens whose object is gone
+(dead uuid) or whose story expired — bookkeeping only; reads already 404
+live.
+
+### 1.68 Group visibility modes (v0.8b — ADR-020, FEATURES #79d)
+
+`conversations.visibility` (`private` DEFAULT / `invite_only` / `public` /
+`ghost`, **groups only** — DB CHECK; DMs and channels are untouched), plus
+`description` (≤ `GROUP_DESCRIPTION_MAX_CHARS`) and `public_since_seq`
+(migration 0010).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `PATCH /api/conversations/:id/visibility` | `{visibility?, description?, confirm?}` | `200 {conversation}` — **group admins only** (`403 forbidden`; non-groups `400 bad_conversation_type`). Switching **to `public`** requires `confirm: true` (`400 confirm_required` — the admin-confirmed switch) and, in ONE transaction: stamps `public_since_seq = last_seq`, drops a `system` message (`event:'visibility_changed'`, `metadata.system.visibility:'public'` — every member's timeline says it plainly), fans `conv.updated`. Switching **away from `public`**: clears `public_since_seq` + revokes the group's share token (a later re-publicize stamps a FRESH floor — history never retro-exposed). Switching **to `ghost`**: `confirm: true` required; auto-assigns masks to every current member (GHOST_MASK pools) in the transaction + the system message. **A ghost group never switches away** → `400 ghost_is_forever` (members spoke under masks; no admin toggle may unmask them — ADR-020). |
+| `POST /api/conversations/:id/join` | — | visibility `public` → `200 {status:'joined', conversation}` — any non-banned user; participant inserted with `join_seq = last_seq` (§1.4 floor; the §1.14 group-coexistence rule applies to blocks), `400 group_too_large` at 256. `invite_only` → `202 {status:'requested'}` — parks a `group_join_requests` row (idempotent re-request `202`). `private`/`ghost` → `404 not_found`, **byte-identical to an unknown id** (unlisted means unlisted). Rate `GROUP_JOIN_RATE_PER_HOUR` (20). |
+| `GET /api/conversations/:id/join-requests` | — | `200 {requests: GroupJoinRequestRow[]}` — admins only, oldest first (a queue, not a ranking). |
+| `POST /api/conversations/:id/join-requests/:userId/approve` | — | `200 {conversation}` — admin; one transaction: insert participant (§1.4 floor + `participant_added`-style system message), delete the request, `conv.new` to the joiner. Gone request → `404`. |
+| `DELETE /api/conversations/:id/join-requests/:userId` | — | `204` — deny: deletes the row, **silently** — no event, no notice, nothing for the requester to refresh against (the no-rejection-surface rule; their button simply stays "requested" until they ask again). |
+| `PUT /api/conversations/:id/mask` | `{mask_name ≤ 32, mask_emoji ≤ 16}` | `200 {conversation}` — MY mask in a GHOST group I'm a member of (`400 not_ghost` otherwise); the returned conversation's `my_mask` carries the mask now worn. Unique per group → `409 mask_taken` (the previous mask — often the auto-assigned one — stays on, still readable via `my_mask`). Fans `conv.updated` (members see the mask change; nothing links old to new name for non-admins beyond the event itself). |
+
+**Share pages (ties into §1.67).** `invite_only` → the `group_card` page:
+name, avatar (token-gated), `description`, `member_count` — **never
+messages**; the join CTA deep-links to the in-app request flow.
+`member_count` here is join-decision utility (how alive is this group), the
+ADR-012 trust-information argument re-made in ADR-020 — it never ranks,
+compares or rewards, and stays OFF every in-app surface (§1.35's rule
+stands). `public` → the `group_live` page: the card + a **read-only** tail of
+messages with `seq > public_since_seq` ONLY (≤ `SHARE_GROUP_PAGE_MESSAGES_MAX`
+per page, older pages by cursor, floored at `public_since_seq` ALWAYS);
+senders render with real identity — the switch was admin-confirmed, the
+system message announced it, and the DTO's `public_since_seq` keeps a
+**persistent member banner** on screen ("messages here are publicly
+readable"). Tombstones, undone messages and system noise never render.
+`ghost` → **no share page exists**, and no token can be minted.
+
+**👻 Ghost semantics (binding).** Unlisted EVERYWHERE: no discovery/search
+listing, never a `shared_groups` signal in §1.64, `recordActivity` skips
+ghost conversations entirely (no `game_won` leak), no share token, invites
+are the only door (§1.11, minted by admins). **Masks at serialization:** to a
+non-admin member, every OTHER member identity inside the group's payloads
+(participants, senders, §1.18 surfaces, reactions, stamps, system
+actor/target ids, `metadata.game` player ids — every DTO path, REST and WS
+alike) serializes as the MASK UserLite — `id` = a derived pseudo-id (HMAC of
+(conversation_id, user_id) with a server secret: stable within the group,
+linkable to nothing outside it), `username: ''`, `display_name` = mask name,
+empty avatar shell, `mood: null`, `name_style: 'none'`, `mask_emoji` set
+(§0). The viewer's OWN rows serialize with their REAL identity (a client must
+find itself — bubble alignment, "my role", my-turn detection); the pseudonym
+the OTHERS see them as is the explicit own-mask field
+`Conversation.my_mask: {name, emoji}` (§0) — the ghost banner and the mask
+editor read it, and it is how a member learns the auto-mask a
+`409 mask_taken` left them wearing. A §1.27 game challenge in a ghost group
+may name its opponent by the pseudo-id the client sees; the server resolves
+it back to the real participant (the mapping never leaves the server).
+**Calls are refused in ghost groups** (`POST …/calls` →
+`400 call_bad_conversation`): call DTOs and §2.12 signaling frames carry real
+user ids before anyone accepts — masks never ring. A live call straddling the
+switch-to-ghost is ended in the same breath, and the §1.42 call LOG
+(pre-switch history) serializes pseudo-id-masked to non-admin members.
+**Group admins see real identities** (abuse handling needs a responsible
+adult — the #77 precedent), plus each member's mask. Presence, typing, last-seen and §1.18
+seen-by are **suppressed entirely** in ghost groups (they are identity side
+channels; receipts still advance watermarks for MY unread counts, serialized
+as the §1.13 receipts-off shape). @mentions are not parsed (a mention is an
+identity assertion). Push for ghost messages uses the group title only, never
+a sender name. **Reports attach real identity**: a `kind:'message'` report
+from inside a ghost group resolves the true sender in `AdminReport` — the
+server was never anonymous.
+
+### 1.69 Admin: content tab, support inbox, report context & update banner (v0.8b — ADR-020, FEATURES #81)
+
+All §1.41 framing holds: admin-only (404-shaped to everyone else), every
+action ring-logged, **no private-message reader exists**. The one bounded
+exception (the consented context viewer) is spelled out below.
+
+#### Content moderation tab (#81a)
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/admin/content?type=&q=&cursor=&limit=` | `type` `post`\|`beacon`\|`listing` (omitted = all); `q` ILIKE over title/body | `200 {items: AdminContentRow[], next_cursor}` — **PUBLIC surfaces only**: `audience:'public'` posts, `audience:'public'` beacons, ALL board listings (the board is instance-readable by design). These are things any member can already read — excerpts here cross no privacy line. `created_at DESC`. Private chats, friends-only posts and `friends` beacons are **not representable** in this endpoint, structurally. |
+| `POST /api/admin/content/:type/:id/takedown` | `{reason: 1..500}` — REQUIRED | `200` — removes via the owning module's own semantics (post → the §1.36 delete cascade; beacon → `cancelled` + its §1.15 fan-out; listing → the author-delete path, share token revoked either way), **neutrally notifies the author** — one §1.69 Support-conversation message, `"A moderator removed your <post/beacon/listing>. Reason: <reason>"`, sender_id NULL (never a named admin, never a public mark on the author) — and ring-logs `{type, id, author_id, reason}`. `400 bad_admin_target` for an admin's own content (demote first, the §1.41 rule). |
+
+#### Support inbox (#81b)
+
+The user-facing intake is Settings → Help & feedback; the dialogue is an
+ordinary conversation, so delivery, push, unread and receipts come free.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/support/tickets` | `{category: 'bug'\|'question'\|'idea'\|'safety', body: 1..2000, attachment_id?}` — attachment mine, kind `image`, `ready` (the optional screenshot) → `400 bad_attachment` | `201 {ticket}`. Rate `SUPPORT_TICKET_RATE_PER_DAY` (10). No fan-out (the inbox is pull for admins). |
+| `GET /api/support/tickets` | — | `200 {tickets}` — mine, `created_at DESC`. |
+| `GET /api/admin/support?status=&cursor=&limit=` | `status` filter, omitted = all | `200 {tickets: AdminSupportTicket[], next_cursor}` — open first, then `created_at DESC`. |
+| `GET /api/admin/support/:id` | — | `200 {ticket, messages}` — the ticket + the user's **Support-conversation** dialogue (`Message[]`, `seq ASC`). This is NOT private-chat reading: the Support conversation exists to talk to the operator — consent is structural (ADR-020). |
+| `POST /api/admin/support/:id/reply` | `{body: 1..2000}` | `200 {ticket}` — in one transaction: **lazily create the user's Support conversation** (type `group`, title `SUPPORT_CONVERSATION_TITLE` = "Bored Chat Support", `created_by NULL`, `metadata.support: true`, the user as sole `member` — no dm_key, no second human), insert the reply as an ordinary §1.5 message with `sender_id NULL` + `metadata.support = {ticket_id}` (clients render the Support brand, §0), set the ticket `answered`. Normal `msg.new` fan-out + §2.9 push — a support answer is a message like any other. |
+| `POST /api/admin/support/:id/close` | `{note? ≤ 500}` | `200 {ticket}` — status `closed`; ring-logged. Idempotent. |
+
+The user may reply **in the Support conversation** (they are a participant;
+ordinary §1.5 send): a user message there re-opens their most recent
+non-closed ticket (or the latest `closed` one) to `open` — route-side, no new
+endpoint. Admins never appear as participants; they read via the ticket
+viewer and speak via replies. The conversation is excluded from §1.64
+`shared_groups`, §1.67/§1.68 sharing and §1.41 user-export counterparty rules
+by construction (one member). The ticket's optional screenshot is the user's
+**consented submission to the operator**: its `url`/`thumb_url` resolve for
+active §1.41 admins through the `GET /api/media/:key` ACL (a dedicated
+support-ticket-attachment branch) as well as for the ticket owner.
+
+#### Report-context viewer (#81c)
+
+The moderation path for private content remains **reports, with reporter
+consent**. v0.8b makes the consent explicit and bounded: the §1.14 message
+report gains `include_context: boolean` (default **false**), rendered in the
+report sheet beside the EXACT copy `REPORT_CONTEXT_CONSENT_COPY` — "Also
+share the 10 messages around this one with the moderators, so they can see
+the context. Only this slice is shared, and only because you chose to."
+(binding UX contract; the checkbox is unchecked by default and the report
+sends fine without it).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/admin/reports/:id/context` | — | `200 {context: {conversation_id, messages: AdminContextMessage[]}}` — ONLY for `kind:'message'` reports with `context_consent: true`, else `404 report_context_unavailable` (byte-identical for wrong-kind/no-consent/unknown — consent is never probeable). The slice: the reported seq ± `REPORT_CONTEXT_RADIUS` (5) — **the reported message + 10 surrounding** — resolved LIVE (tombstones render `deleted: true`, edits show current text — the viewer shows what exists, not a snapshot). `body` is included — **the one admin surface with message bodies, and the reporter opened it**. Attachments are `{kind, mime}` metadata only (no admin media URLs exist). Ghost masks do NOT apply (the server was never anonymous, §1.68). **Every call is ring-logged** (`level:'admin'`, report id + admin). |
+
+#### Update banner (#81d)
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/admin/update` | — | `200 {update: AdminUpdateStatus}` — `running_commit` = the `GIT_COMMIT` **build arg** baked into both images at `docker build` (null in dev — the banner then says "dev build"); `running_version` = the newest §1.61 `release_notes` version; `latest_commit` + `checked_at` from the worker's cached check; `update_available` = commits differ, **null when unknown** (no commit baked, or remote unreachable — documented honesty, never a guess). |
+
+**The check (worker, queue `gc`, repeatable every `UPDATE_CHECK_INTERVAL_S`
+= 6 h):** one GET of `<UPDATE_CHECK_REMOTE>/info/refs?service=git-upload-pack`
+(env, default: the project's public repo URL) — the git HTTPS smart protocol's
+advertisement, first-party git, **no API, no key, no SaaS** (golden rule 7
+intact); parse HEAD's sha, cache `{latest_commit, checked_at}` in Redis
+(`update:check`). Budget `UPDATE_CHECK_TIMEOUT_MS`, SSRF posture as §1.7
+(fixed host from env, no redirect following beyond the unfurl rules). The
+banner renders the §1.61 release-notes delta as its changelog plus the
+instruction: **run `./bored update` on the host** — the container never gets
+docker.sock and never updates itself (ADR-013's trust line, restated in
+ADR-020).
+
 ### 2.1 Connection & handshake
 
 - `GET wss://<host>/ws` — same-origin, the `sid` cookie rides the upgrade. No tickets, no
@@ -2374,6 +2808,9 @@ close `1008`.
 | `discovery.matched` | `{conversation_id, user: UserLite}` | v0.6 (§1.44): to BOTH parties of a mutual wave, each frame stamped with the OTHER party (the `connection.updated` pattern). A single wave fans out NOTHING to anyone, ever. |
 | `roulette.matched` | `{conversation: Conversation}` | v0.6 (§1.45): to both matched users — the provisional DM (viewer-stamped `roulette.kept`). The icebreaker arrives as ordinary `msg.new`. |
 | `roulette.expired` | `{conversation_id}` | v0.6 (§1.45): the keep window lapsed — the conversation is hard-deleted server-side; clients drop local state. Carries no "who didn't keep" (no rejection surface). Offline clients reconcile via §2.8 (absent from the snapshot). |
+| `anon.updated` | `{thread: AnonThread, message: AnonMessage\|null}` | v0.8b (§1.62): **to the thread's TWO parties only**, each frame VIEWER-STAMPED (the `connection.updated` pattern — `role`/`counterpart` resolve per recipient, so the recipient's frame carries `counterpart: null` until reveal while the sender's names the recipient; one envelope never ships one party's view to the other). Fired on new messages (`message` non-null), reveal-mode set, reveal request, and the reveal itself (sender tap or timer sweep). Reconnect truth is `GET /api/anon/threads`, never frame replay. |
+| `story.updated` | `{story: Story}` | v0.8b (§1.66): full-story replace on canvas changes (overlay add/remove/approve, `canvas_mode` switch) — to the story's **audience sockets only** (the `story.new` set), viewer-stamped (`viewed`; `pending` overlays serialize only to their author and the story author, so a pending-only change fans only to those two). Reconnect truth is `GET /api/stories`. |
+| `discovery.nudge` | `{}` | v0.8b (§1.63): the in-app wave nudge — to the recipient's own sockets, at most once per opt-in (worker-claimed), ONLY when the visible pool ≥ `NUDGE_MIN_POOL` and `wave_nudges` is on. Deliberately EMPTY: no identity, no count, no per-card deep link (the no-rejection rule). The offline counterpart is the §2.9 nudge push, same guards. |
 | `error` | `{code, message}` | validation/permission errors on client frames |
 
 ### 2.4 Client → server events

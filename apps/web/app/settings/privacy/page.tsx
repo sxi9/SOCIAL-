@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type {
   ActivityVisibility,
+  AnonOptin,
   BeaconAudience,
   GroupAddPolicy,
   SettingsResponse,
@@ -196,6 +197,33 @@ function PrivacySettings() {
               things they could already see themselves. Moods never show up here — they leave no
               trace at all.
             </p>
+          </div>
+
+          {/* v0.8b §1.62/§1.63: anonymous game opt-in + the wave nudge.
+              Both are enforced server-side; refusals stay invisible. */}
+          <h2>Anonymous &amp; nudges</h2>
+          <div className="card">
+            <SelectRow
+              id="pv-anon"
+              title="🎭 Who can send you anonymous messages"
+              value={settings.anon_messages}
+              options={[
+                { value: 'nobody', label: 'Nobody' },
+                { value: 'connections', label: 'Connections' },
+                { value: 'everyone', label: 'Everyone' },
+              ]}
+              onChange={(v) => void patch({ anon_messages: v as AnonOptin })}
+            />
+            <p className="muted small" style={{ margin: '0 0 8px' }}>
+              Senders are anonymous to you, never to the server — reporting a message always
+              attaches who sent it. Nobody can tell what you picked here.
+            </p>
+            <ToggleRow
+              title="👀 Wave nudges"
+              hint="While you're discoverable, one anonymous “someone in the pool waved at you” per hour — no names, no counts, and only when the pool is big enough to keep the waver anonymous."
+              value={settings.wave_nudges}
+              onChange={(v) => void patch({ wave_nudges: v })}
+            />
           </div>
 
           <h2>Safety</h2>

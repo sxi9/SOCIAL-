@@ -27,6 +27,7 @@ import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { recordActivity } from '../../lib/activity.js';
 import { blockPairsAmong, isBlockedPair } from '../../lib/blocks.js';
+import { revokeShareTokensFor } from '../sharepages/service.js';
 import {
   activeParticipantUserIds,
   publishConversationToUsers,
@@ -580,6 +581,8 @@ export async function beaconRoutes(fastify: FastifyInstance): Promise<void> {
       if (row.status === 'sparked') throw conflict('beacon_sparked');
       const wasOpen = row.status === 'open';
       await db.update(b).set({ status: 'cancelled' }).where(eq(b.id, row.id));
+      // v0.8b (§1.67): cancelling the beacon revokes its share token.
+      await revokeShareTokensFor(db, 'beacon', row.id);
       const fresh = (await loadBeacon(row.id))!;
       await fanBeacon(fresh, 'beacon.updated');
       // v0.7 (§1.47/FEATURES #63): joiners COMMITTED, so they get the one

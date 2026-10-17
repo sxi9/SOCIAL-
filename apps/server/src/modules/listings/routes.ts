@@ -40,6 +40,7 @@ import { badRequest, conflict, forbidden, gone, notFound, rateLimited } from '..
 import { fixedWindow } from '../../lib/ratelimit.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { deniedGroupAddTargets } from '../conversations/routes.js';
+import { revokeShareTokensFor } from '../sharepages/service.js';
 import { fanOutNewMessage, insertMessage } from '../messages/service.js';
 import {
   derivedListingStatus,
@@ -357,6 +358,11 @@ export async function listingRoutes(fastify: FastifyInstance): Promise<void> {
             .update(listings)
             .set({ ...next, editedAt: new Date() })
             .where(eq(listings.id, l.id));
+          // v0.8b (§1.67): narrowing the audience (is_public → false) revokes
+          // the share token in the SAME transaction.
+          if (l.isPublic && !next.isPublic) {
+            await revokeShareTokensFor(tx, 'listing', l.id);
+          }
           // Room photos re-bind (§1.48): new ids must be mine/kind-image/
           // unbound (400 bad_attachment rolls the edit back); dropped ones
           // unbind into the orphan GC (objects refcount-guarded, §1.31).
@@ -412,6 +418,8 @@ export async function listingRoutes(fastify: FastifyInstance): Promise<void> {
         RETURNING id
       `)) as unknown as { id: string }[];
       if (rows.length === 0) throw notFound();
+      // v0.8b (§1.67): the share token dies with the object.
+      await revokeShareTokensFor(db, 'listing', req.params.id);
       return reply.status(204).send();
     },
   );

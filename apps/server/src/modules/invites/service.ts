@@ -21,6 +21,7 @@ import {
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { isBlockedPair } from '../../lib/blocks.js';
+import { assignMasksTx } from '../../lib/ghost.js';
 import {
   activeParticipantUserIds,
   publishConversationToUsers,
@@ -327,6 +328,12 @@ export async function acceptInvite(
 
   // Same upsert as the §1.4 add-participants path (see upsertParticipantJoin).
   await upsertParticipantJoin(conv.id, joinerId, conv.lastSeq);
+  // v0.8b (§1.68): joining a 👻 ghost group auto-assigns a mask from the
+  // GHOST_MASK_* pools (re-pickable via PUT …/mask) — invites are the only
+  // door into a ghost group, so this is THE join-time hook.
+  if (conv.visibility === 'ghost') {
+    await assignMasksTx(db, conv.id, [joinerId]);
+  }
   // §1.35: membership is NEVER exposed to the channel member body (no list,
   // no count) — so a channel join posts NO `invite_joined` system message.
   // The message would land on the seq log: msg.new to all 10k members, an

@@ -20,12 +20,15 @@ describe.runIf(infra)('M2 correctness core', () => {
   }
 
   async function register(username: string): Promise<Session> {
-    // Distinct forwarded IPs dodge the 3/hour/IP register limit (trustProxy on).
+    // Distinct forwarded IPs dodge the 3/hour/IP register limit (trustProxy
+    // on) — time-salted (the v08b pattern) so re-runs within the same hour
+    // never collide with a previous run's counters in a shared local Redis.
     ipCounter += 1;
+    const n = ((Date.now() & 0xffffff) + ipCounter * 23) & 0xffffff;
     const res = await app.inject({
       method: 'POST',
       url: '/api/auth/register',
-      headers: { ...CSRF, 'x-forwarded-for': `203.0.113.${ipCounter}` },
+      headers: { ...CSRF, 'x-forwarded-for': `22.${(n >> 16) & 255}.${(n >> 8) & 255}.${n & 255}` },
       payload: {
         username,
         email: `${username}@example.com`,

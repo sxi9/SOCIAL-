@@ -111,6 +111,10 @@ export async function uploadRoutes(fastify: FastifyInstance): Promise<void> {
     const { user } = authed(req);
     const key = (req.params as Record<string, string>)['*'] ?? '';
     if (!SERVABLE_KEY_RE.test(key)) throw notFound();
+    // §1.69 (#81b): support-ticket screenshots are readable by active §1.41
+    // admins (same gate as requireAdmin) — the ACL branch below uses this.
+    const isActiveAdmin =
+      user.isAdmin === true && user.suspendedAt === null && user.bannedAt === null;
 
     let fileAttachment: AttRow | null = null;
     if (key.startsWith('media/')) {
@@ -184,6 +188,13 @@ export async function uploadRoutes(fastify: FastifyInstance): Promise<void> {
                   WHERE (bl.blocker_id = ${user.id} AND bl.blocked_id = st.author_id)
                      OR (bl.blocker_id = st.author_id AND bl.blocked_id = ${user.id}))
             )
+            -- §1.69 (#81b): support-ticket screenshots — the user's CONSENTED
+            -- submission to the operator, rendered in the admin inbox, so
+            -- active §1.41 admins read them (the ticket owner already passes
+            -- via uploader_id above).
+            OR (${isActiveAdmin} AND EXISTS (
+              SELECT 1 FROM support_tickets stk WHERE stk.attachment_id = a.id
+            ))
             -- §1.37: profile GIF strip — the profile page is readable by any
             -- authed user except blocked pairs (which 404 the whole page).
             OR EXISTS (

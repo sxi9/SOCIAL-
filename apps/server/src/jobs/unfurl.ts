@@ -24,8 +24,8 @@ import {
 } from '@socialchat/shared';
 import { config } from '../config.js';
 import { db, schema } from '../db/index.js';
-import { activeParticipantUserIds, loadMessageDtoById } from '../lib/dto.js';
 import { contentKey, sha256Hex } from '../lib/media.js';
+import { publishMessageUpdated } from '../modules/messages/service.js';
 import { previewDto, takePreviewWaiters } from '../modules/previews/service.js';
 import type { UnfurlJob } from '../queues.js';
 import { putObject } from '../s3.js';
@@ -357,14 +357,15 @@ export async function processUnfurlJob(job: UnfurlJob): Promise<void> {
       RETURNING id
     `)) as unknown as { id: string }[];
     if (updated.length > 0) {
-      const dto = await loadMessageDtoById(job.message.id);
-      if (dto) {
-        const recipients = await activeParticipantUserIds(dto.conversation_id);
-        await publishToUsers(recipients, {
-          t: 'msg.updated',
-          d: { conversation_id: dto.conversation_id, message: dto },
-        });
-      }
+      // v0.8b (§1.68): route through publishMessageUpdated so 👻 ghost
+      // conversations mask the sender per recipient class — fanning the raw
+      // DTO here would deanonymize link senders on preview hydration.
+      const [msg] = await db
+        .select()
+        .from(schema.messages)
+        .where(eq(schema.messages.id, job.message.id))
+        .limit(1);
+      if (msg) await publishMessageUpdated(msg);
     }
   }
 }

@@ -61,10 +61,12 @@ import {
 import { formatTime } from '@/lib/format';
 import { KIND_EMOJI, KIND_LABEL, listMine } from '@/lib/listings';
 import { isSelfDrunk } from '@/lib/mood';
+import { copyShareLink } from '@/lib/share';
 import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
 import DrunkConfirmSheet from './DrunkConfirmSheet';
+import SuggestionCards from './SuggestionCards';
 import { LocationChip, LocationField } from './LocationPicker';
 import Portal from './Portal';
 import ReactionPicker from './ReactionPicker';
@@ -139,6 +141,9 @@ export default function FeedView() {
         </div>
 
         <PostComposerCard lane={lane} />
+        {/* v0.8b §1.64: people-you-may-know — Feed-Discover only, dismissible,
+            pull-only. Never a login-page surface. */}
+        {lane === 'discover' ? <SuggestionCards /> : null}
         {posts === null ? (
           <p className="muted small" style={{ textAlign: 'center' }}>
             <span className="spinner" style={{ display: 'inline-block', verticalAlign: 'middle', marginRight: 8 }} />
@@ -623,6 +628,18 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
             {post.audience === 'public' ? ' · 🌐 public' : ''}
           </span>
         </span>
+        {/* v0.8b §1.67: PUBLIC posts get the one stable share link (mint-or-
+            return + copy). Friends-only content never gets a URL. */}
+        {post.audience === 'public' ? (
+          <button
+            type="button"
+            className="btn btn-ghost btn-icon"
+            aria-label="Copy a public link to this post"
+            onClick={() => void copyShareLink('post', post.id)}
+          >
+            <span aria-hidden>🔗</span>
+          </button>
+        ) : null}
         {own ? (
           <span className={bz.cardRel}>
             <button
@@ -1069,6 +1086,7 @@ function PostComments({ post, meId }: { post: Post; meId: string }) {
         avatar: state.me.avatar,
         mood: state.me.mood,
         name_style: state.me.name_style,
+        mask_emoji: null,
       }
     : null;
 

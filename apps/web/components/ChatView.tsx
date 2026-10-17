@@ -50,6 +50,7 @@ import {
 } from '@/lib/format';
 import { uuidv7 } from '@/lib/ids';
 import { KIND_EMOJI } from '@/lib/listings';
+import { isGhost, isPubliclyReadable, isSupportConversation } from '@/lib/groups';
 import { bubbleEffectFor, isColdContact, isSelfDrunk } from '@/lib/mood';
 import { displayNameFor, loadPrefs, themeClassName, wallpaperClassName } from '@/lib/prefs';
 import { toggleReaction, toggleStamp } from '@/lib/reactions';
@@ -96,6 +97,7 @@ import VibeCheckView from './VibeCheckView';
 import WatchTogetherSheet from './WatchTogetherSheet';
 import brd from './board.module.css';
 import cls from './calls.module.css';
+import cm from './community.module.css';
 import styles from './chat.module.css';
 import idm from './identity.module.css';
 import exp from './expression.module.css';
@@ -504,6 +506,10 @@ export default function ChatView({ conversationId }: { conversationId: string })
   const activeCount = conv.participants.filter((p) => p.left_at === null).length;
   // v0.5a §1.35: channels never show a member count, anywhere (PSYCHOLOGY
   // rule 3) — the subline names the kind, not a number.
+  // v0.8b §1.68: ghost groups say so (and suppress every identity side
+  // channel below); the §1.69 Support conversation wears the brand.
+  const ghost = isGhost(conv);
+  const supportConv = isSupportConversation(conv);
   const subline =
     conv.type === 'dm'
       ? presence
@@ -513,7 +519,11 @@ export default function ChatView({ conversationId }: { conversationId: string })
         : formatLastSeen(peer?.last_seen_at ?? null)
       : conv.type === 'channel'
         ? 'channel'
-        : `${activeCount} members`;
+        : supportConv
+          ? '🛟 the operator answers here'
+          : ghost
+            ? `${activeCount} masks · 👻 ghost group`
+            : `${activeCount} members`;
   const role = myRole(conv, meId);
   const canPost = canPostIn(conv, meId);
   const isChannel = conv.type === 'channel';
@@ -522,7 +532,9 @@ export default function ChatView({ conversationId }: { conversationId: string })
     conv.type === 'dm' ? true : role === 'admin' || role === 'owner';
   // §1.33 autocomplete sources: held participants for DMs/groups; the paged,
   // owner/admin-only search for channels (senders there may read the list).
-  const mentionCandidates: UserLite[] | undefined = isChannel
+  // v0.8b §1.68: mentions are NOT parsed in ghost groups (a mention is an
+  // identity assertion) — offer no autocomplete there.
+  const mentionCandidates: UserLite[] | undefined = isChannel || ghost
     ? undefined
     : conv.participants
         .filter((p) => p.left_at === null)
@@ -533,6 +545,7 @@ export default function ChatView({ conversationId }: { conversationId: string })
           avatar: p.user.avatar,
           mood: p.user.mood,
           name_style: p.user.name_style,
+          mask_emoji: null,
         }));
   const searchMentions = isChannel
     ? async (q: string): Promise<UserLite[]> => {
@@ -548,6 +561,7 @@ export default function ChatView({ conversationId }: { conversationId: string })
             avatar: p.user.avatar,
             mood: p.user.mood,
             name_style: p.user.name_style,
+            mask_emoji: null,
           }));
         } catch {
           return [];
@@ -605,7 +619,10 @@ export default function ChatView({ conversationId }: { conversationId: string })
                 <StyledName userId={peer.id} style={peer.name_style} name={title} />
               </Link>
             ) : (
-              title
+              <>
+                {supportConv ? '🛟 ' : ghost ? '👻 ' : ''}
+                {title}
+              </>
             )}
             {/* v0.8a §1.57: the peer's mood chip — already per-viewer resolved
                 server-side (visibility ∩ blocks ∩ live expiry). */}
@@ -620,8 +637,12 @@ export default function ChatView({ conversationId }: { conversationId: string })
             {state.conn === 'error' ? 'connection error' : state.conn !== 'online' ? 'connecting…' : subline}
           </div>
         </div>
-        {/* v0.6 (§1.42): calls exist for dm/group only — never channels. */}
-        {conv.type !== 'channel' ? <CallHeaderButtons conv={conv} /> : null}
+        {/* v0.6 (§1.42): calls exist for dm/group only — never channels.
+            v0.8b (§1.68): nor 👻 ghost groups — masks never ring (the server
+            refuses the create 400 call_bad_conversation). */}
+        {conv.type !== 'channel' && conv.visibility !== 'ghost' ? (
+          <CallHeaderButtons conv={conv} />
+        ) : null}
         {conv.disappear_ttl_s !== null ? (
           <span className={exp.ttlChip} title={`Messages disappear after ${TTL_SHORT[conv.disappear_ttl_s] ?? ''}`}>
             ⏳ {TTL_SHORT[conv.disappear_ttl_s] ?? ''}
@@ -650,6 +671,34 @@ export default function ChatView({ conversationId }: { conversationId: string })
       {/* v0.8a §1.57: the passive 🍻 banner — a render of an already-visible
           chip, never a push, gone the moment the mood is. */}
       {meId ? <DrunkBanner conv={conv} meId={meId} nameFor={nameFor} /> : null}
+
+      {/* v0.8b §1.68: the PERSISTENT member banner — public_since_seq's
+          presence IS the flag; only messages after the switch render publicly. */}
+      {isPubliclyReadable(conv) ? (
+        <div className={cm.publicBanner} role="status">
+          <span aria-hidden>🌐</span>
+          <span>
+            This group is public — new messages are readable by anyone on its share page.
+            Everything from before the switch stays private.
+          </span>
+        </div>
+      ) : null}
+
+      {/* v0.8b §1.68: ghost groups say who YOU are in here — the explicit
+          own-mask field (my own participant row serializes REAL, so the mask
+          name never appears there). Chat settings holds the re-pick. */}
+      {ghost && meId ? (
+        <div className={cm.publicBanner} role="status">
+          <span aria-hidden>👻</span>
+          <span>
+            Masks on — in here you&rsquo;re{' '}
+            <strong>
+              {conv.my_mask ? `${conv.my_mask.emoji} ${conv.my_mask.name}` : 'masked'}
+            </strong>
+            . Change your mask in chat settings. Admins can see real names for safety.
+          </span>
+        </div>
+      ) : null}
 
       {/* v0.6 (§1.43): a live watch-together session — one tap locks on. */}
       {watchLive && !watchOpen ? (
@@ -713,6 +762,7 @@ export default function ChatView({ conversationId }: { conversationId: string })
             onReply={canPost ? (m) => setReplyTo(m) : undefined}
             onForward={(m) => setForwarding(m)}
             onPinToggle={canPin ? (m, pinned) => void togglePin(m, pinned) : undefined}
+            ghost={ghost}
             onWatch={(url, videoId) => {
               // Session already live → just lock on; else this client becomes
               // the host (the server parses the URL again — §1.43).
@@ -734,8 +784,9 @@ export default function ChatView({ conversationId }: { conversationId: string })
         <ListingReviewNudge conv={conv} messages={messages} meId={meId} />
       ) : null}
 
-      {/* Typing is gateway-dropped in channels (§2.11) — don't render the slot. */}
-      {!isChannel ? <TypingIndicator conversation={conv} /> : null}
+      {/* Typing is gateway-dropped in channels (§2.11) and suppressed
+          entirely in ghost groups (§1.68 — an identity side channel). */}
+      {!isChannel && !ghost ? <TypingIndicator conversation={conv} /> : null}
 
       {/* v0.8a §1.57: live 10 s undo pills on my drunk-mode sends — tap and
           the message vanishes (no "deleted" stub, no trace). */}
@@ -1010,6 +1061,7 @@ function MessageRow({
   onForward,
   onPinToggle,
   onWatch,
+  ghost = false,
 }: {
   message: Message;
   conv: ConversationListItem;
@@ -1025,6 +1077,9 @@ function MessageRow({
   onForward: (message: Message) => void;
   onPinToggle?: (message: Message, pinned: boolean) => void;
   onWatch?: (url: string, videoId: string) => void;
+  /** v0.8b §1.68: ghost groups suppress the seen-by surface (identity side
+   * channel) — the "Message info" item never renders there. */
+  ghost?: boolean;
 }) {
   const state = useAppState();
   const [picker, setPicker] = useState(false);
@@ -1252,12 +1307,17 @@ function MessageRow({
     }
   };
 
+  // v0.8b §1.69: operator replies ride sender_id NULL + metadata.support —
+  // they wear the Support BRAND, never a named admin.
+  const supportMsg = message.sender_id === null && message.metadata.support !== undefined;
   const sender =
     !own && conv.type === 'group'
       ? message.sender_id === null
-        ? message.type === 'poll'
-          ? null // the auto venue poll speaks for itself
-          : 'Unknown'
+        ? supportMsg
+          ? '🛟 Bored Chat Support'
+          : message.type === 'poll'
+            ? null // the auto venue poll speaks for itself
+            : 'Unknown'
         : (() => {
             const p = conv.participants.find((x) => x.user.id === message.sender_id);
             return p ? nameFor(p.user.id, p.user.display_name) : 'Unknown';
@@ -1353,6 +1413,8 @@ function MessageRow({
           {/* §1.58: group sender names are a pinned animated-name site. */}
           {senderUser && message.sender_id ? (
             <StyledName userId={senderUser.id} style={senderUser.name_style} name={sender} />
+          ) : supportMsg ? (
+            <span className={cm.supportBrandName}>{sender}</span>
           ) : (
             sender
           )}
@@ -1610,7 +1672,7 @@ function MessageRow({
                     🗑 Delete
                   </button>
                 ) : null}
-                {own && !isChannel ? (
+                {own && !isChannel && !ghost ? (
                   <button
                     type="button"
                     role="menuitem"
@@ -1751,6 +1813,7 @@ function LocationDrop({
             avatar: p.user.avatar,
             mood: p.user.mood,
             name_style: p.user.name_style,
+            mask_emoji: null,
           });
         }
       }

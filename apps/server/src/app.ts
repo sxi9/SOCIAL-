@@ -34,10 +34,16 @@ import { releaseRoutes } from './modules/releases/routes.js';
 import { listingRoutes } from './modules/listings/routes.js';
 import { personReviewRoutes } from './modules/listings/reviews.js';
 import { adminRoutes } from './modules/admin/routes.js';
+import { adminContentRoutes } from './modules/admin/content.js';
+import { anonRoutes } from './modules/anon/routes.js';
 import { callRoutes } from './modules/calls/routes.js';
+import { groupVisibilityRoutes } from './modules/conversations/visibility.js';
 import { discoveryRoutes } from './modules/discovery/routes.js';
 import { rouletteRoutes } from './modules/discovery/roulette.js';
 import { rescueRoutes } from './modules/rescue/routes.js';
+import { sharePageRoutes } from './modules/sharepages/routes.js';
+import { suggestionRoutes } from './modules/suggestions/routes.js';
+import { supportRoutes } from './modules/support/routes.js';
 import { ApiError } from './lib/errors.js';
 import { createRingLogStream } from './lib/logring.js';
 
@@ -124,6 +130,12 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
   await app.register(listingRoutes); // v0.5b §1.38/§1.39
   await app.register(personReviewRoutes); // v0.5b §1.40
   await app.register(adminRoutes); // v0.5b §1.41
+  await app.register(adminContentRoutes); // v0.8b §1.69 (content tab, takedowns, context, update)
+  await app.register(supportRoutes); // v0.8b §1.69 (help & feedback + admin inbox)
+  await app.register(anonRoutes); // v0.8b §1.62 (anonymous reveal game)
+  await app.register(suggestionRoutes); // v0.8b §1.64 (people you may know)
+  await app.register(groupVisibilityRoutes); // v0.8b §1.68 (visibility, joins, masks)
+  await app.register(sharePageRoutes); // v0.8b §1.67 (share links + public pages)
   await app.register(callRoutes); // v0.6 §1.42
   await app.register(discoveryRoutes); // v0.6 §1.44/§1.45
   await app.register(rouletteRoutes); // v0.6 §1.45

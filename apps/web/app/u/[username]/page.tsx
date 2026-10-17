@@ -23,6 +23,7 @@ import { upsertConversation } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import { useReducedMotion } from '@/lib/useReducedMotion';
 import ActivityStrip from '@/components/ActivityStrip';
+import AnonSendSheet from '@/components/AnonSendSheet';
 import AppShell from '@/components/AppShell';
 import Avatar from '@/components/Avatar';
 import MoodChip from '@/components/MoodChip';
@@ -49,6 +50,10 @@ function PublicProfile({ username }: { username: string }) {
   const [actionError, setActionError] = useState<string | null>(null);
   // v0.8a §1.57: the mood picker lives on MY OWN profile.
   const [moodOpen, setMoodOpen] = useState(false);
+  // v0.8b §1.62: the anonymous-send entry. Whether THEY take anonymous
+  // messages is enforced invisibly server-side (one 404 shape) — the entry
+  // renders for everyone else and the refusal copy never disambiguates.
+  const [anonOpen, setAnonOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -320,12 +325,19 @@ function PublicProfile({ username }: { username: string }) {
             </div>
           </div>
           {moodOpen ? <MoodSheet onClose={() => setMoodOpen(false)} /> : null}
+          {anonOpen && shown ? (
+            <AnonSendSheet userId={shown.id} displayName={shown.display_name} onClose={() => setAnonOpen(false)} />
+          ) : null}
 
           {!isMe ? (
             <div className="card" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {connectButton}
               <button type="button" className="btn" disabled={actionBusy} onClick={() => void message()}>
                 Message
+              </button>
+              {/* v0.8b §1.62: the anonymous reveal game — words first, face later. */}
+              <button type="button" className="btn" onClick={() => setAnonOpen(true)}>
+                👻 Send anonymously
               </button>
               {actionError ? (
                 <p className="error-text" style={{ width: '100%', margin: 0 }}>

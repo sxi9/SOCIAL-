@@ -100,6 +100,7 @@ export default function RescueSheet({ onClose }: { onClose: () => void }) {
           avatar: peer.avatar,
           mood: peer.mood,
           name_style: peer.name_style,
+          mask_emoji: null,
         });
       }
     }

@@ -17,7 +17,8 @@ import { ApiError, badRequest, conflict, gone, notFound, rateLimited } from '../
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { isBlockedPair } from '../../lib/blocks.js';
-import { activeParticipantUserIds } from '../../lib/dto.js';
+import { activeParticipantUserIds, ghostCtxFor } from '../../lib/dto.js';
+import { pseudoIdFor } from '../../lib/ghost.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
 import { mintSelftestTurnCredentials, mintTurnCredentials } from '../../lib/turn.js';
 import { config } from '../../config.js';
@@ -92,6 +93,11 @@ export async function callRoutes(fastify: FastifyInstance): Promise<void> {
       if (!conv) throw notFound('conversation_not_found');
       // Calls exist for dm + group only (§1.42).
       if (conv.type === 'channel') throw badRequest('call_bad_conversation');
+      // v0.8b (§1.68): no calls in 👻 ghost groups — the call DTO and the
+      // §2.12 signaling frames carry REAL user ids (before anyone accepts),
+      // which would link every member's real uuid to the conversation. Masks
+      // never ring.
+      if (conv.visibility === 'ghost') throw badRequest('call_bad_conversation');
       // §1.14: a frozen DM cannot be called into — 404-shaped.
       if (conv.type === 'dm') {
         const peer = (await activeParticipantUserIds(req.params.id)).find((id) => id !== user.id);
@@ -277,6 +283,20 @@ export async function callRoutes(fastify: FastifyInstance): Promise<void> {
     async (req) => {
       const { user } = authed(req);
       await requireActiveParticipant(req.params.id, user.id);
+      // v0.8b (§1.68): the call LOG is durable history — pre-switch calls in a
+      // now-👻 conversation carry real user ids, so non-admin members read
+      // them pseudo-id-masked (own id stays real).
+      const [convRow] = await db
+        .select({ id: convs.id, visibility: convs.visibility })
+        .from(convs)
+        .where(eq(convs.id, req.params.id))
+        .limit(1);
+      if (!convRow) throw notFound('not_found');
+      const ghost = await ghostCtxFor(convRow, user.id);
+      const maskId = (id: string | null): string | null =>
+        ghost && !ghost.viewerIsAdmin && id && id !== user.id
+          ? pseudoIdFor(convRow.id, id)
+          : id;
 
       const conditions = [sql`${calls.conversationId} = ${req.params.id}`];
       if (req.query.before) {
@@ -301,7 +321,12 @@ export async function callRoutes(fastify: FastifyInstance): Promise<void> {
 
       const dtos = [];
       for (const row of rows) {
-        dtos.push(callDto(row, await callMemberIds(row)));
+        const dto = callDto(row, await callMemberIds(row));
+        if (ghost && !ghost.viewerIsAdmin) {
+          dto.initiator_id = maskId(dto.initiator_id);
+          dto.participant_ids = dto.participant_ids.map((id) => maskId(id) ?? id);
+        }
+        dtos.push(dto);
       }
       let nextCursor: string | null = null;
       if (rows.length === req.query.limit) {

@@ -12,9 +12,10 @@ import {
   runRoulettePair,
   runRouletteSweep,
 } from '../modules/discovery/service.js';
+import { runWaveNudge } from '../modules/discovery/nudge.js';
 import type { DiscoveryJob } from '../queues.js';
 
-export async function processDiscoveryJob(name: string, _job: DiscoveryJob): Promise<void> {
+export async function processDiscoveryJob(name: string, job: DiscoveryJob): Promise<void> {
   switch (name) {
     case 'discovery-sweep':
       return runDiscoverySweep();
@@ -22,6 +23,13 @@ export async function processDiscoveryJob(name: string, _job: DiscoveryJob): Pro
       return runRoulettePair();
     case 'roulette-sweep':
       return runRouletteSweep();
+    // v0.8b (§1.63): the anonymous wave nudge — ordered checks, claim, one
+    // identity-free delivery.
+    case 'wave-nudge': {
+      const userId = (job as { user_id?: string }).user_id;
+      if (userId) await runWaveNudge(userId);
+      return;
+    }
     default:
       throw new Error(`discovery: unknown job ${name}`);
   }

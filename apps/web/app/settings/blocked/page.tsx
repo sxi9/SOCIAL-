@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { BlockedListResponse, UserLite } from '@socialchat/shared';
 import { api } from '@/lib/api';
+import { canvasUnban, listCanvasBans } from '@/lib/stories';
 import AppShell from '@/components/AppShell';
 import Avatar from '@/components/Avatar';
 
@@ -93,8 +94,71 @@ function BlockedUsers() {
             are never told.
           </p>
         ) : null}
+
+        {/* v0.8b §1.66: canvas bans — softer than a block; they just can't
+            draw on MY stories any more (present and future). */}
+        <CanvasBans />
       </div>
     </div>
+  );
+}
+
+function CanvasBans() {
+  const [users, setUsers] = useState<UserLite[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listCanvasBans()
+      .then((res) => {
+        if (!cancelled) setUsers(res.users);
+      })
+      .catch(() => {
+        if (!cancelled) setUsers([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function unban(user: UserLite): Promise<void> {
+    if (busy) return;
+    setBusy(user.id);
+    setError(null);
+    try {
+      await canvasUnban(user.id);
+      setUsers((prev) => (prev ? prev.filter((u) => u.id !== user.id) : prev));
+    } catch {
+      setError('Could not lift the ban — try again.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (!users || users.length === 0) return null;
+  return (
+    <>
+      <h2 style={{ margin: '18px 2px 8px', fontSize: 15 }}>🎨 Banned from your canvases</h2>
+      {error ? <p className="error-text">{error}</p> : null}
+      <div className="card" style={{ padding: 8 }}>
+        {users.map((u) => (
+          <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 10px' }}>
+            <Avatar avatar={u.avatar} name={u.display_name} size={40} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>{u.display_name}</div>
+              <div className="muted small">@{u.username}</div>
+            </div>
+            <button type="button" className="btn" disabled={busy === u.id} onClick={() => void unban(u)}>
+              {busy === u.id ? '…' : 'Allow again'}
+            </button>
+          </div>
+        ))}
+      </div>
+      <p className="muted small" style={{ margin: '10px 2px' }}>
+        They can still see your stories — they just can&rsquo;t draw on them. They were never told.
+      </p>
+    </>
   );
 }
 

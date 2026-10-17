@@ -9,13 +9,16 @@ import { initWebPush, processPushJob } from './jobs/push.js';
 import { processTimersJob } from './jobs/timers.js';
 import { processUnfurlJob } from './jobs/unfurl.js';
 import {
+  ANON_SWEEP_INTERVAL_S,
   DISAPPEAR_SWEEP_INTERVAL_S,
   LISTING_SWEEP_INTERVAL_S,
   MOOD_SWEEP_INTERVAL_S,
   ROULETTE_PAIR_INTERVAL_S,
   ROULETTE_SWEEP_INTERVAL_S,
   STORY_SWEEP_INTERVAL_S,
+  UPDATE_CHECK_INTERVAL_S,
 } from '@socialchat/shared';
+import { runUpdateCheck } from './jobs/update.js';
 import { processDiscoveryJob } from './jobs/discovery.js';
 import { ringError } from './lib/logring.js';
 import type { AvatarJob, BeaconsJob, DiscoveryJob, MediaJob, PushJob, TimersJob, UnfurlJob } from './queues.js';
@@ -45,7 +48,12 @@ async function main(): Promise<void> {
       connection: createRedis(),
       concurrency: 10,
     }),
-    new Worker('gc', async () => runGc(), { connection: createRedis(), concurrency: 1 }),
+    // v0.8b (§1.69): the repeatable update-check rides the gc queue (one
+    // outbound GET per interval; the nightly gc job keeps its own name).
+    new Worker('gc', async (job) => (job.name === 'update-check' ? runUpdateCheck() : runGc()), {
+      connection: createRedis(),
+      concurrency: 1,
+    }),
     // v0.3 (ARCHITECTURE §10): beacon-expire | beacon-ritual | beacon-afterglow.
     new Worker<BeaconsJob>('beacons', async (job: Job<BeaconsJob>) => processBeaconsJob(job.name, job.data), {
       connection: createRedis(),
@@ -181,6 +189,32 @@ async function main(): Promise<void> {
     'mood-swing-sweep',
     {},
     { repeat: { every: 60_000 }, jobId: 'mood-swing-sweep', removeOnComplete: 10, removeOnFail: 10 },
+  );
+
+  // v0.8b (API.md §1.62): the anonymous timer-reveal sweep — reads already
+  // resolve the reveal live; the sweep stamps + fans the goodbye-blur frame.
+  await timersQueue.add(
+    'anon-sweep',
+    {},
+    {
+      repeat: { every: ANON_SWEEP_INTERVAL_S * 1000 },
+      jobId: 'anon-sweep',
+      removeOnComplete: 10,
+      removeOnFail: 10,
+    },
+  );
+
+  // v0.8b (API.md §1.69): the 6-hourly git smart-protocol update check — one
+  // GET of info/refs, cached in Redis; the admin banner reads the cache.
+  await gcQueue.add(
+    'update-check',
+    {},
+    {
+      repeat: { every: UPDATE_CHECK_INTERVAL_S * 1000 },
+      jobId: 'update-check',
+      removeOnComplete: 10,
+      removeOnFail: 10,
+    },
   );
 
   // v0.6 (API.md §1.44/§1.45): discovery bookkeeping + the roulette loop.

@@ -29,6 +29,8 @@ import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
 import ChannelMembersSheet from './ChannelMembersSheet';
+import GroupSettingsSection from './GroupSettingsSection';
+import { isSupportConversation } from '@/lib/groups';
 import { InviteButton } from './InviteSheet';
 import sheetStyles from './beacons.module.css';
 import exp from './expression.module.css';
@@ -216,6 +218,13 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
             ×
           </button>
         </div>
+
+        {/* v0.8b §1.68: visibility modes, description, join queue & masks —
+            GROUPS only (DMs and channels stay private; the Support
+            conversation is operator plumbing with no modes to set). */}
+        {conv.type === 'group' && !isSupportConversation(conv) ? (
+          <GroupSettingsSection conv={conv} meId={meId} />
+        ) : null}
 
         {isChannel ? (
           <>

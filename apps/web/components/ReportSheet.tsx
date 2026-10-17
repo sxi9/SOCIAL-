@@ -1,9 +1,18 @@
 'use client';
 
-// Report sheet (v0.3 — API.md §1.14). One short optional reason, then
-// POST /api/reports. No one is notified; nothing else changes (FEATURES #29).
+// Report sheet (v0.3 — API.md §1.14; widened v0.8b — §1.62/§1.66/§1.69).
+// One short reason, then POST /api/reports. No one is notified; nothing else
+// changes (FEATURES #29). v0.8b binding UX contracts carried here:
+//   * message reports render REPORT_CONTEXT_CONSENT_COPY beside an UNCHECKED
+//     include-context checkbox — the report sends fine without it;
+//   * anonymous-message and canvas-overlay reports SAY that the author's real
+//     identity is attached (anonymity never survives a report).
 import { useEffect, useState } from 'react';
-import { REPORT_REASON_MAX_CHARS, type CreateReportRequest } from '@socialchat/shared';
+import {
+  REPORT_CONTEXT_CONSENT_COPY,
+  REPORT_REASON_MAX_CHARS,
+  type CreateReportRequest,
+} from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import styles from './beacons.module.css';
@@ -12,16 +21,21 @@ import styles from './beacons.module.css';
 export type ReportTarget =
   | { kind: 'user'; user_id: string }
   | { kind: 'message'; conversation_id: string; seq: number }
-  | { kind: 'beacon'; beacon_id: string };
+  | { kind: 'beacon'; beacon_id: string }
+  | { kind: 'anon_message'; thread_id: string; message_id: string }
+  | { kind: 'story_overlay'; story_id: string; overlay_id: string };
 
 const TITLES: Record<ReportTarget['kind'], string> = {
   user: 'Report this person',
   message: 'Report this message',
   beacon: 'Report this beacon',
+  anon_message: 'Report this anonymous message',
+  story_overlay: 'Report this canvas addition',
 };
 
 export default function ReportSheet({ target, onClose }: { target: ReportTarget; onClose: () => void }) {
   const [reason, setReason] = useState('');
+  const [includeContext, setIncludeContext] = useState(false); // unchecked by default (binding)
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,7 +52,10 @@ export default function ReportSheet({ target, onClose }: { target: ReportTarget;
     if (busy || done) return;
     setBusy(true);
     setError(null);
-    const body: CreateReportRequest = { ...target, reason: reason.trim() };
+    const body: CreateReportRequest =
+      target.kind === 'message'
+        ? { ...target, reason: reason.trim(), include_context: includeContext }
+        : { ...target, reason: reason.trim() };
     try {
       await api.post('/api/reports', body);
       setDone(true);
@@ -85,6 +102,19 @@ export default function ReportSheet({ target, onClose }: { target: ReportTarget;
               Tell us what&rsquo;s wrong (optional). Reports go to moderators only — no one is
               notified.
             </p>
+            {target.kind === 'anon_message' ? (
+              // §1.62 binding: anonymity never survives a report — say so.
+              <p className={styles.sheetNote}>
+                🎭 The sender was only ever anonymous to <em>you</em> — this report attaches their
+                real identity for the moderators.
+              </p>
+            ) : null}
+            {target.kind === 'story_overlay' ? (
+              // §1.66: the overlay author is attached server-side.
+              <p className={styles.sheetNote}>
+                🎨 The moderators see who drew this — attribution is attached automatically.
+              </p>
+            ) : null}
             <textarea
               className="input"
               rows={3}
@@ -94,6 +124,22 @@ export default function ReportSheet({ target, onClose }: { target: ReportTarget;
               onChange={(e) => setReason(e.target.value)}
               style={{ marginTop: 10 }}
             />
+            {target.kind === 'message' ? (
+              // v0.8b §1.69 (binding UX contract): the EXACT consent copy,
+              // unchecked by default. Without it the admin context viewer
+              // answers 404 for this report.
+              <label
+                style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 10, fontSize: 13 }}
+              >
+                <input
+                  type="checkbox"
+                  checked={includeContext}
+                  onChange={(e) => setIncludeContext(e.target.checked)}
+                  style={{ marginTop: 3 }}
+                />
+                <span>{REPORT_CONTEXT_CONSENT_COPY}</span>
+              </label>
+            ) : null}
             {error ? <p className="error-text">{error}</p> : null}
             <button
               type="button"

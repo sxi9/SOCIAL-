@@ -148,8 +148,12 @@ export type TimersJob = ScheduledDeliverJob | CallRingTimeoutJob | Record<string
 // (prunes lapsed opt-ins + stale waves — bookkeeping, reads filter live),
 // roulette-pair (every ROULETTE_PAIR_INTERVAL_S) and roulette-sweep (the
 // provisional-DM hard-delete, every ROULETTE_SWEEP_INTERVAL_S). All
-// repeatable, no per-item jobs.
-export type DiscoveryJob = Record<string, never>;
+// repeatable. v0.8b (§1.63) adds the per-wave `wave-nudge` job: pool-size
+// check BEFORE the wave_nudged_at claim, then one anonymous line.
+export interface WaveNudgeJob {
+  user_id: string;
+}
+export type DiscoveryJob = WaveNudgeJob | Record<string, never>;
 
 export const queueConnection = createRedis();
 const connection = queueConnection;
@@ -293,6 +297,13 @@ export function enqueueCallRingStopPushBulk(jobs: CallRingStopPushJob[]) {
  * not (the point is a buzzing phone); the worker skips the §2.9 guards. */
 export function enqueueRescuePush(job: RescuePushJob) {
   return pushQueue.add('rescue-push', job, { ...defaultJobOpts, attempts: 2 });
+}
+
+/** v0.8b (§1.63): one nudge job per parked wave — the worker's ordered
+ * checks (opt-in live + un-nudged, pool ≥ NUDGE_MIN_POOL, atomic claim) make
+ * duplicates harmless, so no jobId dedupe is needed. */
+export function enqueueWaveNudge(userId: string) {
+  return discoveryQueue.add('wave-nudge', { user_id: userId }, { ...defaultJobOpts, attempts: 2 });
 }
 
 /** Afterglow recap: delayed to expires_at + 2 h (plus a worker safety sweep). */

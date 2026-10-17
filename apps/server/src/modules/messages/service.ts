@@ -14,6 +14,7 @@ import {
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { filterBlockedFrom, isBlockedPair } from '../../lib/blocks.js';
+import { ghostMessageDto, loadMasks, type GhostCtx } from '../../lib/ghost.js';
 import { activeParticipantUserIds, messageDtos, type ConvRow, type MsgRow, type PartRow } from '../../lib/dto.js';
 import { badRequest, forbidden, notFound } from '../../lib/errors.js';
 import { enqueuePushBulk } from '../../queues.js';
@@ -113,14 +114,55 @@ export async function insertMessage(opts: InsertMessageOpts): Promise<MsgRow> {
   });
 }
 
+/** v0.8b (§1.68): the per-recipient-class fan-out of one message DTO inside a
+ * 👻 ghost conversation — admins get real identity, every non-admin member a
+ * masked copy (own identity stays real on their own copy). Returns true when
+ * it handled the fan-out (the conversation is ghost). */
+async function fanGhostMessage(
+  convId: string,
+  dto: Message,
+  t: 'msg.new' | 'msg.updated',
+): Promise<boolean> {
+  const [conv] = await db
+    .select({ visibility: schema.conversations.visibility })
+    .from(schema.conversations)
+    .where(eq(schema.conversations.id, convId))
+    .limit(1);
+  if (conv?.visibility !== 'ghost') return false;
+  const rows = (await db.execute(sql`
+    SELECT user_id, role FROM conversation_participants
+    WHERE conversation_id = ${convId} AND left_at IS NULL
+  `)) as unknown as { user_id: string; role: string }[];
+  const masks = await loadMasks(convId);
+  for (const r of rows) {
+    const payload =
+      r.role === 'admin'
+        ? dto
+        : ghostMessageDto(dto, {
+            convId,
+            masks,
+            viewerId: r.user_id,
+            viewerIsAdmin: false,
+          } satisfies GhostCtx);
+    await publishToUsers([r.user_id], {
+      t,
+      d: { conversation_id: convId, message: payload },
+    });
+  }
+  return true;
+}
+
 /** Fan out msg.new over Redis and enqueue push jobs for offline participants. */
 export async function fanOutNewMessage(msg: MsgRow): Promise<Message> {
   const [dto] = await messageDtos([msg]);
   const participantIds = await activeParticipantUserIds(msg.conversationId);
-  await publishToUsers(participantIds, {
-    t: 'msg.new',
-    d: { conversation_id: msg.conversationId, message: dto! },
-  });
+  // v0.8b (§1.68): ghost conversations mask per recipient class.
+  if (!(await fanGhostMessage(msg.conversationId, dto!, 'msg.new'))) {
+    await publishToUsers(participantIds, {
+      t: 'msg.new',
+      d: { conversation_id: msg.conversationId, message: dto! },
+    });
+  }
 
   if (msg.senderId) {
     // §1.14 (v0.5a hard rule): no push is EVER generated between a blocked
@@ -313,6 +355,8 @@ export async function requireSendContext(
 export async function publishMessageUpdated(msg: MsgRow): Promise<void> {
   const [dto] = await messageDtos([msg]);
   if (!dto) return;
+  // v0.8b (§1.68): ghost conversations mask per recipient class.
+  if (await fanGhostMessage(msg.conversationId, dto, 'msg.updated')) return;
   const recipients = await activeParticipantUserIds(msg.conversationId);
   await publishToUsers(recipients, {
     t: 'msg.updated',

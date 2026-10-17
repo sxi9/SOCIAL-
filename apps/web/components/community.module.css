@@ -1,0 +1,1070 @@
+/* v0.8b community pack styles (API.md §1.62–§1.69).
+   Mobile-first; every animation sits behind prefers-reduced-motion. */
+
+/* ---------------------------------------------------------------------------
+   Anonymous reveal game (§1.62) — ghost-styled thread UI
+--------------------------------------------------------------------------- */
+
+.anonPage {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+.anonRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.anonRow:hover {
+  background: var(--panel-2);
+}
+
+.anonRowText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.anonRowText strong {
+  font-size: 14px;
+}
+
+.anonRowText span {
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.anonRowTime {
+  font-size: 11.5px;
+  color: var(--muted);
+  flex: none;
+}
+
+/* The masked avatar: server-blurred pixels inside a dashed ghost ring. */
+.maskedAvatar {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 2px dashed var(--accent);
+  background: var(--panel-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.maskedAvatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.maskedAvatarBig {
+  width: 84px;
+  height: 84px;
+}
+
+.anonGhostGlyph {
+  font-size: 22px;
+}
+
+.anonThreadScroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px calc(16px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background:
+    radial-gradient(ellipse at 20% 0%, rgba(111, 140, 255, 0.07), transparent 55%),
+    radial-gradient(ellipse at 90% 100%, rgba(111, 140, 255, 0.05), transparent 50%);
+}
+
+.anonBubble {
+  max-width: min(78%, 440px);
+  padding: 9px 12px;
+  border-radius: 16px;
+  background: var(--bubble-in);
+  border: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  align-self: flex-start;
+  font-size: 15px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.anonBubbleMine {
+  align-self: flex-end;
+  background: var(--bubble-out);
+  border-style: solid;
+  border-color: transparent;
+}
+
+.anonBubbleMeta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.anonRiddleAnswer {
+  border-color: var(--ok);
+}
+
+.anonFlagBtn {
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+}
+
+.anonFlagBtn:hover {
+  color: var(--danger);
+}
+
+.anonGameCard {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 12px;
+  margin: 4px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13.5px;
+}
+
+.anonGameCard h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.anonTimerBar {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.anonTimerFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+  border-radius: 3px;
+}
+
+.anonComposer {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.anonComposer input {
+  flex: 1;
+  min-width: 0;
+  font-size: 16px; /* iOS zoom-stick rule */
+}
+
+/* The reveal moment. Reduced motion: layers simply appear. */
+.revealOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 72;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5, 8, 14, 0.78);
+  padding: 24px 16px;
+}
+
+.revealCard {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+  padding: 26px 22px;
+  width: min(360px, 100%);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .revealCard {
+    animation: revealPop 480ms cubic-bezier(0.2, 1.4, 0.4, 1);
+  }
+  .revealFace {
+    animation: revealUnmask 900ms ease-out;
+  }
+}
+
+@keyframes revealPop {
+  from {
+    transform: scale(0.85);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes revealUnmask {
+  from {
+    filter: blur(14px);
+  }
+  to {
+    filter: blur(0);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Wave nudge line (§1.63) + discovery filters & vibes (§1.65)
+--------------------------------------------------------------------------- */
+
+.nudgeLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  font-size: 13.5px;
+}
+
+.nudgeLine span {
+  flex: 1;
+}
+
+.nudgeDismiss {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.filterRow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 12px 0 2px;
+}
+
+.filterChip {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 11px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.filterOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.vibeTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  padding: 3px 9px;
+  font-size: 12px;
+}
+
+.sharedTags {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin: 6px 0 0;
+}
+
+.sharedTag {
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------------------
+   Suggestions (§1.64) — people-you-may-know cards
+--------------------------------------------------------------------------- */
+
+.suggStrip {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 4px 2px 10px;
+  scrollbar-width: thin;
+}
+
+.suggCard {
+  position: relative;
+  flex: none;
+  width: 164px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 14px 10px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.suggDismiss {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 15px;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.suggName {
+  font-size: 13.5px;
+  font-weight: 600;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.suggUser {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.suggWhy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  font-size: 11.5px;
+  color: var(--muted);
+  min-height: 30px;
+}
+
+.suggMutualFaces {
+  display: inline-flex;
+}
+
+.suggMutualFaces > * {
+  margin-left: -6px;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+}
+
+.suggMutualFaces > :first-child {
+  margin-left: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Canvas stories (§1.66)
+--------------------------------------------------------------------------- */
+
+.overlayLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  /* Above the viewer's tap zones (z 3) so overlays are tappable, but the
+     layer itself passes taps through — only children take pointer events. */
+  z-index: 4;
+  pointer-events: none;
+}
+
+.overlayLayer svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .overlayEnter {
+    animation: overlayIn 320ms ease-out;
+  }
+}
+
+@keyframes overlayIn {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.overlayEmoji {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  line-height: 1;
+  pointer-events: auto;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.overlayText {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  background: rgba(10, 14, 22, 0.72);
+  color: #fff;
+  border-radius: 12px;
+  padding: 5px 10px;
+  font-size: 14px;
+  max-width: 70%;
+  pointer-events: auto;
+  border: none;
+  cursor: pointer;
+  text-align: center;
+}
+
+.overlayPending {
+  opacity: 0.55;
+  outline: 1.5px dashed var(--accent);
+}
+
+.overlayHighlight {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
+.overlayChip {
+  pointer-events: auto;
+  position: absolute;
+  transform: translate(-50%, 8px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(10, 14, 22, 0.85);
+  color: #fff;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+  z-index: 3;
+}
+
+.overlayChip a {
+  color: #aebcff;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.overlayChipBtn {
+  border: none;
+  background: none;
+  color: #ff9d9d;
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.contribStrip {
+  position: absolute;
+  pointer-events: none;
+  left: 12px;
+  bottom: 86px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(10, 14, 22, 0.66);
+  color: #e8ecf4;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  z-index: 3;
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.canvasBar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 10px;
+  z-index: 4;
+  flex-wrap: wrap;
+}
+
+.canvasTool {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(10, 14, 22, 0.66);
+  color: #fff;
+  border-radius: 999px;
+  padding: 7px 13px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.canvasToolOn {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.canvasColor {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  padding: 0;
+}
+
+.canvasColorOn {
+  border-color: #fff;
+  transform: scale(1.12);
+}
+
+.canvasHint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 96px;
+  text-align: center;
+  color: #fff;
+  font-size: 12.5px;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+  z-index: 4;
+  padding: 0 16px;
+}
+
+.drawSurface {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.canvasTextRow {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 96px;
+  display: flex;
+  gap: 8px;
+  z-index: 6;
+}
+
+.canvasTextRow input {
+  flex: 1;
+  min-width: 0;
+  font-size: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  padding: 9px 12px;
+}
+
+.emojiPickRow {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 96px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+  background: rgba(10, 14, 22, 0.8);
+  border-radius: 14px;
+  padding: 8px;
+  z-index: 6;
+}
+
+.emojiPickRow button {
+  border: none;
+  background: none;
+  font-size: 24px;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+
+.pendingQueue {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 96px;
+  background: rgba(10, 14, 22, 0.88);
+  border-radius: 14px;
+  padding: 10px 12px;
+  color: #e8ecf4;
+  z-index: 6;
+  max-height: 40vh;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+.pendingRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.pendingRow:last-child {
+  border-bottom: none;
+}
+
+.pendingRow .grow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pendingBtn {
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: none;
+  color: #fff;
+  border-radius: 8px;
+  padding: 4px 9px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------------------
+   Group visibility modes (§1.68)
+--------------------------------------------------------------------------- */
+
+.publicBanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+
+.ghostTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  border-radius: 999px;
+  border: 1px dashed var(--border);
+  padding: 2px 8px;
+  color: var(--muted);
+}
+
+.maskEmoji {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--panel-2);
+  border: 1px dashed var(--border);
+}
+
+.visGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0 10px;
+}
+
+.visOpt {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.visOpt:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.visOptOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.visOptText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.visOptText strong {
+  font-size: 13.5px;
+}
+
+.visOptText span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------------------
+   Public share pages (§1.67) — /p/<token>, /s/<token>
+--------------------------------------------------------------------------- */
+
+.sharePage {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 16px calc(28px + env(safe-area-inset-bottom));
+}
+
+.shareHead {
+  width: min(560px, 100%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 0;
+}
+
+.shareBrand {
+  font-weight: 800;
+  font-size: 17px;
+  letter-spacing: 0.2px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.shareJoin {
+  margin-left: auto;
+}
+
+.shareCard {
+  width: min(560px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.shareAuthor {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.shareAvatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--panel-2);
+}
+
+.shareAvatarFallback {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+
+.shareAuthorText {
+  display: flex;
+  flex-direction: column;
+}
+
+.shareAuthorText strong {
+  font-size: 14.5px;
+}
+
+.shareAuthorText span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.shareBody {
+  margin: 0;
+  font-size: 15.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.shareMediaGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 6px;
+}
+
+.shareMediaGrid img,
+.shareMediaGrid video {
+  width: 100%;
+  border-radius: 12px;
+  display: block;
+  max-height: 420px;
+  object-fit: cover;
+  background: var(--panel-2);
+}
+
+.shareStoryMedia img,
+.shareStoryMedia video {
+  width: 100%;
+  border-radius: 14px;
+  display: block;
+  background: #000;
+}
+
+.shareStoryFrame {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+}
+
+.shareMetaRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.sharePollOpt {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 14px;
+  overflow: hidden;
+}
+
+.sharePollBar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--w, 0%);
+  background: var(--accent-soft);
+}
+
+.sharePollLabel {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.shareGate {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.shareMsg {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 7px 0;
+  border-top: 1px solid var(--border);
+}
+
+.shareMsg:first-of-type {
+  border-top: none;
+}
+
+.shareMsgBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.shareMsgBody strong {
+  font-size: 13px;
+}
+
+.shareMsgBody p {
+  margin: 2px 0 0;
+  font-size: 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.shareMsgTime {
+  font-size: 11px;
+  color: var(--muted);
+  flex: none;
+}
+
+.shareFootnote {
+  width: min(560px, 100%);
+  margin: 14px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.shareFootnote button {
+  border: none;
+  background: none;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* ---------------------------------------------------------------------------
+   Support & admin extras (§1.69)
+--------------------------------------------------------------------------- */
+
+.catRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0 12px;
+}
+
+.catChip {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 9px 13px;
+  font-size: 13.5px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.catOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.statusChip {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 11.5px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.statusOpen {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.statusAnswered {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.updateBanner {
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  padding: 12px 14px;
+  margin: 0 0 16px;
+  font-size: 13.5px;
+}
+
+.updateBanner h3 {
+  margin: 0 0 4px;
+  font-size: 14.5px;
+}
+
+.updateBanner code {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.contextSlice {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  margin-top: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.contextMsg {
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.contextMsg:last-child {
+  border-bottom: none;
+}
+
+.contextReported {
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 5px 8px;
+}
+
+.supportBrandName {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 12.5px;
+}

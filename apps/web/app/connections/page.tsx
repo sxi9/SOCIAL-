@@ -18,6 +18,7 @@ import {
 import { upsertConversation } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import Avatar from '@/components/Avatar';
+import SuggestionCards from '@/components/SuggestionCards';
 import TabPage from '@/components/TabPage';
 import st from '@/components/social.module.css';
 
@@ -181,6 +182,9 @@ function ConnectionsView() {
               </div>
             </>
           ) : null}
+
+          {/* v0.8b §1.64: people-you-may-know — dismissible, silent. */}
+          <SuggestionCards />
 
           <p className="muted small" style={{ margin: '14px 2px 0' }}>
             &ldquo;Friends&rdquo; everywhere in Bored Chat means your connections plus the people you

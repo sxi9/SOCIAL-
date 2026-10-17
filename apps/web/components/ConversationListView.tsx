@@ -6,6 +6,7 @@ import { PRESENCE_SUB_MAX, type ConversationListItem } from '@socialchat/shared'
 import { retryConnection, subscribePresence, unsubscribePresence } from '@/lib/connection';
 import { refreshConnections } from '@/lib/connections';
 import { conversationTitle, dmPeer, formatTime, messageSnippet } from '@/lib/format';
+import { isGhost, isSupportConversation } from '@/lib/groups';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
 import ConnectionRequestsSheet from './ConnectionRequestsSheet';
@@ -57,6 +58,10 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
         {/* v0.6 §1.46 (fixer r1): the one-tap SOS lives on the home tab too,
             not only buried in Profile settings. */}
         <RescueButton />
+        {/* v0.8b §1.62: the anonymous reveal-game inbox. */}
+        <Link href="/anon" className="btn btn-ghost btn-icon" aria-label="Anonymous messages">
+          <span aria-hidden>🎭</span>
+        </Link>
         <InviteButton className={`btn btn-ghost btn-icon ${styles.headerInvite}`} label="" />
         <button
           type="button"
@@ -139,6 +144,10 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
                     <span className={styles.titleLine}>
                       <span className={styles.title}>
                         {item.type === 'channel' ? <span aria-label="channel">📣 </span> : null}
+                        {/* v0.8b: ghost groups wear the badge; the Support
+                            conversation wears the brand (§1.68/§1.69). */}
+                        {isGhost(item) ? <span aria-label="ghost group">👻 </span> : null}
+                        {isSupportConversation(item) ? <span aria-hidden>🛟 </span> : null}
                         {title}
                       </span>
                       {item.last_message_at ? (

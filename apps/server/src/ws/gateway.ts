@@ -149,10 +149,13 @@ async function allowedPresenceTargets(me: string, ids: string[]): Promise<string
   if (ids.length === 0) return [];
   // §1.14/§2.11: subscriptions between blocked pairs are silently dropped —
   // indistinguishable from the existing not-shared-a-conversation drop.
+  // v0.8b (§1.68): presence is suppressed entirely in 👻 ghost groups — a
+  // conversation shared only there never qualifies a presence subscription.
   const rows = (await db.execute(sql`
     SELECT DISTINCT other.user_id AS user_id
     FROM conversation_participants mine
     JOIN conversation_participants other ON other.conversation_id = mine.conversation_id
+    JOIN conversations gc ON gc.id = mine.conversation_id AND gc.visibility <> 'ghost'
     WHERE mine.user_id = ${me} AND mine.left_at IS NULL AND other.left_at IS NULL
       AND other.user_id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
       AND NOT EXISTS (
@@ -212,11 +215,14 @@ async function applyReceipt(
   // v0.5a §1.35/§2.11: receipt frames for CHANNELS go to the reader's own
   // sockets only (cross-device unread sync) — never a 10k fan-out per read.
   const [convRow] = await db
-    .select({ type: schema.conversations.type })
+    .select({ type: schema.conversations.type, visibility: schema.conversations.visibility })
     .from(schema.conversations)
     .where(eq(schema.conversations.id, conversationId))
     .limit(1);
-  if (convRow?.type === 'channel') {
+  // v0.8b (§1.68): 👻 ghost groups — receipt frames go to the reader's own
+  // sockets only (cross-device unread sync); a watermark frame to anyone else
+  // is an identity side channel. Same shape as channels.
+  if (convRow?.type === 'channel' || convRow?.visibility === 'ghost') {
     queueReceipt(
       {
         conversation_id: conversationId,
@@ -481,12 +487,14 @@ async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promis
       if (!(await isActiveParticipant(meta.userId, conversation_id))) return;
       // v0.5a §1.35/§2.11: typing frames for CHANNEL conversations are dropped
       // at ingest unconditionally — whatever the sender's show_typing says.
+      // v0.8b (§1.68): 👻 ghost groups drop typing the same way — the frame's
+      // user_id is an identity, and masks never type.
       const [convRow] = await db
-        .select({ type: schema.conversations.type })
+        .select({ type: schema.conversations.type, visibility: schema.conversations.visibility })
         .from(schema.conversations)
         .where(eq(schema.conversations.id, conversation_id))
         .limit(1);
-      if (convRow?.type === 'channel') return;
+      if (convRow?.type === 'channel' || convRow?.visibility === 'ghost') return;
       // §1.13 show_typing: suppressed AT INGEST, before rebroadcast. No error
       // frame — typing is best-effort ephemera.
       const [sender] = await db

@@ -22,6 +22,7 @@ import {
   vibeEmojiOf,
   vibeLabelOf,
 } from '@/lib/beacons';
+import { copyShareLink } from '@/lib/share';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
 import Avatar from './Avatar';
@@ -279,6 +280,19 @@ export default function BeaconDetailSheet({
           )}
 
           {error ? <p className="error-text">{error}</p> : null}
+
+          {/* v0.8b §1.67: PUBLIC beacons get the one stable share link. The
+              page shows the utility "needs N" number and never joiner faces. */}
+          {beacon.audience === 'public' && open ? (
+            <button
+              type="button"
+              className="btn"
+              style={{ width: '100%', marginTop: 10 }}
+              onClick={() => void copyShareLink('beacon', beacon.id)}
+            >
+              🔗 Copy a public link
+            </button>
+          ) : null}
 
           {/* ---- actions ---- */}
           {sparked && beacon.conversation_id ? (

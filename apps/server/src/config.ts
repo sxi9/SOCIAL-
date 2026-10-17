@@ -36,6 +36,20 @@ const EnvSchema = z.object({
   VAPID_PRIVATE_KEY: z.string().optional(),
   VAPID_SUBJECT: z.string().optional(),
 
+  // v0.8b (API.md §1.69, ADR-020): the running build's git commit, BAKED at
+  // `docker build` via the GIT_COMMIT build arg (null in dev — the admin
+  // banner then says "dev build"). Never computed at runtime: the container
+  // has no .git and no docker.sock.
+  GIT_COMMIT: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(7).optional()),
+  // v0.8b (§1.69): the instance repo remote the update-check worker peeks at
+  // via the git HTTPS smart protocol (info/refs — first-party git, no API, no
+  // key, golden rule 7). Unset → the check is skipped and update_available
+  // stays null (documented honesty, never a guess).
+  UPDATE_CHECK_REMOTE: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().url().optional(),
+  ),
+
   // v0.6 calls (API.md §1.42, ADR-014): the shared secret between the api
   // (mints time-limited HMAC credentials) and the coturn service (verifies
   // them, static-auth-secret mode). '' (a blank `TURN_SECRET=` .env line)
@@ -69,6 +83,9 @@ export const config = {
   // for free; setting PUZZLE_SECRET explicitly pins the word schedule so a
   // session-secret rotation doesn't reshuffle it mid-stream.
   puzzleSecret: env.PUZZLE_SECRET ?? `puzzle:${env.SESSION_SECRET}`,
+  // v0.8b (§1.69): build identity + update-check remote; both null-safe.
+  gitCommit: env.GIT_COMMIT ?? null,
+  updateCheckRemote: env.UPDATE_CHECK_REMOTE ?? null,
   // null = no TURN relay configured (ADR-014): calls still work on host
   // candidates between same-network peers; the §1.42 responses carry turn:null.
   turnSecret: env.TURN_SECRET ?? null,

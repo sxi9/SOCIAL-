@@ -1062,3 +1062,196 @@ export const FEATURE_DIRECTORY = [
 export const RELEASE_VERSION_MAX_CHARS = 20;
 export const RELEASE_NOTE_ITEM_MAX_CHARS = 200;
 export const RELEASE_NOTE_ITEMS_MAX = 12;
+
+// ============================ v0.8b additions =================================
+// Community pack — the rest of v0.8 (FEATURES #77, #78/#78a/#78b, #79a, #79c,
+// #79d, #81; API.md §1.62–§1.69; ADR-019 / ADR-020). HARD RULES carried here:
+// the anonymous game hides the sender from the RECIPIENT only, never from the
+// server — reports and ghost-group reports always attach real identity; blocks
+// and opt-outs are enforced invisibly (byte-identical refusals); a single wave
+// stays invisible — the nudge names nobody and fires only when the pool is big
+// enough to keep it that way; canvas overlays are attributed vector layers,
+// never burned into the image, and being drawable is always the author's
+// invitation (default OFF); share pages exist for PUBLIC things only,
+// friends-only content never gets a URL, and all share media rides token-gated
+// endpoints (the §1.11 invite-avatar pattern — no open media routes); public
+// groups expose only post-switch messages, ghost groups are unlisted
+// everywhere; admin still never reads private messages — the report-context
+// viewer exists only where the REPORTER consented at report time.
+
+// ---- Anonymous reveal game (v0.8b — API.md §1.62, FEATURES #77, ADR-019) ----
+// Recipient opt-in: who may open an anonymous thread to me. Resolved at send
+// like every §1.13 setting; 'connections' = accepted §1.28 connections
+// (literally connections, NOT friends-of — the §1.57 mood rule).
+export const ANON_OPTIN_VALUES = ['nobody', 'connections', 'everyone'] as const;
+export const ANON_OPTIN_DEFAULT = 'connections' as const;
+// Text only at first — no attachments, no media, by design (ADR-019).
+export const ANON_BODY_MAX_CHARS = 500;
+export const ANON_RIDDLE_MAX_CHARS = 200;
+// Timer reveal presets (1 h / 6 h / 24 h) — reveal_at = now() + preset; the
+// client derives the progressive un-blur factor as
+// clamp((reveal_at - now) / reveal_timer_s, 0, 1); the SERVER renders the
+// blurred avatar (the gated §1.62 proxy) so the real image never ships early.
+export const ANON_TIMER_PRESETS_S = [3600, 21600, 86400] as const;
+// Gaussian blur sigma (px at the 512 avatar size) at factor 1; sigma scales
+// linearly down to 0 at full reveal.
+export const ANON_BLUR_SIGMA_MAX = 24;
+// Cache-Control: private, max-age for the blurred-avatar proxy — SHORT: the
+// blur factor is time-derived and must keep moving.
+export const ANON_AVATAR_CACHE_TTL_S = 60;
+// Messages into anon threads (either party), per user.
+export const ANON_SEND_RATE_PER_HOUR = 20;
+// Brand-new threads (distinct recipients), per user per UTC day — the spam
+// bound that also blunts delete-and-retry games.
+export const ANON_NEW_THREAD_RATE_PER_DAY = 5;
+// Worker sweep cadence (queue `timers`): timer reveals are also resolved LIVE
+// at read (reveal_at <= now() serializes as revealed) — the house pattern;
+// the sweep only stamps revealed_at + fans the anon.updated goodbye-blur.
+export const ANON_SWEEP_INTERVAL_S = 60;
+// Push copy — NEVER any identity in either direction's payload.
+export const ANON_PUSH_BODY_RECIPIENT = 'Someone sent you an anonymous message 🎭';
+export const ANON_PUSH_BODY_SENDER = 'Your anonymous thread got a reply 🎭';
+
+// ---- Wave nudges (v0.8b — API.md §1.63, FEATURES #78a) ----
+// A nudge fires ONLY when the recipient's currently-visible card pool (the
+// §1.44 mutual-reachability set, minus blocks/friends-of) holds at least this
+// many people — below it, "someone waved" would be guessable and the
+// no-rejection rule would quietly die (ADR-019).
+export const NUDGE_MIN_POOL = 4;
+// One nudge per opt-in hour, claimed via the guarded wave_nudged_at UPDATE —
+// multiple waves batch into that single anonymous line.
+export const NUDGE_PUSH_BODY = 'Someone in the pool waved at you 👀';
+
+// ---- Suggestions & find-your-people (v0.8b — API.md §1.64, FEATURES #78) ----
+export const SUGGESTIONS_MAX = 20;
+// Mutual-connection FACES inlined per suggestion card; mutual_count carries
+// the rest (the §1.36 pattern — the count here is relationship evidence about
+// MY network, not public approval; ADR-019 records the distinction).
+export const SUGGESTION_MUTUALS_PREVIEW_MAX = 3;
+// NEVER suggestion/user cards on the login page — unauthenticated member
+// enumeration is forbidden (the standing decision, SPECS v0.8).
+
+// ---- Discovery filters & vibes (v0.8b — API.md §1.65, FEATURES #78b) ----
+// Optional what-for chip on a discovery opt-in. Same vocabulary as the beacon
+// chips (familiar glyphs), its own tuple so the two can diverge. Filters only
+// ever NARROW on data people chose to share — no age/gender fields exist.
+export const DISCOVERY_VIBES = [
+  'food',
+  'chai',
+  'walk',
+  'game',
+  'movie',
+  'study',
+  'sport',
+  'chill',
+] as const;
+// Shared profile-interest tags inlined on a card ("you both like X") — the
+// overlap of two PUBLIC §1.37 interest lists, capped.
+export const DISCOVERY_SHARED_INTERESTS_MAX = 3;
+
+// ---- Canvas stories (v0.8b — API.md §1.66, FEATURES #79a, ADR-020) ----
+// Per-story author mode. DEFAULT OFF — being drawable is always the author's
+// invitation; 'approve' holds viewer overlays as 'pending' until the author
+// approves each one.
+export const STORY_CANVAS_MODES = ['off', 'open', 'approve'] as const;
+export const STORY_OVERLAY_KINDS = ['stroke', 'emoji', 'text'] as const;
+// 'removed' is a tombstone (reports must outlive moderation); removed rows
+// never serialize to anyone and never count toward the cap.
+export const STORY_OVERLAY_STATUSES = ['live', 'pending', 'removed'] as const;
+// Live+pending overlays per (story, contributor); the 6th → 409 overlay_limit.
+export const OVERLAYS_PER_USER = 5;
+// Vector payload bounds (coordinates are normalized 0..1 of the story frame;
+// stroke width is px at a 512 reference edge — clients scale).
+export const OVERLAY_STROKE_POINTS_MIN = 2;
+export const OVERLAY_STROKE_POINTS_MAX = 256;
+export const OVERLAY_STROKE_WIDTH_MIN = 1;
+export const OVERLAY_STROKE_WIDTH_MAX = 24;
+export const OVERLAY_TEXT_MAX_CHARS = 80;
+export const OVERLAY_EMOJI_SCALE_MIN = 0.5;
+export const OVERLAY_EMOJI_SCALE_MAX = 3;
+export const OVERLAY_RATE_PER_HOUR = 60;
+
+// ---- Public share pages (v0.8b — API.md §1.67, FEATURES #79c, ADR-020) ----
+// What a share token may point at. post/beacon/listing tokens exist only for
+// PUBLIC-audience objects; story tokens are author-minted only; group tokens
+// exist for visibility public|invite_only (§1.68). Friends-only content NEVER
+// gets a token.
+export const SHARE_OBJECT_TYPES = ['post', 'beacon', 'listing', 'story', 'group'] as const;
+// Token entropy + accepted shape — the §1.11 invite-token machinery verbatim
+// (revocable capability stored plaintext with a unique index, ADR-007).
+export const SHARE_TOKEN_BYTES = 32;
+export const SHARE_TOKEN_REGEX = /^[A-Za-z0-9_-]{32,128}$/;
+// UNAUTHENTICATED budgets, per IP (Redis fixed window, the invite-public
+// pattern). The report budget is deliberately HARD — it is writable.
+export const SHARE_PUBLIC_RATE_PER_HOUR_PER_IP = 120;
+export const SHARE_MEDIA_RATE_PER_HOUR_PER_IP = 240;
+export const SHARE_REPORT_RATE_PER_DAY_PER_IP = 5;
+// Cache-Control: private, max-age for token-gated share media (short — the
+// token can be revoked while a CDN-less browser cache lives).
+export const SHARE_MEDIA_CACHE_TTL_S = 300;
+// Messages rendered on a PUBLIC group's live share page (newest page; older
+// pages via cursor, floor always public_since_seq — history never
+// retro-exposed).
+export const SHARE_GROUP_PAGE_MESSAGES_MAX = 50;
+
+// ---- Group visibility modes (v0.8b — API.md §1.68, FEATURES #79d, ADR-020) ----
+// Groups only (DMs and channels stay 'private', DB CHECK). PUBLIC exposes
+// ONLY messages with seq > public_since_seq (stamped at the admin-confirmed
+// switch); GHOST is unlisted everywhere and one-way (never switchable off —
+// members spoke under masks).
+export const GROUP_VISIBILITIES = ['private', 'invite_only', 'public', 'ghost'] as const;
+export const GROUP_DESCRIPTION_MAX_CHARS = 300;
+// POST /api/conversations/:id/join budget (fixed window, per user) — covers
+// both public joins and invite-only join requests.
+export const GROUP_JOIN_RATE_PER_HOUR = 20;
+// Ghost masks: chosen pseudonym + emoji avatar, unique per group. Members are
+// anonymous to EACH OTHER, never to the server; group admins see real
+// identities for abuse handling and reports always attach them (the #77
+// precedent).
+export const MASK_NAME_MAX_CHARS = 32;
+export const MASK_EMOJI_MAX_LEN = 16;
+// Auto-assign pools (random name+emoji at join / at the switch; the member
+// can re-pick). Appending is contract-safe.
+export const GHOST_MASK_NAMES = [
+  'raccoon', 'heron', 'walnut', 'comet', 'bramble', 'tundra', 'pepper',
+  'marble', 'juniper', 'ember', 'puffin', 'lantern', 'clover', 'drift',
+  'maple', 'onyx', 'poppy', 'quartz', 'sorrel', 'wisp',
+] as const;
+export const GHOST_MASK_EMOJI = [
+  '🦝', '🦜', '🐢', '🦊', '🐙', '🦔', '🐸', '🦉', '🐌', '🦩',
+  '🐰', '🦥', '🐧', '🦀', '🐝', '🦭', '🐨', '🦎', '🐿️', '🦡',
+] as const;
+
+// ---- Admin: content, support, report context, update (v0.8b — API.md §1.69,
+// FEATURES #81, ADR-020) ----
+export const ADMIN_CONTENT_TYPES = ['post', 'beacon', 'listing'] as const;
+// Takedown reason — REQUIRED (min 1): the author-facing notice carries it.
+export const TAKEDOWN_REASON_MAX_CHARS = 500;
+// Support inbox (Settings → Help & feedback): 🐞 bug / ❓ question / 💡 idea /
+// ⚠️ safety.
+export const SUPPORT_CATEGORIES = ['bug', 'question', 'idea', 'safety'] as const;
+export const SUPPORT_TICKET_STATUSES = ['open', 'answered', 'closed'] as const;
+export const SUPPORT_BODY_MAX_CHARS = 2000;
+export const SUPPORT_TICKET_RATE_PER_DAY = 10;
+// The per-user support conversation (lazily created on the first delivery):
+// type 'group', this exact title, metadata.support = true, the user as sole
+// member, messages from the operator side sender_id NULL + metadata.support
+// rider — rendered as the Support brand, never as a named admin.
+export const SUPPORT_CONVERSATION_TITLE = 'Bored Chat Support';
+// Report-context viewer: the reported message ± this many messages by seq
+// (N = 10 surrounding), served ONLY when the reporter consented at report
+// time (include_context). Every view is ring-logged.
+export const REPORT_CONTEXT_RADIUS = 5;
+// The EXACT consent copy rendered beside the include-context checkbox in the
+// report sheet (binding UX contract — the §1.54/§1.56 precedent). Unchecked
+// by default; the report sends fine without it.
+export const REPORT_CONTEXT_CONSENT_COPY =
+  'Also share the 10 messages around this one with the moderators, so they can see the context. Only this slice is shared, and only because you chose to.';
+// Update banner: the api compares its baked build commit (GIT_COMMIT build
+// arg) against the instance repo remote's HEAD via the git HTTPS smart
+// protocol (info/refs — first-party protocol, no API, no key), on a worker
+// cadence, cached in Redis. Unreachable remote → update_available null
+// (honesty, never a guess). The update itself always runs on the HOST
+// (./bored update) — the container never gets docker.sock.
+export const UPDATE_CHECK_INTERVAL_S = 6 * 3600;
+export const UPDATE_CHECK_TIMEOUT_MS = 5000;

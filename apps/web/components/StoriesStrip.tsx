@@ -4,8 +4,8 @@
 // Unviewed authors glow first, then all-viewed — each bucket by USERNAME, never
 // recency: a finite tray, not a feed. Expired cards drop locally between GETs.
 import { useEffect, useRef, useState } from 'react';
-import type { StoryAuthorGroup, UploadResponse, UserLite } from '@socialchat/shared';
-import { STORY_CAPTION_MAX_CHARS } from '@socialchat/shared';
+import type { StoryAuthorGroup, StoryCanvasMode, UploadResponse, UserLite } from '@socialchat/shared';
+import { STORY_CANVAS_MODES, STORY_CAPTION_MAX_CHARS } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
 import { createStory, refreshStories } from '@/lib/stories';
 import * as store from '@/lib/store';
@@ -44,6 +44,7 @@ export default function StoriesStrip() {
     avatar: me.avatar,
     mood: me.mood,
     name_style: me.name_style,
+    mask_emoji: null,
   };
 
   const openViewer = (startAuthorId: string) => {
@@ -118,6 +119,9 @@ export default function StoriesStrip() {
 export function StoryComposerSheet({ onClose }: { onClose: () => void }) {
   const [attachment, setAttachment] = useState<UploadResponse['attachment'] | null>(null);
   const [caption, setCaption] = useState('');
+  // v0.8b §1.66: the canvas invitation — DEFAULT OFF ('just viewing');
+  // being drawable is always the author's choice.
+  const [canvasMode, setCanvasMode] = useState<StoryCanvasMode>('off');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -156,7 +160,7 @@ export function StoryComposerSheet({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      await createStory(attachment.id, caption.trim());
+      await createStory(attachment.id, caption.trim(), canvasMode);
       onClose();
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) setError('Easy there — story limit for this hour.');
@@ -233,6 +237,29 @@ export function StoryComposerSheet({ onClose }: { onClose: () => void }) {
             onChange={(e) => setCaption(e.target.value)}
           />
         </div>
+        {/* v0.8b §1.66: the canvas choice — off / open / approve-first. */}
+        <div className={sheet.sheetLabel}>Canvas</div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} role="radiogroup" aria-label="Can friends draw on this story?">
+          {STORY_CANVAS_MODES.map((m) => (
+            <button
+              key={m}
+              type="button"
+              role="radio"
+              aria-checked={canvasMode === m}
+              className={`btn${canvasMode === m ? ' btn-primary' : ''}`}
+              onClick={() => setCanvasMode(m)}
+            >
+              {m === 'off' ? '🖼 Just viewing' : m === 'open' ? '🎨 Open canvas' : '✅ Approve first'}
+            </button>
+          ))}
+        </div>
+        <p className="muted small" style={{ margin: '6px 0 12px' }}>
+          {canvasMode === 'off'
+            ? 'Nobody can draw on it — the default.'
+            : canvasMode === 'open'
+              ? 'Friends can add doodles, emoji and little notes — each one signed, each one removable by you.'
+              : 'Friends can draw, but nothing shows until you approve it.'}
+        </p>
         {error ? <p className="error-text">{error}</p> : null}
         <button
           type="button"

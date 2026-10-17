@@ -22,6 +22,7 @@ import {
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { blockedSetOf, isBlockedPair } from '../../lib/blocks.js';
+import { ghostMessageDtos, loadMasks, type GhostCtx } from '../../lib/ghost.js';
 import { activeParticipantUserIds, messageDtos, userLiteDto, type AttRow, type MsgRow } from '../../lib/dto.js';
 import { ApiError, badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { extractFirstUrl } from '../../lib/urls.js';
@@ -43,9 +44,27 @@ import {
   requireSendContext,
   resolveMentions,
 } from './service.js';
+import { isSupportConversation, reopenTicketOnUserReply } from '../support/service.js';
 
 const IdParams = z.object({ id: z.string().uuid() });
 const m = schema.messages;
+
+/** v0.8b (§1.68): the viewer's GhostCtx for a conversation — null unless it
+ * is a 👻 ghost group AND the viewer is a non-admin member (admins see real
+ * identities; everyone else gets the mask transform applied to message DTOs). */
+async function ghostViewOf(
+  convId: string,
+  viewerId: string,
+  role: string | null,
+): Promise<GhostCtx | null> {
+  const [conv] = await db
+    .select({ visibility: schema.conversations.visibility })
+    .from(schema.conversations)
+    .where(eq(schema.conversations.id, convId))
+    .limit(1);
+  if (conv?.visibility !== 'ghost' || role === 'admin') return null;
+  return { convId, masks: await loadMasks(convId), viewerId, viewerIsAdmin: false };
+}
 
 export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
   const app = fastify.withTypeProvider<ZodTypeProvider>();
@@ -87,7 +106,10 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
           .limit(limit);
       }
       // Viewer-scoped DTOs: reactions[].mine is personal (API.md §1.12).
-      return { messages: await messageDtos(rows, user.id) };
+      const dtos = await messageDtos(rows, user.id);
+      // v0.8b (§1.68): ghost groups serialize MASKS to non-admin members.
+      const ghost = await ghostViewOf(req.params.id, user.id, part.role);
+      return { messages: ghost ? ghostMessageDtos(dtos, ghost) : dtos };
     },
   );
 
@@ -100,7 +122,10 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       const convId = req.params.id;
       // §1.14 frozen DMs + §1.35 channel send permission (owner/admin only
       // → 403 channel_read_only), in 404-shape order.
-      const { part } = await requireSendContext(convId, user.id);
+      const { conv, part } = await requireSendContext(convId, user.id);
+      // v0.8b (§1.68): ghost groups — a mention is an identity assertion, so
+      // @tokens stay inert plain text (never parsed, never a mute override).
+      const isGhostConv = conv.visibility === 'ghost';
 
       const body = req.body;
       const replay = await findByClientMsgId(convId, user.id, body.client_msg_id);
@@ -249,7 +274,7 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       // ---- v0.5a §1.33: SERVER-parsed mentions against active participants.
       // Client-sent mention values never exist (the schema has no field); the
       // tokens live in the body and the server is the only metadata writer.
-      if (text) {
+      if (text && !isGhostConv) {
         const mentions = await resolveMentions(convId, text);
         if (mentions.length > 0) metadata.mentions = mentions;
       }
@@ -335,6 +360,13 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
 
       await fanOutNewMessage(msg);
 
+      // v0.8b (§1.69): a user message in their Support conversation re-opens
+      // their most recent non-closed ticket (or the latest closed one) —
+      // route-side, no new endpoint.
+      if (isSupportConversation(conv)) {
+        await reopenTicketOnUserReply(user.id);
+      }
+
       // §1.23: every accepted vibe reply ALSO re-ships the vibe message as a
       // full-DTO msg.updated, so the collage strip grows live.
       if (isVibeReply) {
@@ -348,7 +380,10 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
 
       // Viewer-scoped response (reactions.mine / poll.my_vote / vibe.my_reply_seq).
       const [dto] = await messageDtos([msg], user.id);
-      return reply.status(201).send({ message: dto });
+      // §1.68: the sender's own copy in a ghost group — own identity real,
+      // every OTHER member (reply context, stamps) masked.
+      const ghost = isGhostConv ? await ghostViewOf(convId, user.id, part.role) : null;
+      return reply.status(201).send({ message: ghost ? ghostMessageDtos([dto!], ghost)[0] : dto });
     },
   );
 
@@ -376,11 +411,15 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       // drive unread counts, but min-watermark math over 10k members is
       // neither cheap nor wanted.
       const [convRow] = await db
-        .select({ type: schema.conversations.type })
+        .select({ type: schema.conversations.type, visibility: schema.conversations.visibility })
         .from(schema.conversations)
         .where(eq(schema.conversations.id, convId))
         .limit(1);
       if (convRow?.type === 'channel') throw new ApiError(403, 'channel_no_receipts');
+      // v0.8b (§1.68): seen-by is an identity side channel — suppressed
+      // ENTIRELY in 👻 ghost groups (empty lists, the receipts-off shape;
+      // watermarks still advance for unread counts).
+      if (convRow?.visibility === 'ghost') return { seen: [], delivered: [] };
       const [msg] = await db
         .select({ seq: m.seq, senderId: m.senderId })
         .from(m)
@@ -454,7 +493,7 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
     async (req) => {
       const { user } = authed(req);
       const { id: convId, seq } = req.params;
-      const { part } = await requireUnfrozenParticipant(convId, user.id);
+      const { conv, part } = await requireUnfrozenParticipant(convId, user.id);
       const [row] = await db
         .select()
         .from(m)
@@ -465,6 +504,8 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       if (!(EDITABLE_MESSAGE_TYPES as readonly string[]).includes(row.type)) {
         throw badRequest('not_editable');
       }
+      // v0.8b (§1.68): mentions are never parsed in 👻 ghost groups.
+      const isGhostConv = conv.visibility === 'ghost';
       if (row.createdAt.getTime() < Date.now() - EDIT_WINDOW_S * 1000) {
         throw conflict('edit_window_closed');
       }
@@ -473,7 +514,7 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       const metadata = { ...((row.metadata ?? {}) as MessageMetadata) };
       // §1.33: edits re-parse mentions against CURRENT active participants —
       // stored, but mention pushes fire at send time ONLY (no re-ping).
-      const mentions = await resolveMentions(convId, req.body.body);
+      const mentions = isGhostConv ? [] : await resolveMentions(convId, req.body.body);
       if (mentions.length > 0) metadata.mentions = mentions;
       else delete metadata.mentions;
       // §1.30: edits never re-run unfurl; the existing snapshot stays.
@@ -485,7 +526,8 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
         .returning();
       await publishMessageUpdated(updated!);
       const [dto] = await messageDtos([updated!], user.id);
-      return { message: dto };
+      const ghost = isGhostConv ? await ghostViewOf(convId, user.id, part.role) : null;
+      return { message: ghost ? ghostMessageDtos([dto!], ghost)[0] : dto };
     },
   );
 
@@ -630,13 +672,27 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       const srcMeta = (src.metadata ?? {}) as MessageMetadata;
       let forwardedFrom: ForwardedFrom | undefined = srcMeta.forwarded_from;
       if (!forwardedFrom && src.senderId) {
-        const [author] = await db
-          .select({ username: schema.users.username, displayName: schema.users.displayName })
-          .from(schema.users)
-          .where(eq(schema.users.id, src.senderId))
+        // v0.8b (§1.68): a message forwarded OUT of a 👻 ghost group never
+        // carries the member's real name — the snapshot is the MASK (the
+        // identity the forwarder saw), whoever forwards it.
+        const [srcConv] = await db
+          .select({ visibility: schema.conversations.visibility })
+          .from(schema.conversations)
+          .where(eq(schema.conversations.id, convId))
           .limit(1);
-        if (author) {
-          forwardedFrom = { username: author.username, display_name: author.displayName };
+        if (srcConv?.visibility === 'ghost') {
+          const masks = await loadMasks(convId);
+          const mask = masks.get(src.senderId);
+          forwardedFrom = { username: '', display_name: mask?.name ?? 'ghost' };
+        } else {
+          const [author] = await db
+            .select({ username: schema.users.username, displayName: schema.users.displayName })
+            .from(schema.users)
+            .where(eq(schema.users.id, src.senderId))
+            .limit(1);
+          if (author) {
+            forwardedFrom = { username: author.username, display_name: author.displayName };
+          }
         }
       }
       // Copied: body, link_preview snapshot, doodle. NOT copied: mentions

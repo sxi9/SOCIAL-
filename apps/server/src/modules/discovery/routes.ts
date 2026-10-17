@@ -11,7 +11,9 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import {
   DISCOVERY_CARDS_MAX,
   DISCOVERY_OPTIN_TTL_S,
+  DISCOVERY_SHARED_INTERESTS_MAX,
   DISCOVERY_WAVE_RATE_PER_HOUR,
+  DiscoveryCardsQuerySchema,
   DiscoveryOptinRequestSchema,
   ENCOURAGEMENT_MIN_SAMPLES,
   ExpectationFeedbackRequestSchema,
@@ -25,7 +27,7 @@ import { avatarDto, userLiteDto, type UserRow } from '../../lib/dto.js';
 import { badRequest, forbidden, notFound, rateLimited } from '../../lib/errors.js';
 import { friendsOfPairCond } from '../../lib/friends.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
-import { enqueueSocialPush } from '../../queues.js';
+import { enqueueSocialPush, enqueueWaveNudge } from '../../queues.js';
 import { redis } from '../../redis.js';
 import { publishToUsers } from '../../ws/events.js';
 import { authed, requireAuth } from '../auth/guard.js';
@@ -45,6 +47,8 @@ interface CardRow {
   user_id: string;
   scope: string;
   note: string;
+  vibe: string | null;
+  interests: string[] | null;
   expires_at: Date | string;
   username: string;
   display_name: string;
@@ -56,17 +60,28 @@ interface CardRow {
   waved: boolean;
 }
 
+/** v0.8b (§1.65): each filter only ever NARROWS the §1.44 pool. */
+export interface CardFilters {
+  vibe?: string;
+  /** keep cards sharing ≥1 PUBLIC interest tag with me */
+  interests?: boolean;
+  /** keep cards whose owner's area equals mine (citext; never serialized) */
+  area?: boolean;
+}
+
 /**
  * §1.44 mutual-reachability card query: users U with a live opt-in where U's
  * scope reaches me AND my scope reaches U (area = citext equality on MY
  * area), excluding both ways: blocks, the friends-of set, suspended/banned,
  * me. The area TEXT itself is never serialized (FEATURES #30).
  */
-async function visibleCards(
+export async function visibleCards(
   meId: string,
   myOptin: OptinRow,
   myArea: string | null,
   targetId?: string,
+  filters: CardFilters = {},
+  myInterests: string[] = [],
 ): Promise<CardRow[]> {
   // NOTE: raw-SQL aliases (o, u) — never Drizzle column refs here, they
   // render fully qualified and miss the alias.
@@ -75,8 +90,23 @@ async function visibleCards(
     : sql`o.scope = 'public'`;
   const myReach =
     myOptin.scope === 'public' ? sql`TRUE` : myArea ? sql`u.area = ${myArea}` : sql`FALSE`;
+  // v0.8b (§1.65): filters only ever NARROW. A card without a vibe simply
+  // never matches a vibe filter; interests intersect the two PUBLIC §1.37
+  // lists; the area MATCH is computed here — the text never serializes.
+  const vibeCond = filters.vibe ? sql`AND o.vibe = ${filters.vibe}` : sql``;
+  const interestsCond =
+    filters.interests && myInterests.length > 0
+      ? sql`AND u.interests && ARRAY[${sql.join(myInterests.map((t) => sql`${t}`), sql`, `)}]::text[]`
+      : filters.interests
+        ? sql`AND FALSE` // I have no public tags — an honest empty result
+        : sql``;
+  const areaCond = filters.area
+    ? myArea
+      ? sql`AND u.area = ${myArea}`
+      : sql`AND FALSE`
+    : sql``;
   const rows = (await db.execute(sql`
-    SELECT o.user_id, o.scope, o.note, o.expires_at,
+    SELECT o.user_id, o.scope, o.note, o.vibe, o.expires_at, u.interests,
            u.username, u.display_name, u.name_style,
            u.avatar_status, u.avatar_version, u.avatar_static_key, u.avatar_animated_key,
            EXISTS (SELECT 1 FROM discovery_waves w
@@ -89,6 +119,9 @@ async function visibleCards(
       AND u.suspended_at IS NULL AND u.banned_at IS NULL
       AND ${theirReach}
       AND ${myReach}
+      ${vibeCond}
+      ${interestsCond}
+      ${areaCond}
       AND NOT EXISTS (
         SELECT 1 FROM blocks bl
         WHERE (bl.blocker_id = ${meId} AND bl.blocked_id = o.user_id)
@@ -100,7 +133,7 @@ async function visibleCards(
   return rows;
 }
 
-function cardDto(row: CardRow): DiscoveryCard {
+function cardDto(row: CardRow, myInterests: string[] = []): DiscoveryCard {
   const user: UserLite = {
     id: row.user_id,
     username: row.username,
@@ -115,11 +148,21 @@ function cardDto(row: CardRow): DiscoveryCard {
     // (§1.57 conservative rule; no per-viewer ctx on this surface).
     mood: null,
     name_style: ((row.name_style ?? 'none') as UserLite['name_style']),
+    mask_emoji: null,
   };
+  // v0.8b (§1.65): the overlap of the two PUBLIC §1.37 interest lists, first
+  // DISCOVERY_SHARED_INTERESTS_MAX by the OWNER's tag order — already-public
+  // data, intersected; nothing new revealed.
+  const mine = new Set(myInterests.map((t) => t.toLowerCase()));
+  const shared = (row.interests ?? [])
+    .filter((t) => mine.has(t.toLowerCase()))
+    .slice(0, DISCOVERY_SHARED_INTERESTS_MAX);
   return {
     user,
     scope: row.scope as DiscoveryCard['scope'],
     note: row.note,
+    vibe: (row.vibe ?? null) as DiscoveryCard['vibe'],
+    shared_interests: shared,
     expires_at: new Date(row.expires_at).toISOString(),
     waved: Boolean(row.waved),
   };
@@ -142,6 +185,8 @@ export async function discoveryRoutes(fastify: FastifyInstance): Promise<void> {
           userId: user.id,
           scope: req.body.scope,
           note: req.body.note,
+          // v0.8b (§1.65): the optional what-for chip.
+          vibe: req.body.vibe ?? null,
           createdAt: new Date(),
           expiresAt,
         })
@@ -150,7 +195,10 @@ export async function discoveryRoutes(fastify: FastifyInstance): Promise<void> {
           set: {
             scope: req.body.scope,
             note: req.body.note,
-            // A re-PUT is a NEW moment: created_at drives card freshness.
+            vibe: req.body.vibe ?? null,
+            // A re-PUT is a NEW moment: created_at drives card freshness —
+            // and clears the §1.63 nudge claim (a fresh hour may nudge once).
+            waveNudgedAt: null,
             createdAt: new Date(),
             expiresAt,
           },
@@ -177,14 +225,30 @@ export async function discoveryRoutes(fastify: FastifyInstance): Promise<void> {
   });
 
   // §1.44 GET /api/discovery/cards — symmetric visibility: you are seen
-  // while you see, no lurking.
-  app.get('/api/discovery/cards', { preHandler: requireAuth }, async (req) => {
-    const { user } = authed(req);
-    const mine = await liveOptinOf(user.id);
-    if (!mine) throw forbidden('discovery_not_opted_in');
-    const rows = await visibleCards(user.id, mine, user.area);
-    return { cards: rows.map(cardDto) };
-  });
+  // while you see, no lurking. v0.8b (§1.65): ?vibe=&interests=&area= each
+  // only ever NARROW the pool (never widen, never re-rank).
+  app.get(
+    '/api/discovery/cards',
+    { preHandler: requireAuth, schema: { querystring: DiscoveryCardsQuerySchema } },
+    async (req) => {
+      const { user } = authed(req);
+      const mine = await liveOptinOf(user.id);
+      if (!mine) throw forbidden('discovery_not_opted_in');
+      const rows = await visibleCards(
+        user.id,
+        mine,
+        user.area,
+        undefined,
+        {
+          ...(req.query.vibe ? { vibe: req.query.vibe } : {}),
+          ...(req.query.interests ? { interests: true } : {}),
+          ...(req.query.area ? { area: true } : {}),
+        },
+        user.interests ?? [],
+      );
+      return { cards: rows.map((r) => cardDto(r, user.interests ?? [])) };
+    },
+  );
 
   // §1.44 POST /api/discovery/wave — single wave parks silently (NOBODY is
   // notified); mutual wave mints the DM in one advisory-locked transaction.
@@ -242,6 +306,22 @@ export async function discoveryRoutes(fastify: FastifyInstance): Promise<void> {
       });
 
       if (!result.matched) {
+        // v0.8b (§1.63): a freshly PARKED wave may enqueue the anonymous
+        // nudge job — the worker re-checks everything (opt-in live and
+        // un-nudged, pool ≥ NUDGE_MIN_POOL) BEFORE claiming wave_nudged_at.
+        // Still: a single wave notifies nobody by name, ever.
+        if (!result.existing_wave) {
+          const [targetRow] = (await db.execute(sql`
+            SELECT u.wave_nudges, o2.wave_nudged_at
+            FROM users u
+            JOIN discovery_optins o2 ON o2.user_id = u.id AND o2.expires_at > now()
+            WHERE u.id = ${targetId}
+            LIMIT 1
+          `)) as unknown as { wave_nudges: boolean; wave_nudged_at: Date | null }[];
+          if (targetRow && targetRow.wave_nudges && targetRow.wave_nudged_at === null) {
+            await enqueueWaveNudge(targetId);
+          }
+        }
         // Parked silently — idempotent re-wave included (§1.44).
         return { matched: false, conversation_id: null };
       }

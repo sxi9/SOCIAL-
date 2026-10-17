@@ -6,10 +6,14 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
+  CreateOverlayRequestSchema,
   CreateRecapStoryRequestSchema,
   CreateStoryRequestSchema,
+  OVERLAY_RATE_PER_HOUR,
+  OVERLAYS_PER_USER,
   STORY_CREATE_RATE_PER_HOUR,
   STORY_TTL_S,
+  UpdateStoryRequestSchema,
   type AfterglowMetadata,
   type Story,
   type StoryAuthorGroup,
@@ -20,13 +24,17 @@ import { newId } from '../../ids.js';
 import { blockedSetOf } from '../../lib/blocks.js';
 import { friendsOfIds, isFriendOf } from '../../lib/friends.js';
 import { userLiteDto, type AttRow, type UserRow } from '../../lib/dto.js';
-import { badRequest, notFound, rateLimited } from '../../lib/errors.js';
+import { badRequest, conflict, forbidden, notFound, rateLimited } from '../../lib/errors.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant } from '../conversations/routes.js';
 import {
   fanStoryNew,
+  fanStoryUpdated,
   hardDeleteStory,
+  loadOverlayRowsFor,
+  overlayDto,
+  overlaysForViewer,
   storyDto,
   viewedSetOf,
   type StoryRow,
@@ -59,6 +67,7 @@ async function createStory(
   user: UserRow,
   att: AttRow,
   caption: string,
+  canvasMode: 'off' | 'open' | 'approve' = 'off',
 ): Promise<{ story: Story }> {
   const now = new Date();
   const [row] = await db
@@ -68,6 +77,8 @@ async function createStory(
       authorId: user.id,
       attachmentId: att.id,
       caption,
+      // v0.8b (§1.66): the canvas invitation — DEFAULT 'off', author's choice.
+      canvasMode,
       createdAt: now,
       expiresAt: new Date(now.getTime() + STORY_TTL_S * 1000),
     })
@@ -114,7 +125,9 @@ export async function storyRoutes(fastify: FastifyInstance): Promise<void> {
       ) {
         throw badRequest('bad_attachment');
       }
-      return reply.status(201).send(await createStory(user, att, req.body.caption));
+      return reply
+        .status(201)
+        .send(await createStory(user, att, req.body.caption, req.body.canvas_mode));
     },
   );
 
@@ -201,11 +214,21 @@ export async function storyRoutes(fastify: FastifyInstance): Promise<void> {
       user.id,
       rows.map((r) => r.s.id),
     );
+    // v0.8b (§1.66): the viewer's overlay slices — live (minus blocked
+    // authors) + pending only where I am the overlay author or story author.
+    const overlayRows = await loadOverlayRowsFor(rows.map((r) => r.s.id));
+    const myBlocked = await blockedSetOf(user.id);
 
     const mine: Story[] = [];
     const byAuthor = new Map<string, { username: string; author: UserRow; stories: Story[]; anyUnviewed: boolean }>();
     for (const { s, u, a } of rows) {
-      const dto = storyDto(s, u, a, s.authorId === user.id ? true : viewed.has(s.id));
+      const overlays = overlaysForViewer(
+        overlayRows.get(s.id) ?? [],
+        user.id,
+        s.authorId,
+        myBlocked,
+      );
+      const dto = storyDto(s, u, a, s.authorId === user.id ? true : viewed.has(s.id), overlays);
       if (s.authorId === user.id) {
         mine.push(dto);
         continue;
@@ -274,6 +297,233 @@ export async function storyRoutes(fastify: FastifyInstance): Promise<void> {
       return { viewers: viewers.map((v) => v.lite) };
     },
   );
+
+  // ---------------------------------------------------------------------------
+  // v0.8b §1.66 — canvas stories (ADR-020, FEATURES #79a).
+  // ---------------------------------------------------------------------------
+
+  // PATCH /api/stories/:id {canvas_mode} — author only (404 otherwise).
+  // Switching to 'off' keeps existing overlays visible (they were invited);
+  // it stops NEW ones. Fans story.updated.
+  app.patch(
+    '/api/stories/:id',
+    { preHandler: requireAuth, schema: { params: IdParams, body: UpdateStoryRequestSchema } },
+    async (req) => {
+      const { user } = authed(req);
+      const row = await loadStory(req.params.id);
+      if (!row || row.authorId !== user.id || row.expiresAt.getTime() <= Date.now()) {
+        throw notFound('story_not_found');
+      }
+      const [updated] = await db
+        .update(st)
+        .set({ canvasMode: req.body.canvas_mode })
+        .where(eq(st.id, row.id))
+        .returning();
+      await fanStoryUpdated(updated!);
+      const [author] = await db.select().from(schema.users).where(eq(schema.users.id, user.id)).limit(1);
+      const [att] = await db
+        .select()
+        .from(schema.attachments)
+        .where(eq(schema.attachments.id, row.attachmentId))
+        .limit(1);
+      const overlayRows = (await loadOverlayRowsFor([row.id])).get(row.id) ?? [];
+      return {
+        story: storyDto(
+          updated!,
+          author!,
+          att!,
+          true,
+          overlaysForViewer(overlayRows, user.id, row.authorId, new Set()),
+        ),
+      };
+    },
+  );
+
+  // POST /api/stories/:id/overlays — viewer must be in the story's audience
+  // (else the §1.34 404). 403 canvas_closed when canvas_mode 'off' AND,
+  // byte-identically, when the viewer is canvas-banned (a ban is never
+  // confirmable). Cap OVERLAYS_PER_USER live+pending per (story, contributor)
+  // counted under the story row lock → 409 overlay_limit.
+  app.post(
+    '/api/stories/:id/overlays',
+    { preHandler: requireAuth, schema: { params: IdParams, body: CreateOverlayRequestSchema } },
+    async (req, reply) => {
+      const { user } = authed(req);
+      const row = await requireVisibleStory(req.params.id, user.id);
+      // Expired own story: the author can still see it (§1.34) but the canvas
+      // is gone with the audience.
+      if (row.expiresAt.getTime() <= Date.now()) throw notFound('story_not_found');
+
+      // The ban check FIRST, and byte-identical to a closed canvas (§1.66).
+      if (user.id !== row.authorId) {
+        const banned = (await db.execute(sql`
+          SELECT 1 AS one FROM story_canvas_bans
+          WHERE owner_id = ${row.authorId} AND banned_user_id = ${user.id}
+          LIMIT 1
+        `)) as unknown as { one: number }[];
+        if (banned.length > 0) throw forbidden('canvas_closed');
+      }
+      if (row.canvasMode === 'off') throw forbidden('canvas_closed');
+
+      const rate = await fixedWindow(`overlay:${user.id}`, OVERLAY_RATE_PER_HOUR, 3600);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+
+      const payload = req.body.payload;
+      const status =
+        user.id === row.authorId ? 'live' : row.canvasMode === 'approve' ? 'pending' : 'live';
+
+      const overlayId = newId();
+      await db.transaction(async (tx) => {
+        // The TROUBLESHOOTING counter-race pattern: count under the story row
+        // lock so two concurrent 5th overlays cannot both land.
+        await tx.execute(sql`SELECT 1 FROM stories WHERE id = ${row.id} FOR UPDATE`);
+        const [count] = (await tx.execute(sql`
+          SELECT count(*)::int AS n FROM story_overlays
+          WHERE story_id = ${row.id} AND author_id = ${user.id}
+            AND status IN ('live','pending')
+        `)) as unknown as { n: number }[];
+        if (Number(count?.n ?? 0) >= OVERLAYS_PER_USER) throw conflict('overlay_limit');
+        await tx.execute(sql`
+          INSERT INTO story_overlays (id, story_id, author_id, kind, payload, status)
+          VALUES (${overlayId}, ${row.id}, ${user.id}, ${payload.kind},
+                  ${JSON.stringify(payload)}::jsonb, ${status})
+        `);
+      });
+
+      const [overlayRow] = await db
+        .select()
+        .from(schema.storyOverlays)
+        .where(eq(schema.storyOverlays.id, overlayId))
+        .limit(1);
+      // Live updates: a pending overlay fans only to its author + the story
+      // author; live ones to the whole audience (§1.66).
+      await fanStoryUpdated(row, status === 'pending' ? { pendingOnlyAuthorId: user.id } : {});
+      return reply.status(201).send({ overlay: overlayDto(overlayRow!, user) });
+    },
+  );
+
+  // DELETE .../overlays/:overlayId — the STORY AUTHOR (any overlay) or the
+  // OVERLAY AUTHOR (their own). Sets status 'removed' (tombstone: reports
+  // must outlive moderation; serializes to nobody, frees the cap). Idempotent.
+  app.delete(
+    '/api/stories/:id/overlays/:overlayId',
+    {
+      preHandler: requireAuth,
+      schema: { params: z.object({ id: z.string().uuid(), overlayId: z.string().uuid() }) },
+    },
+    async (req, reply) => {
+      const { user } = authed(req);
+      const row = await loadStory(req.params.id);
+      if (!row) throw notFound('story_not_found');
+      const [overlay] = await db
+        .select()
+        .from(schema.storyOverlays)
+        .where(
+          and(
+            eq(schema.storyOverlays.id, req.params.overlayId),
+            eq(schema.storyOverlays.storyId, row.id),
+          ),
+        )
+        .limit(1);
+      if (!overlay) throw notFound('not_found');
+      if (user.id !== row.authorId && user.id !== overlay.authorId) throw notFound('not_found');
+      if (overlay.status !== 'removed') {
+        await db
+          .update(schema.storyOverlays)
+          .set({ status: 'removed' })
+          .where(eq(schema.storyOverlays.id, overlay.id));
+        await fanStoryUpdated(row);
+      }
+      return reply.status(204).send();
+    },
+  );
+
+  // POST .../overlays/:overlayId/approve — story author only: pending → live.
+  app.post(
+    '/api/stories/:id/overlays/:overlayId/approve',
+    {
+      preHandler: requireAuth,
+      schema: { params: z.object({ id: z.string().uuid(), overlayId: z.string().uuid() }) },
+    },
+    async (req) => {
+      const { user } = authed(req);
+      const row = await loadStory(req.params.id);
+      if (!row || row.authorId !== user.id) throw notFound('story_not_found');
+      const [overlay] = await db
+        .select({ o: schema.storyOverlays, u: schema.users })
+        .from(schema.storyOverlays)
+        .innerJoin(schema.users, eq(schema.storyOverlays.authorId, schema.users.id))
+        .where(
+          and(
+            eq(schema.storyOverlays.id, req.params.overlayId),
+            eq(schema.storyOverlays.storyId, row.id),
+          ),
+        )
+        .limit(1);
+      if (!overlay) throw notFound('not_found');
+      if (overlay.o.status !== 'pending') throw conflict('overlay_not_pending');
+      const [updated] = await db
+        .update(schema.storyOverlays)
+        .set({ status: 'live' })
+        .where(eq(schema.storyOverlays.id, overlay.o.id))
+        .returning();
+      await fanStoryUpdated(row);
+      return { overlay: overlayDto(updated!, overlay.u) };
+    },
+  );
+
+  // PUT/DELETE /api/users/:id/canvas-ban — ban/unban :id from ALL my
+  // canvases, present and future (idempotent). Enforced INVISIBLY at overlay
+  // create (the 403 canvas_closed shape).
+  app.put(
+    '/api/users/:id/canvas-ban',
+    { preHandler: requireAuth, schema: { params: IdParams } },
+    async (req, reply) => {
+      const { user } = authed(req);
+      if (req.params.id === user.id) throw badRequest('block_self');
+      const [target] = await db
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(eq(schema.users.id, req.params.id))
+        .limit(1);
+      if (!target) throw notFound('user_not_found');
+      await db.execute(sql`
+        INSERT INTO story_canvas_bans (owner_id, banned_user_id)
+        VALUES (${user.id}, ${req.params.id})
+        ON CONFLICT DO NOTHING
+      `);
+      return reply.status(204).send();
+    },
+  );
+
+  app.delete(
+    '/api/users/:id/canvas-ban',
+    { preHandler: requireAuth, schema: { params: IdParams } },
+    async (req, reply) => {
+      const { user } = authed(req);
+      if (req.params.id === user.id) throw badRequest('block_self');
+      await db.execute(sql`
+        DELETE FROM story_canvas_bans
+        WHERE owner_id = ${user.id} AND banned_user_id = ${req.params.id}
+      `);
+      return reply.status(204).send();
+    },
+  );
+
+  // GET /api/users/me/canvas-bans — my list (the §1.14 blocks-list pattern;
+  // faces by username, no timestamps).
+  app.get('/api/users/me/canvas-bans', { preHandler: requireAuth }, async (req) => {
+    const { user } = authed(req);
+    const rows = await db
+      .select({ u: schema.users })
+      .from(schema.storyCanvasBans)
+      .innerJoin(schema.users, eq(schema.storyCanvasBans.bannedUserId, schema.users.id))
+      .where(eq(schema.storyCanvasBans.ownerId, user.id));
+    const sorted = rows
+      .map(({ u }) => u)
+      .sort((a, b) => a.username.toLowerCase().localeCompare(b.username.toLowerCase()));
+    return { users: sorted.map((u) => userLiteDto(u)) };
+  });
 
   // §1.34 DELETE /api/stories/:id — own stories only (404 otherwise); views
   // cascade; attachment row + objects go, refcount-guarded.

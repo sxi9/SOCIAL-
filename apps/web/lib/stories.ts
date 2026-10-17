@@ -3,8 +3,13 @@
 // a tray, not a feed; viewing never auto-advances between authors. View lists
 // are author-only faces with NO timestamps (story_views stores none).
 import type {
+  BlockedListResponse,
   ListStoriesResponse,
+  OverlayResponse,
   Story,
+  StoryCanvasMode,
+  StoryOverlay,
+  StoryOverlayPayload,
   StoryResponse,
   StoryViewsResponse,
 } from '@socialchat/shared';
@@ -29,14 +34,71 @@ export async function refreshStories(): Promise<void> {
   return inflight;
 }
 
-/** POST /api/stories — attachment must be mine, image|video, unbound. */
-export async function createStory(attachmentId: string, caption: string): Promise<Story> {
+/** POST /api/stories — attachment must be mine, image|video, unbound.
+ * v0.8b §1.66: canvas_mode defaults 'off' — drawable is always the AUTHOR's
+ * invitation. */
+export async function createStory(
+  attachmentId: string,
+  caption: string,
+  canvasMode: StoryCanvasMode = 'off'
+): Promise<Story> {
   const res = await api.post<StoryResponse>('/api/stories', {
     attachment_id: attachmentId,
     caption,
+    canvas_mode: canvasMode,
   });
   store.applyStoryNew(res.story);
   return res.story;
+}
+
+// ---------------------------------------------------------------------------
+// Canvas stories (v0.8b — API.md §1.66, ADR-020). Overlays are attributed
+// VECTOR layers, never burned into the image; story.updated keeps viewers
+// live, reconnect truth is GET /api/stories.
+// ---------------------------------------------------------------------------
+
+/** PATCH /api/stories/:id — author only; the canvas switch. 'off' keeps
+ * existing overlays (they were invited) and stops NEW ones. */
+export async function setCanvasMode(storyId: string, mode: StoryCanvasMode): Promise<Story> {
+  const res = await api.patch<StoryResponse>(`/api/stories/${storyId}`, { canvas_mode: mode });
+  store.replaceStoryLocal(res.story);
+  return res.story;
+}
+
+/** POST an overlay. 403 canvas_closed is byte-identical for 'off' AND a
+ * canvas ban (never confirmable); 409 overlay_limit = my 5-per-story cap. */
+export async function addOverlay(storyId: string, payload: StoryOverlayPayload): Promise<StoryOverlay> {
+  const res = await api.post<OverlayResponse>(`/api/stories/${storyId}/overlays`, { payload });
+  return res.overlay;
+}
+
+/** Remove: the STORY AUTHOR (any overlay) or the OVERLAY AUTHOR (their own).
+ * Tombstoned server-side (reports outlive moderation); idempotent. */
+export async function removeOverlay(storyId: string, overlayId: string): Promise<void> {
+  try {
+    await api.del(`/api/stories/${storyId}/overlays/${overlayId}`);
+  } catch (err) {
+    if (!(err instanceof ApiError && err.status === 404)) throw err;
+  }
+}
+
+/** Approve a pending overlay — story author only. */
+export async function approveOverlay(storyId: string, overlayId: string): Promise<StoryOverlay> {
+  const res = await api.post<OverlayResponse>(`/api/stories/${storyId}/overlays/${overlayId}/approve`);
+  return res.overlay;
+}
+
+/** Ban/unban a user from ALL my canvases, present and future (idempotent). */
+export async function canvasBan(userId: string): Promise<void> {
+  await api.put(`/api/users/${userId}/canvas-ban`);
+}
+
+export async function canvasUnban(userId: string): Promise<void> {
+  await api.del(`/api/users/${userId}/canvas-ban`);
+}
+
+export async function listCanvasBans(): Promise<BlockedListResponse> {
+  return api.get<BlockedListResponse>('/api/users/me/canvas-bans');
 }
 
 /** §1.34 afterglow integration: share a recap photo to MY story (re-referenced). */

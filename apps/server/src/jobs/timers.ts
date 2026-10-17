@@ -22,12 +22,12 @@ import { db, schema } from '../db/index.js';
 import {
   activeParticipantUserIds,
   broadcastUserUpdatedOf,
-  messageDtos,
   publishConversationToUsers,
   publishUserUpdated,
   rawToMsgRow,
   type MsgRow,
 } from '../lib/dto.js';
+import { runAnonRevealSweep } from '../modules/anon/service.js';
 import { runCallRingSweep, runMissedCall } from '../modules/calls/service.js';
 import { deliverScheduledMessage } from '../modules/scheduled/service.js';
 import { publishMessageUpdated } from '../modules/messages/service.js';
@@ -35,7 +35,6 @@ import { runListingSweep } from '../modules/listings/service.js';
 import { runStorySweep } from '../modules/stories/service.js';
 import type { TimersJob } from '../queues.js';
 import { deleteAttachmentObjects } from './gc.js';
-import { publishToUsers } from '../ws/events.js';
 
 export { DISAPPEAR_SWEEP_INTERVAL_S, MOOD_SWEEP_INTERVAL_S, STORY_SWEEP_INTERVAL_S };
 
@@ -120,21 +119,15 @@ export async function runDisappearSweep(): Promise<void> {
       if (await tombstoneMessage(msg)) anyPinRemoved = true;
 
       // One msg.updated per tombstone (offline clients reconcile via sync +
-      // history refetch, where tombstones arrive as ordinary DTOs).
+      // history refetch, where tombstones arrive as ordinary DTOs). Routed
+      // through publishMessageUpdated so 👻 ghost conversations mask the
+      // tombstone's sender per recipient class (§1.68).
       const [fresh] = await db
         .select()
         .from(schema.messages)
         .where(eq(schema.messages.id, msg.id))
         .limit(1);
-      if (fresh) {
-        const [dto] = await messageDtos([fresh]);
-        if (dto) {
-          await publishToUsers(recipients, {
-            t: 'msg.updated',
-            d: { conversation_id: conv.id, message: dto },
-          });
-        }
-      }
+      if (fresh) await publishMessageUpdated(fresh);
     }
 
     // §1.32: pin removals ride ONE conv.updated per sweep batch.
@@ -286,6 +279,10 @@ export async function processTimersJob(name: string, job: TimersJob): Promise<vo
       return runMoodExpirySweep();
     case 'mood-swing-sweep':
       return runMoodSwingSweep();
+    // v0.8b (§1.62): timer reveals — reads resolve reveal_at <= now() live;
+    // the sweep stamps revealed_at + fans the anon.updated goodbye-blur.
+    case 'anon-sweep':
+      return runAnonRevealSweep();
     default:
       throw new Error(`timers: unknown job ${name}`);
   }

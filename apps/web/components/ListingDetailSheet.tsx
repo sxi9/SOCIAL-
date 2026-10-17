@@ -18,6 +18,7 @@ import {
   KIND_EMOJI,
   KIND_LABEL,
 } from '@/lib/listings';
+import { copyShareLink } from '@/lib/share';
 import { upsertConversation } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
@@ -362,6 +363,19 @@ export default function ListingDetailSheet({
         ) : null}
 
         {error ? <p className="error-text">{error}</p> : null}
+
+        {/* v0.8b §1.67: PUBLIC listings get the one stable share link —
+            area-only listings never get a URL. */}
+        {listing.is_public && live ? (
+          <button
+            type="button"
+            className="btn"
+            style={{ width: '100%', margin: '8px 0' }}
+            onClick={() => void copyShareLink('listing', listing.id)}
+          >
+            🔗 Copy a public link
+          </button>
+        ) : null}
 
         <div className={st.ctaCol}>
           {mine ? (

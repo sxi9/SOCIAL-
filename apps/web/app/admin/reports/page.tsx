@@ -4,12 +4,13 @@
 // previews are METADATA ONLY: who/where/when/what-kind, never a message body.
 // The only quoted content on this page is the reporter's own reason text.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AdminReport } from '@socialchat/shared';
+import type { AdminContextMessage, AdminReport } from '@socialchat/shared';
 import { ADMIN_NOTE_MAX_CHARS } from '@socialchat/shared';
 import { ApiError } from '@/lib/api';
-import { adminCloseReport, adminReports } from '@/lib/admin';
+import { adminCloseReport, adminReportContext, adminReports } from '@/lib/admin';
 import { formatTime } from '@/lib/format';
 import ad from '@/components/admin.module.css';
+import cm from '@/components/community.module.css';
 
 type StatusFilter = 'open' | 'closed' | null;
 
@@ -168,10 +169,59 @@ function ReportCard({ report, onClosed }: { report: AdminReport; onClosed: (r: A
             Target beacon: {report.target_beacon.vibe} · {report.target_beacon.status} · by{' '}
             {report.target_beacon.creator ? `@${report.target_beacon.creator.username}` : 'deleted account'}
           </>
+        ) : report.target_anon_message ? (
+          // v0.8b §1.62: the reporter disclosed the message; identity is
+          // ATTACHED server-side — anonymity never survives a report.
+          <>
+            Anonymous message by{' '}
+            {report.target_anon_message.author ? (
+              <strong>@{report.target_anon_message.author.username}</strong>
+            ) : (
+              'deleted account'
+            )}{' '}
+            (identity attached — anonymity was recipient-only) ·{' '}
+            {formatTime(report.target_anon_message.created_at)}
+            <br />
+            <em>&ldquo;{report.target_anon_message.body}&rdquo;</em>
+          </>
+        ) : report.target_overlay ? (
+          // v0.8b §1.66: the canvas overlay with its ATTACHED author.
+          <>
+            Canvas {report.target_overlay.kind} by{' '}
+            {report.target_overlay.author ? (
+              <strong>@{report.target_overlay.author.username}</strong>
+            ) : (
+              'deleted account'
+            )}{' '}
+            · status {report.target_overlay.status}
+            {report.target_overlay.payload
+              ? report.target_overlay.payload.kind === 'text'
+                ? ` · “${report.target_overlay.payload.text}”`
+                : report.target_overlay.payload.kind === 'emoji'
+                  ? ` · ${report.target_overlay.payload.emoji}`
+                  : ' · a doodle stroke'
+              : ' · story expired since'}
+          </>
+        ) : report.target_share_page ? (
+          // v0.8b §1.67: a non-user report from a public share page.
+          <>
+            Share page: {report.target_share_page.object_type} by{' '}
+            {report.target_share_page.author ? (
+              <strong>@{report.target_share_page.author.username}</strong>
+            ) : (
+              'deleted account'
+            )}
+            {report.target_share_page.gone ? ' · the page no longer resolves' : ''}
+            {report.reporter === null ? ' · reported by a logged-out visitor' : ''}
+          </>
         ) : (
           <>Target gone — the report outlived it.</>
         )}
       </div>
+
+      {/* v0.8b §1.69 #81c: the consented context viewer — exists ONLY where
+          the reporter checked include_context; every view is ring-logged. */}
+      {report.target_message?.context_available ? <ContextViewer reportId={report.id} /> : null}
 
       {report.status === 'open' ? (
         <div className={ad.closeRow}>
@@ -195,5 +245,78 @@ function ReportCard({ report, onClosed }: { report: AdminReport; onClosed: (r: A
       )}
       {error ? <p className="error-text">{error}</p> : null}
     </article>
+  );
+}
+
+/** The ONE admin surface with message bodies — and only because the REPORTER
+ * consented at report time (§1.69 #81c). Resolves LIVE: tombstones say
+ * deleted, edits show current text. Ghost masks do NOT apply here. */
+function ContextViewer({ reportId }: { reportId: string }) {
+  const [messages, setMessages] = useState<AdminContextMessage[] | null>(null);
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load(): Promise<void> {
+    setOpen(true);
+    setError(null);
+    try {
+      const res = await adminReportContext(reportId);
+      setMessages(res.context.messages);
+    } catch (err) {
+      setError(
+        err instanceof ApiError && err.status === 404
+          ? 'No context exists for this report.'
+          : 'Could not load the context slice.'
+      );
+    }
+  }
+
+  if (!open) {
+    return (
+      <div className={ad.closeRow} style={{ marginTop: 8 }}>
+        <button type="button" className="btn" onClick={() => void load()}>
+          🔍 View consented context (logged)
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={cm.contextSlice} aria-label="Reporter-consented context">
+      <p className="muted small" style={{ margin: '0 0 6px' }}>
+        The reporter chose to share this slice — the reported message ± 5. This view is logged.
+      </p>
+      {error ? <p className="error-text">{error}</p> : null}
+      {messages === null && !error ? (
+        <p className="muted small" style={{ margin: 0 }}>
+          Loading…
+        </p>
+      ) : null}
+      {messages?.map((m) => (
+        <div key={m.seq} className={`${cm.contextMsg}${m.reported ? ` ${cm.contextReported}` : ''}`}>
+          <strong>{m.sender ? `@${m.sender.username}` : 'system'}</strong>{' '}
+          <span className={ad.dim}>
+            seq {m.seq} · {formatTime(m.created_at)}
+            {m.reported ? ' · the reported message' : ''}
+          </span>
+          <div>
+            {m.deleted ? (
+              <em className={ad.dim}>deleted since</em>
+            ) : m.body ? (
+              m.body
+            ) : (
+              <em className={ad.dim}>
+                {m.attachments.length > 0
+                  ? m.attachments.map((a) => `${a.kind} (${a.mime})`).join(', ')
+                  : m.type}
+              </em>
+            )}
+            {!m.deleted && m.body && m.attachments.length > 0 ? (
+              <span className={ad.dim}> + {m.attachments.map((a) => `${a.kind} (${a.mime})`).join(', ')}</span>
+            ) : null}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }

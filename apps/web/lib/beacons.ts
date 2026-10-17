@@ -213,6 +213,7 @@ export async function joinBeacon(id: string): Promise<Beacon> {
           avatar: me.avatar,
           mood: me.mood,
           name_style: me.name_style,
+          mask_emoji: null,
         },
       ],
     });

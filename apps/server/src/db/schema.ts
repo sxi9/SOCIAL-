@@ -119,6 +119,16 @@ export const users = pgTable(
     // version the user dismissed/saw. Register stamps the current newest so
     // new accounts never get a card storm.
     lastSeenRelease: text('last_seen_release'),
+    // v0.8b (migration 0010, API.md §1.62, ADR-019): who may open an
+    // anonymous thread to me. DEFAULT 'connections' (accepted §1.28
+    // connections literally, NOT friends-of). Enforced INVISIBLY at send —
+    // 'nobody', an unmet 'connections' and a §1.14 block all answer the same
+    // 404 anon_unavailable.
+    anonMessages: text('anon_messages').notNull().default('connections'),
+    // v0.8b (migration 0010, API.md §1.63): may the worker send me the
+    // batched anonymous wave nudge during a live discovery opt-in. Off kills
+    // both the push and the in-app discovery.nudge frame.
+    waveNudges: boolean('wave_nudges').notNull().default(true),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },
@@ -196,6 +206,11 @@ export const users = pgTable(
       'users_activity_games_check',
       sql`${t.activityGames} IN ('public','connections','private')`,
     ),
+    // ---- v0.8b (migration 0010) ----
+    anonMessagesCheck: check(
+      'users_anon_messages_check',
+      sql`${t.anonMessages} IN ('nobody','connections','everyone')`,
+    ),
     // Expiry sweep + swing-rotation walks (partial: most users have no mood).
     moodExpiryIdx: index('users_mood_expiry_idx')
       .on(t.moodExpiresAt)
@@ -260,6 +275,21 @@ export const conversations = pgTable(
     // and participants cascade). Set on roulette provisional DMs (+5 min);
     // cleared by the both-kept guarded UPDATE.
     expiresAt: timestamptz('expires_at'),
+    // v0.8b (migration 0010, API.md §1.68, ADR-020): group visibility mode —
+    // GROUPS ONLY (DMs/channels stay 'private', shape CHECK below). 'public'
+    // and 'invite_only' power the §1.67 share pages; 'ghost' is unlisted
+    // everywhere (search, suggestions, activity, share) and serializes member
+    // MASKS to non-admins. Ghost is a ONE-WAY door (route-enforced
+    // 400 ghost_is_forever — members spoke under masks).
+    visibility: text('visibility').notNull().default('private'),
+    // v0.8b (§1.68): group description — the group card + share page copy.
+    description: text('description').notNull().default(''),
+    // v0.8b (§1.68): conversations.last_seq at the admin-confirmed switch to
+    // 'public'. ONLY messages with seq > this ever render publicly (history
+    // is never retro-exposed); cleared when the group leaves 'public' (a
+    // later re-publicize stamps a FRESH floor). Its presence doubles as the
+    // member-banner flag in the DTO.
+    publicSinceSeq: bigint('public_since_seq', { mode: 'number' }),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
   },
   (t) => ({
@@ -290,6 +320,28 @@ export const conversations = pgTable(
     expiryIdx: index('conversations_expiry_idx')
       .on(t.expiresAt)
       .where(sql`${t.expiresAt} IS NOT NULL`),
+    // ---- v0.8b (migration 0010, §1.68) ----
+    visibilityCheck: check(
+      'conversations_visibility_check',
+      sql`${t.visibility} IN ('private','invite_only','public','ghost')`,
+    ),
+    visibilityGroupCheck: check(
+      'conversations_visibility_group_check',
+      sql`${t.visibility} = 'private' OR ${t.type} = 'group'`,
+    ),
+    descriptionCheck: check(
+      'conversations_description_check',
+      sql`char_length(${t.description}) <= 300`,
+    ),
+    publicSinceShapeCheck: check(
+      'conversations_public_since_shape_check',
+      sql`(${t.visibility} = 'public') = (${t.publicSinceSeq} IS NOT NULL)`,
+    ),
+    // Discovery/search listing walk for PUBLIC groups (ghost groups never
+    // appear in any listing — unlisted everywhere, §1.68).
+    publicIdx: index('conversations_public_idx')
+      .on(sql`${t.createdAt} DESC`)
+      .where(sql`${t.visibility} = 'public'`),
   }),
 );
 
@@ -891,14 +943,30 @@ export const reports = pgTable(
   'reports',
   {
     id: uuid('id').primaryKey(),
-    reporterId: uuid('reporter_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    // v0.8b (migration 0010, API.md §1.67): NULLABLE — non-user share-page
+    // reports store NULL + reporter_ip (aged by the IP_RETENTION_DAYS sweep).
+    reporterId: uuid('reporter_id').references(() => users.id, { onDelete: 'cascade' }),
     kind: text('kind').notNull(),
+    // v0.8b doctrine note: target_user_id doubles as the SERVER-ATTACHED
+    // identity on 'anon_message' (the reported anon party — FEATURES #77) and
+    // 'story_overlay' (the overlay author) rows; never client-supplied.
     targetUserId: uuid('target_user_id'),
     targetConversationId: uuid('target_conversation_id'),
     targetSeq: bigint('target_seq', { mode: 'number' }),
     targetBeaconId: uuid('target_beacon_id'),
+    // v0.8b (migration 0010, §1.62/§1.66/§1.67): the new target pointers —
+    // still NO FKs (reports outlive their targets, the 0003 doctrine).
+    targetObjectType: text('target_object_type'),
+    targetObjectId: uuid('target_object_id'),
+    targetOverlayId: uuid('target_overlay_id'),
+    targetAnonThreadId: uuid('target_anon_thread_id'),
+    targetAnonMessageId: uuid('target_anon_message_id'),
+    // v0.8b (§1.69): the reporter's EXPLICIT include-context choice on message
+    // reports — the ONLY key that opens the admin context viewer (ADR-020).
+    contextConsent: boolean('context_consent').notNull().default(false),
+    // v0.8b (§1.67): the non-user reporter's IP (rate-limit audit), nulled by
+    // the retention GC like every stored IP.
+    reporterIp: inet('reporter_ip'),
     reason: text('reason').notNull().default(''),
     status: text('status').notNull().default('open'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
@@ -910,7 +978,11 @@ export const reports = pgTable(
     closeNote: text('close_note').notNull().default(''),
   },
   (t) => ({
-    kindCheck: check('reports_kind_check', sql`${t.kind} IN ('user','message','beacon')`),
+    // v0.8b (migration 0010) widens the kind set.
+    kindCheck: check(
+      'reports_kind_check',
+      sql`${t.kind} IN ('user','message','beacon','anon_message','story_overlay','share_page')`,
+    ),
     reasonCheck: check('reports_reason_check', sql`char_length(${t.reason}) <= 500`),
     statusCheck: check('reports_status_check', sql`${t.status} IN ('open','closed')`),
     closeNoteCheck: check(
@@ -921,9 +993,24 @@ export const reports = pgTable(
       'reports_closed_shape_check',
       sql`(${t.status} = 'closed') = (${t.closedAt} IS NOT NULL)`,
     ),
+    targetObjectTypeCheck: check(
+      'reports_target_object_type_check',
+      sql`${t.targetObjectType} IN ('post','beacon','listing','story','group')`,
+    ),
+    // Exactly one target shape per kind (the 0003 CHECK, widened by 0010).
     targetCheck: check(
       'reports_target_check',
-      sql`(${t.kind} = 'user' AND ${t.targetUserId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL) OR (${t.kind} = 'message' AND ${t.targetConversationId} IS NOT NULL AND ${t.targetSeq} IS NOT NULL AND ${t.targetUserId} IS NULL AND ${t.targetBeaconId} IS NULL) OR (${t.kind} = 'beacon' AND ${t.targetBeaconId} IS NOT NULL AND ${t.targetUserId} IS NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL)`,
+      sql`(${t.kind} = 'user' AND ${t.targetUserId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetObjectType} IS NULL AND ${t.targetOverlayId} IS NULL AND ${t.targetAnonThreadId} IS NULL) OR (${t.kind} = 'message' AND ${t.targetConversationId} IS NOT NULL AND ${t.targetSeq} IS NOT NULL AND ${t.targetUserId} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetObjectType} IS NULL AND ${t.targetOverlayId} IS NULL AND ${t.targetAnonThreadId} IS NULL) OR (${t.kind} = 'beacon' AND ${t.targetBeaconId} IS NOT NULL AND ${t.targetUserId} IS NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetObjectType} IS NULL AND ${t.targetOverlayId} IS NULL AND ${t.targetAnonThreadId} IS NULL) OR (${t.kind} = 'anon_message' AND ${t.targetAnonThreadId} IS NOT NULL AND ${t.targetAnonMessageId} IS NOT NULL AND ${t.targetUserId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetObjectType} IS NULL AND ${t.targetOverlayId} IS NULL) OR (${t.kind} = 'story_overlay' AND ${t.targetObjectType} = 'story' AND ${t.targetObjectId} IS NOT NULL AND ${t.targetOverlayId} IS NOT NULL AND ${t.targetUserId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetAnonThreadId} IS NULL) OR (${t.kind} = 'share_page' AND ${t.targetObjectType} IS NOT NULL AND ${t.targetObjectId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetOverlayId} IS NULL AND ${t.targetAnonThreadId} IS NULL)`,
+    ),
+    // context_consent exists only on message reports; only non-user
+    // share-page rows may lack a reporter.
+    contextConsentShapeCheck: check(
+      'reports_context_consent_shape_check',
+      sql`${t.contextConsent} = false OR ${t.kind} = 'message'`,
+    ),
+    reporterShapeCheck: check(
+      'reports_reporter_shape_check',
+      sql`${t.reporterId} IS NOT NULL OR ${t.kind} = 'share_page'`,
     ),
     queueIdx: index('reports_queue_idx').on(t.status, sql`${t.createdAt} DESC`),
   }),
@@ -1173,6 +1260,11 @@ export const stories = pgTable(
       .references(() => attachments.id, { onDelete: 'cascade' }),
     caption: text('caption').notNull().default(''),
     audience: text('audience').notNull().default('friends_of'),
+    // v0.8b (migration 0010, API.md §1.66, ADR-020): the canvas invitation —
+    // DEFAULT 'off' (being drawable is always the author's choice); 'approve'
+    // holds viewer overlays as 'pending' until the author approves each one.
+    // Switchable mid-life via PATCH /api/stories/:id (author only).
+    canvasMode: text('canvas_mode').notNull().default('off'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     expiresAt: timestamptz('expires_at')
       .notNull()
@@ -1181,6 +1273,10 @@ export const stories = pgTable(
   (t) => ({
     captionCheck: check('stories_caption_check', sql`char_length(${t.caption}) <= 140`),
     audienceCheck: check('stories_audience_check', sql`${t.audience} IN ('friends_of')`),
+    canvasModeCheck: check(
+      'stories_canvas_mode_check',
+      sql`${t.canvasMode} IN ('off','open','approve')`,
+    ),
     byAuthorIdx: index('stories_by_author_idx').on(t.authorId, t.createdAt),
     expiryIdx: index('stories_expiry_idx').on(t.expiresAt),
     attachmentIdx: index('stories_attachment_idx').on(t.attachmentId),
@@ -1706,12 +1802,28 @@ export const discoveryOptins = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     scope: text('scope').notNull(),
     note: text('note').notNull().default(''),
+    // v0.8b (migration 0010, API.md §1.65): the optional what-for chip
+    // (DISCOVERY_VIBES) — opt-in data the owner chose to share; the §1.65
+    // card filters only ever NARROW on it. Re-PUT re-scopes/clears it.
+    vibe: text('vibe'),
+    // v0.8b (migration 0010, API.md §1.63): the once-per-opt-in wave-nudge
+    // claim. The worker claims via the guarded UPDATE (… WHERE wave_nudged_at
+    // IS NULL AND expires_at > now()) AFTER the NUDGE_MIN_POOL check, so a
+    // too-small pool leaves the hour's claim open for a later wave. A re-PUT
+    // clears it with the fresh opt-in.
+    waveNudgedAt: timestamptz('wave_nudged_at'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     expiresAt: timestamptz('expires_at').notNull(),
   },
   (t) => ({
     scopeCheck: check('discovery_optins_scope_check', sql`${t.scope} IN ('area','public')`),
     noteCheck: check('discovery_optins_note_check', sql`char_length(${t.note}) <= 80`),
+    // v0.8b (migration 0010): DISCOVERY_VIBES — keep in sync with the shared
+    // tuple and the SQL CHECK.
+    vibeCheck: check(
+      'discovery_optins_vibe_check',
+      sql`${t.vibe} IN ('food','chai','walk','game','movie','study','sport','chill')`,
+    ),
     expiryIdx: index('discovery_optins_expiry_idx').on(t.expiresAt),
   }),
 );
@@ -1813,5 +1925,338 @@ export const activities = pgTable(
     byUserIdx: index('activities_by_user_idx').on(t.userId, sql`${t.createdAt} DESC`),
     // The 30-day retention sweep.
     sweepIdx: index('activities_sweep_idx').on(t.createdAt),
+  }),
+);
+
+// ============================ anonymous threads ===============================
+// v0.8b (migration 0010, API.md §1.62, FEATURES #77, ADR-019). The anonymous
+// reveal game. sender_id is an ORDINARY FK — anonymity is a SERIALIZATION
+// rule (the recipient's DTO strips the sender until revealed), never a
+// storage rule: the server always knows, and reports attach the identity.
+// ONE open thread per (sender, recipient) — the partial unique; a revealed
+// thread keeps living (identity now serialized) and frees the slot.
+// reveal_timer_s keeps the chosen preset (ANON_TIMER_PRESETS_S) so the
+// progressive un-blur factor stays derivable: clamp((reveal_at - now()) /
+// reveal_timer_s, 0, 1) — the SERVER renders the blurred avatar pixels
+// (the §1.62 gated proxy, sigma = ANON_BLUR_SIGMA_MAX × factor); the real
+// image never ships early. Timer reveals resolve LIVE at read
+// (reveal_at <= now() ⇒ revealed, the §1.44 pattern); the `timers` sweep only
+// stamps revealed_at + fans the anon.updated goodbye-blur.
+
+export const anonThreads = pgTable(
+  'anon_threads',
+  {
+    id: uuid('id').primaryKey(),
+    senderId: uuid('sender_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    recipientId: uuid('recipient_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    revealMode: text('reveal_mode').notNull().default('none'),
+    revealTimerS: integer('reveal_timer_s'),
+    revealAt: timestamptz('reveal_at'),
+    riddleQ: text('riddle_q'),
+    revealRequestedAt: timestamptz('reveal_requested_at'),
+    revealedAt: timestamptz('revealed_at'),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    notSelfCheck: check('anon_threads_not_self_check', sql`${t.senderId} <> ${t.recipientId}`),
+    revealModeCheck: check(
+      'anon_threads_reveal_mode_check',
+      sql`${t.revealMode} IN ('none','timer','riddle')`,
+    ),
+    // ANON_TIMER_PRESETS_S — keep in sync with the shared tuple.
+    timerPresetCheck: check(
+      'anon_threads_timer_preset_check',
+      sql`${t.revealTimerS} IN (3600, 21600, 86400)`,
+    ),
+    timerShapeCheck: check(
+      'anon_threads_timer_shape_check',
+      sql`((${t.revealMode} = 'timer') = (${t.revealAt} IS NOT NULL))
+          AND ((${t.revealMode} = 'timer') = (${t.revealTimerS} IS NOT NULL))`,
+    ),
+    riddleCheck: check('anon_threads_riddle_check', sql`char_length(${t.riddleQ}) <= 200`),
+    riddleShapeCheck: check(
+      'anon_threads_riddle_shape_check',
+      sql`(${t.revealMode} = 'riddle') = (${t.riddleQ} IS NOT NULL)`,
+    ),
+    // ONE open thread per direction (§1.62's "UNIQUE sender+recipient open").
+    openUnique: uniqueIndex('anon_threads_open_unique')
+      .on(t.senderId, t.recipientId)
+      .where(sql`${t.revealedAt} IS NULL`),
+    byRecipientIdx: index('anon_threads_by_recipient_idx').on(
+      t.recipientId,
+      sql`${t.createdAt} DESC`,
+    ),
+    bySenderIdx: index('anon_threads_by_sender_idx').on(t.senderId, sql`${t.createdAt} DESC`),
+    // Timer-reveal sweep walk (partial: almost all threads have no timer).
+    revealIdx: index('anon_threads_reveal_idx')
+      .on(t.revealAt)
+      .where(sql`${t.revealedAt} IS NULL AND ${t.revealAt} IS NOT NULL`),
+  }),
+);
+
+// TEXT ONLY by design — no attachment column exists (ADR-019: the game is
+// words first). Deliberately NOT on the conversations/seq log: no receipts,
+// no typing, no reactions — smaller than a chat on purpose. is_riddle_answer
+// marks the recipient's formal POST .../answer-riddle entries (the sender's
+// "that's right ✓" confirm target).
+
+export const anonMessages = pgTable(
+  'anon_messages',
+  {
+    id: uuid('id').primaryKey(),
+    threadId: uuid('thread_id')
+      .notNull()
+      .references(() => anonThreads.id, { onDelete: 'cascade' }),
+    fromSender: boolean('from_sender').notNull(),
+    body: text('body').notNull(),
+    isRiddleAnswer: boolean('is_riddle_answer').notNull().default(false),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    bodyCheck: check(
+      'anon_messages_body_check',
+      sql`char_length(${t.body}) BETWEEN 1 AND 500`, // ANON_BODY_MAX_CHARS
+    ),
+    byThreadIdx: index('anon_messages_by_thread_idx').on(t.threadId, t.createdAt),
+  }),
+);
+
+// ========================== suggestion dismissals =============================
+// v0.8b (migration 0010, API.md §1.64, FEATURES #78, ADR-019). "Not
+// interested" is permanent and SILENT: the dismissed user is never told and
+// the row only ever FILTERS the suggestions read — nothing re-ranks or
+// re-surfaces (PSYCHOLOGY rule 4). Presence IS the dismissal.
+
+export const suggestionDismissals = pgTable(
+  'suggestion_dismissals',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    suggestedUserId: uuid('suggested_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.suggestedUserId] }),
+    notSelfCheck: check(
+      'suggestion_dismissals_not_self_check',
+      sql`${t.userId} <> ${t.suggestedUserId}`,
+    ),
+  }),
+);
+
+// ============================= story overlays =================================
+// v0.8b (migration 0010, API.md §1.66, FEATURES #79a, ADR-020). One VECTOR
+// layer per row, keyed to its contributor — never burned into the image, so
+// removal is total and the username chip always knows its owner. payload
+// shape authority is the shared StoryOverlayPayloadSchema (stroke/emoji/text;
+// the DB pins only jsonb_typeof — the house metadata pattern). status
+// 'pending' = awaiting the author's approve (canvas_mode 'approve');
+// 'removed' is a tombstone kept ONLY so reports resolve — it serializes to
+// nobody and frees the OVERLAYS_PER_USER cap (counted over live+pending,
+// under the story row lock). Everything cascades away with the story (the
+// §1.34 hard-delete sweep: overlays expire with the story, by construction).
+
+export const storyOverlays = pgTable(
+  'story_overlays',
+  {
+    id: uuid('id').primaryKey(),
+    storyId: uuid('story_id')
+      .notNull()
+      .references(() => stories.id, { onDelete: 'cascade' }),
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    payload: jsonb('payload').notNull(),
+    status: text('status').notNull().default('live'),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    kindCheck: check('story_overlays_kind_check', sql`${t.kind} IN ('stroke','emoji','text')`),
+    payloadCheck: check('story_overlays_payload_check', sql`jsonb_typeof(${t.payload}) = 'object'`),
+    statusCheck: check(
+      'story_overlays_status_check',
+      sql`${t.status} IN ('live','pending','removed')`,
+    ),
+    byStoryIdx: index('story_overlays_by_story_idx').on(t.storyId, t.createdAt),
+    // The per-(story, contributor) cap count walk (live+pending only).
+    capIdx: index('story_overlays_cap_idx')
+      .on(t.storyId, t.authorId)
+      .where(sql`${t.status} IN ('live','pending')`),
+  }),
+);
+
+// "Ban from my canvases" — owner-scoped, until lifted. Enforced INVISIBLY at
+// overlay create: a banned contributor gets the same 403 canvas_closed a
+// closed canvas answers (never confirmable, the §1.14 shape doctrine).
+
+export const storyCanvasBans = pgTable(
+  'story_canvas_bans',
+  {
+    ownerId: uuid('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    bannedUserId: uuid('banned_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.ownerId, t.bannedUserId] }),
+    notSelfCheck: check(
+      'story_canvas_bans_not_self_check',
+      sql`${t.ownerId} <> ${t.bannedUserId}`,
+    ),
+  }),
+);
+
+// ============================== share tokens ==================================
+// v0.8b (migration 0010, API.md §1.67, FEATURES #79c, ADR-020). The ADR-007
+// invite-token doctrine re-applied: 32 random bytes base64url stored
+// PLAINTEXT with a unique index — a revocable CAPABILITY, not a credential
+// (mint must re-display it). ONE open token per object ("stable per object,
+// revocable with it"); a revoke frees the slot (stories may re-mint). Tokens
+// exist ONLY for PUBLIC things — route-enforced at mint AND re-checked LIVE
+// on every public read (audience narrowed / story expired / group left
+// 'public'/'invite_only' / author banned ⇒ 404 share_not_found even before
+// any revoke lands). object_id is a plain uuid, NOT an FK: posts hard-delete
+// and stories sweep — the read resolves or 404s; the gc sweep prunes dead
+// tokens.
+
+export const shareTokens = pgTable(
+  'share_tokens',
+  {
+    id: uuid('id').primaryKey(),
+    objectType: text('object_type').notNull(),
+    objectId: uuid('object_id').notNull(),
+    token: text('token').notNull(),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+    revokedAt: timestamptz('revoked_at'),
+  },
+  (t) => ({
+    objectTypeCheck: check(
+      'share_tokens_object_type_check',
+      sql`${t.objectType} IN ('post','beacon','listing','story','group')`,
+    ),
+    tokenUnique: uniqueIndex('share_tokens_token_unique').on(t.token),
+    objectUnique: uniqueIndex('share_tokens_object_unique')
+      .on(t.objectType, t.objectId)
+      .where(sql`${t.revokedAt} IS NULL`),
+  }),
+);
+
+// =========================== group join requests ==============================
+// v0.8b (migration 0010, API.md §1.68, FEATURES #79d). The invite_only queue.
+// Presence = pending; approve inserts the participant (join_seq = last_seq,
+// the §1.4 floor) and deletes the row in ONE transaction; deny just deletes
+// it — SILENTLY (no event, no notice: the no-rejection-surface rule).
+
+export const groupJoinRequests = pgTable(
+  'group_join_requests',
+  {
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.conversationId, t.userId] }),
+  }),
+);
+
+// ============================ conversation masks ==============================
+// v0.8b (migration 0010, API.md §1.68, FEATURES #79d, ADR-020). 👻 ghost
+// masks: chosen pseudonym + emoji avatar per (group, member) — auto-assigned
+// from the GHOST_MASK_* pools at join / at the switch, re-pickable via
+// PUT …/mask (unique name per group → 409 mask_taken). Anonymity is a
+// SERIALIZATION rule: non-admin members get the masked UserLite (derived
+// pseudo-id, mask name, emoji avatar); group ADMINS and reports see real
+// identity — the server always knows who is who (the #77 precedent).
+
+export const conversationMasks = pgTable(
+  'conversation_masks',
+  {
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    maskName: text('mask_name').notNull(),
+    maskEmoji: text('mask_emoji').notNull(),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.conversationId, t.userId] }),
+    maskNameCheck: check(
+      'conversation_masks_mask_name_check',
+      sql`char_length(${t.maskName}) BETWEEN 1 AND 32`, // MASK_NAME_MAX_CHARS
+    ),
+    maskEmojiCheck: check(
+      'conversation_masks_mask_emoji_check',
+      sql`char_length(${t.maskEmoji}) BETWEEN 1 AND 16`, // MASK_EMOJI_MAX_LEN
+    ),
+    nameUnique: uniqueIndex('conversation_masks_name_unique').on(t.conversationId, t.maskName),
+  }),
+);
+
+// ============================= support tickets ================================
+// v0.8b (migration 0010, API.md §1.69, FEATURES #81, ADR-020). The Settings →
+// Help & feedback intake. The DIALOGUE lives in the per-user "Bored Chat
+// Support" conversation (type 'group', metadata.support = true, the user as
+// sole member, lazily created on first delivery; operator messages are
+// sender_id NULL + metadata.support {ticket_id} — rendered as the Support
+// brand, never a named admin); this table is the admin Inbox's index card.
+// attachment_id follows the 0009 prefs pattern (the reference points
+// ticket → attachment): the orphan GC sweep ANTI-JOINS
+// support_tickets_attachment_idx exactly like the chat-background index, and
+// SET NULL keeps the ticket when the attachment goes.
+
+export const supportTickets = pgTable(
+  'support_tickets',
+  {
+    id: uuid('id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    category: text('category').notNull(),
+    body: text('body').notNull(),
+    attachmentId: uuid('attachment_id').references(() => attachments.id, {
+      onDelete: 'set null',
+    }),
+    status: text('status').notNull().default('open'),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+    updatedAt: timestamptz('updated_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    categoryCheck: check(
+      'support_tickets_category_check',
+      sql`${t.category} IN ('bug','question','idea','safety')`,
+    ),
+    bodyCheck: check(
+      'support_tickets_body_check',
+      sql`char_length(${t.body}) BETWEEN 1 AND 2000`, // SUPPORT_BODY_MAX_CHARS
+    ),
+    statusCheck: check(
+      'support_tickets_status_check',
+      sql`${t.status} IN ('open','answered','closed')`,
+    ),
+    queueIdx: index('support_tickets_queue_idx').on(t.status, sql`${t.createdAt} DESC`),
+    byUserIdx: index('support_tickets_by_user_idx').on(t.userId, sql`${t.createdAt} DESC`),
+    // GC anti-join shield for the optional screenshot (the 0009 rule).
+    attachmentIdx: index('support_tickets_attachment_idx')
+      .on(t.attachmentId)
+      .where(sql`${t.attachmentId} IS NOT NULL`),
   }),
 );

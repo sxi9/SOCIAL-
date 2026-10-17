@@ -17,13 +17,9 @@ import {
   THUMB_SIZE_PX,
 } from '@socialchat/shared';
 import { db, schema } from '../db/index.js';
-import {
-  activeParticipantUserIds,
-  attachmentDto,
-  loadMessageDtoById,
-  type AttRow,
-} from '../lib/dto.js';
+import { attachmentDto, type AttRow } from '../lib/dto.js';
 import { contentKey, sha256Hex } from '../lib/media.js';
+import { publishMessageUpdated } from '../modules/messages/service.js';
 import type { MediaJob } from '../queues.js';
 import { deleteObject, getObjectStream, putObject } from '../s3.js';
 import { publishToUsers } from '../ws/events.js';
@@ -61,13 +57,15 @@ export async function moovTrailsMdat(path: string): Promise<boolean> {
 
 async function publishHydration(row: AttRow): Promise<void> {
   if (row.messageId) {
-    const dto = await loadMessageDtoById(row.messageId);
-    if (!dto) return;
-    const recipients = await activeParticipantUserIds(dto.conversation_id);
-    await publishToUsers(recipients, {
-      t: 'msg.updated',
-      d: { conversation_id: dto.conversation_id, message: dto },
-    });
+    // v0.8b (§1.68): route through publishMessageUpdated so 👻 ghost
+    // conversations mask the sender per recipient class — fanning the raw
+    // DTO here would deanonymize voice-note/video senders on hydration.
+    const [msg] = await db
+      .select()
+      .from(schema.messages)
+      .where(eq(schema.messages.id, row.messageId))
+      .limit(1);
+    if (msg) await publishMessageUpdated(msg);
   } else {
     // Composer still open — the uploader gets attachment.ready.
     await publishToUsers([row.uploaderId], {
