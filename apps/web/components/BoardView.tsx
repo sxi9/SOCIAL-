@@ -352,10 +352,9 @@ function ListingCard({
   onOpen: () => void;
 }) {
   const expiry = expiryLine(listing, now);
+  // v1.0a (#91): every kind can carry photos now.
   const thumb =
-    listing.kind === 'room' && listing.photos.length > 0
-      ? listing.photos[0].thumb_url ?? listing.photos[0].url
-      : null;
+    listing.photos.length > 0 ? listing.photos[0].thumb_url ?? listing.photos[0].url : null;
   const mine = meId !== undefined && listing.author.id === meId;
 
   return (

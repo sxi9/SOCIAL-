@@ -23,6 +23,7 @@ import {
 } from '@socialchat/shared';
 import { useRouter } from 'next/navigation';
 import { api, ApiError } from '@/lib/api';
+import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
 import { THEME_INFO, WALLPAPER_INFO, updatePrefs, wallpaperClassName } from '@/lib/prefs';
 import * as store from '@/lib/store';
 import { toast } from '@/lib/toast';
@@ -110,8 +111,9 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
     }
     setBgBusy(true);
     try {
+      const up = await maybeConvertImage(file); // v1.0a #91: HEIC → JPEG
       const form = new FormData();
-      form.append('file', file, file.name);
+      form.append('file', up, up.name);
       // The ordinary §1.6 pipeline — sniffed MIME, EXIF strip, worker poster.
       const res = await api.postForm<UploadResponse>('/api/uploads', form);
       if (res.attachment.status === 'ready') {
@@ -120,7 +122,8 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
         setBgPendingId(res.attachment.id);
       }
     } catch (err) {
-      if (err instanceof ApiError && err.status === 413) setBgError(`Too large. ${bgLimits}`);
+      if (err instanceof HeicUnreadableError) setError(err.message);
+        else if (err instanceof ApiError && err.status === 413) setBgError(`Too large. ${bgLimits}`);
       else if (err instanceof ApiError && err.status === 415) setBgError('That file type is not supported.');
       else setBgError('Upload failed — try again.');
     } finally {

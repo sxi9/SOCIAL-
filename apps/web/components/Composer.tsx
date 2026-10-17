@@ -12,6 +12,7 @@ import type {
 } from '@socialchat/shared';
 import { MAX_AUDIO_DURATION_S } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
 import { EFFECT_EMOJI, EFFECT_LABEL, suggestEffect } from '@/lib/effects';
 import { EMOJI_GRID } from '@/lib/emoji';
 import { firstUrl, formatDuration } from '@/lib/format';
@@ -290,12 +291,14 @@ export default function Composer({
     for (const file of Array.from(files)) {
       setUploading((n) => n + 1);
       try {
+        const up = await maybeConvertImage(file); // v1.0a #91: HEIC → JPEG
         const form = new FormData();
-        form.append('file', file, file.name);
+        form.append('file', up, up.name);
         const res = await api.postForm<UploadResponse>('/api/uploads', form);
         setAttachments((prev) => [...prev, res.attachment]);
       } catch (err) {
-        if (err instanceof ApiError && err.status === 413) setError(`${file.name} is too large.`);
+        if (err instanceof HeicUnreadableError) setError(err.message);
+        else if (err instanceof ApiError && err.status === 413) setError(`${file.name} is too large.`);
         else if (err instanceof ApiError && err.status === 415) setError(`${file.name}: unsupported file type.`);
         else setError(`Could not upload ${file.name}.`);
       } finally {

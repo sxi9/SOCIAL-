@@ -4,7 +4,7 @@
 // (PSYCHOLOGY design rules 2/4) — the §1.39 contact/team-up paths reuse the
 // ordinary DM/group machinery, which is theirs, not the board's.
 import { inArray, sql } from 'drizzle-orm';
-import type { Listing, ListingKind, ListingStatus, Location, RoomDetails } from '@socialchat/shared';
+import type { Listing, ListingKind, ListingStatus, Location } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { attachmentDto, userLiteDto, type AttRow, type UserRow } from '../../lib/dto.js';
 
@@ -76,9 +76,10 @@ export async function listingDtos(
     for (const r of memberRows) memberOf.add(r.conversation_id);
   }
 
-  // Room photos: details.attachment_ids resolved in the author's order.
-  const photoIds = rows.flatMap((r) =>
-    r.l.kind === 'room' ? (((r.l.details as RoomDetails).attachment_ids ?? []) as string[]) : [],
+  // Photos (v1.0a #91 — every kind): details.attachment_ids resolved in the
+  // author's order.
+  const photoIds = rows.flatMap(
+    (r) => ((r.l.details as { attachment_ids?: string[] }).attachment_ids ?? []) as string[],
   );
   const attById = new Map<string, AttRow>();
   if (photoIds.length > 0) {
@@ -90,13 +91,10 @@ export async function listingDtos(
   }
 
   return rows.map(({ l, u }) => {
-    const photos =
-      l.kind === 'room'
-        ? (((l.details as RoomDetails).attachment_ids ?? []) as string[])
-            .map((id) => attById.get(id))
-            .filter((a): a is AttRow => a !== undefined)
-            .map(attachmentDto)
-        : [];
+    const photos = (((l.details as { attachment_ids?: string[] }).attachment_ids ?? []) as string[])
+      .map((id) => attById.get(id))
+      .filter((a): a is AttRow => a !== undefined)
+      .map(attachmentDto);
     const convVisible =
       l.conversationId !== null &&
       (l.authorId === viewerId || memberOf.has(l.conversationId));

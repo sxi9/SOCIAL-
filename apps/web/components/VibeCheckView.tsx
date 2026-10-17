@@ -7,6 +7,7 @@
 import { useRef, useState } from 'react';
 import type { Message, SendMessageRequest, UploadResponse, VibeReplyRef } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
 import { sendMessage } from '@/lib/connection';
 import { uuidv7 } from '@/lib/ids';
 import { useAppState } from '@/lib/useStore';
@@ -77,8 +78,9 @@ export default function VibeCheckView({ message, nameFor }: VibeCheckViewProps) 
     setBusy(true);
     setError(null);
     try {
+      const up = await maybeConvertImage(file); // v1.0a #91: HEIC → JPEG
       const form = new FormData();
-      form.append('file', file, file.name);
+      form.append('file', up, up.name);
       const res = await api.postForm<UploadResponse>('/api/uploads', form);
       await sendReply({ type: 'image', attachment_ids: [res.attachment.id] });
     } catch {

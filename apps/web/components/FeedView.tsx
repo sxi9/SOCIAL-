@@ -40,6 +40,7 @@ import {
   STAMP_REACTION_KEY,
 } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
 import { vibeEmojiOf, vibeLabelOf } from '@/lib/beacons';
 import { QUICK_REACTIONS } from '@/lib/emoji';
 import {
@@ -301,12 +302,14 @@ function PostComposerCard({ lane }: { lane: FeedLane }) {
       }
       setUploading((n) => n + 1);
       try {
+        const up = await maybeConvertImage(file); // v1.0a #91: HEIC → JPEG
         const form = new FormData();
-        form.append('file', file, file.name);
+        form.append('file', up, up.name);
         const res = await api.postForm<UploadResponse>('/api/uploads', form);
         setAttachments((prev) => (prev.length < POST_MAX_ATTACHMENTS ? [...prev, res.attachment] : prev));
       } catch (err) {
-        if (err instanceof ApiError && err.status === 413) setError(`${file.name} is too large.`);
+        if (err instanceof HeicUnreadableError) setError(err.message);
+        else if (err instanceof ApiError && err.status === 413) setError(`${file.name} is too large.`);
         else if (err instanceof ApiError && err.status === 415) setError(`${file.name}: unsupported type.`);
         else setError(`Could not upload ${file.name}.`);
       } finally {
@@ -1132,13 +1135,15 @@ function PostComments({ post, meId }: { post: Post; meId: string }) {
     setUploading(true);
     setError(null);
     try {
+      const up = await maybeConvertImage(file); // v1.0a #91: HEIC → JPEG
       const form = new FormData();
-      form.append('file', file, file.name);
+      form.append('file', up, up.name);
       const res = await api.postForm<UploadResponse>('/api/uploads', form);
       if (res.attachment.kind !== 'image') setError('Comments take images and GIFs only.');
       else setAttachment(res.attachment);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 413) setError('That image is too large.');
+      if (err instanceof HeicUnreadableError) setError(err.message);
+        else if (err instanceof ApiError && err.status === 413) setError('That image is too large.');
       else if (err instanceof ApiError && err.status === 415) setError('Unsupported image type.');
       else setError('Could not upload that image.');
     } finally {

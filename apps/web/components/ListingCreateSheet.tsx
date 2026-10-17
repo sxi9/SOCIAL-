@@ -17,10 +17,11 @@ import {
   LISTING_RIDE_LEG_MAX_CHARS,
   LISTING_RIDE_SEATS_MAX,
   LISTING_RIDE_SEATS_MIN,
-  LISTING_ROOM_PHOTOS_MAX,
+  LISTING_PHOTOS_MAX,
   LISTING_TITLE_MAX_CHARS,
 } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
 import { createListing, KIND_EMOJI } from '@/lib/listings';
 import { isSelfDrunk } from '@/lib/mood';
 import { setMe } from '@/lib/store';
@@ -92,24 +93,26 @@ export default function ListingCreateSheet({
     if (!files) return;
     setError(null);
     for (const file of Array.from(files)) {
-      if (photos.length + uploading >= LISTING_ROOM_PHOTOS_MAX) {
-        setError(`Up to ${LISTING_ROOM_PHOTOS_MAX} photos per room listing.`);
+      if (photos.length + uploading >= LISTING_PHOTOS_MAX) {
+        setError(`Up to ${LISTING_PHOTOS_MAX} photos per listing.`);
         break;
       }
       setUploading((n) => n + 1);
       try {
+        const up = await maybeConvertImage(file); // v1.0a #91: HEIC → JPEG
         const form = new FormData();
-        form.append('file', file, file.name);
+        form.append('file', up, up.name);
         const res = await api.postForm<UploadResponse>('/api/uploads', form);
         if (res.attachment.kind !== 'image') {
-          setError('Room photos must be images.');
+          setError('Listing photos must be images.');
         } else {
           setPhotos((prev) =>
-            prev.length < LISTING_ROOM_PHOTOS_MAX ? [...prev, res.attachment] : prev
+            prev.length < LISTING_PHOTOS_MAX ? [...prev, res.attachment] : prev
           );
         }
       } catch (err) {
-        if (err instanceof ApiError && err.status === 413) setError(`${file.name} is too large.`);
+        if (err instanceof HeicUnreadableError) setError(err.message);
+        else if (err instanceof ApiError && err.status === 413) setError(`${file.name} is too large.`);
         else if (err instanceof ApiError && err.status === 415) setError(`${file.name}: unsupported type.`);
         else setError(`Could not upload ${file.name}.`);
       } finally {
@@ -138,14 +141,24 @@ export default function ListingCreateSheet({
     };
     switch (kind) {
       case 'gig':
-        return { ...base, kind, details: { direction, tags: parsedTags() } };
+        return {
+          ...base,
+          kind,
+          details: { direction, tags: parsedTags(), attachment_ids: photos.map((p) => p.id) },
+        };
       case 'ride': {
         if (!departsAt) return null;
         const iso = new Date(departsAt).toISOString();
         return {
           ...base,
           kind,
-          details: { from_text: fromText.trim(), to_text: toText.trim(), departs_at: iso, seats },
+          details: {
+            from_text: fromText.trim(),
+            to_text: toText.trim(),
+            departs_at: iso,
+            seats,
+            attachment_ids: photos.map((p) => p.id),
+          },
         };
       }
       case 'room':
@@ -165,7 +178,7 @@ export default function ListingCreateSheet({
           ...base,
           kind,
           price_text: null,
-          details: { place_name: placeName.trim(), rating },
+          details: { place_name: placeName.trim(), rating, attachment_ids: photos.map((p) => p.id) },
         };
     }
   }
@@ -380,47 +393,49 @@ export default function ListingCreateSheet({
                   value={availableFrom}
                   onChange={(e) => setAvailableFrom(e.target.value)}
                 />
-                <div className={bz.sheetLabel}>Photos (up to {LISTING_ROOM_PHOTOS_MAX})</div>
-                <div className={st.photoRow}>
-                  {photos.map((p) => (
-                    <span key={p.id}>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={p.thumb_url ?? p.url} alt="" />
-                      <button
-                        type="button"
-                        className={st.photoRemove}
-                        aria-label="Remove photo"
-                        onClick={() => setPhotos((prev) => prev.filter((x) => x.id !== p.id))}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                  {photos.length < LISTING_ROOM_PHOTOS_MAX ? (
-                    <button
-                      type="button"
-                      className={st.photoAdd}
-                      aria-label="Add photo"
-                      disabled={uploading > 0}
-                      onClick={() => fileRef.current?.click()}
-                    >
-                      {uploading > 0 ? '…' : '+'}
-                    </button>
-                  ) : null}
-                </div>
-                <input
-                  ref={fileRef}
-                  type="file"
-                  hidden
-                  multiple
-                  accept="image/*"
-                  onChange={(e) => {
-                    void uploadPhotos(e.target.files);
-                    e.target.value = '';
-                  }}
-                />
               </>
             ) : null}
+
+            {/* v1.0a (#91): photos on EVERY kind, not just rooms. */}
+            <div className={bz.sheetLabel}>Photos (up to {LISTING_PHOTOS_MAX})</div>
+            <div className={st.photoRow}>
+              {photos.map((p) => (
+                <span key={p.id}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={p.thumb_url ?? p.url} alt="" />
+                  <button
+                    type="button"
+                    className={st.photoRemove}
+                    aria-label="Remove photo"
+                    onClick={() => setPhotos((prev) => prev.filter((x) => x.id !== p.id))}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {photos.length < LISTING_PHOTOS_MAX ? (
+                <button
+                  type="button"
+                  className={st.photoAdd}
+                  aria-label="Add photo"
+                  disabled={uploading > 0}
+                  onClick={() => fileRef.current?.click()}
+                >
+                  {uploading > 0 ? '…' : '+'}
+                </button>
+              ) : null}
+            </div>
+            <input
+              ref={fileRef}
+              type="file"
+              hidden
+              multiple
+              accept="image/*"
+              onChange={(e) => {
+                void uploadPhotos(e.target.files);
+                e.target.value = '';
+              }}
+            />
 
             {kind === 'place_review' ? (
               <>

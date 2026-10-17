@@ -478,7 +478,10 @@ export const LISTING_GIG_TAG_MAX_CHARS = 24; // the INTEREST_TAG_MAX_CHARS bound
 export const LISTING_RIDE_LEG_MAX_CHARS = 80; // from_text / to_text
 export const LISTING_RIDE_SEATS_MIN = 1;
 export const LISTING_RIDE_SEATS_MAX = 8;
-export const LISTING_ROOM_PHOTOS_MAX = 6;
+// v1.0a (#91): every listing kind takes photos now, not just rooms.
+export const LISTING_PHOTOS_MAX = 6;
+/** @deprecated alias — use LISTING_PHOTOS_MAX. */
+export const LISTING_ROOM_PHOTOS_MAX = LISTING_PHOTOS_MAX;
 export const LISTING_PLACE_NAME_MAX_CHARS = 80;
 export const LISTING_RATING_MIN = 1;
 export const LISTING_RATING_MAX = 5;

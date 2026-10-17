@@ -23,7 +23,6 @@ import {
   UpdateListingRequestSchema,
   type ListingRef,
   type RideDetails,
-  type RoomDetails,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
@@ -169,11 +168,12 @@ export async function listingRoutes(fastify: FastifyInstance): Promise<void> {
           kind: 'listing_posted',
           ref: { listing_id: id },
         });
-        // Room photos bind via attachments.listing_id (the post_id GC-shield
-        // pattern): mine, kind image, unbound anywhere → else 400
-        // bad_attachment (whole create rolls back).
-        if (body.kind === 'room') {
-          const ids = ((body.details as RoomDetails).attachment_ids ?? []) as string[];
+        // Photos (v1.0a #91 — every kind) bind via attachments.listing_id
+        // (the post_id GC-shield pattern): mine, kind image, unbound anywhere
+        // → else 400 bad_attachment (whole create rolls back).
+        {
+          const ids = ((body.details as { attachment_ids?: string[] }).attachment_ids ??
+            []) as string[];
           if (ids.length > 0) {
             const bound = (await tx.execute(sql`
               UPDATE attachments SET listing_id = ${id}, share_import_id = NULL
@@ -363,12 +363,14 @@ export async function listingRoutes(fastify: FastifyInstance): Promise<void> {
           if (l.isPublic && !next.isPublic) {
             await revokeShareTokensFor(tx, 'listing', l.id);
           }
-          // Room photos re-bind (§1.48): new ids must be mine/kind-image/
-          // unbound (400 bad_attachment rolls the edit back); dropped ones
-          // unbind into the orphan GC (objects refcount-guarded, §1.31).
-          if (body.kind === 'room' && body.details !== undefined) {
-            const nextIds = ((body.details as RoomDetails).attachment_ids ?? []) as string[];
-            const prevIds = ((l.details as RoomDetails).attachment_ids ?? []) as string[];
+          // Photos re-bind (§1.48; v1.0a #91 — every kind): new ids must be
+          // mine/kind-image/unbound (400 bad_attachment rolls the edit back);
+          // dropped ones unbind into the orphan GC (refcount-guarded, §1.31).
+          if (body.details !== undefined) {
+            const nextIds = ((body.details as { attachment_ids?: string[] }).attachment_ids ??
+              []) as string[];
+            const prevIds = ((l.details as { attachment_ids?: string[] }).attachment_ids ??
+              []) as string[];
             const added = nextIds.filter((id) => !prevIds.includes(id));
             const dropped = prevIds.filter((id) => !nextIds.includes(id));
             if (dropped.length > 0) {

@@ -14,6 +14,7 @@ import {
   PROFILE_MEDIA_MAX,
 } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
 import st from './social.module.css';
 
 interface EntryDraft {
@@ -124,8 +125,9 @@ export default function ProfileEditor() {
     setUploading(true);
     setError(null);
     try {
+      const up = await maybeConvertImage(file); // v1.0a #91: HEIC → JPEG
       const form = new FormData();
-      form.append('file', file, file.name);
+      form.append('file', up, up.name);
       const res = await api.postForm<UploadResponse>('/api/uploads', form);
       if (res.attachment.kind !== 'image') {
         setError('The strip takes images (GIFs welcome).');
@@ -134,7 +136,8 @@ export default function ProfileEditor() {
       const ids = [...media.map((m) => m.id), res.attachment.id];
       await save({ media_attachment_ids: ids });
     } catch (err) {
-      if (err instanceof ApiError && err.status === 413) setError('That file is too large.');
+      if (err instanceof HeicUnreadableError) setError(err.message);
+        else if (err instanceof ApiError && err.status === 413) setError('That file is too large.');
       else if (err instanceof ApiError && err.status === 415) setError('Unsupported file type.');
       else setError('Upload failed.');
     } finally {

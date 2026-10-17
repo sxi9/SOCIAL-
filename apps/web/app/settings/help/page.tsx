@@ -8,6 +8,7 @@ import Link from 'next/link';
 import type { Attachment, SupportCategory, SupportTicket, UploadResponse } from '@socialchat/shared';
 import { SUPPORT_BODY_MAX_CHARS, SUPPORT_CATEGORIES } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
 import { createSupportTicket, listMySupportTickets } from '@/lib/support';
 import { toast } from '@/lib/toast';
 import AppShell from '@/components/AppShell';
@@ -48,13 +49,14 @@ function HelpAndFeedback() {
     setUploading(true);
     setError(null);
     try {
+      const up = await maybeConvertImage(file); // v1.0a #91: HEIC → JPEG
       const form = new FormData();
-      form.append('file', file, file.name);
+      form.append('file', up, up.name);
       const res = await api.postForm<UploadResponse>('/api/uploads', form);
       if (res.attachment.kind !== 'image') setError('Screenshots are images only.');
       else setAttachment(res.attachment);
-    } catch {
-      setError('Could not upload the screenshot.');
+    } catch (err) {
+      setError(err instanceof HeicUnreadableError ? err.message : 'Could not upload the screenshot.');
     } finally {
       setUploading(false);
     }

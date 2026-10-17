@@ -183,3 +183,18 @@ committed the message to IndexedDB sends `delivered` (receipt-honesty rule).
   install the npm pkg OUTSIDE the repo; WebRTC tests need
   `--use-fake-device-for-media-stream --use-fake-ui-for-media-stream`.
 - The verification bar for any change is in `CLAUDE.md` ("Verification bar").
+
+## “Can’t add photos” from a phone (board listing, post, chat, story)
+
+**Symptom:** picking a photo on an iPhone appears to do nothing, or the
+uploaded photo renders broken/blank for everyone.
+**Cause:** iPhones shoot HEIC; sharp’s prebuilt libvips has no HEVC codec, so
+the server used to store the file VERBATIM — no thumb, no dimensions, and most
+browsers can’t render HEIC (fixed v1.0a #91).
+**Fix pattern:** the web client converts HEIC→JPEG before upload
+(`apps/web/lib/imageUpload.ts`, `maybeConvertImage` — wrap EVERY new image
+upload call site with it); the server now rejects undecodable images with
+`415 image_undecodable` (`modules/uploads/pipeline.ts`) instead of storing a
+broken row. If a user reports it again: check the browser (non-Safari cannot
+decode HEIC — the error message tells them to convert), and check the
+attachment row for `width IS NULL` leftovers from before the fix.

@@ -225,7 +225,12 @@ async function processImage(buf: Buffer, sniff: SniffResult): Promise<ImageResul
       height = meta.height ?? null;
     }
   } catch {
-    // Undecodable by sharp (e.g. heic without libheif) — store verbatim.
+    // v1.0a (#91): an image sharp cannot decode (HEVC-coded .heic — prebuilt
+    // libvips has no HEVC codec) used to be stored VERBATIM: no thumb, no
+    // dimensions, and most browsers can't render it — the "can't add photos
+    // from my iPhone" bug. Reject loudly instead; the web client converts
+    // HEIC to JPEG before upload, so a 415 here means a truly alien file.
+    throw unsupportedMedia('image_undecodable');
   }
 
   const extra = await makeThumbAndBlurhash(buf);

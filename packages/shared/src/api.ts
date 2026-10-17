@@ -25,7 +25,7 @@ import {
   LISTING_RIDE_LEG_MAX_CHARS,
   LISTING_RIDE_SEATS_MAX,
   LISTING_RIDE_SEATS_MIN,
-  LISTING_ROOM_PHOTOS_MAX,
+  LISTING_PHOTOS_MAX,
   LISTING_SEARCH_MAX_CHARS,
   LISTING_TITLE_MAX_CHARS,
   PERSON_REVIEW_BODY_MAX_CHARS,
@@ -2380,6 +2380,9 @@ export type GigDirection = z.infer<typeof GigDirectionSchema>;
 // = portfolio/hire-me; seeking = I need people/a gig.
 export const GigDetailsSchema = z.object({
   direction: GigDirectionSchema,
+  // v1.0a (#91): photos on every kind — mine, kind image, unbound at create;
+  // bound via attachments.listing_id (the post_id GC-shield pattern).
+  attachment_ids: z.array(UuidSchema).max(LISTING_PHOTOS_MAX).default([]),
   tags: z
     .array(z.string().min(1).max(LISTING_GIG_TAG_MAX_CHARS))
     .max(LISTING_GIG_TAGS_MAX)
@@ -2389,6 +2392,9 @@ export type GigDetails = z.infer<typeof GigDetailsSchema>;
 
 // kind='ride' (FEATURES #40). departs_at doubles as the listing's expires_at.
 export const RideDetailsSchema = z.object({
+  // v1.0a (#91): photos on every kind — mine, kind image, unbound at create;
+  // bound via attachments.listing_id (the post_id GC-shield pattern).
+  attachment_ids: z.array(UuidSchema).max(LISTING_PHOTOS_MAX).default([]),
   from_text: z.string().min(1).max(LISTING_RIDE_LEG_MAX_CHARS),
   to_text: z.string().min(1).max(LISTING_RIDE_LEG_MAX_CHARS),
   departs_at: IsoDateTimeSchema,
@@ -2408,7 +2414,7 @@ export const RoomDetailsSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .nullable()
     .default(null),
-  attachment_ids: z.array(UuidSchema).max(LISTING_ROOM_PHOTOS_MAX).default([]),
+  attachment_ids: z.array(UuidSchema).max(LISTING_PHOTOS_MAX).default([]),
 });
 export type RoomDetails = z.infer<typeof RoomDetailsSchema>;
 
@@ -2416,6 +2422,9 @@ export type RoomDetails = z.infer<typeof RoomDetailsSchema>;
 // person — PSYCHOLOGY rule 3 is about scoring people; venues are fair game.
 // These never expire and later feed beacon venue suggestions.
 export const PlaceReviewDetailsSchema = z.object({
+  // v1.0a (#91): photos on every kind — mine, kind image, unbound at create;
+  // bound via attachments.listing_id (the post_id GC-shield pattern).
+  attachment_ids: z.array(UuidSchema).max(LISTING_PHOTOS_MAX).default([]),
   place_name: z.string().min(1).max(LISTING_PLACE_NAME_MAX_CHARS),
   rating: z.number().int().min(LISTING_RATING_MIN).max(LISTING_RATING_MAX),
 });
@@ -2435,8 +2444,8 @@ const ListingDtoBase = {
   // false = visible to same-area users only; true = board-wide.
   is_public: z.boolean(),
   status: ListingStatusSchema,
-  // §1.38 room photos, resolved server-side from details.attachment_ids
-  // ([] for every other kind).
+  // §1.38 photos, resolved server-side from details.attachment_ids
+  // (v1.0a #91: every kind; [] when none).
   photos: z.array(AttachmentSchema).default([]),
   // Viewer-specific: I already contacted this listing (the "Message me"
   // button flips to "Open chat"). Always false for the author.
