@@ -30,3 +30,8 @@ Thumbs.db
 
 # Local Redis dumps from test runs
 dump.rdb
+
+# bored control panel artifacts
+.bored-tunnel.log
+.bored-tunnel.pid
+backups/

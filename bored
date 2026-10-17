@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# bored — Bored Chat control panel (operator CLI).
+# Run from the repo root:  ./bored <command>
+set -euo pipefail
+cd "$(dirname "$0")"
+
+TUNNEL_LOG=".bored-tunnel.log"
+TUNNEL_PID=".bored-tunnel.pid"
+
+say()  { printf '\033[1m%s\033[0m\n' "$*"; }
+fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+
+env_get() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- || true; }
+env_set() { # env_set KEY VALUE — update or append in .env
+  touch .env
+  if grep -qE "^$1=" .env; then
+    sed -i "s|^$1=.*|$1=$2|" .env
+  else
+    printf '%s=%s\n' "$1" "$2" >> .env
+  fi
+}
+
+http_port() { local p; p="$(env_get HTTP_PORT)"; echo "${p:-80}"; }
+
+cmd_status() {
+  say "── Bored Chat status ──"
+  echo "Version:  $(git log --oneline -1)"
+  git fetch origin main -q 2>/dev/null || true
+  local behind; behind=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo '?')
+  if [ "$behind" = "0" ]; then echo "Updates:  up to date ✓"; else echo "Updates:  $behind commit(s) behind — run: ./bored update"; fi
+  echo "Local:    http://localhost:$(http_port)"
+  local po; po="$(env_get PUBLIC_ORIGIN)"
+  echo "Public:   ${po:-<not set — run: ./bored tunnel>}"
+  if [ -f "$TUNNEL_PID" ] && kill -0 "$(cat "$TUNNEL_PID")" 2>/dev/null; then
+    echo "Tunnel:   running (pid $(cat "$TUNNEL_PID"))"
+  else
+    echo "Tunnel:   not running"
+  fi
+  echo
+  docker compose ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null || echo "(stack not running)"
+}
+
+cmd_update() {
+  say "Pulling latest…"
+  git stash push -m "bored-update-autostash" >/dev/null 2>&1 || true
+  git pull --ff-only || fail "Pull failed — paste this output to Claude."
+  say "Rebuilding (this takes a few minutes — do NOT Ctrl+C)…"
+  docker compose up -d --build
+  docker compose ps --format "table {{.Name}}\t{{.Status}}"
+  say "✓ Updated to: $(git log --oneline -1)"
+}
+
+cmd_up()   { docker compose up -d; cmd_status; }
+cmd_down() { docker compose down; say "Stack stopped (data kept)."; }
+cmd_logs() { docker compose logs -f --tail 100 "${1:-api}"; }
+
+cmd_tunnel() {
+  command -v cloudflared >/dev/null || fail "cloudflared is not installed.
+Install: curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb && sudo dpkg -i /tmp/cf.deb"
+  # stop a previous quick tunnel we started
+  if [ -f "$TUNNEL_PID" ] && kill -0 "$(cat "$TUNNEL_PID")" 2>/dev/null; then
+    kill "$(cat "$TUNNEL_PID")" 2>/dev/null || true; sleep 1
+  fi
+  : > "$TUNNEL_LOG"
+  say "Starting Cloudflare quick tunnel…"
+  nohup cloudflared tunnel --url "http://localhost:$(http_port)" >"$TUNNEL_LOG" 2>&1 &
+  echo $! > "$TUNNEL_PID"
+  local url=""
+  for _ in $(seq 1 30); do
+    url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TUNNEL_LOG" | head -1 || true)
+    [ -n "$url" ] && break
+    sleep 1
+  done
+  [ -n "$url" ] || fail "Tunnel did not report a URL in 30s — see $TUNNEL_LOG"
+  env_set PUBLIC_ORIGIN "$url"
+  say "Restarting web with PUBLIC_ORIGIN=$url …"
+  docker compose up -d web >/dev/null
+  say "✓ Your app is public at:  $url"
+  echo "  (Quick-tunnel URLs change on every restart — rerun ./bored tunnel to refresh."
+  echo "   For a permanent URL use a real domain, or a named Cloudflare tunnel.)"
+}
+
+cmd_tunnel_stop() {
+  if [ -f "$TUNNEL_PID" ] && kill -0 "$(cat "$TUNNEL_PID")" 2>/dev/null; then
+    kill "$(cat "$TUNNEL_PID")"; rm -f "$TUNNEL_PID"; say "Tunnel stopped."
+  else
+    say "No tunnel running."
+  fi
+}
+
+cmd_admin()  { [ -n "${1:-}" ] || fail "Usage: ./bored admin <username>"; docker compose exec api node dist/cli.js grant-admin "$1"; }
+cmd_backup() {
+  mkdir -p backups
+  local f="backups/boredchat-$(date +%Y%m%d-%H%M%S).sql.gz"
+  docker compose exec -T postgres pg_dump -U "$(env_get POSTGRES_USER)" "$(env_get POSTGRES_DB)" | gzip > "$f"
+  say "✓ Database backup: $f  (media lives in the minio_data docker volume)"
+}
+
+case "${1:-help}" in
+  status)      cmd_status ;;
+  update)      cmd_update ;;
+  up)          cmd_up ;;
+  down)        cmd_down ;;
+  logs)        cmd_logs "${2:-}" ;;
+  tunnel)      cmd_tunnel ;;
+  tunnel-stop) cmd_tunnel_stop ;;
+  admin)       cmd_admin "${2:-}" ;;
+  backup)      cmd_backup ;;
+  *) cat <<'HELP'
+bored — Bored Chat control panel
+
+  ./bored status       what version, what's running, your public link
+  ./bored update       git pull + rebuild + restart (safe: data kept)
+  ./bored up / down    start / stop the stack
+  ./bored tunnel       go public: starts cloudflared, auto-writes the new
+                       URL into .env (PUBLIC_ORIGIN) and restarts web —
+                       invite-link previews work immediately
+  ./bored tunnel-stop  stop the tunnel
+  ./bored logs [svc]   follow logs (api, worker, web, caddy, …)
+  ./bored admin USER   grant admin to a user
+  ./bored backup       gzip database dump into ./backups/
+HELP
+  ;;
+esac
