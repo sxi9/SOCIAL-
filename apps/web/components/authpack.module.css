@@ -172,6 +172,25 @@
   flex-shrink: 0;
 }
 
+/* 390px defect fix: the meta line ("added … · last used …") must only break
+   at the · separator, never mid-phrase; each phrase is an unbreakable unit. */
+.metaPhrase {
+  white-space: nowrap;
+}
+
+/* …and on phone widths the Rename/Delete column gives width back to the text
+   (compact buttons) so the meta usually fits on one line at all. */
+@media (max-width: 429px) {
+  .rowActions {
+    gap: 4px;
+  }
+
+  .rowActions > :global(.btn) {
+    padding: 7px 10px;
+    font-size: 13px;
+  }
+}
+
 .warnNote {
   border: 1px solid color-mix(in srgb, #e8b339 55%, transparent);
   background: color-mix(in srgb, #e8b339 12%, transparent);

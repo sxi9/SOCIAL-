@@ -17,32 +17,26 @@ reading `CLAUDE.md` first (it auto-loads), then this file.
 - The `wip/v0.9` and `backup/*` branches are now historical only — ignore
   them (main supersedes).
 
-## FIRST TASK for the next session: v0.9.1 hardening
+## FIRST TASK for the next session: 3 remaining audit minors
 
-The adversarial auth audit returned 4 findings that were NOT yet fixed at
-ship time (shipped by owner's explicit call — credits running out). If a
-commit titled "v0.9.1" (or "hardening") is already on `main`, this section
-is done — skip it. Otherwise fix these, hold the CLAUDE.md verification
-bar, and ship as v0.9.1:
+v0.9.1 (on `main`) fixed the audit's MAJOR finding (TOTP verify/disable
+rate limit, with test + API.md §1.73 429 docs) plus two UI minors. Three
+audit MINORS remain unfixed — small, well-scoped, defense-in-depth. Fix
+them, hold the CLAUDE.md verification bar, ship as v0.9.2 (or fold into
+the next release):
 
-1. **MAJOR — `apps/server/src/modules/auth/totp.ts`**: `POST
-   /api/auth/totp/disable` (and similarly the enable/verify step) has no
-   rate limit → online brute-force of the 6-digit code from a hijacked
-   authed session (10^6 keyspace, ~3 valid codes per window, failed
-   guesses free). Add the standard per-user rate limit (see existing
-   limiter patterns in auth routes).
-2. **minor — `auth/passkeys.ts` (~line 288)**: login counter update is an
+1. **`auth/passkeys.ts` (~line 288)**: login counter update is an
    unconditional `SET counter = $new`; concurrent assertions can regress
    it. Make it conditional: `SET counter = GREATEST(counter, $new) WHERE
    ... AND counter = $read` (or `AND counter <= $new`).
-3. **minor — `auth/recovery.ts` (~line 135)**: `POST /api/auth/recover`
-   timing side-channel on account existence (unknown user skips the
-   consume UPDATE). Run an equal-cost dummy consume for unknown users.
-4. **minor — `auth/recovery.ts` (~line 146)**: recovery consumes the code
-   + revokes all sessions BEFORE the support-message insert and
-   reset-token mint; a throw there burns the code and locks the user out.
-   Mint/store the reset token first; wrap the notify in try/catch
-   (best-effort, like the register invite-accept pattern).
+2. **`auth/recovery.ts` (~line 135)**: `POST /api/auth/recover` timing
+   side-channel on account existence (unknown user skips the consume
+   UPDATE). Run an equal-cost dummy consume for unknown users.
+3. **`auth/recovery.ts` (~line 146)**: recovery consumes the code +
+   revokes all sessions BEFORE the support-message insert and reset-token
+   mint; a throw there burns the code and locks the user out. Mint/store
+   the reset token first; wrap the notify in try/catch (best-effort, like
+   the register invite-accept pattern).
 
 ## After v0.9.1 — the agreed backlog (owner schedules, do not auto-start)
 
