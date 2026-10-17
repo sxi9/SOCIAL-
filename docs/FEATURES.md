@@ -129,9 +129,9 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 85. Optional TOTP 2FA (authenticator apps)
 86. OTP-READY admin settings: an Authentication section in the admin panel to configure delivery when available — SMTP (email verification, OTP, magic links, password reset) and an SMS-gateway slot — with per-feature toggles and a test-send button; all auth features flag off instance settings so enabling OTP later is configuration, not code
 
-## 📋 v1.0a — Board & media pack (full design: SPECS.md §v1.0)
+## ✅ v1.0a — Board & media pack (shipped on branch; full design: SPECS.md §v1.0)
 
-91. Photos on board posts: fix the composer bug + photo picker (≤4, previews) on every post/board composer
+91. Photos on EVERY board kind (gig/ride/room/review, ≤6) + the iPhone HEIC fix (client converts HEIC→JPEG; server rejects undecodable images instead of storing broken rows)
 92. Edit-before-upload: in-app crop/rotate with aspect presets wherever an image is picked (avatars, chat, posts, stories)
 93. Full-screen pinch-zoom viewer for profile/group pics
 94. Personal gallery ("My gallery"): private view over my own media + story auto-saver past 24h
