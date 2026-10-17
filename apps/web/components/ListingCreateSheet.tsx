@@ -23,6 +23,7 @@ import {
 import { api, ApiError } from '@/lib/api';
 import { createListing, KIND_EMOJI } from '@/lib/listings';
 import { setMe } from '@/lib/store';
+import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
 import type { UpdateMeResponse } from '@socialchat/shared';
 import { LocationField } from './LocationPicker';
@@ -191,6 +192,7 @@ export default function ListingCreateSheet({
         }
       }
       const listing = await createListing(req);
+      toast('Posted to the board'); // v0.7.1 §1.56: the shared confirmation toast
       onCreated(listing);
       onClose();
     } catch (err) {

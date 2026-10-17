@@ -10,25 +10,31 @@
 // Offer direction — one rule everywhere (§2.12): the JOINING peer offers.
 // For mid-call renegotiation/reconnect, the LOWER user id is the impolite
 // peer (perfect-negotiation applied per pair — deterministic, no glare).
-import type {
-  Call,
-  CallKind,
-  CallResponse,
-  CallInviteEvent,
-  CallRingingEvent,
-  CallAcceptEvent,
-  CallRejectEvent,
-  CallOfferEvent,
-  CallAnswerEvent,
-  CallIceEvent,
-  CallLeaveEvent,
-  CallEndEvent,
-  CallUpdatedEvent,
-  IceCandidate,
-  TurnCredentials,
-  TurnCredentialsResponse,
+import {
+  CALL_ICE_DISCONNECT_GRACE_MS,
+  CALL_ICE_RESTART_BACKOFF_MS,
+  CALL_ICE_RESTART_MAX_ATTEMPTS,
+  type Call,
+  type CallConnState,
+  type CallKind,
+  type CallResponse,
+  type CallInviteEvent,
+  type CallRingingEvent,
+  type CallAcceptEvent,
+  type CallRejectEvent,
+  type CallOfferEvent,
+  type CallAnswerEvent,
+  type CallIceEvent,
+  type CallLeaveEvent,
+  type CallEndEvent,
+  type CallStateEvent,
+  type CallUpdatedEvent,
+  type IceCandidate,
+  type TurnCredentials,
+  type TurnCredentialsResponse,
 } from '@socialchat/shared';
 import { api, ApiError } from './api';
+import { noteTurnFromCall, relayKnownUnreachable } from './selftest';
 import { sendEvent } from './signals';
 import * as store from './store';
 
@@ -42,6 +48,7 @@ export type CallServerEvent =
   | CallIceEvent
   | CallLeaveEvent
   | CallEndEvent
+  | CallStateEvent
   | CallUpdatedEvent;
 
 interface PeerEntry {
@@ -50,8 +57,21 @@ interface PeerEntry {
   /** Trickled candidates that arrived before the remote description. */
   pendingIce: IceCandidateInitLike[];
   makingOffer: boolean;
-  /** Timer waiting out a transient 'disconnected' before restarting ICE. */
+  /** Timer waiting out a transient 'disconnected' before restarting ICE
+   * (CALL_ICE_DISCONNECT_GRACE_MS, §1.55). */
   lostTimer: ReturnType<typeof setTimeout> | null;
+  // ---- v0.7.1 (§1.55, ADR-017): bounded automatic ICE restart ----
+  /** MY view of this pair (feeds the aggregate conn_state machine). */
+  connState: CallConnState;
+  /** Media connected at least once — a 1:1 call that NEVER connected ends
+   * with POST end {reason:'failed'} when the pair gives up (§1.55). */
+  everConnected: boolean;
+  /** Restart attempts burned for the CURRENT outage (reset on reconnect);
+   * capped at CALL_ICE_RESTART_MAX_ATTEMPTS, backed off per attempt. */
+  restartAttempts: number;
+  /** Pending backoff/watchdog timer for the restart loop (impolite side)
+   * or the give-up timer on the polite side. */
+  restartTimer: ReturnType<typeof setTimeout> | null;
 }
 
 type IceCandidateInitLike = IceCandidate;
@@ -125,6 +145,10 @@ function ensurePeer(callId: string, userId: string): PeerEntry {
     pendingIce: [],
     makingOffer: false,
     lostTimer: null,
+    connState: 'connecting',
+    everConnected: false,
+    restartAttempts: 0,
+    restartTimer: null,
   };
   peers.set(userId, entry);
   if (localStream) {
@@ -151,35 +175,51 @@ function ensurePeer(callId: string, userId: string): PeerEntry {
       },
     });
   };
-  pc.onconnectionstatechange = () => {
+  // v0.7.1 (§1.55): states derive from iceConnectionState — 'disconnected'
+  // persisting CALL_ICE_DISCONNECT_GRACE_MS (or 'failed' immediately) starts
+  // the bounded automatic ICE-restart loop; 'connected'/'completed' heals.
+  pc.oniceconnectionstatechange = () => {
     const ui = store.state.callUi;
     if (!ui || ui.call_id !== callId) return;
-    const s = pc.connectionState;
-    if (s === 'connected') {
-      if (entry.lostTimer !== null) {
-        clearTimeout(entry.lostTimer);
-        entry.lostTimer = null;
-      }
+    const s = pc.iceConnectionState;
+    if (s === 'connected' || s === 'completed') {
+      clearPeerTimers(entry);
+      entry.connState = 'connected';
+      entry.everConnected = true;
+      entry.restartAttempts = 0;
       store.patchCallUi({
         phase: ui.phase === 'ended' ? ui.phase : 'ongoing',
         reconnecting_ids: ui.reconnecting_ids.filter((id) => id !== userId),
       });
+      reportConnState();
     } else if (s === 'failed') {
-      void attemptReconnect(callId, userId);
+      pairLost(callId, userId);
     } else if (s === 'disconnected') {
-      // Wait out a blip; if it does not heal, restart ICE via a new offer.
+      // Wait out a blip (transient blips self-heal and must not thrash
+      // renegotiation); if it does not heal, the restart loop takes over.
       if (entry.lostTimer === null) {
         entry.lostTimer = setTimeout(() => {
           entry.lostTimer = null;
-          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-            void attemptReconnect(callId, userId);
+          if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+            pairLost(callId, userId);
           }
-        }, 3000);
+        }, CALL_ICE_DISCONNECT_GRACE_MS);
       }
     }
   };
   syncPeerIds();
   return entry;
+}
+
+function clearPeerTimers(entry: PeerEntry): void {
+  if (entry.lostTimer !== null) {
+    clearTimeout(entry.lostTimer);
+    entry.lostTimer = null;
+  }
+  if (entry.restartTimer !== null) {
+    clearTimeout(entry.restartTimer);
+    entry.restartTimer = null;
+  }
 }
 
 function syncPeerIds(): void {
@@ -191,19 +231,23 @@ function syncPeerIds(): void {
 function closePeer(userId: string): void {
   const entry = peers.get(userId);
   if (!entry) return;
-  if (entry.lostTimer !== null) clearTimeout(entry.lostTimer);
+  clearPeerTimers(entry);
   entry.pc.onicecandidate = null;
   entry.pc.ontrack = null;
-  entry.pc.onconnectionstatechange = null;
+  entry.pc.oniceconnectionstatechange = null;
   entry.pc.close();
   peers.delete(userId);
   const ui = store.state.callUi;
   if (ui) {
+    const peerStates = { ...ui.peer_states };
+    delete peerStates[userId];
     store.patchCallUi({
       peer_ids: [...peers.keys()],
       reconnecting_ids: ui.reconnecting_ids.filter((id) => id !== userId),
+      peer_states: peerStates,
     });
   }
+  reportConnState();
   bumpMedia();
 }
 
@@ -222,17 +266,156 @@ async function sendOfferTo(callId: string, userId: string, iceRestart = false): 
   }
 }
 
-/** Peer lost → reconnect attempt via a new offer. Deterministic roles: the
- * LOWER user id makes the restart offer (impolite peer, §2.12); the higher
- * one marks the tile and waits for it. */
-async function attemptReconnect(callId: string, userId: string): Promise<void> {
+// ---------------------------------------------------------------------------
+// v0.7.1 connectivity state machine + bounded automatic ICE restart (§1.55,
+// §2.12, ADR-017). The aggregate conn_state (connecting / connected /
+// reconnecting / failed) is derived from the per-pair views; each TRANSITION
+// is patched into the UI and reported to peers via ONE relayed `call.state`
+// frame (a healthy call sends two, ever). ICE restart adds NO frame: it is
+// restartIce() + a re-offer riding the existing call.offer/call.answer pair
+// under the lower-user-id-impolite rule.
+// ---------------------------------------------------------------------------
+
+/** How long the POLITE side of a lost pair waits for the impolite peer's
+ * restarts before calling the pair failed: the full backoff budget plus a
+ * gather margin. */
+const POLITE_GIVE_UP_MS =
+  CALL_ICE_RESTART_BACKOFF_MS.reduce((a, b) => a + b, 0) + CALL_ICE_DISCONNECT_GRACE_MS * 3;
+
+function aggregateConnState(): CallConnState {
+  if (peers.size === 0) return 'connecting';
+  const states = [...peers.values()].map((e) => e.connState);
+  if (states.some((s) => s === 'connected')) return 'connected';
+  if (states.some((s) => s === 'reconnecting')) return 'reconnecting';
+  if (states.every((s) => s === 'failed')) return 'failed';
+  return 'connecting';
+}
+
+/** WHY — verdict copy keyed on what is known (§1.55): no relay configured,
+ * relay unreachable from here, peer gone. Never a bare "call failed". */
+function failReason(): string {
+  const ui = store.state.callUi;
+  if (ui && ui.relay_available === false) {
+    return 'This server has no call relay — calls only work on the same network.';
+  }
+  if (relayKnownUnreachable()) {
+    return 'The call relay was not reachable from your network — cross-network calls cannot connect from here.';
+  }
+  return 'Their connection dropped and did not come back.';
+}
+
+/** Patch the aggregate into the UI and relay the transition (one frame per
+ * transition, §2.12). */
+function reportConnState(): void {
+  const ui = store.state.callUi;
+  if (!ui || ui.phase === 'ended' || !ui.call_id) return;
+  const next = aggregateConnState();
+  if (next === ui.conn_state) return;
+  // All pairs gone at once only happens mid-teardown (hang-up closing peers)
+  // or when everyone left (call.updated ends the call right behind) — never
+  // report a bogus connected→connecting transition for that.
+  if (ui.conn_state === 'connected' && next === 'connecting' && peers.size === 0) return;
+  store.patchCallUi({
+    conn_state: next,
+    conn_reason: next === 'failed' ? failReason() : null,
+  });
+  sendEvent({ t: 'call.state', d: { call_id: ui.call_id, state: next } });
+}
+
+/** A pair's ICE dropped (grace elapsed, or hard 'failed'). Deterministic
+ * roles (§2.12): the LOWER user id (impolite) restarts; the higher one marks
+ * the tile, waits, and gives up after the full restart budget. */
+function pairLost(callId: string, userId: string): void {
   const ui = store.state.callUi;
   if (!ui || ui.call_id !== callId || ui.phase === 'ended') return;
+  const entry = peers.get(userId);
+  if (!entry || entry.connState === 'failed') return;
+  entry.connState = 'reconnecting';
   if (!ui.reconnecting_ids.includes(userId)) {
     store.patchCallUi({ reconnecting_ids: [...ui.reconnecting_ids, userId] });
   }
+  reportConnState();
   if (meId() < userId) {
-    await sendOfferTo(callId, userId, true);
+    scheduleRestartAttempt(callId, userId);
+  } else if (entry.restartTimer === null) {
+    entry.restartTimer = setTimeout(() => {
+      entry.restartTimer = null;
+      const s = entry.pc.iceConnectionState;
+      if (s !== 'connected' && s !== 'completed') pairFailed(callId, userId);
+    }, POLITE_GIVE_UP_MS);
+  }
+}
+
+/** The impolite side's restart loop: backoff → refresh TURN creds →
+ * restartIce() + re-offer → watchdog → next attempt, at most
+ * CALL_ICE_RESTART_MAX_ATTEMPTS per outage (§1.55). */
+function scheduleRestartAttempt(callId: string, userId: string): void {
+  const entry = peers.get(userId);
+  if (!entry || entry.restartTimer !== null) return;
+  if (entry.restartAttempts >= CALL_ICE_RESTART_MAX_ATTEMPTS) {
+    pairFailed(callId, userId);
+    return;
+  }
+  const backoff =
+    CALL_ICE_RESTART_BACKOFF_MS[Math.min(entry.restartAttempts, CALL_ICE_RESTART_BACKOFF_MS.length - 1)];
+  entry.restartTimer = setTimeout(() => {
+    entry.restartTimer = null;
+    void (async () => {
+      const ui = store.state.callUi;
+      if (!ui || ui.call_id !== callId || ui.phase === 'ended') return;
+      if (!peers.has(userId)) return;
+      const s = entry.pc.iceConnectionState;
+      if (s === 'connected' || s === 'completed') return; // healed meanwhile
+      entry.restartAttempts += 1;
+      // Fresh TURN credentials before the restart (§1.55; 503/offline is fine
+      // — host candidates carry on, exactly like the periodic refresh).
+      try {
+        const res = await api.get<TurnCredentialsResponse>(`/api/turn-credentials?call_id=${callId}`);
+        turn = res.turn;
+        entry.pc.setConfiguration({ iceServers: iceServers() });
+      } catch {
+        /* unconfigured or offline — restart on what we have */
+      }
+      try {
+        entry.pc.restartIce();
+      } catch {
+        /* older engines: createOffer({iceRestart:true}) below does the job */
+      }
+      await sendOfferTo(callId, userId, true);
+      // Watchdog: a restart that neither connects nor hard-fails within the
+      // grace+gather window goes around again (bounded by the attempt cap).
+      if (entry.restartTimer === null) {
+        entry.restartTimer = setTimeout(() => {
+          entry.restartTimer = null;
+          const st = entry.pc.iceConnectionState;
+          if (st !== 'connected' && st !== 'completed') scheduleRestartAttempt(callId, userId);
+        }, CALL_ICE_DISCONNECT_GRACE_MS * 3);
+      }
+    })();
+  }, backoff);
+}
+
+/** Out of attempts → the pair is failed (§1.55). A 1:1 call whose media NEVER
+ * connected ends with the existing POST end {reason:'failed'}; one that had
+ * connected shows the failed state + reason and leaves hanging up to the
+ * user. In a group only that tile fails — the rest of the mesh carries on. */
+function pairFailed(callId: string, userId: string): void {
+  const ui = store.state.callUi;
+  if (!ui || ui.call_id !== callId || ui.phase === 'ended') return;
+  const entry = peers.get(userId);
+  if (!entry || entry.connState === 'failed') return;
+  clearPeerTimers(entry);
+  entry.connState = 'failed';
+  store.patchCallUi({ reconnecting_ids: ui.reconnecting_ids.filter((id) => id !== userId) });
+  reportConnState();
+  if (!ui.is_group && !entry.everConnected) {
+    const reason = failReason();
+    void api.post(`/api/calls/${callId}/end`, { reason: 'failed' }).catch(() => undefined);
+    const cur = store.state.callUi;
+    if (cur && cur.call_id === callId && cur.phase !== 'ended') {
+      store.patchCallUi({ error: reason });
+      endLocally('failed');
+    }
   }
 }
 
@@ -313,6 +496,11 @@ function baseUi(call: Call, kind: CallKind, outgoing: boolean): store.CallUi {
     minimized: false,
     error: null,
     ended_reason: null,
+    conn_state: 'connecting',
+    conn_reason: null,
+    peer_states: {},
+    relay_available: null,
+    push_note_dismissed: false,
   };
 }
 
@@ -348,13 +536,19 @@ export async function startCall(conversationId: string, kind: CallKind): Promise
   }
   localStream = media;
   turn = res.turn;
+  // TURN honesty (§1.55, FEATURES #90): POST …/calls returning turn: null is
+  // the in-band "no relay" fact — the caller sees the inline warning on the
+  // call screen BEFORE anyone picks up, never a silent failure.
+  noteTurnFromCall(res.turn);
   store.upsertLiveCall(res.call);
-  store.setCallUi(baseUi(res.call, kind, true));
+  store.setCallUi({ ...baseUi(res.call, kind, true), relay_available: res.turn !== null });
   bumpMedia();
   scheduleTurnRefresh(res.call.id);
   // The invite frame makes everyone else ring (§2.12). The callee(s) will
   // offer to us once they join — the joining peer offers.
   sendEvent({ t: 'call.invite', d: { call_id: res.call.id } });
+  // §2.12: the first of the (at most two, when healthy) call.state frames.
+  sendEvent({ t: 'call.state', d: { call_id: res.call.id, state: 'connecting' } });
 }
 
 /** DM accept and group join are the same durable transition (§1.42). */
@@ -394,11 +588,13 @@ export async function joinCall(
   }
   localStream = media;
   turn = res.turn;
+  noteTurnFromCall(res.turn);
   store.upsertLiveCall(res.call);
   store.setCallInvite(null);
-  store.setCallUi(baseUi(res.call, kind, false));
+  store.setCallUi({ ...baseUi(res.call, kind, false), relay_available: res.turn !== null });
   bumpMedia();
   scheduleTurnRefresh(callId);
+  sendEvent({ t: 'call.state', d: { call_id: callId, state: 'connecting' } });
   // Mesh rule: the JOINING peer offers to every existing member (§2.12).
   for (const uid of res.call.participant_ids) {
     if (uid !== meId()) void sendOfferTo(callId, uid);
@@ -516,6 +712,11 @@ function showCallError(message: string): void {
     minimized: false,
     error: message,
     ended_reason: null,
+    conn_state: 'connecting',
+    conn_reason: null,
+    peer_states: {},
+    relay_available: null,
+    push_note_dismissed: false,
   });
   scheduleEndCardDismiss();
 }
@@ -624,6 +825,16 @@ export function handleCallEvent(ev: CallServerEvent): void {
     case 'call.leave': {
       const ui = store.state.callUi;
       if (ui && ui.call_id === ev.d.call_id) closePeer(ev.d.from_user);
+      return;
+    }
+    // v0.7.1 (§2.12): a peer's self-reported connection state — their tile
+    // says the truth too ("reconnecting…"). Advisory UI truth only; a stale
+    // value is corrected by the next frame or the member's leave/updated.
+    case 'call.state': {
+      const ui = store.state.callUi;
+      if (!ui || ui.call_id !== ev.d.call_id || ui.phase === 'ended') return;
+      if (ev.d.from_user === meId()) return; // my own relayed frame
+      store.patchCallUi({ peer_states: { ...ui.peer_states, [ev.d.from_user]: ev.d.state } });
       return;
     }
     case 'call.end': {

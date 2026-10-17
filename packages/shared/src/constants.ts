@@ -767,3 +767,75 @@ export const SCHEDULED_TOAST_MS = 4000;
 // prefers-reduced-motion renders static 'Bored'. The mascot reacts per word.
 export const WORDMARK_WORDS = ['Bored', 'Sad', 'Excited', 'Happy', 'Lonely', 'Hyped'] as const;
 export const WORDMARK_FLIP_INTERVAL_MS = 2500;
+
+// =========================== v0.7.1 additions ================================
+// Call reliability (FEATURES #87–#90b; API.md §1.55–§1.56 + §2.9 + §2.12;
+// ADR-017). HARD RULES carried here: the ring push is RETRACTABLE (a silent
+// `call.ring.stop` push closes it by tag the instant the call is handled
+// anywhere) and runs the §2.9 guards unchanged — muted_until suppresses it,
+// blocks are structural, and it only ever announces a call the recipient can
+// actually join (PSYCHOLOGY rule 2); connection-state frames and ICE restarts
+// are EPHEMERAL signaling on the existing gateway (never persisted); the
+// self-test and TURN-honesty surfaces tell the truth about this instance's
+// relay instead of letting calls fail silently.
+
+// ---- Incoming-call ring push (v0.7.1 — API.md §2.9, FEATURES #88) ----
+// Push payload discriminator. Legacy payloads (message snippet, missed call)
+// carry NO kind field; v0.7.1 kinds are explicit so the service worker can
+// route without guessing.
+export const PUSH_KIND_CALL_RING = 'call.ring' as const;
+export const PUSH_KIND_CALL_RING_STOP = 'call.ring.stop' as const;
+// Notification tag = CALL_RING_PUSH_TAG_PREFIX + call_id. Tag-scoped per
+// CALL (not conversation) so the ring never collapses into message pushes
+// and the stop push can close exactly the ring it targets.
+export const CALL_RING_PUSH_TAG_PREFIX = 'call:';
+// notification action ids (service-worker action routing, §2.9).
+export const PUSH_ACTION_ANSWER = 'answer' as const;
+export const PUSH_ACTION_DECLINE = 'decline' as const;
+// Web-push TTL header on the ring push: a ring that cannot be delivered
+// within the ring window must NEVER be delivered late (a stale "incoming
+// call" hours after the fact is a lie). The stop push uses the same TTL.
+export const CALL_RING_PUSH_TTL_S = CALL_RING_TIMEOUT_S;
+
+// ---- Connection-state reporting + ICE restart (v0.7.1 — API.md §2.12) ----
+// The per-peer RTC connection states a client reports via the relayed
+// `call.state` frame and renders in the call UI. These are UI-truth states
+// derived from RTCPeerConnection.iceConnectionState — not the raw enum.
+export const CALL_CONN_STATES = ['connecting', 'connected', 'reconnecting', 'failed'] as const;
+// 'disconnected' must persist this long before the impolite peer (lower user
+// id, the §2.12 perfect-negotiation rule) triggers restartIce() — transient
+// blips self-heal and must not thrash renegotiation.
+export const CALL_ICE_DISCONNECT_GRACE_MS = 3000;
+// Automatic ICE restarts per peer pair before giving up; backoff between
+// attempts. After the last attempt the pair is 'failed' and the UI says WHY
+// (verdict copy keyed on the §1.55 self-test knowledge, never "call failed").
+export const CALL_ICE_RESTART_MAX_ATTEMPTS = 3;
+export const CALL_ICE_RESTART_BACKOFF_MS = [2000, 4000, 8000] as const;
+
+// ---- Call self-test + TURN honesty (v0.7.1 — API.md §1.55, FEATURES #89/#90) ----
+// GET /api/call-selftest mints SHORT-lived probe credentials (same coturn
+// static-auth-secret format; username "<unix expiry>:selftest:<user_id>" so
+// relay logs distinguish probes from calls). Participant-free but authed +
+// rate-limited: the relay still cannot be farmed anonymously.
+export const CALL_SELFTEST_CRED_TTL_S = 300;
+export const CALL_SELFTEST_RATE_PER_HOUR = 30;
+// Client-side ICE gather budget per probe pass (relay-only pass + default
+// pass). A gather that produces no relay candidate within this window is the
+// "relay unreachable" verdict.
+export const CALL_SELFTEST_GATHER_TIMEOUT_MS = 8000;
+
+// ---- Shared toasts (v0.7.1 — API.md §1.56, FEATURES #90a, web-only) ----
+// ONE shared component (components/Toast.tsx), rendered through Portal,
+// bottom-anchored above the tab bar, auto-dismiss, reduced-motion safe
+// (fade only, no slide). Per-call duration override allowed (the v0.7
+// SCHEDULED_TOAST_MS=4000 scheduled-send toast now rides this component).
+export const TOAST_DEFAULT_MS = 3500;
+// Oldest toast drops when a new one would exceed this (never a stack of
+// nags; confirmations are glanceable, not a log).
+export const TOAST_MAX_VISIBLE = 2;
+
+// ---- Notifications-on assurance (v0.7.1 — API.md §1.56, FEATURES #90b) ----
+// localStorage key for the one-time post-login push explainer. DEVICE-local
+// by design: push permission is a per-browser fact, so the prompt state
+// lives beside it — never synced, never re-nagged after a decline.
+export const PUSH_EXPLAINER_SEEN_KEY = 'bc.push-explainer-seen';

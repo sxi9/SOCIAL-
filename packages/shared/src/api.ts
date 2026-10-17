@@ -91,6 +91,9 @@ import {
   POST_KINDS,
   POST_POLL_QUESTION_MAX_CHARS,
   POST_REF_TYPES,
+  // ---- v0.7.1 (API.md §1.55–§1.56 + §2.9 + §2.12; ADR-017) ----
+  CALL_CONN_STATES,
+  CALL_RING_PUSH_TAG_PREFIX,
 } from './constants.js';
 
 // ---------------------------------------------------------------------------
@@ -2698,3 +2701,75 @@ export const RescueResponseSchema = z.object({
   ),
 });
 export type RescueResponse = z.infer<typeof RescueResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Call reliability (v0.7.1 — API.md §1.55 + §2.9 + §2.12, ADR-017,
+// FEATURES #87–#90b)
+// ---------------------------------------------------------------------------
+
+// Per-peer RTC connection state as the client REPORTS it (relayed `call.state`
+// frame, §2.12) and renders it. Derived client-side from
+// RTCPeerConnection.iceConnectionState; 'reconnecting' covers the automatic
+// ICE-restart window, 'failed' is terminal for that peer pair.
+export const CallConnStateSchema = z.enum(CALL_CONN_STATES);
+export type CallConnState = z.infer<typeof CallConnStateSchema>;
+
+// §2.9 push payloads. The pre-v0.7.1 payloads (message snippet, missed call)
+// carry NO `kind` — the service worker treats a kind-less payload as a plain
+// notification, exactly as before. v0.7.1 payloads are discriminated so the
+// worker routes without guessing.
+
+// Incoming-call ring push — sent at call create to every callee the §2.9
+// guards allow, ONLY when that user has no live socket (a live socket already
+// rings via `call.invite`). tag = `call:<call_id>` (CALL_RING_PUSH_TAG_PREFIX)
+// so the stop push can close exactly this ring. Shown with Answer/Decline
+// actions (PUSH_ACTION_ANSWER / PUSH_ACTION_DECLINE) where the platform
+// supports notification actions; a plain tap deep-links to data.url.
+export const CallRingPushPayloadSchema = z.object({
+  kind: z.literal('call.ring'),
+  title: z.string(), // caller display name, or the group title
+  body: z.string(), // "Incoming audio call" | "Incoming video call"
+  tag: z.string().startsWith(CALL_RING_PUSH_TAG_PREFIX),
+  data: z.object({
+    url: z.string(), // /c/<conversation_id>?call=<call_id> — the answer deep link
+    call_id: UuidSchema,
+    conversation_id: UuidSchema,
+    call_kind: CallKindSchema,
+    // Decline routing (§2.9): DM → the worker POSTs /api/calls/:id/reject;
+    // group → a decline is personal & ephemeral (§1.42), so the worker just
+    // closes the notification (no REST call exists to make).
+    is_group: z.boolean(),
+  }),
+});
+export type CallRingPushPayload = z.infer<typeof CallRingPushPayloadSchema>;
+
+// Silent retraction — "the call was handled somewhere" (answered on another
+// device, rejected, cancelled, timed out to missed, or ended). The worker
+// closes any shown notification with this tag and displays NOTHING. Sent to
+// exactly the subscriptions the ring went to (the Redis `call:{id}:rang` set,
+// dropped with the member set on terminal status).
+export const CallRingStopPushPayloadSchema = z.object({
+  kind: z.literal('call.ring.stop'),
+  tag: z.string().startsWith(CALL_RING_PUSH_TAG_PREFIX),
+});
+export type CallRingStopPushPayload = z.infer<typeof CallRingStopPushPayloadSchema>;
+
+// GET /api/call-selftest (§1.55) — authed, participant-FREE (no live call
+// required: the whole point is finding out BEFORE a call fails), rate-limited
+// CALL_SELFTEST_RATE_PER_HOUR/user. This is also the one authed read of the
+// instance's TURN state: the admin panel and the §1.55 caller warning both
+// consume `turn_configured` from here.
+//
+// turn_configured=false → turn is null: the instance has no TURN_SECRET (no
+// relay service runs — ADR-014's empty-secret hard stop), so cross-network
+// calls cannot work; same-network/host-candidate calls still can. When
+// configured, `turn` carries SHORT-lived probe credentials
+// (CALL_SELFTEST_CRED_TTL_S, username "<unix expiry>:selftest:<user_id>") for
+// the client's relay-reachability gather; the verdict (relay reachable or
+// not, candidate types found) is determined CLIENT-side — only the browser
+// can test the UDP path from where the user actually sits.
+export const CallSelftestResponseSchema = z.object({
+  turn_configured: z.boolean(),
+  turn: TurnCredentialsSchema.nullable(),
+});
+export type CallSelftestResponse = z.infer<typeof CallSelftestResponseSchema>;

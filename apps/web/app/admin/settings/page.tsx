@@ -3,15 +3,20 @@
 // Admin instance settings (§1.41). One switch today: invites. Enforced at
 // mint AND accept server-side (minted links outlive the flip); registration
 // with a token degrades to invite:null rather than failing. Ring-logged.
+// v0.7.1 (§1.55): TURN state surfaces here too, read from the same
+// GET /api/call-selftest everyone consumes — a read-only environment fact,
+// NOT a PATCHable InstanceSettings field.
 import { useEffect, useState } from 'react';
-import type { InstanceSettings } from '@socialchat/shared';
+import type { CallSelftestResponse, InstanceSettings } from '@socialchat/shared';
 import { adminSettings, adminUpdateSettings } from '@/lib/admin';
+import { api } from '@/lib/api';
 import ad from '@/components/admin.module.css';
 
 export default function AdminSettingsPage() {
   const [settings, setSettings] = useState<InstanceSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [turnConfigured, setTurnConfigured] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -22,6 +27,12 @@ export default function AdminSettingsPage() {
       .catch(() => {
         if (!cancelled) setError('Could not load settings.');
       });
+    void api
+      .get<CallSelftestResponse>('/api/call-selftest')
+      .then((res) => {
+        if (!cancelled) setTurnConfigured(res.turn_configured);
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
@@ -70,6 +81,25 @@ export default function AdminSettingsPage() {
           </button>
         </div>
       )}
+      <div className={ad.settingRow} style={{ marginTop: 14 }}>
+        <div>
+          <h3>Call relay (TURN)</h3>
+          <p>
+            {turnConfigured === null
+              ? 'Reading…'
+              : turnConfigured
+                ? 'Configured — cross-network calls can relay through coturn (reachability still depends on each caller’s network; Settings → Call self-test checks it from a device).'
+                : 'Not configured (no TURN_SECRET) — calls only work when both sides are on the same network. Set TURN_SECRET and deploy coturn reachably (VPS or port forwarding); a laptop behind home NAT with an HTTP-only tunnel cannot relay media.'}
+          </p>
+        </div>
+        <span className={`btn${turnConfigured ? ' btn-primary' : ''}`} aria-disabled style={{ pointerEvents: 'none' }}>
+          {turnConfigured === null ? '…' : turnConfigured ? 'Configured' : 'Absent'}
+        </span>
+      </div>
+      <p className={ad.note} style={{ marginTop: 14 }}>
+        TURN state is environment fact, read via <code>GET /api/call-selftest</code> — change it in{' '}
+        <code>.env</code> on the host (<code>./bored status</code> prints the same), not here.
+      </p>
       <p className={ad.note} style={{ marginTop: 14 }}>
         Adminhood itself is CLI-only: <code>node dist/cli.js grant-admin &lt;username&gt;</code> /{' '}
         <code>revoke-admin &lt;username&gt;</code> — there is no web path to promote anyone

@@ -13,6 +13,7 @@ import {
   ClientCallOfferEventSchema,
   ClientCallRejectEventSchema,
   ClientCallRingingEventSchema,
+  ClientCallStateEventSchema,
   ClientTypingEventSchema,
   ClientWatchStartEventSchema,
   ClientWatchStopEventSchema,
@@ -342,6 +343,9 @@ const CALL_ICE_RELAY_MAX = 50; // trickle ICE for ≤7 mesh peers
 const CALL_SDP_RELAY_MAX = 30; // offers+answers: join to 7 peers + glare + ICE restarts
 const CALL_INVITE_RELAY_MAX = 2; // the client sends exactly one per call
 const CALL_CTL_RELAY_MAX = 20; // ringing/accept/reject/leave/end combined
+// v0.7.1 (§2.12): call.state gets its OWN budget — a flapping network emits
+// reconnecting/connected flips and must not starve the hang-up budget above.
+const CALL_STATE_RELAY_MAX = 20;
 const WATCH_START_RELAY_MAX = 5; // retries after watch_active/bad-URL errors
 // window/interval = 10_000/250: the budget a host obeying the 250ms
 // min-interval exactly fills, so no real client ever hits it.
@@ -676,6 +680,35 @@ async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promis
         t,
         d: { call_id: call.id, from_user: meta.userId },
       } as ServerEvent);
+      return;
+    }
+
+    case 'call.state': {
+      // v0.7.1 (§1.55/§2.12, ADR-017): self-reported aggregate connection
+      // state, relayed to ALL live call members (the call.leave recipient set,
+      // own other devices included) so peers' tiles say the truth
+      // ("reconnecting…"). Advisory UI ephemera only: no server state changes,
+      // no persistence, never replayed — reconnect truth stays call.updated.
+      // ICE restart itself adds NO frame: it is restartIce() + a re-offer on
+      // the existing call.offer/call.answer pair, indistinguishable from any
+      // other renegotiation here, deliberately.
+      const result = ClientCallStateEventSchema.safeParse(parsed);
+      if (!result.success) return strike(ws, meta, 'bad_payload', 'invalid call.state frame');
+      const { call_id, state } = result.data.d;
+      // Own flood key (§2.12): a flapping network must not starve the
+      // ringing/accept/reject/leave/end budget.
+      if (!sigGateAllows(meta, `cst:${call_id}`, CALL_STATE_RELAY_MAX)) return;
+      const call = await authorizeCallFrame(ws, meta, call_id, true);
+      if (!call) return;
+      const pool = await redis.smembers(callMembersKey(call.id));
+      const others = await filterBlockedFrom(
+        meta.userId,
+        pool.filter((id) => id !== meta.userId),
+      );
+      await publishToUsers([meta.userId, ...others], {
+        t: 'call.state',
+        d: { call_id: call.id, from_user: meta.userId, state },
+      });
       return;
     }
 

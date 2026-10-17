@@ -8,6 +8,7 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
   CALL_RING_TIMEOUT_S,
+  CALL_SELFTEST_RATE_PER_HOUR,
   CreateCallRequestSchema,
   EndCallRequestSchema,
   TurnCredentialsQuerySchema,
@@ -18,7 +19,7 @@ import { newId } from '../../ids.js';
 import { isBlockedPair } from '../../lib/blocks.js';
 import { activeParticipantUserIds } from '../../lib/dto.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
-import { mintTurnCredentials } from '../../lib/turn.js';
+import { mintSelftestTurnCredentials, mintTurnCredentials } from '../../lib/turn.js';
 import { config } from '../../config.js';
 import { enqueueCallRingTimeout } from '../../queues.js';
 import { redis } from '../../redis.js';
@@ -30,12 +31,14 @@ import {
   callMemberIds,
   callMembersKey,
   deleteCallMembers,
+  enqueueCallRingPushes,
   isCallMember,
   isLiveStatus,
   loadCall,
   publishCallUpdated,
   removeCallMember,
   runMissedCall,
+  stopCallRing,
   type CallRow,
 } from './service.js';
 
@@ -121,6 +124,8 @@ export async function callRoutes(fastify: FastifyInstance): Promise<void> {
       await redis.sadd(callMembersKey(callId), user.id);
       await enqueueCallRingTimeout(callId, CALL_RING_TIMEOUT_S * 1000);
       await publishCallUpdated(row);
+      // v0.7.1 (§1.55/§2.9): ring pushes for every callee with no live socket.
+      await enqueueCallRingPushes(row);
       return reply
         .status(201)
         .send({ call: callDto(row, [user.id]), turn: mintTurnCredentials(user.id) });
@@ -164,6 +169,10 @@ export async function callRoutes(fastify: FastifyInstance): Promise<void> {
         if (fresh && !isLiveStatus(fresh.status)) await deleteCallMembers(call.id);
         throw gone('call_ended');
       }
+      // v0.7.1 (§1.55/§2.9): the call is HANDLED — retract every ring push
+      // (answered-elsewhere lock screens go quiet). Idempotent; runs on the
+      // ringing→ongoing transition and is a no-op for later group joins.
+      if (call.status === 'ringing') await stopCallRing(call.id);
       call = fresh;
       await publishCallUpdated(call);
       const members = await callMemberIds(call);
@@ -242,6 +251,9 @@ export async function callRoutes(fastify: FastifyInstance): Promise<void> {
         throw gone('call_ended');
       }
       await deleteCallMembers(call.id);
+      // v0.7.1 (§1.55/§2.9): a DM decline is "handled anywhere" — retract the
+      // ring push on every device that got one.
+      await stopCallRing(call.id);
       const fresh = (await loadCall(call.id)) ?? call;
       // No system message: a decline is not an archive entry (liking gap).
       await publishCallUpdated(fresh);
@@ -318,4 +330,22 @@ export async function callRoutes(fastify: FastifyInstance): Promise<void> {
       return { turn };
     },
   );
+
+  // §1.55 GET /api/call-selftest (v0.7.1, ADR-017) — the ONE authed read of
+  // the instance's TURN state, consumed by Settings → Call self-test, the
+  // pre-dial caller warning, and the admin panel. Participant-FREE by design
+  // (the point is finding out BEFORE a call fails) but authed + rate-limited,
+  // so the relay cannot be farmed anonymously. turn_configured mirrors
+  // TURN_SECRET; when configured, `turn` carries SHORT-lived probe creds
+  // (username "<expiry>:selftest:<user_id>") for the client's relay gather —
+  // reachability itself is judged CLIENT-side (only the browser can test the
+  // UDP path from where the user sits). Unconfigured → turn: null, never 503:
+  // "no relay" is this endpoint's honest ANSWER, not an error.
+  app.get('/api/call-selftest', { preHandler: requireAuth }, async (req) => {
+    const { user } = authed(req);
+    const rate = await fixedWindow(`callselftest:${user.id}`, CALL_SELFTEST_RATE_PER_HOUR, 3600);
+    if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+    const turn = mintSelftestTurnCredentials(user.id);
+    return { turn_configured: config.turnSecret !== null, turn };
+  });
 }

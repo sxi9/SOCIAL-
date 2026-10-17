@@ -16,6 +16,7 @@ import type {
 } from '@socialchat/shared';
 import { api } from '@/lib/api';
 import { setSettings as storeSettings } from '@/lib/store';
+import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
 import AppShell from '@/components/AppShell';
 
@@ -52,6 +53,7 @@ function PrivacySettings() {
       const res = await api.patch<SettingsResponse>('/api/users/me/settings', change);
       setLocal(res.settings);
       storeSettings(res.settings);
+      toast('Settings saved'); // v0.7.1 §1.56: the shared confirmation toast
     } catch {
       setLocal(prev);
       storeSettings(prev);

@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import { REPORT_REASON_MAX_CHARS, type CreateReportRequest } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { toast } from '@/lib/toast';
 import styles from './beacons.module.css';
 
 /** The target identity — reason is collected here. */
@@ -41,6 +42,9 @@ export default function ReportSheet({ target, onClose }: { target: ReportTarget;
     try {
       await api.post('/api/reports', body);
       setDone(true);
+      // v0.7.1 §1.56: the shared confirmation toast (the sheet's done view
+      // keeps the "no one is told" reassurance for whoever lingers).
+      toast('Report sent — a human will take a look');
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) {
         setError('You have sent a lot of reports this hour — try again later.');

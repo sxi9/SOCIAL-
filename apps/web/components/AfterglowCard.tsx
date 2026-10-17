@@ -15,6 +15,7 @@ import type {
 import { api } from '@/lib/api';
 import { runItBack, sendKudos, VIBE_EMOJI, VIBE_LABEL } from '@/lib/beacons';
 import { createRecapStory } from '@/lib/stories';
+import { toast } from '@/lib/toast';
 import Avatar from './Avatar';
 import styles from './beacons.module.css';
 import soc from './social.module.css';
@@ -110,6 +111,7 @@ export default function AfterglowCard({ afterglow, body, conv, meId, recapSeq }:
     const kind = user.id === conv.created_by ? 'glad_you_posted' : 'glad_you_came';
     try {
       await sendKudos(afterglow.beacon_id, user.id, kind);
+      toast('Kudos sent 💛'); // v0.7.1 §1.56 — private to them, like the kudos itself
       setSentTo((prev) => new Set(prev).add(user.id));
       markKudosDone(afterglow.beacon_id); // one gentle prompt, never again
     } catch {

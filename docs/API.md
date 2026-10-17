@@ -1529,6 +1529,12 @@ read-elsewhere suppression, `muted_until`, debounce; blocked pairs
 structurally excluded). Push payload: `{title: caller or group title, body:
 "Missed <audio|video> call", tag: conversation_id, data: {url: /c/:id}}`.
 
+**v0.7.1 (§1.55, ADR-017)** adds the incoming-call **ring push** with
+Answer/Decline actions (payloads in §2.9), the authed
+`GET /api/call-selftest`, connection-state reporting (`call.state`, §2.12)
+and automatic ICE restart. The `calls` row, status machine and every endpoint
+above are unchanged.
+
 ### 1.43 Watch together (v0.6 — FEATURES #51)
 
 YouTube co-watching in any conversation. **Ephemeral only — no table, no
@@ -1906,9 +1912,116 @@ Chat" where the bracketed word cycles `WORDMARK_WORDS`
   TROUBLESHOOTING hydration entry — never clock-dependent text in SSR
   output).
 
----
+### 1.55 Call reliability: self-test, TURN honesty & the ring push (v0.7.1 — ADR-017, FEATURES #87–#90)
 
-## 2. WebSocket protocol
+Calls that just work — or say exactly why they don't. No schema change (the
+`calls` row is untouched); the additions are one authed GET, one push payload
+family (§2.9), one relayed frame (§2.12) and binding client contracts.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/call-selftest` | — | `200 {turn_configured, turn}` (`CallSelftestResponse`) — authed, **participant-free** (no live call required — the point is finding out *before* a call fails) and rate-limited `CALL_SELFTEST_RATE_PER_HOUR=30`/user. `turn_configured` mirrors whether `TURN_SECRET` is set. When configured, `turn` carries **short-lived probe credentials** (`CALL_SELFTEST_CRED_TTL_S=300`, username `"<unix expiry>:selftest:<user_id>"` — same coturn static-auth-secret HMAC as §1.42, the `selftest:` infix only so relay logs distinguish probes from calls; coturn reads the leading expiry and verifies the HMAC identically). When unconfigured, `turn: null` — there is nothing to probe (ADR-014's empty-secret hard stop means no relay service runs at all). |
+
+**This GET is the one authed read of the instance's TURN state.** Three
+consumers, one truth:
+
+- **Settings → Call self-test (FEATURES #89):** the client runs, in order:
+  secure-context check (`window.isSecureContext` — phones opening a LAN IP
+  fail here, with the "open via the HTTPS tunnel URL" fix spelled out),
+  mic/cam permission probe (`getUserMedia`, immediately stopped),
+  `GET /api/call-selftest`, then — when `turn_configured` — two ICE gathers
+  bounded by `CALL_SELFTEST_GATHER_TIMEOUT_MS=8000`: one with
+  `iceTransportPolicy: 'relay'` using the probe credentials (**relay
+  reachable** iff a `relay` candidate appears) and one default-policy gather
+  (the candidate-type inventory: host / srflx / relay). Verdict in plain
+  words, worst finding first; reachability is decided **client-side** because
+  only the browser can test the UDP path from where the user actually sits.
+- **The caller warning (FEATURES #90):** when `turn_configured` is `false`
+  (cached per session; `POST …/calls` returning `turn: null` is the same
+  fact in-band), the call screen shows the banner **before dialing**: *"This
+  server has no call relay — calls only work when you're on the same
+  network."* When a past self-test on this device found the relay
+  unreachable, the variant says so instead. Never a silent failure.
+- **Admin:** the admin panel calls the same GET and surfaces TURN state
+  (configured / not) alongside the §1.41 settings; `./bored status` prints
+  the same from the host side (compose profile + `TURN_SECRET` presence).
+  `InstanceSettings` is untouched — TURN state is *read-only environment
+  fact*, not a PATCHable setting.
+
+**Connectivity UX (FEATURES #89, binding client contract):** the call screen
+states say the truth — `connecting` (signaling done, ICE in progress) →
+`connected` (first successful pair) → `reconnecting` (ICE dropped; automatic
+restart running) → `failed` **with the reason** (verdict copy keyed on what
+is known: no relay configured, relay unreachable from here, peer gone —
+never a bare "call failed"). State transitions are reported to peers via the
+relayed `call.state` frame (§2.12) so *their* tiles are honest too. Automatic
+ICE restart: `iceConnectionState 'disconnected'` persisting
+`CALL_ICE_DISCONNECT_GRACE_MS=3000` (or `'failed'` immediately) → the
+**impolite peer** (lower user id — the existing §2.12 perfect-negotiation
+rule) refreshes TURN credentials (`GET /api/turn-credentials`, §1.42, +
+`setConfiguration`), calls `restartIce()` and re-offers over the existing
+`call.offer`/`call.answer` frames — **no new signaling frame exists for
+restarts**. At most `CALL_ICE_RESTART_MAX_ATTEMPTS=3` attempts per peer pair,
+backed off `CALL_ICE_RESTART_BACKOFF_MS=[2000,4000,8000]`; then that pair is
+`failed`. A 1:1 call whose media never connected ends with the existing
+`POST /api/calls/:id/end {reason:'failed'}` (§1.42, unchanged).
+
+**Ring push (FEATURES #88) — payloads in §2.9**, machinery here: on call
+create, every callee the §2.9 guards allow **who has no live socket** (a live
+socket already rings via `call.invite`) gets a `call.ring` push with
+Answer/Decline actions; the moment the call is **handled anywhere** (first
+join, DM reject, initiator cancel, ring timeout, end) a silent
+`call.ring.stop` push closes it by tag. The server tracks who was rung in the
+ephemeral Redis set `call:{id}:rang` (user ids; dropped with the member set
+on any terminal status) so the stop goes to exactly the subscriptions the
+ring went to — no new durable state.
+
+**The floating call pill (FEATURES #87)** is pure client: the connected call
+collapses to a draggable pill (avatar, live timer, mute, hang-up) rendered
+through `components/Portal.tsx` like every overlay (TROUBLESHOOTING: never a
+fixed element inside app chrome), expands on tap, uses browser PiP for video
+where supported. No contract surface; listed here so the release is complete.
+
+### 1.56 Web client contracts: shared toasts & notifications-on (v0.7.1 — ADR-017, FEATURES #90a–#90b)
+
+Web-only, but **binding** (the §1.54 precedent): these are product rules the
+next client must also satisfy, documented here because no server surface
+exists to carry them.
+
+**Shared toast (#90a) — `components/Toast.tsx`, ONE component:**
+
+- Rendered through `components/Portal.tsx` into `<body>`; **bottom-anchored
+  above the tab bar** (`z-index` per the `app/globals.css` scale: toast tops
+  it; `padding-bottom` includes `env(safe-area-inset-bottom)` + tab-bar
+  height).
+- Auto-dismiss after `TOAST_DEFAULT_MS=3500` (per-call override allowed —
+  the v0.7 scheduled-send toast keeps its `SCHEDULED_TOAST_MS=4000`); at
+  most `TOAST_MAX_VISIBLE=2` at once, oldest dropped. Dismissible by tap;
+  screen-reader surfaced via `role="status"` (`aria-live="polite"`).
+- `prefers-reduced-motion`: fade only, no slide (the §1.22 replacement rule).
+- **Every action without a visible immediate result confirms itself** through
+  it: posted to board, beacon lit, invite copied, settings saved, report
+  sent, scheduled-for-&lt;time&gt;, kudos sent. Toasts are **confirmations of
+  the user's own actions only** — never incoming-event notifications, never
+  social counters (PSYCHOLOGY rule 3 untouched).
+
+**Notifications-on assurance (#90b):**
+
+- **One-time post-login explainer** when `Notification.permission ===
+  'default'` and no push subscription exists: what push is for (messages,
+  calls, sparked plans, wave nudges) + *Enable now* / *Not now*. *Not now*
+  (or a browser deny) writes `PUSH_EXPLAINER_SEEN_KEY` to localStorage —
+  **device-local by design** (permission is a per-browser fact; the prompt
+  state lives beside it) — and the prompt never shows again on this device.
+  No re-nags, no badges, no guilt (PSYCHOLOGY rule 5).
+- **Settings row** (Settings → Notifications) always tells the truth: **ON**
+  (permission granted + live subscription), **OFF** (`default`, or granted
+  with no subscription — offers Enable), **Blocked by browser** (`denied` —
+  per-browser unblock steps, keyed on UA, since the page cannot re-ask).
+- **Ring-dependent features surface the OFF state instead of failing
+  silently:** the call screen notes "you won't be rung when the app is
+  closed" (linking the settings row) when permission isn't granted. The note
+  is dismissible context, never a gate — calls still work in-app.
 
 ### 2.1 Connection & handshake
 
@@ -1959,6 +2072,7 @@ close `1008`.
 | `post.new` | `{post: Post}` | v0.5a (§1.36): **only to sockets of the author's friends-of audience minus blocks.** No push. Reactions/comments deliberately fan out NOTHING — viewers reconcile from `GET /api/feed` / `GET /api/posts/:id` when they return (no approval pings, PSYCHOLOGY rules 3/4). v0.7 (§1.50): `join_card` frames carry **`ref_summary: null`** — the summary is viewer-specific (joiner faces minus the viewer's blocks, §1.14 visibility, `my_state`), so the broadcast never ships one user's view to another; each client resolves its own via `GET /api/posts/:id` before rendering the card. |
 | `call.updated` | `{call: Call}` | v0.6 (§1.42): SERVER-emitted on every durable call transition (create, first join, member join/leave, reject, end, ring timeout), to the conversation's active participants. Full-DTO replace by `call.id`; reconnect truth is `GET /api/conversations/:id/calls`, never frame replay. |
 | `call.invite` / `call.ringing` / `call.accept` / `call.reject` / `call.offer` / `call.answer` / `call.ice` / `call.leave` / `call.end` | relayed (§2.12) | v0.6: RELAYED ephemeral signaling — client frames validated, authorized and forwarded per recipient with `from_user` stamped server-side; **never persisted, never replayed**. Full shapes + recipient sets in §2.12. |
+| `call.state` | `{call_id, from_user, state}` | v0.7.1 (§1.55/§2.12, ADR-017): relayed connection-state report (`connecting`/`connected`/`reconnecting`/`failed`) to all live call members — peers' tiles say the truth. Ephemeral like all §2.12 frames. |
 | `watch.start` / `watch.sync` / `watch.stop` | relayed (§2.12) | v0.6 (§1.43): relayed watch-together state. start/sync carry the FULL state (`conversation_id, video_id, host, position_s, playing`) so mid-session joiners lock on from the next sync; stop carries `{conversation_id}`. |
 | `discovery.matched` | `{conversation_id, user: UserLite}` | v0.6 (§1.44): to BOTH parties of a mutual wave, each frame stamped with the OTHER party (the `connection.updated` pattern). A single wave fans out NOTHING to anyone, ever. |
 | `roulette.matched` | `{conversation: Conversation}` | v0.6 (§1.45): to both matched users — the provisional DM (viewer-stamped `roulette.kept`). The icebreaker arrives as ordinary `msg.new`. |
@@ -1976,6 +2090,7 @@ close `1008`.
 | `presence.unsub` | `{user_ids: string[]}` | stop receiving |
 
 | `call.invite`, `call.ringing`, `call.accept`, `call.reject`, `call.offer {sdp, to_user}`, `call.answer {sdp, to_user}`, `call.ice {candidate, to_user}`, `call.leave`, `call.end` | all carry `call_id` | v0.6 ephemeral call signaling — validated by Zod, authorized per frame, relayed to the recipients in §2.12, dropped. Never persisted. Durable call transitions stay REST (§1.42): these frames never write the `calls` row. |
+| `call.state` | `{call_id, state}` | v0.7.1 (§1.55/§2.12): self-reported aggregate connection state, one frame per transition (a healthy call sends two, ever). Live-member-gated like `call.leave`; relayed with `from_user` stamped. ICE restarts ride the existing `call.offer`/`call.answer` — no restart frame exists. |
 | `watch.start {conversation_id, url}` / `watch.sync {conversation_id, position_s, playing}` / `watch.stop {conversation_id}` | — | v0.6 watch together (§1.43): participant-gated; `sync` is host-only; the video id is parsed server-side from `url`. §2.12 has the rules. |
 
 Durable writes (messages, conversation ops, watermark-affecting sends) are **not** accepted
@@ -2053,6 +2168,31 @@ starting-soon pushes go to **current joiners only** (starting-soon also to
 the creator of a sparked plan), through every guard above unchanged — no
 overrides, no new exceptions. The wider audience is never pushed about a
 plan changing shape (PSYCHOLOGY rule 2); blocks stay structural.
+
+**v0.7.1 ring push (§1.55, ADR-017, FEATURES #88):** on call create, every
+callee passing the guards above **who has no live socket** (the online-now
+guard, doing its usual job — a live socket rings via `call.invite`) gets a
+`call.ring` push. Differences from message push, and ONLY these: the
+5 s debounce key is per **call** (one ring push per call per user, never
+collapsed with message pushes); the read-elsewhere guard does not apply (no
+seq); the web-push `TTL` header is `CALL_RING_PUSH_TTL_S=45` with
+`Urgency: high` — a ring that cannot be delivered within the ring window must
+never arrive late. `muted_until` suppresses it (no mention-style override —
+a call is not a mention) and blocked pairs stay structurally excluded. The
+notification shows **Answer / Decline** actions (`PUSH_ACTION_ANSWER`/
+`PUSH_ACTION_DECLINE`) where the platform supports them (iOS Safari does
+not — a plain tap behaves as Answer): **Answer** (and plain tap) deep-links
+to `data.url` (the call screen, which runs the normal §1.42 join); **Decline**
+on a DM has the worker POST `/api/calls/:id/reject` itself (the `sid` cookie
+rides the worker's same-origin fetch; it sets `X-Requested-With: fetch`), on
+a group (`data.is_group`) it just closes the notification — a group decline
+is personal and ephemeral (§1.42) and there is nothing durable to write. The
+moment the call is handled anywhere, a **silent `call.ring.stop` push**
+(same `tag: call:<call_id>`) reaches the same subscriptions and the worker
+closes the notification, showing nothing (§1.55 has the `call:{id}:rang`
+machinery). Payload shapes: `CallRingPushPayload` / `CallRingStopPushPayload`
+in `packages/shared` — the first push payloads with a `kind` discriminator;
+kind-less payloads stay plain notifications exactly as before.
 
 Payload: `{title, body (snippet | "Photo" | "Video" | "File"), tag: conversation_id,
 data: {url: "/c/<conversation_id>"}}`. The service worker shows the notification and deep-links
@@ -2136,7 +2276,9 @@ and ICE payloads are **opaque bounded strings** to the server (≤ 64 KiB /
 - **Flood guards (every relayed frame):** per-socket fixed 10 s windows, keyed
   by (kind, call) — `call.ice` ≤ 50, `call.offer`+`call.answer` ≤ 30 (each can
   carry 64 KiB of SDP), `call.invite` ≤ 2 (it fans to every participant),
-  `call.ringing`/`accept`/`reject`/`leave`/`end` ≤ 20 combined,
+  `call.ringing`/`accept`/`reject`/`leave`/`end` ≤ 20 combined, `call.state`
+  ≤ 20 on its own (v0.7.1 — a flapping network must not starve the hang-up
+  budget),
   `watch.start` ≤ 5, `watch.sync` ≤ 40, `watch.stop` ≤ 5 — the `watch.*`
   gates keyed per (socket, conversation); `watch.sync` additionally honors at
   most one frame per `WATCH_SYNC_MIN_INTERVAL_MS=250` (40 = 10 s window /
@@ -2162,6 +2304,7 @@ and ICE payloads are **opaque bounded strings** to the server (≤ 64 KiB /
 | `call.ice {call_id, to_user, candidate}` | either peer, trickled | `to_user`'s sockets |
 | `call.leave {call_id}` | a member hanging up (group) | all live call members (tiles drop instantly; REST end is the durable record) |
 | `call.end {call_id}` | the member whose REST end terminates the call | all live call members + all ringing callees (stop ringing everywhere) |
+| `call.state {call_id, state}` (v0.7.1 — §1.55, ADR-017) | any live member, once per transition of its aggregate connection state (`connecting`/`connected`/`reconnecting`/`failed`) | all live call members, as `{call_id, from_user, state}` — peers render honest tiles ("reconnecting…"). Advisory UI truth only: no server state changes, no persistence; a stale `reconnecting` is corrected by the next frame or the member's `call.leave`/`call.updated` |
 
 **Offer direction — one rule everywhere:** *the joining peer offers.* In a DM
 the callee joins, so the callee offers to the initiator; on every group join
@@ -2170,6 +2313,17 @@ offers), who each answer. Deterministic roles kill glare: an existing member
 never offers to a joiner. For mid-call renegotiation (track changes, ICE
 restart) the **lower user id is the impolite peer** (perfect-negotiation
 pattern, applied per pair).
+
+**ICE restart (v0.7.1 — §1.55, ADR-017) adds no frame.** On
+`iceConnectionState 'disconnected'` persisting
+`CALL_ICE_DISCONNECT_GRACE_MS=3000` (or `'failed'` at once), the impolite
+peer of the pair refreshes TURN credentials (§1.42
+`GET /api/turn-credentials` + `setConfiguration`), calls `restartIce()` and
+re-offers over the ordinary `call.offer`/`call.answer` pair — the gateway
+cannot tell a restart from any other renegotiation and must not try. Bounded:
+`CALL_ICE_RESTART_MAX_ATTEMPTS=3` per pair with
+`CALL_ICE_RESTART_BACKOFF_MS=[2000,4000,8000]`; the attempting client reports
+`reconnecting` / `failed` via `call.state` either side of the window.
 
 **1:1 handshake, end to end:**
 

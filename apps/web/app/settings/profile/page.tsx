@@ -13,12 +13,32 @@ import {
 import { api, ApiError } from '@/lib/api';
 import { logout } from '@/lib/connection';
 import { disablePush, enablePush, getPushSubscription, pushSupported } from '@/lib/push';
+import { toast } from '@/lib/toast';
 import { setMe } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import Avatar from '@/components/Avatar';
 import ProfileEditor from '@/components/ProfileEditor';
 import { RescueCard } from '@/components/RescueSheet';
 import TabPage from '@/components/TabPage';
+
+/** v0.7.1 (§1.56): per-browser unblock steps for the 'denied' state — the
+ * page cannot re-ask, so the row says exactly where the switch lives. */
+function unblockSteps(): string {
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  if (/iPhone|iPad|iPod/.test(ua)) {
+    return 'iPhone/iPad: add Bored Chat to your home screen (Share → Add to Home Screen), then iOS Settings → Notifications → Bored Chat → Allow Notifications.';
+  }
+  if (/Firefox/.test(ua)) {
+    return 'Firefox: tap the permissions icon left of the address bar → Notifications → remove the "Blocked" entry, then reload and enable here.';
+  }
+  if (/Edg\//.test(ua)) {
+    return 'Edge: tap the lock icon in the address bar → Permissions for this site → Notifications → Allow, then reload and enable here.';
+  }
+  if (/Safari/.test(ua) && !/Chrome|Chromium|Android/.test(ua)) {
+    return 'Safari: menu Safari → Settings → Websites → Notifications → set this site to Allow, then reload and enable here.';
+  }
+  return 'Chrome: tap the lock/tune icon in the address bar → Site settings → Notifications → Allow, then reload and enable here.';
+}
 
 function ProfileSettings() {
   const state = useAppState();
@@ -36,7 +56,11 @@ function ProfileSettings() {
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
-  const [pushOn, setPushOn] = useState<boolean | null>(null);
+  // v0.7.1 (§1.56, FEATURES #90b): the row always tells the truth — ON
+  // (permission granted + live subscription), OFF ('default', or granted with
+  // no subscription), or Blocked by browser ('denied' — the page cannot
+  // re-ask; per-browser unblock steps shown instead).
+  const [pushStatus, setPushStatus] = useState<'on' | 'off' | 'blocked' | 'unsupported' | null>(null);
   const [pushBusy, setPushBusy] = useState(false);
 
   useEffect(() => {
@@ -50,14 +74,22 @@ function ProfileSettings() {
   }, [me]);
 
   useEffect(() => {
+    refreshPushStatus();
+  }, []);
+
+  function refreshPushStatus(): void {
     if (!pushSupported()) {
-      setPushOn(false);
+      setPushStatus('unsupported');
+      return;
+    }
+    if (Notification.permission === 'denied') {
+      setPushStatus('blocked');
       return;
     }
     void getPushSubscription()
-      .then((sub) => setPushOn(sub !== null))
-      .catch(() => setPushOn(false));
-  }, []);
+      .then((sub) => setPushStatus(sub !== null && Notification.permission === 'granted' ? 'on' : 'off'))
+      .catch(() => setPushStatus('off'));
+  }
 
   async function save(): Promise<void> {
     if (busy) return;
@@ -75,6 +107,7 @@ function ProfileSettings() {
       });
       setMe(res.user);
       setSaved(true);
+      toast('Settings saved'); // §1.56: actions without a visible result confirm themselves
     } catch (err) {
       setError(err instanceof ApiError ? (err.message || 'Could not save.') : 'Could not save.');
     } finally {
@@ -112,19 +145,18 @@ function ProfileSettings() {
   }
 
   async function togglePush(): Promise<void> {
-    if (pushBusy || pushOn === null) return;
+    if (pushBusy || pushStatus === null || pushStatus === 'unsupported' || pushStatus === 'blocked') return;
     setPushBusy(true);
     try {
-      if (pushOn) {
+      if (pushStatus === 'on') {
         await disablePush();
-        setPushOn(false);
       } else {
-        const ok = await enablePush();
-        setPushOn(ok);
+        await enablePush();
       }
     } catch {
-      /* permission denied or endpoint failure; leave state as-is */
+      /* permission denied or endpoint failure; the refresh below tells the truth */
     } finally {
+      refreshPushStatus();
       setPushBusy(false);
     }
   }
@@ -269,23 +301,57 @@ function ProfileSettings() {
         <RescueCard />
 
         <h2>Notifications</h2>
+        <div className="card">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <strong>
+                Push notifications
+                {pushStatus === 'on' ? (
+                  <span className="ok-text" style={{ marginLeft: 8 }}>ON</span>
+                ) : pushStatus === 'off' ? (
+                  <span className="muted" style={{ marginLeft: 8, fontSize: 13 }}>OFF</span>
+                ) : pushStatus === 'blocked' ? (
+                  <span className="error-text" style={{ marginLeft: 8 }}>Blocked by browser</span>
+                ) : null}
+              </strong>
+              <p className="muted small" style={{ margin: '4px 0 0' }}>
+                {pushStatus === 'unsupported'
+                  ? 'Not supported in this browser.'
+                  : 'Messages, incoming calls, sparked plans and wave nudges when the app is closed — rings depend on this.'}
+              </p>
+            </div>
+            {pushStatus !== 'blocked' ? (
+              <button
+                type="button"
+                className={`btn${pushStatus === 'on' ? '' : ' btn-primary'}`}
+                disabled={pushStatus === 'unsupported' || pushBusy || pushStatus === null}
+                onClick={() => void togglePush()}
+              >
+                {pushStatus === null ? '…' : pushStatus === 'on' ? 'Disable' : 'Enable'}
+              </button>
+            ) : null}
+          </div>
+          {pushStatus === 'blocked' ? (
+            <p className="muted small" style={{ marginBottom: 0 }}>
+              {/* §1.56: 'denied' cannot be re-asked from the page — per-browser
+                  unblock steps, keyed on the UA. */}
+              {unblockSteps()}
+            </p>
+          ) : null}
+        </div>
+
+        {/* v0.7.1 (§1.55, FEATURES #89): find out BEFORE a call fails. */}
         <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
-            <strong>Push notifications</strong>
+            <strong>Call self-test</strong>
             <p className="muted small" style={{ margin: '4px 0 0' }}>
-              {pushSupported()
-                ? 'Get notified about new messages when the app is closed.'
-                : 'Not supported in this browser.'}
+              Checks mic &amp; camera permission, secure context, and whether this server&rsquo;s
+              call relay is reachable from your network — in plain words.
             </p>
           </div>
-          <button
-            type="button"
-            className={`btn${pushOn ? '' : ' btn-primary'}`}
-            disabled={!pushSupported() || pushBusy || pushOn === null}
-            onClick={() => void togglePush()}
-          >
-            {pushOn === null ? '…' : pushOn ? 'Disable' : 'Enable'}
-          </button>
+          <Link href="/settings/calls" className="btn">
+            Run
+          </Link>
         </div>
 
         <h2>Privacy &amp; safety</h2>

@@ -15,7 +15,11 @@ import {
 import { db, schema } from '../../db/index.js';
 import { filterBlockedFrom } from '../../lib/blocks.js';
 import { activeParticipantUserIds } from '../../lib/dto.js';
-import { enqueueCallPushBulk } from '../../queues.js';
+import {
+  enqueueCallPushBulk,
+  enqueueCallRingPushBulk,
+  enqueueCallRingStopPushBulk,
+} from '../../queues.js';
 import { redis } from '../../redis.js';
 import { publishToUsers } from '../../ws/events.js';
 import { registry } from '../../ws/registry.js';
@@ -24,6 +28,15 @@ import { fanOutNewMessage, insertMessage } from '../messages/service.js';
 export type CallRow = typeof schema.calls.$inferSelect;
 
 export const callMembersKey = (callId: string): string => `call:${callId}:members`;
+
+// v0.7.1 (§1.55/§2.9, ADR-017): who actually got a ring PUSH for this call —
+// written by the push worker right before sending, read by stopCallRing so the
+// silent retraction goes to exactly the subscriptions the ring went to.
+// Ephemeral like the member set (no table); dropped the moment the call is
+// handled anywhere. The TTL is only a leak belt against a worker dying between
+// SADD and the stop (a ring is ≤45 s old by definition).
+export const callRangKey = (callId: string): string => `call:${callId}:rang`;
+export const CALL_RANG_TTL_S = CALL_RING_TIMEOUT_S * 4;
 
 export async function loadCall(callId: string): Promise<CallRow | null> {
   const [row] = await db.select().from(schema.calls).where(eq(schema.calls.id, callId)).limit(1);
@@ -100,6 +113,51 @@ export async function publishCallUpdated(call: CallRow): Promise<void> {
   await publishToUsers(recipients, { t: 'call.updated', d: { call: callDto(call, members) } });
 }
 
+/**
+ * v0.7.1 ring push (§1.55/§2.9, ADR-017, FEATURES #88): at call create,
+ * enqueue a `call.ring` push for every callee who has NO live socket (a live
+ * socket already rings via call.invite) — blocked pairs structurally excluded
+ * (the belt re-checks in the worker), everything else (presence, muted_until,
+ * still-ringing, per-call debounce) re-checked at execution exactly like the
+ * missed-call push. Online callees are skipped at enqueue, not delayed: a ring
+ * is time-critical, and the worker's presence guard re-covers races.
+ */
+export async function enqueueCallRingPushes(call: CallRow): Promise<void> {
+  const participants = await activeParticipantUserIds(call.conversationId);
+  let targets = participants.filter((id) => id !== call.initiatorId);
+  if (call.initiatorId) targets = await filterBlockedFrom(call.initiatorId, targets);
+  targets = targets.filter((id) => !registry.userHasSockets(id));
+  if (targets.length === 0) return;
+  await enqueueCallRingPushBulk(
+    targets.map((userId) => ({
+      kind: 'call_ring' as const,
+      user_id: userId,
+      call_id: call.id,
+      conversation_id: call.conversationId,
+      initiator_id: call.initiatorId,
+      call_kind: call.kind as CallKind,
+      is_group: call.isGroup,
+    })),
+  );
+}
+
+/**
+ * v0.7.1 (§1.55/§2.9): the call was HANDLED somewhere — first join, DM
+ * reject, initiator cancel, ring timeout — so every ring push that went out
+ * is retracted by a silent `call.ring.stop` (the worker closes the
+ * notification by tag, shows nothing). Reads + drops the `call:{id}:rang`
+ * set; idempotent (an empty set is a no-op), so every ringing→* transition
+ * calls it unconditionally.
+ */
+export async function stopCallRing(callId: string): Promise<void> {
+  const rang = await redis.smembers(callRangKey(callId));
+  await redis.del(callRangKey(callId));
+  if (rang.length === 0) return;
+  await enqueueCallRingStopPushBulk(
+    rang.map((userId) => ({ kind: 'call_ring_stop' as const, user_id: userId, call_id: callId })),
+  );
+}
+
 // withinTx abort sentinel: the ring already resolved (join/reject/end raced
 // the timeout) — the whole seq transaction rolls back, no system message.
 class CallNotRingingError extends Error {}
@@ -156,6 +214,8 @@ export async function runMissedCall(callId: string): Promise<void> {
   }
 
   await deleteCallMembers(call.id);
+  // v0.7.1: a timed-out/cancelled ring stops ringing on lock screens too.
+  await stopCallRing(call.id);
   const fresh = await loadCall(call.id);
   if (fresh) await publishCallUpdated(fresh);
   await fanOutNewMessage(msg); // sender null → no ordinary message push

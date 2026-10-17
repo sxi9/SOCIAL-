@@ -345,6 +345,8 @@ function handleFrame(raw: string): void {
     case 'call.ice':
     case 'call.leave':
     case 'call.end':
+    // v0.7.1 (§2.12): relayed peer connection-state reports — same route.
+    case 'call.state':
     case 'call.updated':
       handleCallEvent(ev);
       break;

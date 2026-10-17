@@ -85,6 +85,16 @@ self.addEventListener('fetch', (event) => {
   }
 });
 
+/* v0.7.1 ring push (API.md §1.55 + §2.9, FEATURES #88). Payloads carry a
+ * `kind` discriminator from this release on; kind-less payloads stay plain
+ * notifications exactly as before. Values mirror packages/shared/constants.ts
+ * (the worker cannot import modules): PUSH_KIND_CALL_RING / _STOP,
+ * PUSH_ACTION_ANSWER / _DECLINE, CALL_RING_PUSH_TAG_PREFIX 'call:'. */
+const PUSH_KIND_CALL_RING = 'call.ring';
+const PUSH_KIND_CALL_RING_STOP = 'call.ring.stop';
+const PUSH_ACTION_ANSWER = 'answer';
+const PUSH_ACTION_DECLINE = 'decline';
+
 self.addEventListener('push', (event) => {
   let payload = {};
   try {
@@ -92,21 +102,67 @@ self.addEventListener('push', (event) => {
   } catch {
     payload = {};
   }
+
+  // Silent retraction: the call was handled somewhere (answered on another
+  // device, rejected, cancelled, timed out, ended) — close the ring by tag
+  // and show NOTHING (§1.55 "stops ringing the instant it is handled").
+  if (payload.kind === PUSH_KIND_CALL_RING_STOP) {
+    event.waitUntil(
+      (async () => {
+        const tag = typeof payload.tag === 'string' ? payload.tag : '';
+        if (!tag) return;
+        const shown = await self.registration.getNotifications({ tag });
+        for (const n of shown) n.close();
+      })()
+    );
+    return;
+  }
+
   const title = typeof payload.title === 'string' && payload.title ? payload.title : 'Bored Chat';
   const options = {
     body: typeof payload.body === 'string' ? payload.body : '',
-    // tag = conversation_id: stacked notifications for one conversation collapse.
+    // tag = conversation_id (messages) or `call:<call_id>` (rings): stacked
+    // notifications for one tag collapse; the ring stop closes by its tag.
     tag: typeof payload.tag === 'string' && payload.tag ? payload.tag : undefined,
     data: payload.data && typeof payload.data === 'object' ? payload.data : {},
     icon: '/icons/icon-192.png',
     badge: '/icons/icon-192.png',
   };
+  if (payload.kind === PUSH_KIND_CALL_RING) {
+    // Answer/Decline where the platform supports actions (iOS Safari does
+    // not — a plain tap behaves as Answer, §2.9).
+    options.actions = [
+      { action: PUSH_ACTION_ANSWER, title: 'Answer' },
+      { action: PUSH_ACTION_DECLINE, title: 'Decline' },
+    ];
+    options.data = Object.assign({ kind: PUSH_KIND_CALL_RING }, options.data);
+  }
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const data = event.notification.data || {};
+
+  // v0.7.1 (§2.9) Decline on a ring: DM → the worker POSTs the durable reject
+  // itself (the sid cookie rides this same-origin fetch; X-Requested-With is
+  // the CSRF header, API.md §0). Group → a decline is personal and ephemeral
+  // (§1.42): there is nothing durable to write, closing is all it is.
+  if (event.action === PUSH_ACTION_DECLINE && data.kind === PUSH_KIND_CALL_RING) {
+    if (!data.is_group && typeof data.call_id === 'string') {
+      event.waitUntil(
+        fetch('/api/calls/' + encodeURIComponent(data.call_id) + '/reject', {
+          method: 'POST',
+          headers: { 'X-Requested-With': 'fetch' },
+          credentials: 'same-origin',
+        }).catch(() => undefined)
+      );
+    }
+    return;
+  }
+
+  // Answer (and a plain tap) deep-links to data.url — the call screen, which
+  // runs the normal §1.42 join (auto-accept rides the ?call= param).
   const url = typeof data.url === 'string' && data.url.startsWith('/') ? data.url : '/';
   event.waitUntil(
     (async () => {

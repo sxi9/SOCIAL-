@@ -10,6 +10,7 @@ import {
 } from './constants.js';
 import {
   AttachmentSchema,
+  CallConnStateSchema,
   CallKindSchema,
   CallSchema,
   BeaconRoleSchema,
@@ -372,6 +373,20 @@ export type CallLeaveEvent = z.infer<typeof CallLeaveEventSchema>;
 export const CallEndEventSchema = z.object({ t: z.literal('call.end'), d: callSignalD });
 export type CallEndEvent = z.infer<typeof CallEndEventSchema>;
 
+// v0.7.1 (§2.12, ADR-017): a member's self-reported per-call connection state,
+// relayed to all live call members (the call.leave recipient set) so tiles can
+// say "reconnecting" truthfully. Ephemeral like every frame here — reconnect
+// truth stays call.updated + re-negotiation, never a replay of these.
+export const CallStateEventSchema = z.object({
+  t: z.literal('call.state'),
+  d: z.object({
+    call_id: UuidSchema,
+    from_user: UuidSchema,
+    state: CallConnStateSchema,
+  }),
+});
+export type CallStateEvent = z.infer<typeof CallStateEventSchema>;
+
 // Relayed SDP exchange — to the NAMED recipient's sockets only (to_user is
 // consumed by the gateway; from_user is stamped on the way out).
 export const CallOfferEventSchema = z.object({
@@ -526,6 +541,8 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
   CallLeaveEventSchema,
   CallEndEventSchema,
   CallUpdatedEventSchema,
+  // v0.7.1 (§2.12, ADR-017): relayed connection-state reporting.
+  CallStateEventSchema,
   WatchStartEventSchema,
   WatchSyncEventSchema,
   WatchStopEventSchema,
@@ -637,6 +654,22 @@ export const ClientCallEndEventSchema = z.object({
 });
 export type ClientCallEndEvent = z.infer<typeof ClientCallEndEventSchema>;
 
+// v0.7.1 (§2.12, ADR-017): self-reported connection state. Sent on every
+// transition of the client's AGGREGATE call connectivity (connecting /
+// connected / reconnecting / failed) — at most one frame per transition, so a
+// healthy call sends two, ever. Live-call-member-gated like call.leave;
+// from_user is stamped server-side on the way out. ICE restart itself needs
+// NO new frame: it is restartIce() + a re-offer riding the existing
+// call.offer/call.answer pair under the §2.12 perfect-negotiation rule.
+export const ClientCallStateEventSchema = z.object({
+  t: z.literal('call.state'),
+  d: z.object({
+    call_id: UuidSchema,
+    state: CallConnStateSchema,
+  }),
+});
+export type ClientCallStateEvent = z.infer<typeof ClientCallStateEventSchema>;
+
 // SDP exchange, addressed per peer (mesh rule: the JOINING peer offers to
 // every existing member — §2.12).
 export const ClientCallOfferEventSchema = z.object({
@@ -715,6 +748,8 @@ export const ClientEventSchema = z.discriminatedUnion('t', [
   ClientCallIceEventSchema,
   ClientCallLeaveEventSchema,
   ClientCallEndEventSchema,
+  // v0.7.1 (§2.12)
+  ClientCallStateEventSchema,
   ClientWatchStartEventSchema,
   ClientWatchSyncEventSchema,
   ClientWatchStopEventSchema,

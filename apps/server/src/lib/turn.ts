@@ -7,6 +7,7 @@
 // GET /api/turn-credentials before expiry.
 import { createHmac } from 'node:crypto';
 import {
+  CALL_SELFTEST_CRED_TTL_S,
   TURN_CRED_TTL_S,
   TURN_PORT,
   type TurnCredentials,
@@ -19,9 +20,24 @@ import { config } from '../config.js';
  * same-network peers; §1.42 create/join serialize `turn: null`).
  */
 export function mintTurnCredentials(userId: string): TurnCredentials | null {
+  return mint(userId, TURN_CRED_TTL_S, '');
+}
+
+/**
+ * v0.7.1 (API.md §1.55, ADR-017): SHORT-lived probe credentials for the call
+ * self-test's relay-reachability gather. Same coturn static-auth-secret HMAC
+ * — coturn reads the leading expiry and verifies identically; the `selftest:`
+ * infix exists ONLY so relay logs distinguish probes from calls. TTL
+ * CALL_SELFTEST_CRED_TTL_S (5 min), so farmed probe creds die fast.
+ */
+export function mintSelftestTurnCredentials(userId: string): TurnCredentials | null {
+  return mint(userId, CALL_SELFTEST_CRED_TTL_S, 'selftest:');
+}
+
+function mint(userId: string, ttlS: number, infix: '' | 'selftest:'): TurnCredentials | null {
   if (!config.turnSecret) return null;
-  const expiryUnix = Math.floor(Date.now() / 1000) + TURN_CRED_TTL_S;
-  const username = `${expiryUnix}:${userId}`;
+  const expiryUnix = Math.floor(Date.now() / 1000) + ttlS;
+  const username = `${expiryUnix}:${infix}${userId}`;
   const credential = createHmac('sha1', config.turnSecret).update(username).digest('base64');
   const host = config.domain;
   return {

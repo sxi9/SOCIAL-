@@ -36,6 +36,24 @@ cmd_status() {
   else
     echo "Tunnel:   not running"
   fi
+  # TURN honesty (v0.7.1 #90, API.md §1.55): the host-side view of the same
+  # fact the admin panel reads from GET /api/call-selftest — TURN_SECRET
+  # presence + the "turn" compose profile that starts coturn.
+  local turn_secret turn_profiles
+  turn_secret="$(env_get TURN_SECRET)"
+  turn_profiles="$(env_get COMPOSE_PROFILES)"
+  if [ -n "$turn_secret" ] && printf '%s' "$turn_profiles" | grep -qw turn; then
+    if docker compose ps turn 2>/dev/null | grep -qiE 'up|running'; then
+      echo "TURN:     configured (coturn running) — cross-network calls can relay"
+    else
+      echo "TURN:     configured but coturn is not running — run: ./bored up"
+    fi
+  elif [ -n "$turn_secret" ]; then
+    echo "TURN:     TURN_SECRET set but coturn disabled — add COMPOSE_PROFILES=turn to .env"
+  else
+    echo "TURN:     not configured — calls only work on the same network"
+    echo "          (set TURN_SECRET + COMPOSE_PROFILES=turn in .env; needs a reachable host)"
+  fi
   echo
   docker compose ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null || echo "(stack not running)"
 }

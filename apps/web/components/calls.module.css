@@ -204,9 +204,20 @@
   cursor: pointer;
 }
 
+/* gridWrap: the positioning context for the self-camera PiP, so the PiP is
+   clipped to the VIDEO AREA and can never cover the notice lines (TURN
+   warning / push-off note / failure reason) rendered below the grid. */
+.gridWrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
 /* Remote grid: 1 tile fills, 2–4 → 2 columns, 5–9 → 3 (mesh caps at 8). */
 .grid {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: grid;
   gap: 8px;
@@ -284,11 +295,12 @@
   color: #ffd166;
 }
 
-/* Local preview: PiP when others are on screen; a grid tile when alone. */
+/* Local preview: PiP when others are on screen; a grid tile when alone.
+   Positioned within .gridWrap (NOT the screen) — see gridWrap note. */
 .pip {
   position: absolute;
   right: 14px;
-  bottom: calc(108px + env(safe-area-inset-bottom));
+  bottom: 10px;
   width: 96px;
   aspect-ratio: 3 / 4;
   border-radius: 14px;
@@ -352,25 +364,144 @@
   width: 62px;
 }
 
-/* ---- minimized floating pill ---- */
+/* ---- minimized floating pill (v0.7.1 #87: draggable, avatar, timer, mute,
+   hang-up, video thumbnail/PiP; z 69 per the globals.css scale) ---- */
 
-.pill {
+.pillWrap {
   position: fixed;
   right: 14px;
-  bottom: calc(76px + env(safe-area-inset-bottom));
-  z-index: 60;
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  z-index: 69;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 5px 6px;
+  box-shadow: var(--shadow);
+  touch-action: none; /* the pill IS the drag surface */
+  user-select: none;
+}
+
+.pillMain {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  background: var(--accent-strong);
-  color: #fff;
+  background: none;
   border: none;
-  border-radius: 999px;
-  padding: 10px 16px;
-  font-size: 13.5px;
+  color: inherit;
+  padding: 4px 6px 4px 4px;
+  font-size: 13px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
-  box-shadow: var(--shadow);
   cursor: pointer;
+  min-width: 0;
+}
+
+.pillTime {
+  white-space: nowrap;
+}
+
+.pillCtl {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: var(--panel-2);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: none;
+}
+
+.pillCtl svg {
+  width: 17px;
+  height: 17px;
+}
+
+.pillCtlOff {
+  background: #fff;
+  color: #0b0e14;
+}
+
+.pillEnd {
+  background: var(--danger);
+  color: #fff;
+}
+
+.pillThumb {
+  position: relative;
+  width: 44px;
+  height: 34px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #121828;
+  flex: none;
+}
+
+.pillThumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pillPip {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.25);
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.pillPip:hover,
+.pillPip:focus-visible {
+  opacity: 1;
+}
+
+/* ---- v0.7.1 §1.55: TURN honesty + push-off note on the call screen ---- */
+
+.relayWarn {
+  margin: 0;
+  padding: 8px 16px 0;
+  text-align: center;
+  color: #ffd166;
+  font-size: 13px;
+}
+
+.pushNote {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 16px 0;
+  text-align: center;
+  color: #9aa4bd;
+  font-size: 12.5px;
+}
+
+.pushNote a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+.pushNoteDismiss {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
 }
 
 /* ---- ended card ---- */

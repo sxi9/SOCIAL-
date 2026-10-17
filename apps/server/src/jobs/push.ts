@@ -4,17 +4,28 @@
 // advances last_delivered_seq — the service worker only shows the notification.
 import { and, eq, sql } from 'drizzle-orm';
 import webpush from 'web-push';
-import { PUSH_DEBOUNCE_S } from '@socialchat/shared';
+import {
+  CALL_RING_PUSH_TAG_PREFIX,
+  CALL_RING_PUSH_TTL_S,
+  PUSH_DEBOUNCE_S,
+  PUSH_KIND_CALL_RING,
+  PUSH_KIND_CALL_RING_STOP,
+  type CallRingPushPayload,
+  type CallRingStopPushPayload,
+} from '@socialchat/shared';
 import { config } from '../config.js';
 import { db, schema } from '../db/index.js';
 import { isBlockedPair } from '../lib/blocks.js';
-// The pure guard verdict lives in lib/pushGuard.ts (no infra imports — the
+// The pure guard verdicts live in lib/pushGuard.ts (no infra imports — the
 // mention/mute/block rules are unit-tested there); re-exported for callers.
-import { messagePushAllowed } from '../lib/pushGuard.js';
-export { messagePushAllowed };
+import { callRingPushAllowed, messagePushAllowed } from '../lib/pushGuard.js';
+export { callRingPushAllowed, messagePushAllowed };
+import { CALL_RANG_TTL_S, callRangKey } from '../modules/calls/service.js';
 import type {
   BeaconPushJob,
   CallPushJob,
+  CallRingPushJob,
+  CallRingStopPushJob,
   MessagePushJob,
   PushJob,
   RescuePushJob,
@@ -52,7 +63,14 @@ function snippetFor(type: string, body: string | null): string {
   }
 }
 
-async function sendToSubscriptions(userId: string, payload: string): Promise<void> {
+async function sendToSubscriptions(
+  userId: string,
+  payload: string,
+  // v0.7.1 (§2.9): the ring push rides TTL=CALL_RING_PUSH_TTL_S + Urgency:
+  // high — a ring that cannot be delivered within the ring window must never
+  // arrive late. Omitted everywhere else (web-push defaults unchanged).
+  options?: webpush.RequestOptions,
+): Promise<void> {
   const subs = await db
     .select()
     .from(schema.pushSubscriptions)
@@ -63,6 +81,7 @@ async function sendToSubscriptions(userId: string, payload: string): Promise<voi
       await webpush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
         payload,
+        options,
       );
       await db
         .update(schema.pushSubscriptions)
@@ -191,6 +210,110 @@ async function processCallPushJob(job: CallPushJob): Promise<void> {
   await sendToSubscriptions(job.user_id, payload);
 }
 
+// v0.7.1 (§1.55 + §2.9, ADR-017, FEATURES #88): the incoming-call RING push.
+// Guards re-checked at execution: presence (a live socket rings via
+// call.invite), active membership, the block belt, muted_until with NO
+// mention-style override (a call is not a mention), the call STILL RINGING
+// (a handled call must never ring late — this is the queue-side half of the
+// call.ring.stop retraction), and a per-(user, CALL) debounce (one ring push
+// per call per user, never collapsed with message pushes). The user is added
+// to the `call:{id}:rang` set BEFORE sending, so stopCallRing retracts
+// exactly the subscriptions the ring went to even when the two race.
+async function processCallRingPushJob(job: CallRingPushJob): Promise<void> {
+  if ((await redis.exists(presenceKey(job.user_id))) === 1) return;
+  const [part] = await db
+    .select()
+    .from(schema.conversationParticipants)
+    .where(
+      and(
+        eq(schema.conversationParticipants.conversationId, job.conversation_id),
+        eq(schema.conversationParticipants.userId, job.user_id),
+      ),
+    )
+    .limit(1);
+  if (!part || part.leftAt !== null) return;
+  const blockedPair = job.initiator_id
+    ? await isBlockedPair(job.user_id, job.initiator_id)
+    : false;
+  if (!callRingPushAllowed({ blockedPair, mutedUntil: part.mutedUntil })) return;
+
+  // Still ringing? (fresh read — join/reject/cancel/timeout between enqueue
+  // and execution means the ring was handled; PSYCHOLOGY rule 2: never
+  // announce a call the recipient can no longer join.)
+  const [call] = await db
+    .select({ status: schema.calls.status })
+    .from(schema.calls)
+    .where(eq(schema.calls.id, job.call_id))
+    .limit(1);
+  if (!call || call.status !== 'ringing') return;
+
+  const debounced = await redis.set(
+    `pushdb:${job.user_id}:callring:${job.call_id}`,
+    '1',
+    'EX',
+    PUSH_DEBOUNCE_S,
+    'NX',
+  );
+  if (debounced !== 'OK') return;
+
+  // Title: caller display name (DM) or the group title (the §1.42 copy rule).
+  const [conv] = await db
+    .select()
+    .from(schema.conversations)
+    .where(eq(schema.conversations.id, job.conversation_id))
+    .limit(1);
+  if (!conv) return;
+  let title = conv.title ?? 'Incoming call';
+  if (!job.is_group && job.initiator_id) {
+    const [caller] = await db
+      .select({ displayName: schema.users.displayName })
+      .from(schema.users)
+      .where(eq(schema.users.id, job.initiator_id))
+      .limit(1);
+    if (caller) title = caller.displayName;
+  }
+
+  // Record the rung user BEFORE the send: a stop racing this job then still
+  // reaches this subscription. TTL is the leak belt only — stopCallRing
+  // deletes the set the moment the call is handled.
+  await redis.sadd(callRangKey(job.call_id), job.user_id);
+  await redis.expire(callRangKey(job.call_id), CALL_RANG_TTL_S);
+
+  const payload: CallRingPushPayload = {
+    kind: PUSH_KIND_CALL_RING,
+    title,
+    body: `Incoming ${job.call_kind} call`,
+    tag: `${CALL_RING_PUSH_TAG_PREFIX}${job.call_id}`,
+    data: {
+      url: `/c/${job.conversation_id}?call=${job.call_id}`,
+      call_id: job.call_id,
+      conversation_id: job.conversation_id,
+      call_kind: job.call_kind,
+      is_group: job.is_group,
+    },
+  };
+  await sendToSubscriptions(job.user_id, JSON.stringify(payload), {
+    TTL: CALL_RING_PUSH_TTL_S,
+    urgency: 'high',
+  });
+}
+
+// v0.7.1 (§1.55 + §2.9): the silent retraction — the service worker closes
+// any notification with this tag and displays NOTHING, so no guards apply
+// (closing a stale ring is always right, muted or not). Same TTL/urgency as
+// the ring: a stop that arrives after the window matters as little as a ring
+// that does.
+async function processCallRingStopPushJob(job: CallRingStopPushJob): Promise<void> {
+  const payload: CallRingStopPushPayload = {
+    kind: PUSH_KIND_CALL_RING_STOP,
+    tag: `${CALL_RING_PUSH_TAG_PREFIX}${job.call_id}`,
+  };
+  await sendToSubscriptions(job.user_id, JSON.stringify(payload), {
+    TTL: CALL_RING_PUSH_TTL_S,
+    urgency: 'high',
+  });
+}
+
 // v0.6 (§1.46): the ONE push that bypasses the §2.9 guards — presence,
 // read-elsewhere and debounce SKIPPED, muted_until OVERRIDDEN (the §1.33
 // mention precedent). Blocks remain structural: the route's friends-of gate
@@ -211,6 +334,8 @@ export async function processPushJob(job: PushJob): Promise<void> {
   if (job.kind === 'beacon') return processBeaconPushJob(job);
   if (job.kind === 'social') return processSocialPushJob(job);
   if (job.kind === 'call') return processCallPushJob(job);
+  if (job.kind === 'call_ring') return processCallRingPushJob(job);
+  if (job.kind === 'call_ring_stop') return processCallRingStopPushJob(job);
   if (job.kind === 'rescue') return processRescuePushJob(job);
   return processMessagePushJob(job);
 }

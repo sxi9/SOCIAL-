@@ -1,14 +1,28 @@
 'use client';
 
-// v0.6 calls (API.md §1.42 + §2.12): the incoming-ring overlay (works
-// anywhere — mounted by GlobalOverlays inside AppShell), the full in-call
-// screen (local preview + remote mesh grid, mute/camera/flip/end), the
-// minimized floating pill, and the transient ended-call card. All media state
-// lives in lib/webrtc.ts; this component only renders store.callUi /
-// store.callInvite and re-grabs streams when media_version bumps.
-import { useEffect, useRef } from 'react';
-import type { CallKind } from '@socialchat/shared';
+// v0.6 calls (API.md §1.42 + §2.12) + v0.7.1 reliability (§1.55–§1.56,
+// FEATURES #87–#90b): the incoming-ring overlay (works anywhere — mounted by
+// GlobalOverlays inside AppShell), the full in-call screen (local preview +
+// remote mesh grid, mute/camera/flip/end, honest connectivity states, TURN
+// honesty banner, push-off note), the DRAGGABLE floating pill (avatar, live
+// timer, mute, hang-up, video thumbnail / browser PiP), and the transient
+// ended-call card. All media state lives in lib/webrtc.ts (a module
+// singleton — the call survives full app navigation); this component only
+// renders store.callUi / store.callInvite and re-grabs streams when
+// media_version bumps. EVERYTHING renders through Portal into <body>
+// (TROUBLESHOOTING: never a fixed overlay inside app chrome).
+import {
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
+import Link from 'next/link';
+import type { CallConnState, CallKind } from '@socialchat/shared';
 import { conversationTitle } from '@/lib/format';
+import { pushSupported } from '@/lib/push';
+import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
 import { useReducedMotion } from '@/lib/useReducedMotion';
@@ -26,6 +40,7 @@ import {
 } from '@/lib/webrtc';
 import Avatar from './Avatar';
 import Mascot from './Mascot';
+import Portal from './Portal';
 import styles from './calls.module.css';
 
 export default function CallOverlay() {
@@ -34,13 +49,13 @@ export default function CallOverlay() {
   const ui = state.callUi;
 
   return (
-    <>
+    <Portal>
       {/* The ring overlay hides while I'm already in a call (webrtc guards
           the invite away in that case, but belt and braces). */}
       {invite && !ui ? <IncomingRing /> : null}
       {ui && ui.phase !== 'ended' ? (ui.minimized ? <CallPill /> : <CallScreen />) : null}
       {ui && ui.phase === 'ended' ? <EndCard /> : null}
-    </>
+    </Portal>
   );
 }
 
@@ -119,6 +134,60 @@ function durationLabel(answeredAt: string | null, now: number): string | null {
   return h > 0 ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
 }
 
+/** v0.7.1 (§1.55): the states say the truth — connecting / connected /
+ * reconnecting / failed, with the duration standing in for "connected". */
+function connStatusLabel(connState: CallConnState, duration: string | null): string {
+  switch (connState) {
+    case 'connecting':
+      return 'Connecting…';
+    case 'connected':
+      return duration ?? 'Connected';
+    case 'reconnecting':
+      return 'Reconnecting…';
+    case 'failed':
+      return 'Connection failed';
+  }
+}
+
+const PEER_STATE_BADGE: Record<CallConnState, string | null> = {
+  connecting: 'connecting…',
+  connected: null,
+  reconnecting: 'reconnecting…',
+  failed: 'connection lost',
+};
+
+/** v0.7.1 (§1.56, FEATURES #90b): ring-dependent features surface the
+ * push-off state instead of failing silently — dismissible context, never a
+ * gate (calls still work in-app). */
+function PushOffNote() {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    try {
+      setVisible(pushSupported() && Notification.permission !== 'granted');
+    } catch {
+      setVisible(false);
+    }
+  }, []);
+  const dismissed = useAppState().callUi?.push_note_dismissed ?? true;
+  if (!visible || dismissed) return null;
+  return (
+    <p className={styles.pushNote} role="note">
+      <span>
+        Notifications are off — you won&rsquo;t be rung when the app is closed.{' '}
+        <Link href="/settings/profile">Turn them on</Link>
+      </span>
+      <button
+        type="button"
+        className={styles.pushNoteDismiss}
+        aria-label="Dismiss"
+        onClick={() => store.patchCallUi({ push_note_dismissed: true })}
+      >
+        ×
+      </button>
+    </p>
+  );
+}
+
 function CallScreen() {
   const state = useAppState();
   const now = useNow(1000);
@@ -132,9 +201,7 @@ function CallScreen() {
       ? ui.ringing_heard
         ? 'Ringing…'
         : 'Calling…'
-      : ui.phase === 'connecting'
-        ? 'Connecting…'
-        : duration ?? '';
+      : connStatusLabel(ui.conn_state, duration);
 
   const nameOf = (userId: string): string =>
     conv?.participants.find((p) => p.user.id === userId)?.user.display_name ?? 'Peer';
@@ -172,8 +239,12 @@ function CallScreen() {
         </button>
       </div>
 
-      <div className={gridClass}>
-        {peerIds.length === 0 ? (
+      {/* gridWrap anchors the self-camera PiP INSIDE the video area, so it
+          can never cover the notice lines (TURN warning, push-off note,
+          failure reason) that sit between the grid and the controls. */}
+      <div className={styles.gridWrap}>
+        <div className={gridClass}>
+          {peerIds.length === 0 ? (
           <div className={styles.tile}>
             <div className={styles.tileFace}>
               <Mascot state={ui.phase === 'ringing' ? 'watch' : 'idle'} size={84} />
@@ -192,22 +263,39 @@ function CallScreen() {
                   </div>
                 ) : null}
                 <span className={styles.tileName}>{nameOf(id)}</span>
-                {ui.reconnecting_ids.includes(id) ? (
-                  <span className={styles.tileBadge}>reconnecting…</span>
-                ) : null}
+                {(() => {
+                  // My view of the pair wins; otherwise the peer's own
+                  // relayed call.state report (§2.12) — their tile is honest
+                  // about THEIR network too.
+                  const badge = ui.reconnecting_ids.includes(id)
+                    ? 'reconnecting…'
+                    : PEER_STATE_BADGE[ui.peer_states[id] ?? 'connected'];
+                  return badge ? <span className={styles.tileBadge}>{badge}</span> : null;
+                })()}
               </div>
             );
           })
-        )}
+          )}
+        </div>
+        {ui.kind === 'video' ? (
+          <div className={styles.pip} aria-label="Your camera preview">
+            <LocalPreview version={ui.media_version} camOn={ui.cam_on} />
+          </div>
+        ) : null}
       </div>
 
-      {ui.error ? <p className={styles.callStatus}>{ui.error}</p> : null}
-
-      {ui.kind === 'video' ? (
-        <div className={styles.pip} aria-label="Your camera preview">
-          <LocalPreview version={ui.media_version} camOn={ui.cam_on} />
-        </div>
+      {/* TURN honesty (§1.55, FEATURES #90): inline + non-blocking — the
+          caller learns BEFORE anyone picks up, never via a silent failure. */}
+      {ui.relay_available === false ? (
+        <p className={styles.relayWarn} role="note">
+          This server has no call relay — calls only work on the same network.
+        </p>
       ) : null}
+      {ui.conn_state === 'failed' && ui.conn_reason ? (
+        <p className={styles.callStatus}>{ui.conn_reason}</p>
+      ) : null}
+      {ui.error ? <p className={styles.callStatus}>{ui.error}</p> : null}
+      <PushOffNote />
 
       <div className={styles.controls}>
         <button
@@ -287,24 +375,234 @@ function LocalPreview({ version, camOn }: { version: number; camOn: boolean }) {
 }
 
 // ---------------------------------------------------------------------------
-// Minimized pill + ended card
+// Minimized floating pill (v0.7.1 — FEATURES #87): draggable, avatar, live
+// timer, mute, hang-up; video keeps a thumbnail (+ browser PiP where
+// supported); tap expands. The RTCPeerConnections live in the lib/webrtc
+// module singleton, so the call itself survives any navigation — this pill
+// merely keeps it on screen. Position persists across remounts/pages in a
+// module variable (per-session UI convenience, not state).
 // ---------------------------------------------------------------------------
+
+let pillPos: { x: number; y: number } | null = null;
+
+function clampPillPos(x: number, y: number, w: number, h: number): { x: number; y: number } {
+  const maxX = Math.max(8, window.innerWidth - w - 8);
+  const maxY = Math.max(8, window.innerHeight - h - 8);
+  return { x: Math.min(Math.max(8, x), maxX), y: Math.min(Math.max(8, y), maxY) };
+}
 
 function CallPill() {
   const state = useAppState();
   const now = useNow(1000);
   const ui = state.callUi;
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    x: number;
+    y: number;
+  } | null>(null);
+  // Survives past pointerup so the click that follows a drag never expands.
+  const movedRef = useRef(false);
+  const [, forceRender] = useState(0);
+
   if (!ui) return null;
   const duration = durationLabel(ui.answered_at, now);
+  const label =
+    ui.phase === 'ringing'
+      ? 'Ringing…'
+      : ui.conn_state === 'reconnecting'
+        ? 'Reconnecting…'
+        : ui.conn_state === 'failed'
+          ? 'Failed'
+          : duration ?? 'In call';
+
+  const conv = state.conversations.get(ui.conversation_id);
+  const peerUser =
+    conv?.participants.find((p) => p.user.id === ui.peer_ids[0])?.user ??
+    (conv && state.me ? conv.participants.find((p) => p.user.id !== state.me?.id)?.user ?? null : null);
+
+  function onPointerDown(e: ReactPointerEvent<HTMLDivElement>): void {
+    const target = e.target as HTMLElement;
+    if (target.closest('[data-nodrag]')) return; // mute/hang-up/PiP taps
+    const el = wrapRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    pillPos = { x: rect.left, y: rect.top };
+    dragRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      x: rect.left,
+      y: rect.top,
+    };
+    movedRef.current = false;
+    // Deliberately NO setPointerCapture here: capturing on pointerdown makes
+    // the browser retarget the follow-up click to this wrapper, which
+    // swallowed plain taps (the expand button's click never fired). Capture
+    // starts only once movement crosses the drag threshold (onPointerMove).
+  }
+
+  function onPointerMove(e: ReactPointerEvent<HTMLDivElement>): void {
+    const d = dragRef.current;
+    const el = wrapRef.current;
+    if (!d || !el) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    if (!movedRef.current) {
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      movedRef.current = true;
+      try {
+        el.setPointerCapture(d.pointerId); // now it's a drag — keep it smooth
+      } catch {
+        /* pointer already gone — the drag just ends */
+      }
+    }
+    const rect = el.getBoundingClientRect();
+    pillPos = clampPillPos(d.x + dx, d.y + dy, rect.width, rect.height);
+    forceRender((v) => v + 1);
+  }
+
+  function onPointerUp(): void {
+    dragRef.current = null;
+  }
+
+  // Expand lives on the WRAPPER click (not only the inner button): after a
+  // captured drag the release-click retargets to the wrapper, so this is the
+  // one place that reliably sees both the drag-release click (consumed via
+  // movedRef) and a genuine tap anywhere on the pill body. Keyboard
+  // activation of the "Return to call" button bubbles here too.
+  function onWrapClick(e: ReactMouseEvent<HTMLDivElement>): void {
+    if ((e.target as HTMLElement).closest('[data-nodrag]')) return; // mute/hang-up/PiP
+    if (movedRef.current) {
+      movedRef.current = false;
+      return; // that was a drag, not a tap
+    }
+    expand();
+  }
+
+  function expand(): void {
+    // Leave browser PiP when returning to the full screen.
+    if (typeof document !== 'undefined' && document.pictureInPictureElement) {
+      void document.exitPictureInPicture().catch(() => undefined);
+    }
+    setMinimized(false);
+  }
+
+  // Thumbnail stream for video calls: first remote with live video, else me.
+  const thumbUserId =
+    ui.kind === 'video' ? ui.peer_ids.find((id) => remoteHasVideo(id)) ?? null : null;
+
   return (
-    <button
-      type="button"
-      className={styles.pill}
-      onClick={() => setMinimized(false)}
-      aria-label="Return to call"
+    <div
+      ref={wrapRef}
+      className={styles.pillWrap}
+      style={pillPos ? { left: pillPos.x, top: pillPos.y, right: 'auto', bottom: 'auto' } : undefined}
+      role="group"
+      aria-label="Ongoing call"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      onClick={onWrapClick}
     >
-      <PhoneIcon /> {duration ?? 'In call'} · Return
-    </button>
+      {/* Remote AUDIO must keep playing while the full screen's <video>
+          elements are unmounted — hidden sinks hold every peer's stream. */}
+      <PillAudio peerIds={ui.peer_ids} version={ui.media_version} />
+      {ui.kind === 'video' ? (
+        <PillThumb userId={thumbUserId} version={ui.media_version} />
+      ) : null}
+      <button type="button" className={styles.pillMain} aria-label="Return to call">
+        {peerUser ? (
+          <Avatar avatar={peerUser.avatar} name={peerUser.display_name} size={26} />
+        ) : (
+          <PhoneIcon />
+        )}
+        <span className={styles.pillTime}>{label}</span>
+      </button>
+      <button
+        type="button"
+        data-nodrag
+        className={`${styles.pillCtl}${ui.mic_on ? '' : ` ${styles.pillCtlOff}`}`}
+        aria-label={ui.mic_on ? 'Mute microphone' : 'Unmute microphone'}
+        aria-pressed={!ui.mic_on}
+        onClick={toggleMic}
+      >
+        {ui.mic_on ? <MicIcon /> : <MicOffIcon />}
+      </button>
+      <button
+        type="button"
+        data-nodrag
+        className={`${styles.pillCtl} ${styles.pillEnd}`}
+        aria-label="End call"
+        onClick={() => void hangUp()}
+      >
+        <PhoneDownIcon />
+      </button>
+    </div>
+  );
+}
+
+function PillAudio({ peerIds, version }: { peerIds: string[]; version: number }) {
+  return (
+    <span hidden>
+      {peerIds.map((id) => (
+        <PillAudioSink key={id} userId={id} version={version} />
+      ))}
+    </span>
+  );
+}
+
+function PillAudioSink({ userId, version }: { userId: string; version: number }) {
+  const ref = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    const stream = getRemoteStream(userId);
+    if (el && stream && el.srcObject !== stream) {
+      el.srcObject = stream;
+      void el.play().catch(() => undefined);
+    }
+  }, [userId, version]);
+  return <audio ref={ref} autoPlay />;
+}
+
+/** The pill's video thumbnail; doubles as the browser-PiP source where the
+ * engine supports requestPictureInPicture (FEATURES #87). Muted — audio
+ * rides the hidden sinks above so a group call keeps every voice. */
+function PillThumb({ userId, version }: { userId: string | null; version: number }) {
+  const ref = useRef<HTMLVideoElement | null>(null);
+  const [pipOk, setPipOk] = useState(false);
+  useEffect(() => {
+    setPipOk(typeof document !== 'undefined' && document.pictureInPictureEnabled === true);
+  }, []);
+  useEffect(() => {
+    const el = ref.current;
+    const stream = userId ? getRemoteStream(userId) : getLocalStream();
+    if (el && stream && el.srcObject !== stream) {
+      el.srcObject = stream;
+      void el.play().catch(() => undefined);
+    }
+  }, [userId, version]);
+  async function togglePip(): Promise<void> {
+    const el = ref.current;
+    if (!el) return;
+    try {
+      if (document.pictureInPictureElement === el) await document.exitPictureInPicture();
+      else await el.requestPictureInPicture();
+    } catch {
+      /* unsupported / no video track yet — the thumbnail stays */
+    }
+  }
+  return (
+    <span className={styles.pillThumb}>
+      <video ref={ref} autoPlay playsInline muted />
+      {pipOk ? (
+        <button type="button" data-nodrag className={styles.pillPip} aria-label="Picture in picture" onClick={() => void togglePip()}>
+          <PipIcon />
+        </button>
+      ) : null}
+    </span>
   );
 }
 
@@ -406,6 +704,15 @@ function FlipIcon() {
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
       <path d="M7 8 a7 5.5 0 0 1 12 2 M17 16 a7 5.5 0 0 1 -12 -2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
       <path d="M19.5 6.5 V10 H16 M4.5 17.5 V14 H8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function PipIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <rect x="3" y="5" width="18" height="14" rx="3" stroke="currentColor" strokeWidth="1.7" />
+      <rect x="11.5" y="11" width="7" height="5.5" rx="1.5" fill="currentColor" />
     </svg>
   );
 }

@@ -20,6 +20,7 @@ import {
 import { api, ApiError } from '@/lib/api';
 import { createBeacon, fmtCountdown, presetWindow, rememberVibeRecent, type WhenPreset } from '@/lib/beacons';
 import { setMe, setSettings } from '@/lib/store';
+import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
 import { LocationField } from './LocationPicker';
@@ -151,6 +152,7 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
       });
       // Recents are per-device localStorage only (§1.47).
       if (isCustom) rememberVibeRecent(vibeDraft.custom_vibe_emoji, vibeDraft.custom_vibe_label.trim());
+      toast('Beacon lit 🔥'); // v0.7.1 §1.56: the shared confirmation toast
       // Straight back to the list — the live card is already on top.
       onClose();
     } catch (err) {

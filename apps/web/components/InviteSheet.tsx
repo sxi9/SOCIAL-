@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CreateInviteResponse, InvitePrivate, ListInvitesResponse } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { toast } from '@/lib/toast';
 import Portal from './Portal';
 import styles from './invite.module.css';
 
@@ -88,6 +89,7 @@ export default function InviteSheet({ onClose, conversationId }: InviteSheetProp
       await navigator.clipboard.writeText(url);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+      toast('Invite link copied'); // v0.7.1 §1.56: the shared confirmation toast
     } catch {
       /* clipboard blocked — the link text is select-all, manual copy works */
     }

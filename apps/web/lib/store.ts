@@ -1,11 +1,13 @@
 // In-memory app state, fed by REST sync + WS events. Watermarks are monotonic
 // maxima and messages apply idempotently by (conversation_id, seq), so events
 // may arrive duplicated or out of order without harm (API.md §2.5).
+import { TOAST_MAX_VISIBLE } from '@socialchat/shared';
 import type {
   Attachment,
   Beacon,
   BeaconRole,
   Call,
+  CallConnState,
   CallKind,
   Connection,
   Conversation,
@@ -98,6 +100,26 @@ export interface CallUi {
   error: string | null;
   /** Set when phase === 'ended' — drives the end-card copy. */
   ended_reason: string | null;
+  // ---- v0.7.1 (§1.55, FEATURES #89/#90) ----
+  /** MY aggregate connectivity (connecting → connected → reconnecting →
+   * failed). Derived in lib/webrtc.ts; each transition also rides out as the
+   * relayed `call.state` frame (one frame per transition, §2.12). */
+  conn_state: CallConnState;
+  /** WHY the call failed — verdict copy keyed on what is known (no relay
+   * configured / relay unreachable from here / peer gone). Never a bare
+   * "call failed" (§1.55 binding contract). */
+  conn_reason: string | null;
+  /** Peers' self-reported states (relayed call.state frames) — their tiles
+   * say the truth too ("reconnecting…"). Advisory UI truth only. */
+  peer_states: Record<string, CallConnState>;
+  /** TURN honesty (FEATURES #90): false = this instance has no relay
+   * (POST …/calls returned turn: null, or the cached §1.55 GET said so) —
+   * the caller sees the inline warning instead of a silent failure.
+   * null = not known yet. */
+  relay_available: boolean | null;
+  /** The §1.56 "you won't be rung when the app is closed" note was dismissed
+   * for this call (dismissible context, never a gate). */
+  push_note_dismissed: boolean;
 }
 
 /** v0.6 (§1.43): the live watch-together session for a conversation —
@@ -1222,15 +1244,18 @@ export function removePostLocal(postId: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Toasts (v0.7 — API.md §1.54). Transient, self-expiring; rendered by
-// GlobalOverlays' ToastHost through Portal at the toast layer of the z-scale.
+// Toasts (v0.7 §1.54 → v0.7.1 §1.56). Transient, self-expiring; rendered by
+// the ONE shared components/Toast.tsx through Portal at the toast layer of
+// the z-scale. At most TOAST_MAX_VISIBLE at once — oldest dropped (never a
+// stack of nags; confirmations are glanceable, not a log).
 // ---------------------------------------------------------------------------
 
 let toastSeq = 0;
 
 export function pushToast(text: string, ttlMs: number): void {
   const id = ++toastSeq;
-  state.toasts = [...state.toasts, { id, text }];
+  const next = [...state.toasts, { id, text }];
+  state.toasts = next.length > TOAST_MAX_VISIBLE ? next.slice(next.length - TOAST_MAX_VISIBLE) : next;
   emit();
   setTimeout(() => dismissToast(id), ttlMs);
 }

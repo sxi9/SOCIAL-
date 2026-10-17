@@ -70,6 +70,33 @@ export interface CallPushJob {
   call_kind: 'audio' | 'video';
 }
 
+// v0.7.1 (§1.55 + §2.9, ADR-017, FEATURES #88): the incoming-call RING push —
+// enqueued at call create for every callee the structural guards allow who has
+// no live socket (a live socket rings via call.invite). The worker re-checks
+// at execution: presence, membership, muted_until (NO mention-style override —
+// a call is not a mention), the block belt, the call STILL RINGING (a handled
+// call must never ring late), and a per-(user, call) debounce. Title/body are
+// computed at execution; sent with TTL=CALL_RING_PUSH_TTL_S + Urgency: high.
+export interface CallRingPushJob {
+  kind: 'call_ring';
+  user_id: string;
+  call_id: string;
+  conversation_id: string;
+  initiator_id: string | null;
+  call_kind: 'audio' | 'video';
+  is_group: boolean;
+}
+
+// v0.7.1 (§1.55 + §2.9): the silent RETRACTION — "the call was handled
+// somewhere". No guards at all (closing a stale ring is always right); the
+// service worker closes the notification by tag and displays nothing. Sent to
+// exactly the users the ring went to (the Redis `call:{id}:rang` set).
+export interface CallRingStopPushJob {
+  kind: 'call_ring_stop';
+  user_id: string;
+  call_id: string;
+}
+
 // v0.6 (§1.46): the ONE push that bypasses the §2.9 guards — presence,
 // read-elsewhere and debounce SKIPPED, muted_until OVERRIDDEN (the §1.33
 // mention precedent: an SOS from a friend outranks a per-chat mute). Blocks
@@ -84,7 +111,14 @@ export interface RescuePushJob {
   body: string;
 }
 
-export type PushJob = MessagePushJob | BeaconPushJob | SocialPushJob | CallPushJob | RescuePushJob;
+export type PushJob =
+  | MessagePushJob
+  | BeaconPushJob
+  | SocialPushJob
+  | CallPushJob
+  | CallRingPushJob
+  | CallRingStopPushJob
+  | RescuePushJob;
 
 export type GcJob = Record<string, never>;
 
@@ -228,6 +262,30 @@ export function enqueueCallPushBulk(jobs: CallPushJob[]) {
   if (jobs.length === 0) return Promise.resolve([]);
   return pushQueue.addBulk(
     jobs.map((data) => ({ name: 'call-push', data, opts: { ...defaultJobOpts, attempts: 2 } })),
+  );
+}
+
+/** v0.7.1 (§1.55/§2.9): ring pushes for a starting call — one addBulk round
+ * trip (hotspot H2), attempts: 1 (a retried ring could fire after the stop
+ * already retracted it; the worker's still-ringing re-check is per attempt,
+ * but a ring is time-critical ephemera — better never than late). */
+export function enqueueCallRingPushBulk(jobs: CallRingPushJob[]) {
+  if (jobs.length === 0) return Promise.resolve([]);
+  return pushQueue.addBulk(
+    jobs.map((data) => ({ name: 'call-ring-push', data, opts: { ...defaultJobOpts, attempts: 1 } })),
+  );
+}
+
+/** v0.7.1 (§1.55/§2.9): the silent stop push — retries allowed (closing a
+ * notification twice is harmless; failing to close one leaves a lying ring). */
+export function enqueueCallRingStopPushBulk(jobs: CallRingStopPushJob[]) {
+  if (jobs.length === 0) return Promise.resolve([]);
+  return pushQueue.addBulk(
+    jobs.map((data) => ({
+      name: 'call-ring-stop-push',
+      data,
+      opts: { ...defaultJobOpts, attempts: 2 },
+    })),
   );
 }
 
