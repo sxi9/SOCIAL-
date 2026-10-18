@@ -4,33 +4,32 @@
   padding: 0;
 }
 
-/* Royal: the Chats topbar title in the display serif (outweighs .topbar h1). */
+/* Royal: the Chats topbar title in the display serif (outweighs .topbar h1).
+   The 4px lead-in lifts the global 16px topbar pad to the v2 20px gutter. */
 :global(.topbar) .pageTitle {
   font-family: var(--font-display);
   font-size: 23px;
   font-weight: 400;
   min-width: 0;
   overflow: visible;
+  margin-left: 4px;
 }
 
-/* Desktop: the 360px sidebar topbar holds the title + 6 actions — a hair
-   smaller stops the serif title truncating to "Ch…". */
-@media (min-width: 900px) {
-  :global(.topbar) .pageTitle {
-    font-size: 19px;
-  }
-}
+/* (v2 trimmed the bar from 6 actions to 3, so the 23px serif title fits the
+   360px desktop sidebar too — no desktop shrink anymore.) */
 
+/* Royal v2: 72px rows on the 20px screen gutter (48px avatar + 12px pads). */
 .row {
   position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 16px;
+  min-height: 72px;
+  padding: 12px 20px;
   color: var(--text);
 }
 
-/* Royal: hairline divider inset past the avatar (16px pad + 48px + 12px gap). */
+/* Royal: hairline divider inset past the avatar. */
 .row::after {
   content: '';
   position: absolute;
@@ -87,8 +86,11 @@
   gap: 8px;
 }
 
+/* flex 0 1 auto (not 1): the pin glyph hugs the title text; the time takes
+   the right edge via margin-left auto either way. */
 .title {
-  flex: 1;
+  flex: 0 1 auto;
+  min-width: 0;
   font-weight: 600;
   font-size: 15px;
   white-space: nowrap;
@@ -96,21 +98,47 @@
   text-overflow: ellipsis;
 }
 
+/* Royal v2: a conversation with pinned messages wears a small muted pin. */
+.pinGlyph {
+  flex: none;
+  align-self: center;
+  line-height: 0;
+  color: var(--muted);
+}
+
 .time {
   font-size: 12px;
   color: var(--muted);
   flex: none;
+  margin-left: auto;
 }
 
-/* Royal: unread rows carry a white timestamp. */
+/* Royal: unread rows carry a white timestamp (semibold per 08-tabs-chats). */
 .time.timeUnread {
   color: var(--accent);
+  font-weight: 600;
 }
 
 .snippetLine {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* Royal v2: the own-last-message tick before the snippet — green once the
+   receipt watermark says read, muted when delivered, faint when just sent. */
+.tick {
+  flex: none;
+  line-height: 0;
+  color: var(--faint);
+}
+
+.tickDelivered {
+  color: var(--muted);
+}
+
+.tickRead {
+  color: var(--ok);
 }
 
 .snippet {
@@ -166,45 +194,33 @@
   justify-content: center;
 }
 
-.headerInvite {
-  color: var(--accent);
+/* Royal v2: the stories strip is its OWN block right under the header —
+   generous 66px rings, its own horizontal scroll and bottom hairline, and
+   NEVER tucked under the sticky bar (no negative margins). These compose
+   over the social.module.css strip classes, which stay untouched; the
+   doubled selectors outweigh them regardless of CSS-module bundle order. */
+.storiesBlock.storiesBlock {
+  padding: 10px 20px 14px;
+  gap: 20px; /* ring pitch measured off 08-tabs-chats.png (86px centers) */
+  border-bottom: 1px solid var(--border);
 }
 
-/* Header "new conversation" pencil replaces the FAB from 900px up. */
-.desktopOnly {
-  display: none;
+.item66.item66 {
+  width: 66px;
 }
 
-@media (min-width: 900px) {
-  .desktopOnly {
-    display: inline-flex;
-  }
+.ring66.ring66 {
+  width: 66px;
+  height: 66px;
 }
 
-.fab {
-  position: fixed;
-  right: 20px;
-  /* Clears the v0.5a bottom tab bar on mobile. */
-  bottom: calc(76px + env(safe-area-inset-bottom));
-  width: 54px;
-  height: 54px;
-  border-radius: 50%;
-  background: var(--accent-grad); /* Royal: white gradient, ink glyph */
-  color: var(--accent-ink);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: var(--shadow);
-  border: none;
-  cursor: pointer;
+/* No story posted yet: the dashed invite circle with a centered + glyph. */
+.ringEmpty {
+  color: var(--muted);
 }
 
-/* The sidebar header pencil takes over from 900px up (list.fab is viewport-
-   fixed and would float over the open chat in the two-pane shell). */
-@media (min-width: 900px) {
-  .fab {
-    display: none;
-  }
+.name66.name66 {
+  max-width: 66px;
 }
 
 /* user search / pickers */

@@ -197,17 +197,28 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
     >
       <div className={styles.sheet} role="dialog" aria-modal="true" aria-label="Light a beacon">
         <div className={styles.sheetHead}>
-          <h2>Bored? Light a beacon 🔥</h2>
+          {/* Royal v2 (ref 34): serif title, no emoji in the chrome. */}
+          <h2>Light a beacon</h2>
           <button type="button" className={styles.sheetClose} aria-label="Close" onClick={onClose}>
             ×
           </button>
         </div>
-        <p className="muted small" style={{ margin: 0 }}>
-          Friends tap in, and when enough do — it&rsquo;s a plan.
-        </p>
+
+        {/* Royal v2 (ref 34): the free-text "what" sits first. */}
+        <input
+          className="input"
+          placeholder="late tacos, who’s up (optional)"
+          aria-label="Anything else about the plan"
+          value={note}
+          maxLength={BEACON_NOTE_MAX_CHARS}
+          onChange={(e) => setNote(e.target.value)}
+        />
 
         <div className={styles.sheetLabel}>What&rsquo;s the vibe?</div>
         <VibePicker value={vibeDraft} onChange={setVibeDraft} />
+
+        <div className={styles.sheetLabel}>Where? (optional)</div>
+        <LocationField value={location} onChange={setLocation} />
 
         <div className={styles.sheetLabel}>When?</div>
         <div className={styles.whenRow} role="radiogroup" aria-label="When">
@@ -275,44 +286,40 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
           )
         ) : null}
 
-        <div className={styles.sheetLabel}>How many of you?</div>
-        <div className={styles.stepper}>
-          <button
-            type="button"
-            className={styles.stepBtn}
-            aria-label="Smaller group"
-            disabled={groupSize <= minSize}
-            onClick={() => setGroupSize((n) => Math.max(minSize, n - 1))}
-          >
-            −
-          </button>
-          <span className={styles.stepVal} aria-live="polite">
-            {groupSize} of you
-          </span>
-          <button
-            type="button"
-            className={styles.stepBtn}
-            aria-label="Bigger group"
-            disabled={groupSize >= maxSize}
-            onClick={() => setGroupSize((n) => Math.min(maxSize, n + 1))}
-          >
-            +
-          </button>
-          <span className={styles.stepHint}>sparks when {groupSize - 1} tap &ldquo;I&rsquo;m in&rdquo;</span>
+        {/* Royal v2 (ref 34): "Sparks at" row — label left, stepper right. */}
+        <div className={styles.sheetRow}>
+          <span className={styles.sheetRowLabel}>Sparks at</span>
+          <div className={styles.stepper}>
+            <button
+              type="button"
+              className={styles.stepBtn}
+              aria-label="Smaller group"
+              disabled={groupSize <= minSize}
+              onClick={() => setGroupSize((n) => Math.max(minSize, n - 1))}
+            >
+              −
+            </button>
+            <span className={styles.stepVal} aria-live="polite">
+              {groupSize} people
+            </span>
+            <button
+              type="button"
+              className={styles.stepBtn}
+              aria-label="Bigger group"
+              disabled={groupSize >= maxSize}
+              onClick={() => setGroupSize((n) => Math.min(maxSize, n + 1))}
+            >
+              +
+            </button>
+          </div>
         </div>
+        <p className={styles.sheetNote} style={{ marginTop: 4 }}>
+          sparks when {groupSize - 1} tap &ldquo;Join&rdquo; — you included makes {groupSize}
+        </p>
 
-        <div className={styles.sheetLabel}>Where? (optional)</div>
-        <LocationField value={location} onChange={setLocation} />
-
-        <div className={styles.sheetLabel}>Anything else?</div>
-        <input
-          className="input"
-          placeholder="optional — “got a deck of cards”"
-          value={note}
-          maxLength={BEACON_NOTE_MAX_CHARS}
-          onChange={(e) => setNote(e.target.value)}
-        />
-
+        <p className={styles.expiryNote}>
+          Expires on its own. No one is notified when it fizzles.
+        </p>
         {error ? <p className="error-text">{error}</p> : null}
         <button
           type="button"
@@ -320,7 +327,7 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
           disabled={!vibeDraftValid(vibeDraft) || busy || (audience === 'area' && needsArea)}
           onClick={() => void light()}
         >
-          {busy ? 'Lighting…' : 'Light it 🔥'}
+          {busy ? 'Lighting…' : 'Light it'}
         </button>
       </div>
       {drunkAsk ? (
@@ -339,33 +346,16 @@ export default function BeaconCreateSheet({ onClose }: { onClose: () => void }) 
   );
 }
 
-/** The floating mascot-yellow "I'm bored" button (Local tab) — docked
- * bottom-right so it never stacks on the board's own controls (fixer r1). */
+/** The dashed "+ I'm bored" pill (Local tab) — Royal v2 (ref 10): it sits in
+ * flow directly under the live beacon card, still one tap to the sheet. */
 export function BoredButton() {
   const [open, setOpen] = useState(false);
   return (
     <div className={`${styles.boredWrap} ${styles.beaconVars}`}>
       <button type="button" className={styles.boredBtn} onClick={() => setOpen(true)}>
-        <MiniBlob />
-        I&rsquo;m bored
+        <span aria-hidden>+</span> I&rsquo;m bored
       </button>
       {open ? <BeaconCreateSheet onClose={() => setOpen(false)} /> : null}
     </div>
-  );
-}
-
-/** Tiny drowsy blob face — the mascot peeking out of the button. */
-function MiniBlob() {
-  return (
-    <svg width="26" height="26" viewBox="0 0 120 120" aria-hidden focusable="false">
-      <path
-        d="M60 16 C84 16 102 32 103 58 C104 86 88 106 60 106 C32 106 16 86 17 58 C18 32 36 16 60 16 Z"
-        fill="#3b2d07"
-        opacity="0.9"
-      />
-      <ellipse cx="44" cy="54" rx="7" ry="4.5" fill="#ffd166" />
-      <ellipse cx="76" cy="54" rx="7" ry="4.5" fill="#ffd166" />
-      <path d="M50 78 L70 78" stroke="#ffd166" strokeWidth="6" strokeLinecap="round" />
-    </svg>
   );
 }

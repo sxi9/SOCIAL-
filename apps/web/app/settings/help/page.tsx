@@ -13,6 +13,17 @@ import { createSupportTicket, listMySupportTickets } from '@/lib/support';
 import { toast } from '@/lib/toast';
 import AppShell from '@/components/AppShell';
 import cm from '@/components/community.module.css';
+import sm from '@/components/settings.module.css';
+
+const CHEV = { stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', fill: 'none' } as const;
+
+function ChevronLeft() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+      <path d="M14.5 6 L8.5 12 L14.5 18" {...CHEV} />
+    </svg>
+  );
+}
 
 const CATEGORY_INFO: Record<SupportCategory, { emoji: string; label: string }> = {
   bug: { emoji: '🐞', label: 'Something broke' },
@@ -93,10 +104,11 @@ function HelpAndFeedback() {
   return (
     <div className="page">
       <header className="topbar">
-        <Link href="/settings/profile" className="btn btn-ghost btn-icon" aria-label="Back">
-          ←
+        {/* Royal v2 IA: reached from the /settings category page. */}
+        <Link href="/settings" className="btn btn-ghost btn-icon" aria-label="Back">
+          <ChevronLeft />
         </Link>
-        <h1>Help &amp; feedback</h1>
+        <h1 className={sm.title}>Help &amp; about</h1>
         <span />
       </header>
       <div className="settings-section">
@@ -204,6 +216,11 @@ function HelpAndFeedback() {
             </div>
           </>
         ) : null}
+
+        {/* Royal v2 "about" footer (proto ref 53) — no invented version number. */}
+        <p className="muted small" style={{ textAlign: 'center', margin: '28px 0 8px' }}>
+          Bored Chat · self-hosted
+        </p>
       </div>
     </div>
   );

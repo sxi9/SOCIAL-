@@ -1,21 +1,138 @@
-/* /join/:token — content inside the shared AuthScene frosted card. */
+/* /join/:token — v2 Royal (proto 31): the "what a stranger sees" page.
+   Deep bg, wordmark header, centered card, decorative blurred-locked grid. */
 
-.body {
+.page {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 20px calc(28px + env(safe-area-inset-bottom));
+  background: var(--bg-deeper);
+}
+
+/* ---- header: back chevron · bored. · state note · Sign in ---- */
+
+.head {
+  width: min(560px, 100%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: calc(12px + env(safe-area-inset-top)) 0 12px;
+}
+
+.headBack {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-left: -6px;
+  flex: none;
+  color: var(--text);
+  line-height: 0;
+}
+
+.brand {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 22px;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  text-decoration: none;
+  flex: none;
+}
+
+.headMeta {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- the centered stranger card ---- */
+
+.card {
+  width: min(560px, 100%);
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 26px 20px 22px;
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 6px;
+  gap: 4px;
 }
 
+/* Silver conic ring around the inviter avatar (the story-ring look). */
+.ring {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 50%;
+  background: var(--ring-live);
+  flex: none;
+}
+
+.ringGap {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 50%;
+  background: var(--panel);
+  line-height: 0;
+}
+
+.name {
+  margin: 12px 0 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 23px;
+  line-height: 1.25;
+  letter-spacing: 0.01em;
+  overflow-wrap: anywhere;
+}
+
+.handle {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.groupLine {
+  margin: 4px 0 0;
+  color: var(--body-soft);
+  font-size: 14px;
+}
+
+.cta {
+  width: 100%;
+  margin-top: 16px;
+  padding: 12px 16px;
+  font-size: 15px;
+}
+
+.note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* Invalid / so-close states reuse the card with mascot + plain copy. */
 .headline {
   margin: 10px 0 0;
+  font-family: var(--font-display);
+  font-weight: 400;
   font-size: 20px;
   line-height: 1.3;
 }
 
 .sub {
-  margin: 2px 0 10px;
+  margin: 4px 0 8px;
   color: var(--muted);
   font-size: 14px;
 }
@@ -32,29 +149,72 @@
   align-items: stretch;
   gap: 8px;
   width: 100%;
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
-.actions p {
-  margin: 0;
-  text-align: center;
+/* ---- the blurred-locked grid (proto 31) — decorative tiles, lock overlay,
+   the whole block gates to signup. ---- */
+
+.lockedGrid {
+  position: relative;
+  width: min(420px, 100%);
+  margin-top: 22px;
+  display: block;
+  border-radius: 16px;
+  text-decoration: none;
+  color: var(--text);
+  overflow: hidden;
 }
 
-/* Inviter avatar + waving mascot side by side (mascot overlaps a touch). */
-.duo {
+.lockedTiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.lockTile {
+  aspect-ratio: 1;
+  border-radius: 10px;
+  filter: blur(14px) saturate(0.9);
+  transform: scale(1.15); /* hide the blur's soft edges inside the tile */
+  background: radial-gradient(60px 60px at 35% 30%, rgba(176, 148, 94, 0.75), transparent 70%),
+    linear-gradient(150deg, #2a3350, #171c2c);
+}
+
+.lockTile:nth-child(2) {
+  background: radial-gradient(60px 60px at 65% 35%, rgba(126, 96, 150, 0.7), transparent 70%),
+    linear-gradient(150deg, #33264a, #181527);
+}
+
+.lockTile:nth-child(3) {
+  background: radial-gradient(60px 60px at 40% 60%, rgba(84, 140, 128, 0.7), transparent 70%),
+    linear-gradient(150deg, #1f3a34, #121d1c);
+}
+
+.lockedOverlay {
+  position: absolute;
+  inset: 0;
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
+  gap: 7px;
+  text-align: center;
+  padding: 0 14px;
+  background: rgba(10, 12, 17, 0.35);
 }
 
-.duoMascot {
-  margin-left: -16px;
-  margin-bottom: -6px;
+.lockedOverlay strong {
+  font-size: 14px;
+  font-weight: 700;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
 }
+
+/* ---- inviter avatar inside the ring ---- */
 
 .bigAvatar {
-  width: 112px;
-  height: 112px;
+  width: 96px;
+  height: 96px;
   border-radius: 50%;
   overflow: hidden;
   display: inline-flex;
@@ -62,10 +222,8 @@
   justify-content: center;
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 46px;
+  font-size: 40px;
   font-weight: 700;
-  border: 3px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  box-shadow: var(--shadow);
   flex: none;
   user-select: none;
 }

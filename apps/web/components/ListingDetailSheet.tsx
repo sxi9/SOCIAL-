@@ -10,12 +10,12 @@ import { useRouter } from 'next/navigation';
 import type { Conversation, ConversationResponse, Listing } from '@socialchat/shared';
 import { LISTING_SAFETY_NOTE, LISTING_SAFETY_NOTE_KINDS } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { formatTime } from '@/lib/format';
 import {
   closeListing,
   contactListing,
   deleteListing,
   expiryLine,
-  KIND_EMOJI,
   KIND_LABEL,
 } from '@/lib/listings';
 import { copyShareLink } from '@/lib/share';
@@ -168,6 +168,52 @@ export default function ListingDetailSheet({
     }
   }
 
+  // Royal v2 (ref 37): the first good photo becomes the full-bleed header;
+  // the rest keep the grid below.
+  const hero = photos[0] ?? null;
+  const gridPhotos = hero ? photos.slice(1) : photos;
+
+  const listingMenu = (
+    <>
+      <button type="button" className={bz.menuBackdrop} aria-label="Close menu" onClick={() => setMenu(false)} />
+      <div className={bz.cardMenu} role="menu" style={{ right: 0, top: 40 }}>
+        {mine && listing.status === 'active' ? (
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setMenu(false);
+              setEditOpen(true);
+            }}
+          >
+            Edit listing
+          </button>
+        ) : null}
+        {mine && listing.status === 'active' ? (
+          <button type="button" role="menuitem" onClick={() => void close()}>
+            Close listing
+          </button>
+        ) : null}
+        {mine ? (
+          <button type="button" role="menuitem" className={bz.menuDanger} onClick={() => void remove()}>
+            Delete listing
+          </button>
+        ) : (
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setMenu(false);
+              setReport(true);
+            }}
+          >
+            Report @{listing.author.username}
+          </button>
+        )}
+      </div>
+    </>
+  );
+
   return (
     // v0.6.1 rule: every sheet renders through Portal into <body>.
     <Portal>
@@ -179,87 +225,107 @@ export default function ListingDetailSheet({
       }}
     >
       <div className={bz.sheet} role="dialog" aria-modal="true" aria-label={`${KIND_LABEL[listing.kind]} listing`}>
-        <div className={bz.sheetHead}>
-          <h2>
-            <span aria-hidden>{KIND_EMOJI[listing.kind]}</span> {listing.title}
-          </h2>
-          <div className={bz.cardRel}>
+        {hero ? (
+          // Royal v2 (ref 37): full-bleed photo header when photos exist;
+          // back + ··· float on the photo, the tag + serif title sit below.
+          <div className={st.heroWrap}>
             <button
               type="button"
-              className={bz.cardKebab}
-              aria-label="Listing options"
-              style={{ position: 'static' }}
-              onClick={() => setMenu((v) => !v)}
+              aria-label="View photo full screen"
+              onClick={() =>
+                setZoomPhoto(BROWSER_SAFE_IMAGE.test(hero.mime) ? hero.url : (hero.thumb_url ?? hero.url))
+              }
             >
-              ⋯
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={hero.thumb_url ?? hero.url}
+                alt=""
+                onError={() => setBadPhotos((prev) => new Set(prev).add(hero.id))}
+              />
             </button>
-            {menu ? (
-              <>
-                <button type="button" className={bz.menuBackdrop} aria-label="Close menu" onClick={() => setMenu(false)} />
-                <div className={bz.cardMenu} role="menu" style={{ right: 0, top: 30 }}>
-                  {mine && listing.status === 'active' ? (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setMenu(false);
-                        setEditOpen(true);
-                      }}
-                    >
-                      Edit listing
-                    </button>
-                  ) : null}
-                  {mine && listing.status === 'active' ? (
-                    <button type="button" role="menuitem" onClick={() => void close()}>
-                      Close listing
-                    </button>
-                  ) : null}
-                  {mine ? (
-                    <button type="button" role="menuitem" className={bz.menuDanger} onClick={() => void remove()}>
-                      Delete listing
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setMenu(false);
-                        setReport(true);
-                      }}
-                    >
-                      Report @{listing.author.username}
-                    </button>
-                  )}
-                </div>
-              </>
-            ) : null}
+            <div className={st.heroTop}>
+              <button type="button" className={st.heroBtn} aria-label="Close" onClick={onClose}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path
+                    d="M14.5 5.5 L8 12 L14.5 18.5"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+              <div className={bz.cardRel}>
+                <button
+                  type="button"
+                  className={st.heroBtn}
+                  aria-label="Listing options"
+                  onClick={() => setMenu((v) => !v)}
+                >
+                  ⋯
+                </button>
+                {menu ? listingMenu : null}
+              </div>
+            </div>
           </div>
-          <button type="button" className={bz.sheetClose} aria-label="Close" onClick={onClose}>
-            ×
-          </button>
-        </div>
+        ) : (
+          <div className={bz.sheetHead}>
+            <h2>{listing.title}</h2>
+            <div className={bz.cardRel}>
+              <button
+                type="button"
+                className={bz.cardKebab}
+                aria-label="Listing options"
+                style={{ position: 'static' }}
+                onClick={() => setMenu((v) => !v)}
+              >
+                ⋯
+              </button>
+              {menu ? listingMenu : null}
+            </div>
+            <button type="button" className={bz.sheetClose} aria-label="Close" onClick={onClose}>
+              ×
+            </button>
+          </div>
+        )}
         {report ? (
           <ReportSheet target={{ kind: 'user', user_id: listing.author.id }} onClose={() => setReport(false)} />
         ) : null}
 
+        {/* Royal v2 (ref 37): "RIDE · 2 SEATS" letterspaced tag + serif title. */}
+        <span className={st.detailTag}>
+          {KIND_LABEL[listing.kind]}
+          {listing.kind === 'ride'
+            ? ` · ${listing.details.seats} ${listing.details.seats === 1 ? 'seat' : 'seats'}`
+            : ''}
+        </span>
+        {hero ? <h2 className={st.detailTitle}>{listing.title}</h2> : null}
+
         <div className={st.authorRow}>
           <Link href={`/u/${encodeURIComponent(listing.author.username)}`}>
-            <Avatar avatar={listing.author.avatar} name={listing.author.display_name} size={36} />
+            <Avatar avatar={listing.author.avatar} name={listing.author.display_name} size={40} />
             <span className={st.authorName}>
               <strong>{mine ? 'You' : listing.author.display_name}</strong>
-              <span>@{listing.author.username}</span>
+              <span>
+                {listing.area} · listed {formatTime(listing.created_at)}
+                {live && expiry ? ` · ${expiry}` : ''}
+              </span>
             </span>
           </Link>
           <span style={{ flex: 1 }} />
           {!live ? (
             <span className={st.statusTag}>{listing.status === 'closed' ? 'closed' : 'expired'}</span>
-          ) : expiry ? (
-            <span className={st.lExpiry}>{expiry}</span>
+          ) : !mine ? (
+            <Link href={`/u/${encodeURIComponent(listing.author.username)}`} className={st.profilePill}>
+              Profile
+            </Link>
           ) : null}
         </div>
 
         {listing.kind === 'place_review' ? (
-          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+          // Royal v2 (ref 40): the big serif rating + silver stars.
+          <div className={st.ratingRow}>
+            <span className={st.ratingNum}>{listing.details.rating}</span>
             <Stars value={listing.details.rating} />
             {/* Fixer r1 (parity with the board card): no doubled place name. */}
             {listing.details.place_name !== listing.title ? <strong>{listing.details.place_name}</strong> : null}
@@ -357,9 +423,9 @@ export default function ListingDetailSheet({
           ) : null}
         </dl>
 
-        {photos.length > 0 ? (
+        {gridPhotos.length > 0 ? (
           <div className={st.detailPhotos}>
-            {photos.map((p) => (
+            {gridPhotos.map((p) => (
               /* v1.0a (#93): tap opens the pinch-zoom viewer — on the best
                  source the browser can actually decode. */
               <button
@@ -394,7 +460,6 @@ export default function ListingDetailSheet({
 
         {showSafetyNote ? (
           <div className={st.safetyNote} role="note">
-            <span aria-hidden>🛟</span>
             <span>{LISTING_SAFETY_NOTE}</span>
           </div>
         ) : null}
@@ -410,7 +475,7 @@ export default function ListingDetailSheet({
             style={{ width: '100%', margin: '8px 0' }}
             onClick={() => void copyShareLink('listing', listing.id)}
           >
-            🔗 Copy a public link
+            Copy a public link
           </button>
         ) : null}
 
@@ -419,7 +484,7 @@ export default function ListingDetailSheet({
             <>
               {listing.status === 'active' ? (
                 <button type="button" className="btn" disabled={busy} onClick={() => setEditOpen(true)}>
-                  ✏️ Edit listing
+                  Edit listing
                 </button>
               ) : null}
               {listing.kind === 'gig' ? (
@@ -428,8 +493,15 @@ export default function ListingDetailSheet({
                     Open the project chat →
                   </button>
                 ) : (
-                  <button type="button" className={st.msgBtn} disabled={busy} onClick={() => setTeamUpOpen(true)}>
-                    Team up 🙌
+                  // Royal v2 (ref 37): the team-up entry card into the picker.
+                  <button type="button" className={st.teamUpEntry} disabled={busy} onClick={() => setTeamUpOpen(true)}>
+                    <span className={st.teamUpText}>
+                      <strong>Team up</strong>
+                      <span>pick people who messaged — you all land in a project chat</span>
+                    </span>
+                    <span className={st.teamUpChev} aria-hidden>
+                      ›
+                    </span>
                   </button>
                 )
               ) : null}

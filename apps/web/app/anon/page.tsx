@@ -30,11 +30,15 @@ function AnonList() {
     <div className="page">
       <header className="topbar">
         <Link href="/" className="btn btn-ghost btn-icon" aria-label="Back">
-          ←
+          <ChevronLeftIcon />
         </Link>
-        <h1>🎭 Anonymous</h1>
+        <h1 className={cm.pageTitle}>Anonymous inbox</h1>
         <span />
       </header>
+      {/* Royal v2 (proto 16): what this inbox is, in one quiet card. */}
+      <div className={cm.anonInfoCard}>
+        People you know can message you behind a mask. You choose if a thread ever reveals.
+      </div>
       {threads === null ? (
         <div className="center-screen muted" role="status">
           Loading…
@@ -64,6 +68,20 @@ function AnonList() {
   );
 }
 
+function ChevronLeftIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M14.5 6 L8.5 12 L14.5 18"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function ThreadRow({ thread, now, onOpen }: { thread: AnonThread; now: number; onOpen: () => void }) {
   const revealed = isRevealed(thread, now);
   const counterpart = thread.counterpart;
@@ -87,7 +105,7 @@ function ThreadRow({ thread, now, onOpen }: { thread: AnonThread; now: number; o
           <img src={anonAvatarUrl(thread.id, now)} alt="" />
         </span>
       ) : counterpart ? (
-        <Avatar avatar={counterpart.avatar} name={counterpart.display_name} size={44} />
+        <Avatar avatar={counterpart.avatar} name={counterpart.display_name} size={46} />
       ) : (
         <span className={cm.maskedAvatar} aria-hidden>
           <span className={cm.anonGhostGlyph}>👻</span>

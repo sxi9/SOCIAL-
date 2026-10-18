@@ -2,14 +2,44 @@
    Discovery is a MOMENT: warm, soft, zero pressure — no counters, no
    rejection surfaces. All motion stills under prefers-reduced-motion. */
 
+/* ---- Royal v2 (ref 10): Local header area line + section head ---- */
+
+/* The muted sans area line inside the serif "Local" h1. */
+.localSub {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--muted);
+  margin-left: 8px;
+}
+
+.sectionHead {
+  margin: 18px 20px 0;
+}
+
+.sectionHead h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 22px;
+  letter-spacing: 0.01em;
+}
+
+.sectionHead p {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
 /* ---- the "Bored now?" card on the Local tab ---- */
 
 .boredCard {
-  margin: 12px 16px 4px;
+  margin: 12px 20px 4px;
   background: linear-gradient(135deg, var(--accent-soft), transparent 70%), var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px;
+  padding: 14px 16px;
 }
 
 .boredHead {
@@ -18,9 +48,10 @@
   gap: 12px;
 }
 
-.boredHead h2 {
+.boredHead h3 {
   margin: 0;
-  font-size: 17px;
+  font-size: 15.5px;
+  font-weight: 600;
 }
 
 .boredHead p {
@@ -83,40 +114,15 @@
   }
 }
 
-/* ---- card stack: horizontal snap scroll, wave or scroll on ---- */
+/* ---- Royal v2 (ref 10): the Hinge-style card — one person at a time ---- */
 
-.stack {
-  display: flex;
-  gap: 12px;
-  overflow-x: auto;
-  padding: 12px 16px 16px;
-  scroll-snap-type: x mandatory;
-  -webkit-overflow-scrolling: touch;
-}
-
-.card {
-  scroll-snap-align: center;
-  flex: none;
-  width: min(78vw, 250px);
+.hingeCard {
+  margin: 12px 20px 4px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 18px 16px 14px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  text-align: center;
-  position: relative;
+  border-radius: 18px;
+  overflow: hidden;
   animation: card-in 260ms cubic-bezier(0.2, 0.9, 0.3, 1.05) backwards;
-}
-
-.card:nth-child(2) {
-  animation-delay: 60ms;
-}
-
-.card:nth-child(3) {
-  animation-delay: 120ms;
 }
 
 @keyframes card-in {
@@ -126,87 +132,124 @@
   }
 }
 
-.cardName {
-  margin: 2px 0 0;
-  font-size: 15.5px;
-  font-weight: 600;
-  max-width: 100%;
+/* ~200px photo area; gradient panel + big avatar when there is no photo. */
+.hingePhoto {
+  position: relative;
+  height: 200px;
+  background:
+    radial-gradient(220px 170px at 25% 25%, rgba(120, 70, 110, 0.5), transparent 70%),
+    radial-gradient(260px 200px at 75% 80%, rgba(90, 40, 70, 0.55), transparent 70%),
+    linear-gradient(150deg, #2a2234, #1a1e2a);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hingePhoto img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.hingeFallback {
+  position: relative;
+  z-index: 1;
+}
+
+.hingeScrim {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: linear-gradient(to top, rgba(10, 12, 17, 0.78), transparent 55%);
+  pointer-events: none;
+}
+
+.hingeName {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 12px;
+  z-index: 3;
+}
+
+.hingeName h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 20px;
+  letter-spacing: 0.01em;
+  color: #fff;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.cardUser {
-  font-size: 12.5px;
-  color: var(--muted);
-}
-
-.cardNote {
+.hingeName p {
   margin: 2px 0 0;
-  font-size: 13.5px;
-  min-height: 1.4em;
-  overflow-wrap: anywhere;
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.82);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* Gentle wave: the hand tips side to side on hover/focus; the tap pops. */
-.waveBtn {
-  margin-top: 8px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border: none;
+/* Pass (dark pill) / Say hi (gradient pill) — the skip/wave pair. */
+.hingeActions {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px 4px;
+}
+
+.passBtn {
+  flex: 1;
+  border: 1px solid var(--border);
   border-radius: 999px;
-  background: var(--accent-grad); /* Royal: white/silver primary, ink text */
-  color: var(--accent-ink);
+  background: var(--bg-deep);
+  color: var(--text);
   font-size: 14px;
   font-weight: 600;
-  padding: 9px 20px;
+  padding: 10px 16px;
   cursor: pointer;
 }
 
-.waveBtn span {
-  display: inline-block;
+.sayHiBtn {
+  flex: 1;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent-grad);
+  color: var(--accent-ink);
+  font-size: 14px;
+  font-weight: 700;
+  padding: 10px 16px;
+  cursor: pointer;
 }
 
-.waveBtn:hover span,
-.waveBtn:focus-visible span {
-  animation: wave-hand 0.9s ease-in-out;
-}
-
-@keyframes wave-hand {
-  0%,
-  100% {
-    transform: rotate(0);
-  }
-  25% {
-    transform: rotate(18deg);
-  }
-  55% {
-    transform: rotate(-12deg);
-  }
-  80% {
-    transform: rotate(8deg);
-  }
+.sayHiBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .wavedChip {
-  margin-top: 8px;
+  flex: 1;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
   border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent);
   font-size: 13.5px;
   font-weight: 600;
-  padding: 9px 18px;
+  padding: 10px 16px;
 }
 
 /* Report/block: prominent, not hidden in a hamburger (safety rule). */
 .cardSafety {
   display: flex;
-  gap: 12px;
-  margin-top: 8px;
+  justify-content: center;
+  gap: 14px;
+  padding: 4px 14px 12px;
 }
 
 .cardSafety button {
@@ -221,7 +264,7 @@
 }
 
 .emptyPool {
-  margin: 8px 16px 14px;
+  margin: 8px 20px 14px;
   text-align: center;
   color: var(--muted);
   font-size: 13.5px;
@@ -499,7 +542,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .card,
+  .hingeCard,
   .matchBackdrop,
   .matchCard {
     animation: none;
@@ -507,11 +550,6 @@
 
   .liveDot,
   .queueDots span {
-    animation: none;
-  }
-
-  .waveBtn:hover span,
-  .waveBtn:focus-visible span {
     animation: none;
   }
 }

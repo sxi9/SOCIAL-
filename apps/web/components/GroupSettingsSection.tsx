@@ -154,7 +154,7 @@ export default function GroupSettingsSection({
 
   return (
     <>
-      <div className={bz.sheetLabel}>👥 Group</div>
+      <div className={bz.sheetLabel}>Group</div>
 
       {ghost ? (
         <p className="muted small" style={{ margin: '0 0 8px' }}>

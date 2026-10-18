@@ -6,26 +6,43 @@
 // probe creds + default-policy candidate inventory. Verdict in plain words,
 // worst finding first. Reachability is decided CLIENT-side — only this
 // browser can test the UDP path from where the user actually sits.
-import { useState } from 'react';
+//
+// Royal v2 reskin (proto ref 28): device cards (mic level bars, speaker Play
+// chime, camera preview frame) + a ✓/!/✕ checklist card. The checks and
+// their copy are unchanged; the chime and the on-demand camera preview are
+// page-local conveniences and never touch lib/webrtc.
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { runCallSelftest, type CheckStatus, type SelftestReport } from '@/lib/selftest';
 import AppShell from '@/components/AppShell';
+import sm from '@/components/settings.module.css';
+import cs from '@/components/calls.module.css';
 
-const STATUS_GLYPH: Record<CheckStatus, string> = { pass: '✓', warn: '!', fail: '×' };
+const CHEV = { stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', fill: 'none' } as const;
+
+function ChevronLeft() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+      <path d="M14.5 6 L8.5 12 L14.5 18" {...CHEV} />
+    </svg>
+  );
+}
+
+const STATUS_GLYPH: Record<CheckStatus, string> = { pass: '✓', warn: '!', fail: '✕' };
 const STATUS_CLASS: Record<CheckStatus, string> = { pass: 'ok-text', warn: 'warn-text', fail: 'error-text' };
+const STATUS_WORD: Record<CheckStatus, string> = { pass: 'ready', warn: 'check needed', fail: 'blocked' };
+const STATUS_NAME: Record<CheckStatus, string> = { pass: 'passed', warn: 'warning', fail: 'failed' };
 
 function Row({ label, status, detail }: { label: string; status: CheckStatus; detail: string }) {
   return (
-    <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', padding: '6px 0' }}>
-      <span className={STATUS_CLASS[status] ?? 'muted'} aria-hidden style={{ width: 16, textAlign: 'center', flex: 'none', fontWeight: 700 }}>
-        {STATUS_GLYPH[status]}
-      </span>
-      <div style={{ minWidth: 0 }}>
-        <strong>{label}</strong>
-        <p className="muted small" style={{ margin: '2px 0 0' }}>
-          {detail}
-        </p>
+    <div className={cs.stRow}>
+      <div className={cs.stRowMain}>
+        <span>{label}</span>
+        <span className={`${STATUS_CLASS[status]} ${cs.stGlyph}`} role="img" aria-label={STATUS_NAME[status]}>
+          {STATUS_GLYPH[status]}
+        </span>
       </div>
+      {status !== 'pass' ? <p className={cs.stDetail}>{detail}</p> : null}
     </div>
   );
 }
@@ -46,15 +63,111 @@ function permDetail(kind: 'Microphone' | 'Camera', value: string): { status: Che
   }
 }
 
+/** A short two-note chime through the default output — WebAudio only, no
+ * assets, closed as soon as it rings out. */
+function playChime(): void {
+  try {
+    const ctx = new AudioContext();
+    const at = ctx.currentTime;
+    const gain = ctx.createGain();
+    gain.connect(ctx.destination);
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.2, at + 0.04);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.9);
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(659.25, at); // E5…
+    osc.frequency.setValueAtTime(880, at + 0.18); // …up to A5
+    osc.connect(gain);
+    osc.start(at);
+    osc.stop(at + 0.95);
+    osc.onended = () => {
+      void ctx.close().catch(() => undefined);
+    };
+  } catch {
+    /* no audio output path — the Play button simply does nothing */
+  }
+}
+
 function ReportView({ report }: { report: SelftestReport }) {
   const mic = permDetail('Microphone', report.mic);
   const cam = permDetail('Camera', report.cam);
+
+  // On-demand camera preview inside the frame (stopped on toggle/unmount).
+  const [preview, setPreview] = useState<MediaStream | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el && preview && el.srcObject !== preview) {
+      el.srcObject = preview;
+      void el.play().catch(() => undefined);
+    }
+    return () => {
+      if (preview) for (const t of preview.getTracks()) t.stop();
+    };
+  }, [preview]);
+
+  async function togglePreview(): Promise<void> {
+    if (preview) {
+      setPreview(null);
+      return;
+    }
+    try {
+      setPreview(await navigator.mediaDevices.getUserMedia({ video: true }));
+    } catch {
+      /* permission denied / no device — the Camera status already says so */
+    }
+  }
+
   return (
     <>
-      <div className={`card`} style={{ marginTop: 12 }}>
-        <p className={STATUS_CLASS[report.verdictStatus]} style={{ marginTop: 0, fontWeight: 600 }}>
-          {report.verdict}
-        </p>
+      <p className={`${STATUS_CLASS[report.verdictStatus]} ${cs.stVerdict}`}>{report.verdict}</p>
+
+      <div className={`card ${cs.stCard}`}>
+        <div className={cs.stHead}>
+          <strong>Microphone</strong>
+          <span className={`${STATUS_CLASS[mic.status]} ${cs.stWord}`}>{STATUS_WORD[mic.status]}</span>
+        </div>
+        <div className={`${cs.micBars}${mic.status === 'pass' ? ` ${cs.micBarsLive}` : ''}`} aria-hidden>
+          <span />
+          <span />
+          <span />
+          <span />
+          <span />
+          <span />
+          <span />
+        </div>
+        {mic.status !== 'pass' ? <p className={cs.stDetail}>{mic.detail}</p> : null}
+      </div>
+
+      <div className={`card ${cs.stCard}`}>
+        <div className={cs.stHead}>
+          <strong>Speaker</strong>
+          <button type="button" className={cs.stPlay} onClick={playChime}>
+            Play
+          </button>
+        </div>
+        <p className={cs.stDetail}>Play a short chime to check this device&rsquo;s sound output.</p>
+      </div>
+
+      <div className={`card ${cs.stCard}`}>
+        <div className={cs.stHead}>
+          <strong>Camera</strong>
+          <span className={`${STATUS_CLASS[cam.status]} ${cs.stWord}`}>{STATUS_WORD[cam.status]}</span>
+        </div>
+        <div className={cs.stPreview}>
+          {preview ? <video ref={videoRef} autoPlay playsInline muted /> : null}
+          {cam.status === 'pass' ? (
+            <button type="button" className={cs.stPreviewBtn} onClick={() => void togglePreview()}>
+              {preview ? 'Stop preview' : 'Show preview'}
+            </button>
+          ) : (
+            <p className={cs.stPreviewNote}>{cam.detail}</p>
+          )}
+        </div>
+      </div>
+
+      <div className={`card ${cs.stCard}`}>
         <Row
           label="Secure context"
           status={report.secureContext ? 'pass' : 'fail'}
@@ -64,8 +177,6 @@ function ReportView({ report }: { report: SelftestReport }) {
               : 'Not secure — browsers block mic/cam entirely. Phones must open the app via the HTTPS tunnel URL, never a plain LAN IP.'
           }
         />
-        <Row label="Microphone" status={mic.status} detail={mic.detail} />
-        <Row label="Camera" status={cam.status} detail={cam.detail} />
         <Row
           label="Call relay (TURN)"
           status={report.turnConfigured === true ? 'pass' : report.turnConfigured === false ? 'warn' : 'warn'}
@@ -120,13 +231,17 @@ function CallSelftest() {
   return (
     <div className="page">
       <header className="topbar">
-        <Link href="/settings/profile" className="btn btn-ghost btn-icon" aria-label="Back">
-          ←
+        <Link href="/settings" className="btn btn-ghost btn-icon" aria-label="Back">
+          <ChevronLeft />
         </Link>
-        <h1>Call self-test</h1>
+        <h1 className={sm.title}>Calls</h1>
         <span />
       </header>
-      <div className="settings-section">
+      {/* Royal v2 IA (proto ref 51): this page is the Calls category. The
+          who-can-call / video-asks-first settings and call history ship with
+          the Calls pack — nothing fake is rendered meanwhile. */}
+      <h2 className={sm.sectionLabel}>Self-test</h2>
+      <div className="settings-section" style={{ marginTop: 8 }}>
         <div className="card">
           <p className="muted small" style={{ marginTop: 0 }}>
             Checks everything a call needs from this exact device and network: secure context,
@@ -140,6 +255,7 @@ function CallSelftest() {
         </div>
         {report ? <ReportView report={report} /> : null}
       </div>
+      <p className={sm.noteLine}>Call history is coming soon.</p>
     </div>
   );
 }

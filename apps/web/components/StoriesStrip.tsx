@@ -16,6 +16,7 @@ import { useNow } from '@/lib/useNow';
 import Avatar from './Avatar';
 import StoryViewer from './StoryViewer';
 import sheet from './beacons.module.css';
+import li from './list.module.css';
 import st from './social.module.css';
 
 export default function StoriesStrip() {
@@ -62,28 +63,38 @@ export default function StoriesStrip() {
   // story" — stories are user-pulled, never a nag.
   return (
     <>
-      <div className={st.storiesStrip} role="list" aria-label="Stories">
+      <div className={`${st.storiesStrip} ${li.storiesBlock}`} role="list" aria-label="Stories">
         <button
           type="button"
           role="listitem"
-          className={st.storyItem}
+          className={`${st.storyItem} ${li.item66}`}
           onClick={() => (mine.length > 0 ? openViewer(me.id) : setComposerOpen(true))}
           aria-label={mine.length > 0 ? 'Your story — tap to watch' : 'Add to your story'}
         >
-          <span className={`${st.storyRing} ${st.ringMine}`}>
-            <Avatar avatar={me.avatar} name={me.display_name} size={58} />
-            <span
-              className={st.storyAdd}
-              aria-hidden
-              onClick={(e) => {
-                e.stopPropagation();
-                setComposerOpen(true);
-              }}
-            >
-              +
+          {mine.length > 0 ? (
+            // A posted story: the avatar in a quiet ring, + badge to add more.
+            <span className={`${st.storyRing} ${li.ring66}`}>
+              <Avatar avatar={me.avatar} name={me.display_name} size={61} />
+              <span
+                className={st.storyAdd}
+                aria-hidden
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setComposerOpen(true);
+                }}
+              >
+                +
+              </span>
             </span>
-          </span>
-          <span className={st.storyName}>Your story</span>
+          ) : (
+            // Royal v2: nothing posted = the dashed invite with a centered +.
+            <span className={`${st.storyRing} ${st.ringMine} ${li.ring66} ${li.ringEmpty}`}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path d="M12 5 V19 M5 12 H19" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+              </svg>
+            </span>
+          )}
+          <span className={`${st.storyName} ${li.name66}`}>Your story</span>
         </button>
         {groups.map((g) => {
           const unviewed = g.stories.some((s) => !s.viewed);
@@ -92,14 +103,14 @@ export default function StoriesStrip() {
               key={g.author.id}
               type="button"
               role="listitem"
-              className={st.storyItem}
+              className={`${st.storyItem} ${li.item66}`}
               onClick={() => openViewer(g.author.id)}
               aria-label={`${g.author.display_name}'s story${unviewed ? ' — new' : ''}`}
             >
-              <span className={`${st.storyRing}${unviewed ? ` ${st.ringUnviewed}` : ''}`}>
-                <Avatar avatar={g.author.avatar} name={g.author.display_name} size={58} />
+              <span className={`${st.storyRing} ${li.ring66}${unviewed ? ` ${st.ringUnviewed}` : ''}`}>
+                <Avatar avatar={g.author.avatar} name={g.author.display_name} size={61} />
               </span>
-              <span className={`${st.storyName}${unviewed ? ` ${st.storyNameNew}` : ''}`}>
+              <span className={`${st.storyName} ${li.name66}${unviewed ? ` ${st.storyNameNew}` : ''}`}>
                 {g.author.display_name}
               </span>
             </button>

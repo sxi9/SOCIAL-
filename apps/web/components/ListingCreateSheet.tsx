@@ -23,7 +23,7 @@ import {
 import { api, ApiError } from '@/lib/api';
 import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
 import ImageEditSheet from './ImageEditSheet';
-import { createListing, KIND_EMOJI } from '@/lib/listings';
+import { createListing } from '@/lib/listings';
 import { isSelfDrunk } from '@/lib/mood';
 import { setMe } from '@/lib/store';
 import { toast } from '@/lib/toast';
@@ -36,9 +36,10 @@ import { StarPicker } from './Stars';
 import bz from './beacons.module.css';
 import st from './board.module.css';
 
+// Royal v2 (ref 36): chip order matches the prototype — Ride first.
 const KIND_PICKS: { kind: ListingKind; title: string; sub: string }[] = [
-  { kind: 'gig', title: 'Gig', sub: 'work together / hire me' },
   { kind: 'ride', title: 'Ride', sub: 'offer seats on a route' },
+  { kind: 'gig', title: 'Gig', sub: 'work together / hire me' },
   { kind: 'room', title: 'Room', sub: 'space to share or sublet' },
   { kind: 'place_review', title: 'Place', sub: 'review a spot you went' },
 ];
@@ -252,31 +253,38 @@ export default function ListingCreateSheet({
       }}
     >
       <div className={bz.sheet} role="dialog" aria-modal="true" aria-label="Post to the board">
-        <div className={bz.sheetHead}>
-          <h2>{kind ? `${KIND_EMOJI[kind]} New ${KIND_PICKS.find((k) => k.kind === kind)?.title.toLowerCase()}` : 'Post to the board'}</h2>
-          <button type="button" className={bz.sheetClose} aria-label="Close" onClick={onClose}>
-            ×
+        {/* Royal v2 (ref 36): Cancel · serif title · Post pill header. */}
+        <div className={`${bz.sheetHead} ${st.createHead}`}>
+          <button type="button" className={st.cancelBtn} onClick={onClose}>
+            Cancel
+          </button>
+          <h2>List on the board</h2>
+          <button type="button" className={st.postPill} disabled={!ready} onClick={() => void post()}>
+            {busy ? 'Posting…' : 'Post'}
           </button>
         </div>
 
+        {/* Royal v2 (ref 36): kind chips stay on top and keep switching. */}
+        <div className={st.chipRow} style={{ padding: '2px 0 4px' }} role="radiogroup" aria-label="What kind of card">
+          {KIND_PICKS.map((k) => (
+            <button
+              key={k.kind}
+              type="button"
+              role="radio"
+              aria-checked={kind === k.kind}
+              className={`${st.kindChip}${kind === k.kind ? ` ${st.kindChipOn}` : ''}`}
+              onClick={() => setKind(k.kind)}
+            >
+              {k.title}
+            </button>
+          ))}
+        </div>
+
         {kind === null ? (
-          <>
-            <p className="muted small" style={{ margin: 0 }}>
-              A card on the local board. People answer by messaging you — money (if any) settles
-              outside the app.
-            </p>
-            <div className={st.kindPickGrid}>
-              {KIND_PICKS.map((k) => (
-                <button key={k.kind} type="button" className={st.kindPick} onClick={() => setKind(k.kind)}>
-                  <span className={st.kindPickEmoji} aria-hidden>
-                    {KIND_EMOJI[k.kind]}
-                  </span>
-                  <strong>{k.title}</strong>
-                  <span>{k.sub}</span>
-                </button>
-              ))}
-            </div>
-          </>
+          <p className="muted small" style={{ margin: '6px 0 0' }}>
+            A card on the local board. People answer by messaging you — money (if any) settles
+            outside the app.
+          </p>
         ) : (
           <>
             <div className={bz.sheetLabel}>Title</div>
@@ -420,7 +428,15 @@ export default function ListingCreateSheet({
                     aria-label="Edit photo"
                     onClick={() => setEditingPhoto(p)}
                   >
-                    ✏️
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+                      <path
+                        d="M4.5 19.5l.9-3.6L16.3 5a2 2 0 0 1 2.8 2.8L8.1 18.6l-3.6.9z"
+                        stroke="currentColor"
+                        strokeWidth="1.7"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
                   </button>
                 </span>
               ))}
@@ -536,10 +552,7 @@ export default function ListingCreateSheet({
             </div>
 
             {error ? <p className="error-text">{error}</p> : null}
-            <button type="button" className={st.msgBtn} disabled={!ready} onClick={() => void post()}>
-              {busy ? 'Posting…' : 'Put it on the board'}
-            </button>
-            <p className="muted small" style={{ margin: '8px 0 0' }}>
+            <p className="muted small" style={{ margin: '12px 0 0' }}>
               No payments in here, ever — prices are words, deals are yours.
             </p>
           </>

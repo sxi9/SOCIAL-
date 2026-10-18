@@ -74,6 +74,7 @@ import Portal from './Portal';
 import ReactionPicker from './ReactionPicker';
 import bz from './beacons.module.css';
 import st from './social.module.css';
+import tb from './topbar.module.css';
 
 const LONG_PRESS_MS = 420;
 
@@ -158,17 +159,81 @@ export default function FeedView() {
   const openedPost =
     openPostId === null ? null : ((posts ?? []).find((p) => p.id === openPostId) ?? null);
 
+  // Royal v2 (ref 09): the feed lands on the mosaic — the composer stays
+  // collapsed until the header compose icon opens it, then gets focus.
+  const [composeOpen, setComposeOpen] = useState(false);
+  const composerBodyRef = useRef<HTMLTextAreaElement | null>(null);
+  const focusComposer = useCallback(() => {
+    if (!composerBodyRef.current) {
+      setComposeOpen(true);
+      return;
+    }
+    const el = composerBodyRef.current;
+    let smooth = true;
+    try {
+      smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch {
+      /* no matchMedia — smooth is fine */
+    }
+    el.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'center' });
+    el.focus({ preventScroll: true });
+  }, []);
+
+  // Focus lands once the newly-opened composer has rendered.
+  useEffect(() => {
+    if (!composeOpen) return;
+    composerBodyRef.current?.focus({ preventScroll: true });
+  }, [composeOpen]);
+
+  // Royal v2 mosaic: the FIRST media post renders as the 2×2 hero tile.
+  const gridHeroId = (posts ?? []).find((p) => p.attachments.length > 0)?.id ?? null;
+
   return (
     <div className="page">
       <header className="topbar">
-        <h1 className={st.feedTitle}>Feed</h1>
-        <button type="button" className="btn btn-ghost" onClick={refresh} disabled={loading}>
-          {loading ? 'Checking…' : 'Check for new posts'}
+        {/* Royal v2 header system: serif wordmark left; the grid|list
+            segmented toggle + the compose stroke icon are the ONLY header
+            actions (≤3 icons, no emoji — handoff ref 09). */}
+        <h1 className={st.feedTitle} aria-label="Feed">
+          bored.
+        </h1>
+        <div className={st.layoutToggle} role="group" aria-label="Feed layout">
+          <button
+            type="button"
+            className={st.layoutBtn}
+            aria-pressed={layout === 'grid'}
+            aria-label="Grid view"
+            onClick={() => pickLayout('grid')}
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+              <rect x="1" y="1" width="6" height="6" rx="1.4" fill="currentColor" />
+              <rect x="9" y="1" width="6" height="6" rx="1.4" fill="currentColor" />
+              <rect x="1" y="9" width="6" height="6" rx="1.4" fill="currentColor" />
+              <rect x="9" y="9" width="6" height="6" rx="1.4" fill="currentColor" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className={st.layoutBtn}
+            aria-pressed={layout === 'list'}
+            aria-label="List view"
+            onClick={() => pickLayout('list')}
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+              <rect x="1" y="2.2" width="14" height="3" rx="1.2" fill="currentColor" />
+              <rect x="1" y="6.5" width="14" height="3" rx="1.2" fill="currentColor" />
+              <rect x="1" y="10.8" width="14" height="3" rx="1.2" fill="currentColor" />
+            </svg>
+          </button>
+        </div>
+        <button type="button" className={tb.iconBtn} aria-label="Write a post" onClick={focusComposer}>
+          <IconPlus />
         </button>
       </header>
       <div className={st.feedWrap}>
         {/* v0.7 (§1.49): the lane toggle — two finite windows, no ranking.
-            Owner fix round: the grid|list layout chips ride the same bar. */}
+            Royal v2: the layout toggle moved to the header; the manual
+            refresh keeps a quiet icon on this bar. */}
         <div className={st.laneBar}>
           <div className={st.laneRow} role="radiogroup" aria-label="Feed lane">
             <button
@@ -190,38 +255,18 @@ export default function FeedView() {
               Discover
             </button>
           </div>
-          <div className={st.layoutToggle} role="group" aria-label="Feed layout">
-            <button
-              type="button"
-              className={st.layoutBtn}
-              aria-pressed={layout === 'grid'}
-              aria-label="Grid view"
-              onClick={() => pickLayout('grid')}
-            >
-              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-                <rect x="1" y="1" width="6" height="6" rx="1.4" fill="currentColor" />
-                <rect x="9" y="1" width="6" height="6" rx="1.4" fill="currentColor" />
-                <rect x="1" y="9" width="6" height="6" rx="1.4" fill="currentColor" />
-                <rect x="9" y="9" width="6" height="6" rx="1.4" fill="currentColor" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              className={st.layoutBtn}
-              aria-pressed={layout === 'list'}
-              aria-label="List view"
-              onClick={() => pickLayout('list')}
-            >
-              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
-                <rect x="1" y="2.2" width="14" height="3" rx="1.2" fill="currentColor" />
-                <rect x="1" y="6.5" width="14" height="3" rx="1.2" fill="currentColor" />
-                <rect x="1" y="10.8" width="14" height="3" rx="1.2" fill="currentColor" />
-              </svg>
-            </button>
-          </div>
+          <button
+            type="button"
+            className={st.laneRefresh}
+            aria-label="Check for new posts"
+            onClick={refresh}
+            disabled={loading}
+          >
+            {loading ? <span className="spinner" /> : <IconRefresh />}
+          </button>
         </div>
 
-        <PostComposerCard lane={lane} />
+        {composeOpen ? <PostComposerCard lane={lane} bodyRef={composerBodyRef} /> : null}
         {/* v0.8b §1.64: people-you-may-know — Feed-Discover only, dismissible,
             pull-only. Never a login-page surface. */}
         {lane === 'discover' ? <SuggestionCards moreHref="/people" /> : null}
@@ -258,7 +303,12 @@ export default function FeedView() {
               // the full existing card in a sheet.
               <div className={st.feedGrid}>
                 {posts.map((post) => (
-                  <FeedGridTile key={post.id} post={post} onOpen={() => setOpenPostId(post.id)} />
+                  <FeedGridTile
+                    key={post.id}
+                    post={post}
+                    hero={post.id === gridHeroId}
+                    onOpen={() => setOpenPostId(post.id)}
+                  />
                 ))}
               </div>
             ) : (
@@ -287,7 +337,7 @@ export default function FeedView() {
                 <h3>You&rsquo;re all caught up</h3>
                 <p>
                   {lane === 'friends'
-                    ? 'That’s everything from your people. Go make something worth posting.'
+                    ? 'nothing new from your people — go make a plan'
                     : 'That’s every public post here. The feed has a bottom on purpose.'}
                 </p>
               </div>
@@ -355,14 +405,31 @@ function tileExcerpt(post: Post): string {
   return '';
 }
 
-function FeedGridTile({ post, onOpen }: { post: Post; onOpen: () => void }) {
+function FeedGridTile({ post, hero, onOpen }: { post: Post; hero: boolean; onOpen: () => void }) {
   const media = post.attachments[0] ?? null;
-  const badge =
-    post.kind === 'poll' ? '🗳' : post.kind === 'game' ? '🎮' : media?.kind === 'video' ? '▶' : null;
+
+  // Royal v2 (ref 09): poll posts render as panel cards in the mosaic.
+  if (post.kind === 'poll' && post.poll) {
+    return (
+      <button
+        type="button"
+        className={`${st.gridTile} ${st.gridTilePoll}`}
+        aria-label={`Open poll by ${post.author.display_name}`}
+        onClick={onOpen}
+      >
+        <span className={st.gridPollIcon} aria-hidden>
+          <IconBars size={16} />
+        </span>
+        <span className={st.gridPollQ}>{post.poll.question}</span>
+        <span className={st.gridPollMeta}>poll · tap to vote</span>
+      </button>
+    );
+  }
+
   return (
     <button
       type="button"
-      className={`${st.gridTile}${media ? '' : ` ${st.gridTileText}`}`}
+      className={`${st.gridTile}${media ? '' : ` ${st.gridTileText}`}${hero && media ? ` ${st.gridTileHero}` : ''}`}
       aria-label={`Open post by ${post.author.display_name}`}
       onClick={onOpen}
     >
@@ -370,7 +437,7 @@ function FeedGridTile({ post, onOpen }: { post: Post; onOpen: () => void }) {
         media.kind === 'video' && !media.thumb_url ? (
           // A video with no poster yet (still processing): a quiet play slate.
           <span className={st.gridVideoSlate} aria-hidden>
-            ▶
+            <IconPlay size={22} />
           </span>
         ) : (
           /* eslint-disable-next-line @next/next/no-img-element */
@@ -382,9 +449,16 @@ function FeedGridTile({ post, onOpen }: { post: Post; onOpen: () => void }) {
           <span className={st.gridTileAuthor}>{post.author.display_name}</span>
         </>
       )}
-      {badge ? (
+      {/* Royal v2: the 2×2 hero tile carries the author pill overlay. */}
+      {hero && media ? (
+        <span className={st.gridAuthorPill} aria-hidden>
+          <Avatar avatar={post.author.avatar} name={post.author.display_name} size={18} />
+          {post.author.display_name}
+        </span>
+      ) : null}
+      {media?.kind === 'video' && media.thumb_url ? (
         <span className={st.gridBadge} aria-hidden>
-          {badge}
+          <IconPlay size={15} />
         </span>
       ) : null}
     </button>
@@ -395,11 +469,12 @@ function FeedGridTile({ post, onOpen }: { post: Post; onOpen: () => void }) {
 // Composer: kind picker (§1.50) + audience (§1.49) + location (§1.52)
 // ---------------------------------------------------------------------------
 
-const KIND_PICKS: { kind: PostKind; icon: string; label: string }[] = [
-  { kind: 'text', icon: '✏️', label: 'Post' },
-  { kind: 'poll', icon: '📊', label: 'Poll' },
-  { kind: 'game', icon: '🎮', label: 'Challenge' },
-  { kind: 'join_card', icon: '📣', label: 'Join my…' },
+// Royal v2: text-only kind chips — no emoji as UI icons (hard rule).
+const KIND_PICKS: { kind: PostKind; label: string }[] = [
+  { kind: 'text', label: 'Post' },
+  { kind: 'poll', label: 'Poll' },
+  { kind: 'game', label: 'Challenge' },
+  { kind: 'join_card', label: 'Join my…' },
 ];
 
 interface RefCandidate {
@@ -412,7 +487,14 @@ interface RefCandidate {
   allowed: PostAudience[];
 }
 
-function PostComposerCard({ lane }: { lane: FeedLane }) {
+function PostComposerCard({
+  lane,
+  bodyRef,
+}: {
+  lane: FeedLane;
+  /** The header compose icon scrolls to / focuses this textarea (ref 09). */
+  bodyRef?: React.RefObject<HTMLTextAreaElement | null>;
+}) {
   const state = useAppState();
   const [kind, setKind] = useState<PostKind>('text');
   const [audience, setAudience] = useState<PostAudience>('friends_of');
@@ -576,32 +658,45 @@ function PostComposerCard({ lane }: { lane: FeedLane }) {
             className={`${st.kindBtn}${kind === k.kind ? ` ${st.kindBtnOn}` : ''}`}
             onClick={() => setKind(k.kind)}
           >
-            <span aria-hidden>{k.icon}</span>
             {k.label}
           </button>
         ))}
       </div>
 
-      <textarea
-        value={body}
-        maxLength={POST_BODY_MAX_CHARS}
-        placeholder={
-          kind === 'poll'
-            ? 'Anything to add under the poll? (song links go here)'
-            : kind === 'game'
-              ? 'Talk your trash — first tap plays you.'
-              : kind === 'join_card'
-                ? 'Say why they should jump in…'
-                : audience === 'public'
-                  ? "What's up? Anyone on this server can see it."
-                  : "What's up? Your friends will see it."
-        }
-        aria-label="Write a post"
-        onChange={(e) => setBody(e.target.value)}
-      />
+      {/* Royal v2 (ref 44): avatar + borderless writing area. */}
+      <div className={st.composerTop}>
+        {state.me ? (
+          <Avatar avatar={state.me.avatar} name={state.me.display_name} size={36} />
+        ) : null}
+        <textarea
+          ref={bodyRef}
+          value={body}
+          maxLength={POST_BODY_MAX_CHARS}
+          placeholder={
+            kind === 'poll'
+              ? 'Anything to add under the poll? (song links go here)'
+              : kind === 'game'
+                ? 'Talk your trash — first tap plays you.'
+                : kind === 'join_card'
+                  ? 'Say why they should jump in…'
+                  : audience === 'public'
+                    ? "What's up? Anyone on this server can see it."
+                    : "What's up? Your friends will see it."
+          }
+          aria-label="Write a post"
+          onChange={(e) => setBody(e.target.value)}
+        />
+      </div>
 
       {kind === 'poll' ? (
-        <div className={st.pollEditor}>
+        // Royal v2 (ref 44): the poll builder rides a raised card.
+        <div className={st.pollBuilder}>
+          <div className={st.pollBuilderHead}>
+            <span>Add a poll</span>
+            <span aria-hidden>
+              <IconBars size={16} />
+            </span>
+          </div>
           <input
             className="input"
             placeholder="The question — “song for the ride?”"
@@ -614,7 +709,7 @@ function PostComposerCard({ lane }: { lane: FeedLane }) {
             <div key={i} className={st.pollEditorRow}>
               <input
                 className="input"
-                placeholder={`Option ${i + 1}`}
+                placeholder={`option ${i + 1}${i === 0 ? ' — thursday 7pm' : i === 1 ? ' — friday 8pm' : ''}`}
                 aria-label={`Poll option ${i + 1}`}
                 value={opt}
                 maxLength={POLL_OPTION_MAX_CHARS}
@@ -637,11 +732,10 @@ function PostComposerCard({ lane }: { lane: FeedLane }) {
           {options.length < POLL_OPTIONS_MAX ? (
             <button
               type="button"
-              className="btn btn-ghost"
-              style={{ alignSelf: 'flex-start' }}
+              className={st.addOptionBtn}
               onClick={() => setOptions((prev) => [...prev, ''])}
             >
-              + Add option
+              + add option
             </button>
           ) : null}
         </div>
@@ -649,7 +743,7 @@ function PostComposerCard({ lane }: { lane: FeedLane }) {
 
       {kind === 'game' ? (
         <p className="muted small" style={{ margin: '8px 0 0' }}>
-          🎮 An open tic-tac-toe challenge — the first person to tap Claim plays you (you move
+          An open tic-tac-toe challenge — the first person to tap Claim plays you (you move
           first). The board opens in a DM between you two.
         </p>
       ) : null}
@@ -697,10 +791,11 @@ function PostComposerCard({ lane }: { lane: FeedLane }) {
         </div>
       ) : null}
 
-      {kind === 'text' && attachments.length > 0 ? (
-        <div className={`${st.postImages} ${st[`postImages${Math.min(attachments.length, 4)}`]}`} style={{ marginTop: 8 }}>
+      {kind === 'text' ? (
+        // Royal v2 (ref 44): photo thumbs + the dashed add tile.
+        <div className={st.photoStrip}>
           {attachments.map((a) => (
-            <span key={a.id} style={{ position: 'relative' }}>
+            <span key={a.id} className={st.photoThumb}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={a.thumb_url ?? a.url} alt="" />
               <button
@@ -721,11 +816,33 @@ function PostComposerCard({ lane }: { lane: FeedLane }) {
                   aria-label="Edit image"
                   onClick={() => setEditing(a)}
                 >
-                  ✏️
+                  <IconPencil size={12} />
                 </button>
               ) : null}
             </span>
           ))}
+          <input
+            ref={fileRef}
+            type="file"
+            hidden
+            multiple
+            accept="image/*,video/mp4,video/webm"
+            onChange={(e) => {
+              void upload(e.target.files);
+              e.target.value = '';
+            }}
+          />
+          {attachments.length < POST_MAX_ATTACHMENTS ? (
+            <button
+              type="button"
+              className={st.photoAddTile}
+              aria-label="Add images"
+              disabled={uploading > 0}
+              onClick={() => fileRef.current?.click()}
+            >
+              {uploading > 0 ? <span className="spinner" /> : <IconPlus size={20} />}
+            </button>
+          ) : null}
         </div>
       ) : null}
       {editing ? (
@@ -754,47 +871,30 @@ function PostComposerCard({ lane }: { lane: FeedLane }) {
         />
       ) : null}
 
-      <div style={{ marginTop: 8 }}>
+      <div style={{ marginTop: 10 }}>
         <LocationField value={location} onChange={setLocation} />
       </div>
 
+      {/* §1.49 audience as the Royal v2 row (ref 44): label left, value +
+          chevron right; the tap still just flips friends-of ↔ public. */}
+      <button
+        type="button"
+        className={st.audienceRow}
+        aria-label={`Audience: ${audience === 'public' ? 'public — anyone on this server' : 'friends'}. Tap to switch`}
+        onClick={() => setAudience((a) => (a === 'public' ? 'friends_of' : 'public'))}
+      >
+        <span aria-hidden>
+          <IconPerson />
+        </span>
+        <span>Audience</span>
+        <span className={st.audienceVal}>{audience === 'public' ? 'Public' : 'Connections'} ›</span>
+      </button>
+      <p className={st.composerNote}>
+        Replies are named faces — your post never shows public counts.
+      </p>
+
       {error ? <p className="error-text">{error}</p> : null}
       <div className={st.composerFoot}>
-        {kind === 'text' ? (
-          <>
-            <input
-              ref={fileRef}
-              type="file"
-              hidden
-              multiple
-              accept="image/*,video/mp4,video/webm"
-              onChange={(e) => {
-                void upload(e.target.files);
-                e.target.value = '';
-              }}
-            />
-            <button
-              type="button"
-              className="btn btn-icon"
-              aria-label="Add images"
-              disabled={attachments.length >= POST_MAX_ATTACHMENTS || uploading > 0}
-              onClick={() => fileRef.current?.click()}
-            >
-              📷
-            </button>
-            {uploading > 0 ? <span className="spinner" /> : null}
-          </>
-        ) : null}
-        {/* §1.49: audience — friends-of (default) or truly public. */}
-        <button
-          type="button"
-          className={st.kindBtn}
-          aria-label={`Audience: ${audience === 'public' ? 'public — anyone on this server' : 'friends'}. Tap to switch`}
-          onClick={() => setAudience((a) => (a === 'public' ? 'friends_of' : 'public'))}
-        >
-          <span aria-hidden>{audience === 'public' ? '🌐' : '👥'}</span>
-          {audience === 'public' ? 'Public' : 'Friends'}
-        </button>
         <span style={{ flex: 1 }} />
         <button type="button" className="btn btn-primary" disabled={!canPost} onClick={() => void post()}>
           {busy ? 'Posting…' : 'Post'}
@@ -856,7 +956,7 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
           <strong>{post.author.display_name}</strong>
           <span>
             @{post.author.username} · {formatTime(post.created_at)}
-            {post.audience === 'public' ? ' · 🌐 public' : ''}
+            {post.audience === 'public' ? ' · public' : ''}
           </span>
         </span>
         {/* v0.8b §1.67: PUBLIC posts get the one stable share link (mint-or-
@@ -868,7 +968,9 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
             aria-label="Copy a public link to this post"
             onClick={() => void copyShareLink('post', post.id)}
           >
-            <span aria-hidden>🔗</span>
+            <span aria-hidden>
+              <IconLink />
+            </span>
           </button>
         ) : null}
         {own ? (
@@ -954,7 +1056,9 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
             aria-expanded={pickerOpen}
             onClick={() => setPickerOpen((v) => !v)}
           >
-            <span aria-hidden>🙂+</span>
+            <span aria-hidden>
+              <IconSmilePlus />
+            </span>
           </button>
         </span>
         {pickerOpen ? (
@@ -1025,7 +1129,7 @@ function PostPollView({ post }: { post: Post }) {
 
   return (
     <div className={st.postPoll}>
-      <p className={st.postPollQ}>📊 {poll.question}</p>
+      <p className={st.postPollQ}>{poll.question}</p>
       {poll.options.map((opt, i) => {
         const count = poll.counts[i] ?? 0;
         const pct = poll.total_votes > 0 ? Math.round((count / poll.total_votes) * 100) : 0;
@@ -1489,7 +1593,7 @@ function PostComments({ post, meId }: { post: Post; meId: string }) {
           disabled={uploading || attachment !== null}
           onClick={() => fileRef.current?.click()}
         >
-          {uploading ? <span className="spinner" /> : '🖼'}
+          {uploading ? <span className="spinner" /> : <IconImage />}
         </button>
         <input
           value={draft}
@@ -1610,7 +1714,7 @@ function CommentRow({
             aria-expanded={picker}
             onClick={() => setPicker((v) => !v)}
           >
-            🙂+
+            <IconSmilePlus size={15} />
           </button>
         </span>
       </span>
@@ -1685,5 +1789,134 @@ function CommentReactionOverlay({
         {children}
       </div>
     </Portal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Royal v2 stroke icons — the Tabs.tsx family (24 viewBox, 1.7px stroke,
+// round caps). No emoji as UI icons (hard contract).
+// ---------------------------------------------------------------------------
+
+function IconPlus({ size = 22 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconRefresh({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M19.5 12a7.5 7.5 0 1 1-2.1-5.2M19.7 3.6v3.6h-3.6"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconBars({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M6.5 18v-6M12 18V6.5M17.5 18v-3.5"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconPerson({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="8.4" r="3.6" stroke="currentColor" strokeWidth="1.7" />
+      <path
+        d="M5 19.5 c1.4 -3.4 4 -5 7 -5 s5.6 1.6 7 5"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function IconLink({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M10.2 13.8a4.1 4.1 0 0 0 5.8 0l3.2-3.2a4.1 4.1 0 0 0-5.8-5.8L11.8 6.4"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M13.8 10.2a4.1 4.1 0 0 0-5.8 0l-3.2 3.2a4.1 4.1 0 0 0 5.8 5.8l1.6-1.6"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconSmilePlus({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="10.5" cy="13" r="7" stroke="currentColor" strokeWidth="1.7" />
+      <path
+        d="M7.6 14.6c.7 1.2 1.7 1.8 2.9 1.8s2.2-.6 2.9-1.8"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+      <path d="M8.5 11.2h.01M12.5 11.2h.01" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+      <path d="M19 3.5v5M16.5 6h5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconImage({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <rect x="4" y="5" width="16" height="14" rx="3" stroke="currentColor" strokeWidth="1.7" />
+      <circle cx="9" cy="10" r="1.6" stroke="currentColor" strokeWidth="1.5" />
+      <path
+        d="M5 17l4.5-4.5 3 3 2.5-2.5 4 4"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconPencil({ size = 13 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M4.5 19.5l.9-3.6L16.3 5a2 2 0 0 1 2.8 2.8L8.1 18.6l-3.6.9z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function IconPlay({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M9 6.8v10.4L18 12z" fill="currentColor" />
+    </svg>
   );
 }

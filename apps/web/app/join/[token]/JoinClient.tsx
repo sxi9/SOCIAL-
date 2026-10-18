@@ -1,18 +1,20 @@
 'use client';
 
-// Client half of /join/:token. Shows the inviter's ANIMATED avatar big (the
-// token-gated proxy variant, gated by prefers-reduced-motion per the §5
-// motion-hygiene contract; static fallback, initial-letter fallback on 404),
-// then routes by auth state: signed-out visitors register with the
-// invite_token carried through (or log in and come back here), signed-in
-// ones POST /api/invites/:token/accept and land in the conversation.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// Client half of /join/:token — v2 Royal (proto 31): the "what a stranger
+// sees" page. Deep bg, serif wordmark header with a Sign in pill, a centered
+// card (silver-ring inviter avatar, name, gradient Connect CTA) and a
+// blurred-locked "join to see their world" grid — the tiles are DECORATIVE
+// gradients, no real media ever leaks to a logged-out visitor. Behavior is
+// unchanged: signed-out visitors register with the invite_token carried
+// through (or sign in and come back here), signed-in ones POST
+// /api/invites/:token/accept and land in the conversation. Every action on
+// this page still gates to signup.
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { AcceptInviteResponse, InvitePublic, MeResponse } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
-import { useAuthFx } from '@/components/AuthScene';
-import Mascot, { type MascotState } from '@/components/Mascot';
+import Mascot from '@/components/Mascot';
 import styles from './join.module.css';
 
 interface JoinClientProps {
@@ -22,10 +24,6 @@ interface JoinClientProps {
 
 export default function JoinClient({ token, invite }: JoinClientProps) {
   const router = useRouter();
-  // The Bored Blob waves hello next to the inviter (party mode when the logo
-  // easter egg fires in the surrounding AuthScene).
-  const fx = useAuthFx();
-  const waving: MascotState = fx.party ? 'party' : 'wave';
   // null = still probing; the join page lives outside AppShell on purpose
   // (it must render for visitors with no session at all).
   const [authedAs, setAuthedAs] = useState<string | null>(null);
@@ -69,7 +67,7 @@ export default function JoinClient({ token, invite }: JoinClientProps) {
       .then((res) => {
         if (cancelled) return;
         setAuthedAs(res.user.display_name);
-        // "Log in" from this page round-trips through /login?next=/join/<t>?then=accept:
+        // "Sign in" from this page round-trips through /login?next=/join/<t>?then=accept:
         // when the visitor lands back here signed in, accept without another tap.
         const wantsAccept = new URLSearchParams(window.location.search).get('then') === 'accept';
         if (wantsAccept && invite?.status === 'valid') void accept();
@@ -83,37 +81,42 @@ export default function JoinClient({ token, invite }: JoinClientProps) {
     };
   }, [accept, invite]);
 
+  const loginHref = `/login?next=${encodeURIComponent(`/join/${token}?then=accept`)}`;
+  const registerHref = `/register?invite=${encodeURIComponent(token)}`;
+
+  let body: ReactNode;
   if (!invite) {
-    return (
-      <div className={styles.body}>
-        <Mascot state={fx.party ? 'party' : 'wince'} size={96} />
-        <h2 className={styles.headline}>Hmm, that link doesn&rsquo;t work</h2>
+    body = (
+      <section className={`${styles.card} pageFadeUp`}>
+        <Mascot state="wince" size={96} />
+        <h1 className={styles.headline}>Hmm, that link doesn&rsquo;t work</h1>
         <p className={styles.sub}>
-          It may have a typo, or it never existed. Invite links look like{' '}
-          <code>/join/…</code> and come from someone already on Bored Chat.
+          It may have a typo, or it never existed. Invite links look like <code>/join/…</code> and
+          come from someone already on Bored Chat.
         </p>
         <div className={styles.actions}>
           <Link href="/register" className="btn btn-primary">
             Get your own Bored Chat
           </Link>
         </div>
-      </div>
+      </section>
     );
-  }
-
-  const name = invite.inviter.display_name;
-
-  if (invite.status !== 'valid') {
+  } else if (invite.status !== 'valid') {
+    const name = invite.inviter.display_name;
     const reason =
       invite.status === 'expired'
         ? 'This invite has expired — they only last 7 days.'
         : invite.status === 'exhausted'
           ? 'This invite hit its join limit. Popular crowd.'
           : 'This invite was taken back by its owner.';
-    return (
-      <div className={styles.body}>
-        <InviteAvatar invite={invite} />
-        <h2 className={styles.headline}>So close!</h2>
+    body = (
+      <section className={`${styles.card} pageFadeUp`}>
+        <span className={styles.ring}>
+          <span className={styles.ringGap}>
+            <InviteAvatar invite={invite} />
+          </span>
+        </span>
+        <h1 className={styles.headline}>So close!</h1>
         <p className={styles.sub}>
           {reason} Ask {name} for a fresh link — or just start your own corner of Bored Chat.
         </p>
@@ -125,58 +128,99 @@ export default function JoinClient({ token, invite }: JoinClientProps) {
             Log in
           </Link>
         </div>
-      </div>
+      </section>
+    );
+  } else {
+    const name = invite.inviter.display_name;
+    body = (
+      <>
+        <section className={`${styles.card} pageFadeUp`}>
+          <span className={styles.ring}>
+            <span className={styles.ringGap}>
+              <InviteAvatar invite={invite} />
+            </span>
+          </span>
+          <h1 className={styles.name}>{name}</h1>
+          <p className={styles.handle}>@{invite.inviter.username} · on Bored Chat</p>
+          {invite.kind === 'group' && invite.group_title ? (
+            <p className={styles.groupLine}>invited you to &ldquo;{invite.group_title}&rdquo;</p>
+          ) : null}
+          {acceptError ? <p className="error-text">{acceptError}</p> : null}
+          {!probed ? (
+            <span className="spinner" />
+          ) : authedAs ? (
+            <>
+              <button
+                type="button"
+                className={`btn btn-primary ${styles.cta}`}
+                disabled={accepting}
+                onClick={() => void accept()}
+              >
+                {accepting ? 'Joining…' : 'Jump into the chat'}
+              </button>
+              <p className={styles.note}>Signed in as {authedAs}</p>
+            </>
+          ) : (
+            <>
+              <Link href={registerHref} className={`btn btn-primary ${styles.cta}`}>
+                {invite.kind === 'group' && invite.group_title
+                  ? `Join “${invite.group_title}”`
+                  : `Connect with ${name}`}
+              </Link>
+              <p className={styles.note}>
+                joining takes a minute — {name}&rsquo;s link lands you straight in the chat
+              </p>
+            </>
+          )}
+        </section>
+        {/* proto 31: the blurred-locked grid. Decorative tiles only — nothing
+            of theirs is browsable logged-out; the tap gates to signup. */}
+        {probed && !authedAs ? (
+          <Link href={registerHref} className={styles.lockedGrid}>
+            <span className={styles.lockedTiles} aria-hidden>
+              <span className={styles.lockTile} />
+              <span className={styles.lockTile} />
+              <span className={styles.lockTile} />
+            </span>
+            <span className={styles.lockedOverlay}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <rect x="5.5" y="10.5" width="13" height="9" rx="2" stroke="currentColor" strokeWidth="1.7" />
+                <path d="M8.5 10.5 V8 a3.5 3.5 0 0 1 7 0 v2.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+              </svg>
+              <strong>Join to see {name}&rsquo;s world</strong>
+            </span>
+          </Link>
+        ) : null}
+      </>
     );
   }
 
-  const headline =
-    invite.kind === 'group' && invite.group_title
-      ? `${name} invited you to “${invite.group_title}”`
-      : `${name} invited you to Bored Chat`;
-
-  // Mascot waves next to the inviter's avatar; when the inviter has no avatar
-  // at all, the blob takes center stage instead.
-  const hasAvatar = Boolean(invite.inviter.avatar.static_url ?? invite.inviter.avatar.animated_url);
-
   return (
-    <div className={styles.body}>
-      {hasAvatar ? (
-        <div className={styles.duo}>
-          <InviteAvatar invite={invite} />
-          <Mascot state={waving} size={76} className={styles.duoMascot} />
-        </div>
-      ) : (
-        <Mascot state={waving} size={116} />
-      )}
-      <h2 className={styles.headline}>{headline}</h2>
-      <p className={styles.sub}>
-        {invite.kind === 'group'
-          ? 'One tap and you’re in the group — boredom not included.'
-          : `One tap and you’re chatting with ${name} — boredom not included.`}
-      </p>
-      {acceptError ? <p className="error-text">{acceptError}</p> : null}
-      {!probed ? (
-        <div className={styles.actions}>
-          <span className="spinner" />
-        </div>
-      ) : authedAs ? (
-        <div className={styles.actions}>
-          <button type="button" className="btn btn-primary" disabled={accepting} onClick={() => void accept()}>
-            {accepting ? 'Joining…' : 'Jump into the chat'}
-          </button>
-          <p className="muted small">Signed in as {authedAs}</p>
-        </div>
-      ) : (
-        <div className={styles.actions}>
-          <Link href={`/register?invite=${encodeURIComponent(token)}`} className="btn btn-primary">
-            Join Bored Chat
+    <main className={styles.page}>
+      <header className={styles.head}>
+        <Link href="/" className={styles.headBack} aria-label="Back">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <path
+              d="M14.5 5.5 8 12l6.5 6.5"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </Link>
+        <Link href="/" className={styles.brand}>
+          bored.
+        </Link>
+        <span className={styles.headMeta}>what a stranger sees</span>
+        {probed && !authedAs ? (
+          <Link href={loginHref} className="btn btn-primary">
+            Sign in
           </Link>
-          <Link href={`/login?next=${encodeURIComponent(`/join/${token}?then=accept`)}`} className="btn">
-            I have an account — log in
-          </Link>
-        </div>
-      )}
-    </div>
+        ) : null}
+      </header>
+      {body}
+    </main>
   );
 }
 

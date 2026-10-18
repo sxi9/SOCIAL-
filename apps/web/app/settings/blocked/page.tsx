@@ -9,6 +9,17 @@ import { api } from '@/lib/api';
 import { canvasUnban, listCanvasBans } from '@/lib/stories';
 import AppShell from '@/components/AppShell';
 import Avatar from '@/components/Avatar';
+import sm from '@/components/settings.module.css';
+
+const CHEV = { stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', fill: 'none' } as const;
+
+function ChevronLeft() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+      <path d="M14.5 6 L8.5 12 L14.5 18" {...CHEV} />
+    </svg>
+  );
+}
 
 function BlockedUsers() {
   const [users, setUsers] = useState<UserLite[] | null>(null);
@@ -48,9 +59,9 @@ function BlockedUsers() {
     <div className="page">
       <header className="topbar">
         <Link href="/settings/privacy" className="btn btn-ghost btn-icon" aria-label="Back">
-          ←
+          <ChevronLeft />
         </Link>
-        <h1>Blocked people</h1>
+        <h1 className={sm.title}>Blocked people</h1>
         <span />
       </header>
 

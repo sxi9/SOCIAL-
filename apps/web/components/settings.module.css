@@ -1,0 +1,492 @@
+/* v1.2 Royal v2 — Telegram-style settings IA (proto refs 46–53 + 11).
+   Category page (/settings), its subpages, and the own-profile tab
+   (/settings/profile). Tokens only; 20px screen gutter; rows 52–56px with
+   34px tinted stroke-icon squares; hairline separators on the page bg (no
+   stacked card boxes — reference 46). All new motion is entry-only and dies
+   under prefers-reduced-motion (guard at the bottom). */
+
+/* ---- titles on the shared .topbar ---- */
+
+/* Subpage titles: 20px display serif (handoff type scale). */
+:global(.topbar) .title {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 400;
+  overflow: visible;
+}
+
+/* Tab-root title (Profile): 23px, like the Chats tab. */
+:global(.topbar) .tabTitle {
+  font-family: var(--font-display);
+  font-size: 23px;
+  font-weight: 400;
+  min-width: 0;
+  overflow: visible;
+}
+
+@media (min-width: 900px) {
+  :global(.topbar) .tabTitle {
+    font-size: 19px;
+  }
+}
+
+/* ---- category page (/settings — reference 46) ---- */
+
+/* User card: avatar 52 + name + "@user · mood", chevron → Account. */
+.userCard {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 20px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.userCard:hover {
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+}
+
+.userMain {
+  flex: 1;
+  min-width: 0;
+}
+
+.userName {
+  display: block;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.userHandle {
+  display: block;
+  margin-top: 1px;
+  font-size: 13px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The mood word rides the handle line (never a timestamp, never a count). */
+.userMood {
+  color: var(--body-soft);
+  font-weight: 600;
+}
+
+/* Category rows: 52–56px, hairline-separated, flush on the page bg. */
+.rows {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 54px;
+  padding: 8px 20px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 500;
+  transition: background 120ms ease;
+}
+
+.row:hover {
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+}
+
+/* 34px tinted icon square, stroke icon inside (NOT emoji). */
+.rowIcon {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--body-soft);
+  line-height: 0;
+}
+
+.rowTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Right-side value ("2 devices") — muted, 13px. */
+.rowValue {
+  flex: none;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.rowChevron {
+  flex: none;
+  color: var(--faint);
+  line-height: 0;
+}
+
+/* Sign out: a danger text row at the bottom (reference 46). */
+.signOut {
+  margin: 20px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--danger);
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+/* ---- subpage primitives (references 47–53) ---- */
+
+/* Section label: 12px/700, letterspaced 0.09em (RECEIPTS, SESSIONS …). */
+.sectionLabel {
+  margin: 20px 20px 2px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Flush setting rows: title (+hint) left, control/value right, hairlines. */
+.setList {
+  display: flex;
+  flex-direction: column;
+}
+
+.setRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  width: 100%;
+  background: none;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  color: var(--text);
+  text-align: left;
+}
+
+a.setRow:hover,
+button.setRow:hover {
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  cursor: pointer;
+}
+
+.setMain {
+  flex: 1;
+  min-width: 0;
+}
+
+.setTitle {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.setHint {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.setValue {
+  flex: none;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+
+/* Quiet full-width note lines ("Call history coming soon", psych notes). */
+.noteLine {
+  margin: 14px 20px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.pad {
+  padding: 0 20px;
+}
+
+/* ---- Account (reference 47): centered avatar + camera orb ---- */
+
+.avatarBlock {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 20px 20px 6px;
+  text-align: center;
+}
+
+.avatarTap {
+  position: relative;
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  line-height: 0;
+}
+
+/* The small camera orb riding the avatar's lower-right edge. */
+.camOrb {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  line-height: 0;
+}
+
+.avatarCaption {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.avatarActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* ---- own profile (/settings/profile — reference 11) ---- */
+
+/* Hero WITHOUT the public page's cover band: profilepage's `.hero
+   .avatarRing` pulls the avatar up -51px to overlap a cover that this tab
+   does not have (it slid under the sticky topbar). This section owns its
+   own hero class instead, clearing the header with plain padding. */
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 18px 0 4px;
+}
+
+/* Edit profile / Connections: two outline pills side by side. */
+.pillRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 16px 0 18px;
+}
+
+/* Ritual/scrapbook lines under the handle — dot-marked, never a counter. */
+.ritualLines {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: 10px 0 0;
+  max-width: 100%;
+}
+
+.ritualLine {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--body-soft);
+  max-width: 100%;
+  min-width: 0;
+}
+
+.ritualLine > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ritualDot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text);
+}
+
+.ritualDotAlt {
+  background: var(--ok);
+}
+
+/* ---- POSTS / GALLERY / INTERESTS — the segmented row + grid (ref 11) ---- */
+
+.tabbed {
+  padding: 0 0 14px;
+}
+
+/* 12px/700 letterspaced labels; active = white with a 2px white underline,
+   inactive var(--inactive). ≥44px tap height. */
+.segRow {
+  display: flex;
+  align-items: stretch;
+  gap: 26px;
+}
+
+.segTab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 12px 0 10px;
+  min-height: 44px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--inactive);
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.segTab:hover {
+  color: var(--body-soft);
+}
+
+.segTabActive,
+.segTab.segTabActive:hover {
+  color: var(--text);
+  border-bottom-color: var(--text);
+}
+
+/* Entry-only fade when a panel swaps in (killed under reduced motion). */
+.tabPanel {
+  animation: segFade 160ms ease;
+}
+
+@keyframes segFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 3-across square media grid: 4px gaps, 10px-rounded tiles. */
+.mediaGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 10px 0 4px;
+}
+
+.mediaTile {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--panel-2);
+}
+
+.mediaTile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Muted centered empty line (words only — never a zero). */
+.tabEmpty {
+  margin: 0;
+  padding: 24px 0 12px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.tabEmpty a {
+  color: var(--body-soft);
+}
+
+/* "My gallery ›" — the quiet see-more row under the gallery grid. */
+.moreRow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 44px;
+  padding: 10px 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--body-soft);
+}
+
+.moreRow:hover {
+  color: var(--text);
+}
+
+/* Interest chips: the shared pill look (1px border, 999px, 13px). */
+.chipWrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 16px 0 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 13px;
+  color: var(--body-soft);
+  background: transparent;
+}
+
+/* ---- reduced motion: the hard contract ---- */
+@media (prefers-reduced-motion: reduce) {
+  .row,
+  .setRow,
+  .userCard,
+  .segTab {
+    transition: none;
+  }
+  .tabPanel {
+    animation: none;
+  }
+}

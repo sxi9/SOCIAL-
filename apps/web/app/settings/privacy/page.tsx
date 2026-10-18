@@ -21,6 +21,17 @@ import { setSettings as storeSettings } from '@/lib/store';
 import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
 import AppShell from '@/components/AppShell';
+import sm from '@/components/settings.module.css';
+
+const CHEV = { stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', fill: 'none' } as const;
+
+function ChevronLeft() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+      <path d="M14.5 6 L8.5 12 L14.5 18" {...CHEV} />
+    </svg>
+  );
+}
 
 function PrivacySettings() {
   const state = useAppState();
@@ -66,10 +77,11 @@ function PrivacySettings() {
   return (
     <div className="page">
       <header className="topbar">
-        <Link href="/settings/profile" className="btn btn-ghost btn-icon" aria-label="Back">
-          ←
+        {/* Royal v2 IA: reached from the /settings category page. */}
+        <Link href="/settings" className="btn btn-ghost btn-icon" aria-label="Back">
+          <ChevronLeft />
         </Link>
-        <h1>Privacy</h1>
+        <h1 className={sm.title}>Privacy &amp; safety</h1>
         <span />
       </header>
 

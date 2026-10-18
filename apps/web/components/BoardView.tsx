@@ -13,10 +13,8 @@ import {
   expiryLine,
   getListing,
   KIND_CHIP_LABEL,
-  KIND_EMOJI,
   KIND_LABEL,
   listBoard,
-  listingKindLine,
   listMine,
 } from '@/lib/listings';
 import { useAppState } from '@/lib/useStore';
@@ -142,17 +140,24 @@ export default function BoardView({
   const myArea = state.me?.area ?? null;
   const areaLabel = areaFilter ?? myArea ?? 'public cards';
 
+  // Royal v2 (ref 10): typographic chips — no emoji as UI icons.
   const chips: { key: Filter; label: string }[] = [
     { key: 'all', label: 'All' },
-    { key: 'plans', label: '🔥 Plans' },
-    ...LISTING_KINDS.map((k) => ({ key: k as Filter, label: `${KIND_EMOJI[k]} ${KIND_CHIP_LABEL[k]}` })),
-    { key: 'mine', label: '✦ Mine' },
+    { key: 'plans', label: 'Plans' },
+    ...LISTING_KINDS.map((k) => ({ key: k as Filter, label: KIND_CHIP_LABEL[k] })),
+    { key: 'mine', label: 'Mine' },
   ];
 
   return (
     <div>
-      {/* Royal: the board announces itself in the display serif. */}
-      <h2 className={st.boardHead}>The board</h2>
+      {/* Royal v2 (ref 10): serif head + the letterspaced "+ list something"
+          action on the same row (it opens the existing create sheet). */}
+      <div className={st.boardHeadRow}>
+        <h2 className={st.boardHead}>The board</h2>
+        <button type="button" className={st.listCta} onClick={() => setCreateOpen(true)}>
+          + List something
+        </button>
+      </div>
       <div className={st.chipRow} role="radiogroup" aria-label="Board filter">
         {chips.map((c) => (
           <button
@@ -180,7 +185,17 @@ export default function BoardView({
                 setAreaEditing((v) => !v);
               }}
             >
-              <span aria-hidden>📍</span>
+              <span aria-hidden>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M12 21 C8 16.6 5.5 13.4 5.5 10.2 a6.5 6.5 0 0 1 13 0 C18.5 13.4 16 16.6 12 21 Z"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinejoin="round"
+                  />
+                  <circle cx="12" cy="10" r="2.4" stroke="currentColor" strokeWidth="1.7" />
+                </svg>
+              </span>
               <span>{areaLabel}</span>
             </button>
             <input
@@ -233,13 +248,13 @@ export default function BoardView({
             </div>
           ) : null}
           {areaFilter === null && myArea === null ? (
-            <p className="muted small" style={{ margin: '0 16px 4px' }}>
-              No area set — you&rsquo;re seeing public cards only. Tap 📍 to browse an area, or set
-              yours when you post.
+            <p className="muted small" style={{ margin: '0 20px 4px' }}>
+              No area set — you&rsquo;re seeing public cards only. Tap the area pill to browse an
+              area, or set yours when you post.
             </p>
           ) : null}
           {areaFilter !== null ? (
-            <p className="muted small" style={{ margin: '0 16px 4px' }}>
+            <p className="muted small" style={{ margin: '0 20px 4px' }}>
               Browsing “{areaFilter}” — only cards shared publicly show outside their own area.
             </p>
           ) : null}
@@ -247,20 +262,8 @@ export default function BoardView({
       ) : null}
 
       <div className={st.cardList}>
-        <button
-          type="button"
-          className={`${st.kindChip} ${st.kindChipOn}`}
-          style={{ alignSelf: 'flex-start' }}
-          onClick={() => setCreateOpen(true)}
-        >
-          + Post to the board
-        </button>
-
         {filter === 'plans' ? (
           <div className={st.boardEmpty}>
-            <span aria-hidden style={{ fontSize: 28 }}>
-              🔥
-            </span>
             <h3>Plans are the live cards up top</h3>
             <p>
               Beacons burn out fast, so they get the strip above. Everything else on the board just
@@ -274,9 +277,6 @@ export default function BoardView({
           </p>
         ) : listings !== null && listings.length === 0 ? (
           <div className={st.boardEmpty}>
-            <span aria-hidden style={{ fontSize: 28 }}>
-              📋
-            </span>
             <h3>{filter === 'mine' ? 'Nothing posted yet' : 'The board is bare'}</h3>
             <p>
               {filter === 'mine'
@@ -360,66 +360,48 @@ function ListingCard({
     listing.photos.length > 0 ? listing.photos[0].thumb_url ?? listing.photos[0].url : null;
   const mine = meId !== undefined && listing.author.id === meId;
 
+  // Royal v2 (ref 10): one right-aligned value per row — seats for rides,
+  // the price text otherwise; place reviews carry their stars.
+  const value =
+    listing.kind === 'ride'
+      ? `${listing.details.seats} ${listing.details.seats === 1 ? 'seat' : 'seats'}`
+      : listing.kind === 'room'
+        ? listing.details.monthly_price_text
+        : listing.price_text;
+
   return (
+    // Royal v2 (ref 10): 76px board ROWS — 56px photo thumb on the left,
+    // letterspaced kind tag over the title, hairline between rows.
     <button type="button" className={st.lCard} onClick={onOpen}>
-      <div className={st.lCardMain}>
-        <div className={st.lCardTop}>
-          {/* Royal: typographic kind tag instead of the emoji glyph. */}
-          <span className={st.lKindTag}>{KIND_LABEL[listing.kind]}</span>
-          <span className={st.lTitle}>{listing.title}</span>
-          {mineView && listing.status !== 'active' ? (
-            <span className={st.statusTag}>{listing.status}</span>
-          ) : expiry ? (
-            <span className={st.lExpiry}>{expiry}</span>
-          ) : null}
-        </div>
-
-        {listing.kind === 'place_review' ? (
-          <span className={st.lLine} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            {/* Fixer r1: don't print the place name twice when the title IS the place name. */}
-            {listing.details.place_name !== listing.title ? <span>{listing.details.place_name}</span> : null}
-            {/* Royal: rating sits right-aligned on the row. */}
-            <span style={{ marginLeft: 'auto', flex: 'none' }}>
-              <Stars value={listing.details.rating} />
-            </span>
-          </span>
-        ) : (
-          <span className={st.lLine}>
-            {listingKindLine(listing)}
-            {listing.kind === 'ride' ? ` · ${listing.details.seats} ${listing.details.seats === 1 ? 'seat' : 'seats'}` : ''}
-          </span>
-        )}
-
-        {listing.kind === 'gig' && listing.details.tags.length > 0 ? (
-          <span className={st.tagRow}>
-            {listing.details.tags.map((t) => (
-              <span key={t} className={st.tag}>
-                {t}
-              </span>
-            ))}
-          </span>
-        ) : null}
-
-        <span className={st.lMeta}>
-          <Avatar avatar={listing.author.avatar} name={listing.author.display_name} size={18} />
-          <span>{mine ? 'You' : listing.author.display_name}</span>
-          <span aria-hidden>·</span>
-          <span>{listing.area}</span>
-          {listing.kind !== 'room' && listing.price_text ? (
-            <span className={st.lPrice}>{listing.price_text}</span>
-          ) : null}
-          {listing.kind === 'room' && listing.details.monthly_price_text ? (
-            <span className={st.lPrice}>{listing.details.monthly_price_text}</span>
-          ) : null}
-          {listing.my_contacted ? <span>· messaged ✓</span> : null}
-        </span>
-      </div>
       {thumb ? (
         <span className={st.lThumb} aria-hidden>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={thumb} alt="" loading="lazy" />
         </span>
       ) : null}
+      <div className={st.lCardMain}>
+        <span className={st.lKindTag}>{KIND_LABEL[listing.kind]}</span>
+        <span className={st.lTitle}>{listing.title}</span>
+        <span className={st.lMeta}>
+          <Avatar avatar={listing.author.avatar} name={listing.author.display_name} size={16} />
+          <span>{mine ? 'You' : listing.author.display_name}</span>
+          <span aria-hidden>·</span>
+          <span>{listing.area}</span>
+          {listing.my_contacted ? <span>· messaged ✓</span> : null}
+        </span>
+      </div>
+      <span className={st.lRight}>
+        {listing.kind === 'place_review' ? (
+          <Stars value={listing.details.rating} />
+        ) : value ? (
+          <span className={st.lValue}>{value}</span>
+        ) : null}
+        {mineView && listing.status !== 'active' ? (
+          <span className={st.statusTag}>{listing.status}</span>
+        ) : expiry ? (
+          <span className={st.lExpiry}>{expiry}</span>
+        ) : null}
+      </span>
     </button>
   );
 }

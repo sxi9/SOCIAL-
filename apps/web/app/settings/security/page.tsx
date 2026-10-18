@@ -44,6 +44,17 @@ import QrCode from '@/components/QrCode';
 import RecoveryCodes from '@/components/RecoveryCodes';
 import sheet from '@/components/beacons.module.css';
 import ap from '@/components/authpack.module.css';
+import sm from '@/components/settings.module.css';
+
+const CHEV = { stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', fill: 'none' } as const;
+
+function ChevronLeft() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+      <path d="M14.5 6 L8.5 12 L14.5 18" {...CHEV} />
+    </svg>
+  );
+}
 
 // ---- §1.73 TOTP setup sheet ---------------------------------------------------
 
@@ -569,14 +580,31 @@ function SecuritySettings() {
   return (
     <div className="page">
       <header className="topbar">
-        <Link href="/settings/profile" className="btn btn-ghost btn-icon" aria-label="Back">
-          ←
+        {/* Royal v2 IA: this page is the "Devices & security" category
+            (proto ref 52) — sessions first, then the sign-in locks. */}
+        <Link href="/settings" className="btn btn-ghost btn-icon" aria-label="Back">
+          <ChevronLeft />
         </Link>
-        <h1>Security</h1>
+        <h1 className={sm.title}>Devices &amp; security</h1>
         <span />
       </header>
 
       <div className="settings-section">
+        {/* ---- §1.1 sessions = the device registry (reference: SESSIONS first) ---- */}
+        <h2>Sessions</h2>
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <strong>Active sessions</strong>
+            <p className="muted small" style={{ margin: '4px 0 0' }}>
+              Every signed-in device — password, passkey or phone-approved alike. Revoking one
+              signs it out instantly.
+            </p>
+          </div>
+          <Link href="/settings/sessions" className="btn">
+            Open
+          </Link>
+        </div>
+
         {/* ---- §1.70 passkeys ---- */}
         <h2>Passkeys</h2>
         <div className="card">
@@ -807,20 +835,6 @@ function SecuritySettings() {
           </form>
         </div>
 
-        {/* ---- §1.1 sessions = the device registry ---- */}
-        <h2>Devices</h2>
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ flex: 1 }}>
-            <strong>Active sessions</strong>
-            <p className="muted small" style={{ margin: '4px 0 0' }}>
-              Every signed-in device — password, passkey or phone-approved alike. Revoking one
-              signs it out instantly.
-            </p>
-          </div>
-          <Link href="/settings/sessions" className="btn">
-            Open
-          </Link>
-        </div>
       </div>
 
       {totpSetupOpen ? <TotpSetupSheet onClose={() => setTotpSetupOpen(false)} /> : null}

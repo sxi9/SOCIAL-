@@ -92,14 +92,15 @@ export default function TeamUpSheet({
     >
       <div className={bz.sheet} role="dialog" aria-modal="true" aria-label="Pick your team">
         <div className={bz.sheetHead}>
-          <h2>Team up 🙌</h2>
+          {/* Royal v2 (ref 39): serif "Team up · <listing>" title. */}
+          <h2>Team up · {listing.title}</h2>
           <button type="button" className={bz.sheetClose} aria-label="Close" onClick={onClose}>
             ×
           </button>
         </div>
         <p className="muted small" style={{ margin: 0 }}>
-          Pick up to {TEAM_UP_MAX_PICKS} of the people who messaged about “{listing.title}” — you
-          all land in a project group chat together.
+          Pick up to {TEAM_UP_MAX_PICKS} of the people who messaged about this — you all land in a
+          project group chat together. Leave anytime.
         </p>
 
         {contacts === null && !error ? (

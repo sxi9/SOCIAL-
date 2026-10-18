@@ -15,6 +15,87 @@
   flex-direction: column;
 }
 
+/* ---- v2 cover band (proto 30): decorative gradient + floating controls ---- */
+
+.cover {
+  position: relative;
+  height: 128px;
+  flex: none;
+  background:
+    radial-gradient(150px 110px at 76% -8%, rgba(176, 148, 94, 0.5), transparent 72%),
+    radial-gradient(240px 170px at 12% 30%, rgba(64, 82, 132, 0.45), transparent 72%),
+    linear-gradient(140deg, #1b2438, #141a2a 55%, #10141f);
+  border-bottom: 1px solid var(--border);
+}
+
+@media (prefers-color-scheme: light) {
+  .cover {
+    background:
+      radial-gradient(150px 110px at 76% -8%, rgba(176, 148, 94, 0.35), transparent 72%),
+      radial-gradient(240px 170px at 12% 30%, rgba(98, 116, 166, 0.35), transparent 72%),
+      linear-gradient(140deg, #dfe4f0, #d4daea 55%, #cdd4e6);
+  }
+}
+
+/* Floating controls over the cover: back orb left, ···/Edit right. */
+.coverBar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 0;
+}
+
+.orbBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border: none;
+  border-radius: 50%;
+  background: rgba(10, 12, 17, 0.45);
+  color: #f3f5f9;
+  cursor: pointer;
+  line-height: 0;
+  backdrop-filter: blur(6px);
+}
+
+.orbBtn:hover {
+  background: rgba(10, 12, 17, 0.65);
+}
+
+/* The owner's Edit affordance, same floating treatment as the orbs. */
+.coverPill {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  border-radius: 999px;
+  background: rgba(10, 12, 17, 0.45);
+  color: #f3f5f9;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+
+.coverPill:hover {
+  background: rgba(10, 12, 17, 0.65);
+}
+
+/* Visually hidden page heading (the floating bar replaced the topbar h1). */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* ---- hero: ringed avatar + centered identity ---- */
 
 .hero {
@@ -22,7 +103,12 @@
   flex-direction: column;
   align-items: center;
   text-align: center;
-  padding: 18px 0 4px;
+  padding: 0 0 4px;
+}
+
+/* The avatar overlaps the cover band (proto 30). */
+.hero .avatarRing {
+  margin-top: -51px;
 }
 
 /* Silver conic ring, 3px, with a bg "gap ring" inside (story-ring look). */
@@ -267,4 +353,109 @@
 .flat li > span > span:last-child {
   font-size: 12px;
   color: var(--muted);
+}
+
+/* ---- v2 (proto 30): one-row actions — Connect filled / Message outline /
+   anon orb — on OTHER profiles (own profile keeps the stacked column). ---- */
+
+.actionsRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 16px 0 18px;
+}
+
+.actionsRow .pillBtn {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+/* Filled variant: the accent gradient with ink text (primary Connect). */
+.pillPrimary {
+  background: var(--accent-grad);
+  border-color: transparent;
+  color: var(--accent-ink);
+}
+
+.pillPrimary:hover:not(:disabled) {
+  background: var(--accent-grad);
+  filter: brightness(1.05);
+}
+
+/* The anonymous-send orb: round, outline, the mask emoji as content. */
+.anonOrb {
+  flex: none;
+  width: 46px;
+  height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 50%;
+  background: transparent;
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.anonOrb:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.anonOrb:active {
+  transform: scale(0.94);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anonOrb {
+    transition: none;
+  }
+  .anonOrb:active {
+    transform: none;
+  }
+}
+
+@media (prefers-color-scheme: light) {
+  .anonOrb {
+    border-color: rgba(18, 20, 28, 0.55);
+  }
+}
+
+/* ---- v2 (proto 30): interest chips under the handle — shared tags get the
+   white border + a " · shared" word; the rest stay quiet outlines. ---- */
+
+.intChips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 0 2px;
+}
+
+.intChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 5px 13px;
+  font-size: 12.5px;
+  color: var(--body-soft);
+  background: transparent;
+}
+
+.intChipShared {
+  border-color: color-mix(in srgb, var(--accent) 75%, transparent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.intChipShared .sharedWord {
+  color: var(--muted);
+  font-weight: 400;
 }

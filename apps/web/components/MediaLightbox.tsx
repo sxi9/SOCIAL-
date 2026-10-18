@@ -28,6 +28,8 @@ export default function MediaLightbox({
   const [scale, setScale] = useState(1);
   const [tx, setTx] = useState(0);
   const [ty, setTy] = useState(0);
+  // v2 (proto 42): the ··· overflow holding "Open original".
+  const [menu, setMenu] = useState(false);
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef<{
     startDist: number;
@@ -177,13 +179,66 @@ export default function MediaLightbox({
             <img src={src} alt={alt} className={st.img} draggable={false} />
           </div>
         </div>
+        {/* v2 (proto 42): close orb left, zoom hint center, ··· overflow right. */}
         <div className={st.topBar}>
-          <a className={st.barBtn} href={originalUrl ?? src} target="_blank" rel="noreferrer">
-            Open original
-          </a>
-          <button type="button" className={st.barBtn} aria-label="Close" onClick={onClose}>
-            ✕
+          <button type="button" className={st.orb} aria-label="Close" onClick={onClose}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <path
+                d="M6.5 6.5 17.5 17.5 M17.5 6.5 6.5 17.5"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+              />
+            </svg>
           </button>
+          <span className={st.hint}>pinch or double-tap to zoom</span>
+          <div className={st.menuWrap}>
+            <button
+              type="button"
+              className={st.orb}
+              aria-label="More options"
+              aria-expanded={menu}
+              onClick={() => setMenu((v) => !v)}
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                <circle cx="5.5" cy="12" r="1.6" />
+                <circle cx="12" cy="12" r="1.6" />
+                <circle cx="18.5" cy="12" r="1.6" />
+              </svg>
+            </button>
+            {menu ? (
+              <>
+                <button type="button" className={st.menuBackdrop} aria-label="Close menu" onClick={() => setMenu(false)} />
+                <div className={st.menu} role="menu">
+                  <a
+                    role="menuitem"
+                    href={originalUrl ?? src}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={() => setMenu(false)}
+                  >
+                    Open original
+                  </a>
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+        {/* proto 42 bottom action row. Share/Edit have no affordance on a bare
+            viewer, so only Save renders (download via the existing URL). */}
+        <div className={st.bottomBar}>
+          <a className={st.action} href={originalUrl ?? src} download>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <path
+                d="M12 4.5 v10.2 M7.8 11 l4.2 4.2 4.2 -4.2 M5 19.3 h14"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <span>Save</span>
+          </a>
         </div>
       </div>
     </Portal>

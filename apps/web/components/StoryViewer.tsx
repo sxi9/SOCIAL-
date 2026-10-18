@@ -197,7 +197,7 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
           <Avatar avatar={group.author.avatar} name={group.author.display_name} size={34} />
           <span className={st.viewerHeadName}>
             {isMine ? 'Your story' : group.author.display_name}
-            <span className={st.viewerExpiry}>{expiresLabel(story)}</span>
+            <span className={st.viewerExpiry}>{expiresLabel(story)} · hold to pause</span>
           </span>
           <button type="button" className={st.viewerClose} aria-label="Close stories" onClick={onClose}>
             ×
@@ -290,7 +290,7 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
         {isMine ? (
           <div className={st.viewerFooter}>
             <button type="button" className={st.viewerBtn} onClick={() => setViewersOpen(true)}>
-              👀 Viewers
+              Viewers
             </button>
             {/* v0.8b §1.66: the author's canvas switch — 'off' keeps existing
                 overlays (they were invited); it stops NEW ones. */}

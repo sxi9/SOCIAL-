@@ -21,34 +21,24 @@
 /* ---- the "+ I'm bored" trigger (Royal: full-width dashed ghost pill) ---- */
 
 .boredWrap {
-  position: sticky;
-  bottom: calc(14px + env(safe-area-inset-bottom));
-  z-index: 15;
+  /* Royal v2 (ref 10): the dashed pill sits in flow, right under the live
+     beacon card — no longer a sticky bottom FAB. */
+  flex: none;
   display: flex;
-  /* Royal redesign: no longer a bottom-right FAB — the trigger stretches the
-     full width as a quiet dashed pill (board.module.css .cardList keeps
-     110px bottom clearance so everything scrolls out from under it). */
   justify-content: stretch;
-  margin-top: auto;
-  padding: 10px 16px 0;
-  pointer-events: none;
+  padding: 10px 20px 0;
 }
 
 .boredBtn {
-  pointer-events: auto;
   flex: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 9px;
   border: 1.5px dashed #4a5060;
-  border-radius: 999px;
-  padding: 11px 16px;
-  /* Floating over scrolling cards — a see-through pill collides with their
-     text; keep the dashed ghost look on a blurred bg scrim instead. */
-  background: color-mix(in srgb, var(--bg) 86%, transparent);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  border-radius: 14px;
+  padding: 12px 16px;
+  background: none;
   color: var(--muted);
   font-size: 14px;
   font-weight: 600;
@@ -68,42 +58,30 @@
 /* ---- live beacon strip ---- */
 
 .strip {
-  /* The strip is a flex child of the .page column; without this, overflowing
-     board content below crushes it to its padding height (fixer r1). */
+  /* Royal v2 (ref 10): full-width beacon cards stacked vertically.
+     flex:none — the strip is a flex child of the .page column; without this,
+     overflowing board content below crushes it (fixer r1). */
   flex: none;
   display: flex;
+  flex-direction: column;
   gap: 10px;
-  overflow-x: auto;
-  padding: 12px 16px 6px;
-  scrollbar-width: none;
-  scroll-snap-type: x proximity;
-}
-
-.strip::-webkit-scrollbar {
-  display: none;
+  padding: 12px 20px 0;
 }
 
 .card {
-  flex: none;
-  /* Fixer r1: 78vw capped the card at ~304px on a 390px phone while the strip
-     had ~358px of room, so .cardTitle ellipsized a custom vibe label ("You ·
-     wa…") with visible free viewport space left over. Use the real strip
-     width (16px side padding each side + a 16px peek of the next card) and a
-     roomier desktop cap so the title keeps its flex share. */
-  width: min(calc(100vw - 48px), 340px);
-  scroll-snap-align: start;
+  position: relative;
+  width: 100%;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 12px 14px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  box-shadow: var(--shadow);
 }
 
-.cardMine {
-  /* Royal: a live/own beacon reads as the lit card — bright hairline. */
+/* Royal v2: a LIVE beacon reads as the lit card — accent hairline. */
+.cardLive {
   border-color: var(--border-accent);
 }
 
@@ -112,40 +90,55 @@
   background: linear-gradient(170deg, color-mix(in srgb, var(--ok) 12%, var(--panel)), var(--panel) 70%);
 }
 
-.cardTop {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
+/* Vibe glyph — still used by the sparked-plan header (PlanHeader.tsx). */
 .vibeEmoji {
   font-size: 22px;
   line-height: 1;
 }
 
+/* Royal v2 card anatomy (ref 10): 46px creator avatar · title/meta stack ·
+   joiner pile + Join pill on the right; the kebab floats top-right. */
+.cardTop {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-right: 18px; /* clear the floating kebab */
+}
+
 .cardTitle {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cardTitle strong {
+  font-size: 15px;
   font-weight: 600;
-  font-size: 14px;
-  white-space: nowrap;
+  line-height: 1.3;
   overflow: hidden;
-  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  word-break: break-word;
 }
 
-.countdown {
-  flex: none;
-  font-size: 12px;
-  font-weight: 600;
+.cardMeta {
+  font-size: 12.5px;
   color: var(--muted);
-  background: var(--panel-2);
-  border-radius: 999px;
-  padding: 3px 9px;
 }
 
-.countdownSoon {
-  color: var(--accent-ink);
-  background: var(--accent);
+.cardMetaSoon {
+  color: var(--text);
+}
+
+.cardSide {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .cardNote {
@@ -180,19 +173,6 @@
   margin-left: 0;
 }
 
-/* Royal sizing: the creator leads at 40px, joiner faces pile at 24px. The
-   Avatar component sets its size inline, so these overrides need !important
-   (the strip's JSX is outside this reskin's reach). */
-.pile :global(.avatar) {
-  width: 24px !important;
-  height: 24px !important;
-}
-
-.pile > :first-child :global(.avatar) {
-  width: 40px !important;
-  height: 40px !important;
-}
-
 .pileMore {
   margin-left: -8px;
   width: 24px;
@@ -225,14 +205,6 @@
   }
 }
 
-.needs {
-  /* Faces-not-counts language stays; Royal tones the meta down to muted. */
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--muted);
-  white-space: nowrap;
-}
-
 .needsOne {
   animation: needs-pulse 1.6s ease-in-out infinite;
 }
@@ -245,12 +217,6 @@
   50% {
     opacity: 0.55;
   }
-}
-
-.cardActions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .joinBtn {
@@ -298,12 +264,24 @@
   animation: pile-pop 300ms cubic-bezier(0.2, 0.9, 0.3, 1.35);
 }
 
+/* Royal v2: the compact Join pill on the card's right edge (ref 10). */
+.joinSm {
+  flex: none;
+  width: auto;
+  padding: 9px 18px;
+  font-size: 13.5px;
+  white-space: nowrap;
+}
+
 .cardKebab {
   flex: none;
-  width: 32px;
-  height: 32px;
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
-  border: 1px solid var(--border);
+  border: none;
   background: transparent;
   color: var(--muted);
   font-size: 16px;
@@ -371,7 +349,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 10px 16px 0;
+  margin: 10px 20px 0;
   padding: 9px 14px;
   border: 1px dashed var(--border);
   border-radius: 14px;
@@ -402,7 +380,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 10px 16px 0;
+  margin: 10px 20px 0;
   padding: 10px 14px;
   border-radius: 14px;
   background: var(--panel-2);
@@ -503,7 +481,14 @@
 .sheetHead h2 {
   flex: 1;
   margin: 0;
-  font-size: 18px;
+  /* Royal v2: sheet titles in the display serif (refs 34/39). */
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 20px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sheetClose {
@@ -667,14 +652,15 @@
 
 .lightBtn {
   width: 100%;
-  margin-top: 18px;
+  margin-top: 14px;
   border: none;
-  border-radius: 14px;
+  border-radius: 16px;
   padding: 13px;
-  background: linear-gradient(145deg, var(--bored-yellow), var(--bored-yellow-deep));
-  color: var(--bored-ink);
-  font-size: 15.5px;
-  font-weight: 800;
+  /* Royal v2 (ref 34): the white/silver primary gradient, ink text. */
+  background: var(--accent-grad);
+  color: var(--accent-ink);
+  font-size: 15px;
+  font-weight: 700;
   cursor: pointer;
   transition: transform 120ms ease, filter 120ms ease;
 }
@@ -1111,6 +1097,135 @@
   cursor: pointer;
 }
 
+/* ---- Royal v2 create-sheet rows (ref 34) ---- */
+
+/* Label-left / control-right row ("Sparks at — 3 people +"). */
+.sheetRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.sheetRowLabel {
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.expiryNote {
+  margin: 14px 0 0;
+  font-size: 12.5px;
+  color: var(--faint);
+}
+
+/* ---- Royal v2 beacon detail (ref 35) ---- */
+
+/* Decorative map strip with the pulsing pin + place pill. */
+.mapStrip {
+  position: relative;
+  height: 110px;
+  margin-top: 4px;
+  border-radius: 14px;
+  overflow: hidden;
+  background:
+    radial-gradient(180px 120px at 62% 20%, rgba(76, 212, 160, 0.3), transparent 70%),
+    radial-gradient(140px 110px at 15% 85%, rgba(76, 212, 160, 0.16), transparent 70%),
+    linear-gradient(160deg, #1d3a2f, #142420);
+  display: flex;
+  align-items: flex-end;
+  padding: 10px;
+}
+
+.mapPin {
+  position: absolute;
+  left: 48%;
+  top: 40%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2.5px solid rgba(255, 255, 255, 0.6);
+  animation: pulseGlow 2.2s ease-out infinite;
+}
+
+@keyframes pulseGlow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.35);
+  }
+  70% {
+    box-shadow: 0 0 0 9px rgba(255, 255, 255, 0);
+  }
+}
+
+/* The by-line under the strip: 46px avatar + serif name + meta. */
+.detailBy {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  color: inherit;
+}
+
+.detailByName {
+  flex: 1;
+  min-width: 0;
+}
+
+.detailByName strong {
+  display: block;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 19px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detailByName span {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* The roles-style card (ref 35) — here it holds the Who's-in faces. */
+.rolesCard {
+  margin-top: 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+
+.rolesLabel {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+/* Side-by-side outline pills (Join · Open chat). */
+.pillRow {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.pillRow > * {
+  flex: 1;
+}
+
+.detailFoot {
+  margin: 12px 0 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--faint);
+}
+
 /* Beacon detail sheet (§1.47): facts + Who's in + creator tools. */
 
 .detailFactRow {
@@ -1210,6 +1325,7 @@
   .pilePop,
   .joinPop,
   .needsOne,
+  .mapPin,
   .sheetBackdrop,
   .sheet {
     animation: none;

@@ -9,12 +9,13 @@ import type { ForwardMessageResponse, Message } from '@socialchat/shared';
 import { FORWARD_MAX_TARGETS } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
 import * as db from '@/lib/db';
-import { canPostIn, conversationTitle, dmPeer } from '@/lib/format';
+import { canPostIn, conversationTitle, dmPeer, messageSnippet } from '@/lib/format';
 import { uuidv7 } from '@/lib/ids';
 import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
 import sheet from './beacons.module.css';
+import cm from './community.module.css';
 import st from './social.module.css';
 
 interface ForwardSheetProps {
@@ -108,19 +109,24 @@ export default function ForwardSheet({ message, onClose }: ForwardSheetProps) {
             ×
           </button>
         </div>
+        {/* Royal v2 (proto 15): the quoted message rides a preview pill. */}
+        <div className={cm.fwdQuote} title={messageSnippet(message)}>
+          {messageSnippet(message)}
+        </div>
         <input
           className="input"
           type="search"
           placeholder="Search chats"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          style={{ marginBottom: 10 }}
+          style={{ marginBottom: 4 }}
         />
-        <div style={{ maxHeight: '45dvh', overflowY: 'auto' }}>
-          {targets.length === 0 ? (
-            <p className={st.connEmpty}>No chats you can post into match.</p>
-          ) : (
-            targets.map((c) => {
+        {/* Recent chats as a horizontal avatar row with check badges. */}
+        {targets.length === 0 ? (
+          <p className={st.connEmpty}>No chats you can post into match.</p>
+        ) : (
+          <div className={cm.fwdTargets}>
+            {targets.map((c) => {
               const peer = dmPeer(c, meId);
               const title = conversationTitle(c, meId);
               const on = picked.has(c.id);
@@ -128,23 +134,31 @@ export default function ForwardSheet({ message, onClose }: ForwardSheetProps) {
                 <button
                   key={c.id}
                   type="button"
-                  className={`${st.fwdRow}${on ? ` ${st.fwdRowOn}` : ''}`}
+                  className={`${cm.fwdTarget}${on ? ` ${cm.fwdTargetOn}` : ''}`}
                   aria-pressed={on}
+                  title={c.type === 'channel' ? `${title} · channel` : title}
                   onClick={() => toggle(c.id)}
                 >
-                  <Avatar avatar={peer ? peer.avatar : c.avatar} name={title} size={34} />
-                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {title}
-                    {c.type === 'channel' ? <span className={st.channelMark}> · channel</span> : null}
+                  <span className={cm.fwdFace}>
+                    <Avatar avatar={peer ? peer.avatar : c.avatar} name={title} size={52} />
+                    <span className={cm.fwdBadge} aria-hidden>
+                      <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                        <path
+                          d="M2.2 6.4 L4.8 9 L9.8 3.4"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </span>
                   </span>
-                  <span className={st.fwdCheck} aria-hidden>
-                    {on ? '✓' : ''}
-                  </span>
+                  <span className={cm.fwdTargetName}>{title}</span>
                 </button>
               );
-            })
-          )}
-        </div>
+            })}
+          </div>
+        )}
         {error ? <p className="error-text">{error}</p> : null}
         <button
           type="button"
@@ -153,7 +167,18 @@ export default function ForwardSheet({ message, onClose }: ForwardSheetProps) {
           disabled={busy || picked.size === 0}
           onClick={() => void send()}
         >
-          {done ? 'Forwarded ✓' : busy ? 'Forwarding…' : picked.size > 1 ? `Forward to ${picked.size} chats` : 'Forward'}
+          {done
+            ? 'Forwarded ✓'
+            : busy
+              ? 'Forwarding…'
+              : picked.size > 1
+                ? `Send to ${picked.size} chats`
+                : picked.size === 1
+                  ? `Send to ${(() => {
+                      const c = state.conversations.get([...picked][0]);
+                      return c ? conversationTitle(c, meId) : 'chat';
+                    })()}`
+                  : 'Send'}
         </button>
       </div>
     </div>

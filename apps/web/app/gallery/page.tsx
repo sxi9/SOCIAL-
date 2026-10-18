@@ -13,11 +13,12 @@ import TabPage from '@/components/TabPage';
 
 type Filter = 'all' | 'image' | 'video' | 'saved';
 
+// v2 Royal (proto 41): plain-word chips — no emoji as UI icons.
 const CHIPS: { key: Filter; label: string }[] = [
   { key: 'all', label: 'All' },
-  { key: 'image', label: '📷 Photos' },
-  { key: 'video', label: '🎞 Videos' },
-  { key: 'saved', label: '⭐ Saved stories' },
+  { key: 'image', label: 'Photos' },
+  { key: 'video', label: 'Videos' },
+  { key: 'saved', label: 'Saved stories' },
 ];
 
 export default function GalleryPage() {
@@ -67,18 +68,28 @@ export default function GalleryPage() {
   return (
     <TabPage active="profile">
       <div className="page">
-        <div className="settings-section">
-          <h1 style={{ margin: 0 }}>My gallery</h1>
-          <p className="muted small" style={{ margin: '4px 0 10px' }}>
-            Everything you’ve shared, in one private place — only you see this. Stories land here
-            automatically when they expire.
-          </p>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }} role="group" aria-label="Filter gallery">
+        <header className="topbar">
+          <Link href="/settings/profile" className="btn btn-ghost btn-icon" aria-label="Back">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <path
+                d="M14.5 5.5 8 12l6.5 6.5"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </Link>
+          <h1 style={{ fontSize: 20 }}>My gallery</h1>
+        </header>
+        <div className="settings-section" style={{ marginTop: 10 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }} role="group" aria-label="Filter gallery">
             {CHIPS.map((c) => (
               <button
                 key={c.key}
                 type="button"
                 className={`btn${filter === c.key ? ' btn-primary' : ''}`}
+                style={{ padding: '7px 13px', fontSize: 13 }}
                 aria-pressed={filter === c.key}
                 onClick={() => setFilter(c.key)}
               >
@@ -101,7 +112,8 @@ export default function GalleryPage() {
               </p>
             </div>
           ) : (
-            <div className="galleryGrid">
+            // proto 41: a straight 3-across grid, tight gap.
+            <div className="galleryGrid" style={{ gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
               {items.map((item) => (
                 <span key={item.attachment.id} className="galleryCell">
                   <button
@@ -114,12 +126,22 @@ export default function GalleryPage() {
                     <img src={item.attachment.thumb_url ?? item.attachment.url} alt="" loading="lazy" />
                     {item.attachment.kind === 'video' ? (
                       <span className="galleryBadge" aria-hidden>
-                        ▶
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M8.5 5.8 18.2 12 8.5 18.2 Z" />
+                        </svg>
                       </span>
                     ) : null}
                     {item.saved ? (
+                      // proto 41: the saved-story star badge.
                       <span className="galleryBadge galleryBadgeLeft" aria-hidden title="Saved story">
-                        ⭐
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                          <path
+                            d="M12 4.2 l2.3 4.7 5.2 0.75 -3.75 3.66 0.88 5.15 L12 16 l-4.63 2.46 0.88 -5.15 L4.5 9.65 l5.2 -0.75 Z"
+                            stroke="currentColor"
+                            strokeWidth="1.7"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
                       </span>
                     ) : null}
                   </button>
@@ -130,7 +152,15 @@ export default function GalleryPage() {
                       aria-label="Delete from gallery"
                       onClick={() => void removeSave(item)}
                     >
-                      🗑
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+                        <path
+                          d="M5 7 h14 M10 7 V5.2 a1 1 0 0 1 1 -1 h2 a1 1 0 0 1 1 1 V7 M7.5 7 l0.8 12 a1.4 1.4 0 0 0 1.4 1.3 h4.6 a1.4 1.4 0 0 0 1.4 -1.3 L16.5 7 M10.2 10.5 v6 M13.8 10.5 v6"
+                          stroke="currentColor"
+                          strokeWidth="1.7"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
                     </button>
                   ) : null}
                 </span>
@@ -148,6 +178,10 @@ export default function GalleryPage() {
               {busy ? 'Loading…' : 'Load more'}
             </button>
           ) : null}
+          <p className="muted small" style={{ margin: '12px 0 0' }}>
+            Everything you’ve shared, in one private place — only you see this. Stories land here
+            automatically when they expire.
+          </p>
         </div>
       </div>
       {zoom ? (

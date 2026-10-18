@@ -476,7 +476,8 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 12px 16px calc(16px + env(safe-area-inset-bottom));
+  /* Royal v2: 20px screen gutter (handoff spacing scale). */
+  padding: 12px 20px calc(16px + env(safe-area-inset-bottom));
   max-width: 560px;
   margin: 0 auto;
   width: 100%;
@@ -503,8 +504,8 @@
 .composerCard {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px 14px;
+  border-radius: 18px;
+  padding: 14px;
 }
 
 /* Royal: posts are edge-to-edge rows on the page — no per-post card chrome,
@@ -514,7 +515,7 @@
   border: none;
   border-radius: 0;
   padding: 16px 20px;
-  margin: 0 -16px; /* bleed across .feedWrap's 16px side padding */
+  margin: 0 -20px; /* bleed across .feedWrap's 20px side padding */
 }
 
 .postCard + .postCard {
@@ -522,22 +523,147 @@
   border-top: 1px solid var(--border);
 }
 
+/* Royal v2 (ref 44): avatar + borderless writing area. */
+.composerTop {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
 .composerCard textarea {
+  flex: 1;
   width: 100%;
-  min-height: 56px;
-  resize: vertical;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
+  min-height: 52px;
+  resize: none;
+  background: none;
+  border: none;
   color: var(--text);
-  border-radius: 12px;
-  padding: 9px 12px;
+  padding: 7px 0 0;
   font: inherit;
   font-size: 16px; /* iOS: <16px form controls auto-zoom */
+  line-height: 1.45;
   outline: none;
 }
 
-.composerCard textarea:focus {
-  border-color: var(--accent);
+.composerCard textarea::placeholder {
+  color: var(--inactive);
+}
+
+/* Photo thumbs + the dashed add tile (ref 44). */
+.photoStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.photoThumb {
+  position: relative;
+  width: 86px;
+  height: 86px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+.photoThumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.photoAddTile {
+  width: 86px;
+  height: 86px;
+  border-radius: 14px;
+  border: 1.5px dashed #4a5060;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.photoAddTile:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The poll builder card (ref 44): "Add a poll" head + option rows. */
+.pollBuilder {
+  margin-top: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pollBuilderHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14.5px;
+  font-weight: 700;
+}
+
+.pollBuilderHead > :last-child {
+  color: var(--muted);
+  line-height: 0;
+}
+
+.addOptionBtn {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+/* Audience row (ref 44): label left, value + chevron right. */
+.audienceRow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  margin-top: 14px;
+  padding: 12px 2px 10px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border);
+  color: var(--text);
+  font: inherit;
+  font-size: 14.5px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.audienceRow > :first-child {
+  color: var(--muted);
+  line-height: 0;
+}
+
+.audienceVal {
+  margin-left: auto;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.composerNote {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--faint);
 }
 
 .composerFoot {
@@ -739,11 +865,11 @@
 }
 
 .endCard h3 {
-  margin: 10px 0 4px;
+  margin: 12px 0 4px;
   color: var(--text);
   font-family: var(--font-display);
   font-weight: 400;
-  font-size: 16px;
+  font-size: 19px;
 }
 
 .endCard p {
@@ -1766,7 +1892,8 @@
 
 /* ==================== feed grid view (owner fix round) ==================== */
 
-/* The lane toggle and the grid|list layout chips share one bar. */
+/* The lane toggle and the refresh shortcut share one bar (the grid|list
+   segmented toggle moved to the header — Royal v2 ref 09). */
 .laneBar {
   display: flex;
   align-items: stretch;
@@ -1777,12 +1904,33 @@
   flex: 1;
 }
 
+.laneRefresh {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 0;
+}
+
+.laneRefresh:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Header segmented grid|list toggle (ref 09). */
 .layoutToggle {
+  flex: none;
   display: flex;
   gap: 3px;
   padding: 3px;
-  background: var(--panel);
-  border: 1.5px solid var(--border);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
   border-radius: 12px;
 }
 
@@ -1791,12 +1939,14 @@
   align-items: center;
   justify-content: center;
   width: 34px;
+  height: 26px;
   padding: 0;
   border: none;
   border-radius: 9px;
   background: none;
   color: var(--inactive);
   cursor: pointer;
+  line-height: 0;
 }
 
 .layoutBtn[aria-pressed='true'] {
@@ -1804,22 +1954,24 @@
   color: var(--accent);
 }
 
-/* The 3-up square mosaic — edge-to-edge across .feedWrap's 16px gutters,
-   the same bleed trick as .postCard. Same posts, same order, same paging. */
+/* Royal v2 mosaic (ref 09): 3 columns, 118px rows, 4px gap, rounded tiles;
+   the first media tile spans 2×2. 20px page gutter → the grid's 14px. */
 .feedGrid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 2px;
-  margin: 0 -16px;
+  grid-auto-rows: 118px;
+  grid-auto-flow: dense;
+  gap: 4px;
+  margin: 0 -6px;
 }
 
 .gridTile {
   position: relative;
-  aspect-ratio: 1;
   width: 100%;
+  height: 100%;
   padding: 0;
   border: none;
-  border-radius: 0;
+  border-radius: 14px;
   background: var(--panel-2);
   color: var(--text);
   font: inherit;
@@ -1835,6 +1987,64 @@
   display: block;
 }
 
+/* The FIRST media tile: 2 columns × 2 rows with the author pill overlay. */
+.gridTileHero {
+  grid-column: span 2;
+  grid-row: span 2;
+}
+
+.gridAuthorPill {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 16px);
+  background: rgba(10, 12, 17, 0.72);
+  color: #fff;
+  border-radius: 999px;
+  padding: 3px 10px 3px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Poll tiles are panel cards in the mosaic (ref 09). */
+.gridTilePoll {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  padding: 12px;
+}
+
+.gridPollIcon {
+  color: var(--muted);
+  line-height: 0;
+}
+
+.gridPollQ {
+  margin-top: auto;
+  font-size: 13.5px;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  word-break: break-word;
+}
+
+.gridPollMeta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
 /* A video tile that has no poster yet: a quiet play slate. */
 .gridVideoSlate {
   display: flex;
@@ -1842,17 +2052,17 @@
   height: 100%;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
   color: var(--muted);
+  line-height: 0;
 }
 
-/* Kind / video marker in the tile corner — a symbol, never a number. */
+/* Video marker in the tile corner — a symbol, never a number. */
 .gridBadge {
   position: absolute;
-  top: 6px;
-  right: 7px;
-  font-size: 13px;
-  line-height: 1;
+  top: 8px;
+  right: 8px;
+  color: #fff;
+  line-height: 0;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.65));
 }
 
@@ -1886,10 +2096,10 @@
   text-overflow: ellipsis;
 }
 
-/* Inside the grid's post sheet: cancel .postCard's -16px edge bleed so the
+/* Inside the grid's post sheet: cancel .postCard's -20px edge bleed so the
    full card sits flush within the sheet's own padding. */
 .sheetPostWrap {
-  padding: 0 16px;
+  padding: 0 20px;
 }
 
 /* ======================= reduced-motion guards ======================= */

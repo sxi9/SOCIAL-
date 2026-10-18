@@ -1,614 +1,394 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+// The Profile tab (Royal v2, proto ref 11): your OWN profile, not a settings
+// list any more. Centered silver-ring hero, serif name, "@user · mood",
+// ritual lines drawn from your real recent activity (never numeric totals —
+// PSYCHOLOGY design rule 3), the Edit-profile / Connections pills, the
+// 3-photo strip, and the RECENTLY rows. Editing moved to /settings/account;
+// the settings categories live behind the prefs-sliders icon → /settings.
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import {
-  AREA_MAX_CHARS,
-  MAX_AVATAR_SOURCE_BYTES,
-  NAME_STYLES,
-  type AvatarMotion,
-  type AvatarResponse,
-  type NameStyle,
-  type UpdateMeResponse,
+import type {
+  Activity,
+  ActivityResponse,
+  Attachment,
+  FeedResponse,
+  GalleryItem,
+  GalleryResponse,
+  Profile,
+  ProfileResponse,
 } from '@socialchat/shared';
-import { api, ApiError } from '@/lib/api';
-import { logout } from '@/lib/connection';
+import { api } from '@/lib/api';
 import { refreshMyMood } from '@/lib/mood';
-import { disablePush, getPushSubscription, pushSupported } from '@/lib/push';
-import { PushExplainerSheet } from '@/components/PushExplainer';
-import ImageEditSheet from '@/components/ImageEditSheet';
-import { toast } from '@/lib/toast';
-import { setMe } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
+import { useReducedMotion } from '@/lib/useReducedMotion';
+import ActivityStrip from '@/components/ActivityStrip';
 import Avatar from '@/components/Avatar';
-import MoodChip from '@/components/MoodChip';
-import MoodSheet from '@/components/MoodSheet';
-import ProfileEditor from '@/components/ProfileEditor';
-import { RescueCard } from '@/components/RescueSheet';
 import StyledName from '@/components/StyledName';
 import TabPage from '@/components/TabPage';
+import { RescueCard } from '@/components/RescueSheet';
 import idm from '@/components/identity.module.css';
+import pp from '@/components/profilepage.module.css';
+import sm from '@/components/settings.module.css';
+import st from '@/components/social.module.css';
 
-/** v0.7.1 (§1.56): per-browser unblock steps for the 'denied' state — the
- * page cannot re-ask, so the row says exactly where the switch lives. */
-function unblockSteps(): string {
-  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
-  if (/iPhone|iPad|iPod/.test(ua)) {
-    return 'iPhone/iPad: add Bored Chat to your home screen (Share → Add to Home Screen), then iOS Settings → Notifications → Bored Chat → Allow Notifications.';
-  }
-  if (/Firefox/.test(ua)) {
-    return 'Firefox: tap the permissions icon left of the address bar → Notifications → remove the "Blocked" entry, then reload and enable here.';
-  }
-  if (/Edg\//.test(ua)) {
-    return 'Edge: tap the lock icon in the address bar → Permissions for this site → Notifications → Allow, then reload and enable here.';
-  }
-  if (/Safari/.test(ua) && !/Chrome|Chromium|Android/.test(ua)) {
-    return 'Safari: menu Safari → Settings → Websites → Notifications → set this site to Allow, then reload and enable here.';
-  }
-  return 'Chrome: tap the lock/tune icon in the address bar → Site settings → Notifications → Allow, then reload and enable here.';
+/* Stroke icons — 24 viewBox, 1.7px, round caps (the Tabs.tsx family). */
+const S = { stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', fill: 'none' } as const;
+
+function LinkIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+      <path d="M10.2 13.8 a3.6 3.6 0 0 0 5.1 0 l2.9 -2.9 a3.6 3.6 0 0 0 -5.1 -5.1 l-1.6 1.6" {...S} />
+      <path d="M13.8 10.2 a3.6 3.6 0 0 0 -5.1 0 l-2.9 2.9 a3.6 3.6 0 0 0 5.1 5.1 l1.6 -1.6" {...S} />
+    </svg>
+  );
 }
 
-function ProfileSettings() {
+function SlidersIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+      <path d="M4.5 8 H19.5 M4.5 16 H19.5 M15.5 5.6 V10.4 M8.5 13.6 V18.4" {...S} />
+    </svg>
+  );
+}
+
+function ChevronRight() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden>
+      <path d="M9.5 6 L15.5 12 L9.5 18" {...S} />
+    </svg>
+  );
+}
+
+/** One scrapbook line per recent activity — words only, no totals, no times. */
+function ritualText(a: Activity): string {
+  const s = a.summary;
+  switch (s.type) {
+    case 'beacon': {
+      const vibe =
+        s.vibe === 'custom' && s.custom_vibe_label ? s.custom_vibe_label : s.vibe;
+      return a.kind === 'beacon_sparked' ? `sparked a plan · ${vibe}` : `lit a beacon · ${vibe}`;
+    }
+    case 'post':
+      return s.excerpt ? `posted · ${s.excerpt}` : 'posted on the feed';
+    case 'listing':
+      return `listed ${s.title}`;
+    case 'puzzle':
+      return s.solved ? 'solved the daily puzzle' : 'took on the daily puzzle';
+    case 'game':
+      return s.opponent ? `won tic-tac-toe vs ${s.opponent.display_name}` : 'won tic-tac-toe';
+  }
+}
+
+/* The POSTS / GALLERY / INTERESTS segments (proto 11). */
+const SEGMENTS = [
+  { key: 'posts', label: 'Posts' },
+  { key: 'gallery', label: 'Gallery' },
+  { key: 'interests', label: 'Interests' },
+] as const;
+type Segment = (typeof SEGMENTS)[number]['key'];
+
+function OwnProfile() {
   const state = useAppState();
-  const router = useRouter();
+  const reduced = useReducedMotion();
   const me = state.me;
 
-  const [displayName, setDisplayName] = useState('');
-  const [bio, setBio] = useState('');
-  const [area, setArea] = useState('');
-  const [motion, setMotion] = useState<AvatarMotion>('auto');
-  // v0.8a §1.58 animated name + §1.57 mood picker entry point.
-  const [nameStyle, setNameStyle] = useState<NameStyle>('none');
-  const [moodOpen, setMoodOpen] = useState(false);
-  const seededRef = useRef(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [avatarError, setAvatarError] = useState<string | null>(null);
-  const fileRef = useRef<HTMLInputElement | null>(null);
+  // The 3-photo strip (§1.37 profile media) — read-only here; editing lives
+  // in Settings → Account.
+  const [profile, setProfile] = useState<Profile | null>(null);
+  // Up to two ritual lines from my own recent activity (§1.59 — the same
+  // per-viewer endpoint the RECENTLY strip uses).
+  const [ritual, setRitual] = useState<Activity[]>([]);
+  // Proto 11 segmented row. POSTS = photos off my own feed posts (first
+  // friends-lane page, filtered to me — no counts, just the pictures);
+  // GALLERY = the /gallery source (first page only); INTERESTS = my chips.
+  const [seg, setSeg] = useState<Segment>('posts');
+  const [postPics, setPostPics] = useState<Attachment[] | null>(null);
+  const [galleryPics, setGalleryPics] = useState<GalleryItem[] | null>(null);
 
-  // v0.7.1 (§1.56, FEATURES #90b): the row always tells the truth — ON
-  // (permission granted + live subscription), OFF ('default', or granted with
-  // no subscription), or Blocked by browser ('denied' — the page cannot
-  // re-ask; per-browser unblock steps shown instead).
-  const [pushStatus, setPushStatus] = useState<'on' | 'off' | 'blocked' | 'unsupported' | null>(null);
-  const [pushBusy, setPushBusy] = useState(false);
+  const myId = me?.id ?? null;
+  useEffect(() => {
+    if (!myId) return;
+    let cancelled = false;
+    void api
+      .get<FeedResponse>('/api/feed?lane=friends')
+      .then((res) => {
+        if (cancelled) return;
+        setPostPics(
+          res.posts
+            .filter((p) => p.author.id === myId)
+            .flatMap((p) => p.attachments.filter((a) => a.kind === 'image' || a.kind === 'video')),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setPostPics([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [myId]);
+
+  // Gallery loads lazily, the first time its segment opens (first page only).
+  useEffect(() => {
+    if (seg !== 'gallery' || galleryPics !== null) return;
+    let cancelled = false;
+    void api
+      .get<GalleryResponse>('/api/users/me/gallery')
+      .then((res) => {
+        if (!cancelled) setGalleryPics(res.items);
+      })
+      .catch(() => {
+        if (!cancelled) setGalleryPics([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [seg, galleryPics]);
 
   useEffect(() => {
-    if (me && !seededRef.current) {
-      seededRef.current = true;
-      setDisplayName(me.display_name);
-      setBio(me.bio);
-      setArea(me.area ?? '');
-      setMotion(me.avatar_motion);
-      setNameStyle(me.name_style);
-    }
-  }, [me]);
+    let cancelled = false;
+    void api
+      .get<ProfileResponse>('/api/users/me/profile')
+      .then((res) => {
+        if (!cancelled) setProfile(res.profile);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  // My full mood state (fade time) for the mood card — owner-only read.
-  const [askPush, setAskPush] = useState(false); // v1.0: re-askable enable
-  // v1.0a (#92): a picked STATIC avatar opens the crop editor first (1:1).
-  // Animated sources (gif/webp/apng/mp4) skip it — canvas would flatten them.
-  const [avatarEdit, setAvatarEdit] = useState<File | null>(null);
+  useEffect(() => {
+    if (!me?.username) return;
+    let cancelled = false;
+    void api
+      .get<ActivityResponse>(`/api/users/${encodeURIComponent(me.username)}/activity`)
+      .then((res) => {
+        if (!cancelled) setRitual(res.activities.slice(0, 2));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [me?.username]);
 
+  // Keep my own mood chip fresh (the hero line reads it from the store).
   useEffect(() => {
     void refreshMyMood().catch(() => undefined);
   }, []);
 
-  useEffect(() => {
-    refreshPushStatus();
-    // v1.0: heal the row when the user returns from the browser's site
-    // settings (the unblock steps say "then come back here").
-    const onFocus = () => refreshPushStatus();
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onFocus);
-    return () => {
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onFocus);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  function refreshPushStatus(): void {
-    if (!pushSupported()) {
-      setPushStatus('unsupported');
-      return;
-    }
-    if (Notification.permission === 'denied') {
-      setPushStatus('blocked');
-      return;
-    }
-    void getPushSubscription()
-      .then((sub) => setPushStatus(sub !== null && Notification.permission === 'granted' ? 'on' : 'off'))
-      .catch(() => setPushStatus('off'));
-  }
-
-  async function save(): Promise<void> {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    setSaved(false);
-    try {
-      const res = await api.patch<UpdateMeResponse>('/api/users/me', {
-        display_name: displayName.trim(),
-        bio,
-        avatar_motion: motion,
-        // Coarse self-declared area (§1.13): null clears it (and with it all
-        // 'area' beacon visibility, both directions). Owner-private.
-        area: area.trim() === '' ? null : area.trim(),
-        // v0.8a §1.58: the animated-name style — identity, not privacy.
-        name_style: nameStyle,
-      });
-      setMe(res.user);
-      setSaved(true);
-      toast('Settings saved'); // §1.56: actions without a visible result confirm themselves
-    } catch (err) {
-      setError(err instanceof ApiError ? (err.message || 'Could not save.') : 'Could not save.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function pickAvatar(file: File): void {
-    if (['image/jpeg', 'image/png'].includes(file.type)) {
-      setAvatarEdit(file); // v1.0a #92 — crop first, upload from the sheet
-      return;
-    }
-    void uploadAvatar(file);
-  }
-
-  async function uploadAvatar(file: File): Promise<void> {
-    setAvatarError(null);
-    if (file.size > MAX_AVATAR_SOURCE_BYTES) {
-      setAvatarError('Avatar sources are capped at 15 MB.');
-      return;
-    }
-    try {
-      const form = new FormData();
-      form.append('file', file, file.name);
-      // 202: processing — completion arrives as WS user.updated (§1.2).
-      const res = await api.postForm<AvatarResponse>('/api/users/me/avatar', form);
-      if (me) setMe({ ...me, avatar: { ...me.avatar, ...res.avatar } });
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 415) setAvatarError('That file type is not supported.');
-      else if (err instanceof ApiError && err.status === 413) setAvatarError('That file is too large.');
-      else setAvatarError('Avatar upload failed.');
-    }
-  }
-
-  async function removeAvatar(): Promise<void> {
-    setAvatarError(null);
-    try {
-      const res = await api.del<AvatarResponse>('/api/users/me/avatar');
-      if (me) setMe({ ...me, avatar: res.avatar });
-    } catch {
-      setAvatarError('Could not remove the avatar.');
-    }
-  }
-
-  async function togglePush(): Promise<void> {
-    if (pushBusy || pushStatus === null || pushStatus === 'unsupported' || pushStatus === 'blocked') return;
-    if (pushStatus !== 'on') {
-      // v1.0 (owner ask): Enable re-opens the friendly explainer sheet — the
-      // ask is re-triggerable from Settings forever, not a one-time prompt.
-      setAskPush(true);
-      return;
-    }
-    setPushBusy(true);
-    try {
-      await disablePush();
-      toast('Notifications are off');
-    } catch {
-      /* endpoint failure; the refresh below tells the truth */
-    } finally {
-      refreshPushStatus();
-      setPushBusy(false);
-    }
-  }
-
   if (!me) return null;
+
+  const mood = me.mood ?? state.moodState?.mood ?? null;
+  const motion = me.avatar_motion;
+  const animateStrip = !reduced && motion === 'auto';
 
   return (
     <div className="page pageFadeUp">
       <header className="topbar">
-        <Link href="/" className="btn btn-ghost btn-icon" aria-label="Back">
-          ←
+        <h1 className={sm.tabTitle}>Profile</h1>
+        <Link
+          href={`/u/${encodeURIComponent(me.username)}`}
+          className="btn btn-ghost btn-icon"
+          aria-label="View your public profile"
+        >
+          <LinkIcon />
         </Link>
-        <h1>Profile</h1>
-        <Link href={`/u/${encodeURIComponent(me.username)}`} className="btn btn-ghost">
-          View
-        </Link>
-        <Link href="/settings/sessions" className="btn btn-ghost">
-          Devices
+        <Link href="/settings" className="btn btn-ghost btn-icon" aria-label="Settings">
+          <SlidersIcon />
         </Link>
       </header>
 
-      <div className="settings-section">
-        {/* v1.1 Royal: identity header — the silver live ring, serif display
-            name and the "@username · mood" line (a reskin: editing lives in
-            the cards below, reached by the outline Edit-profile pill). */}
-        <section className={idm.idHead} aria-label="My profile">
-          <span className={idm.idRing}>
-            {/* Profile page: the animated WebP renders here (motion-gated, §5.4). */}
-            <Avatar avatar={me.avatar} name={me.display_name} size={96} animated />
-          </span>
-          <div className={idm.idName}>{me.display_name}</div>
-          <p className={idm.idLine}>
-            @{me.username}
-            {state.moodState?.mood ? (
+      <div className={pp.col}>
+        {/* Hero: silver live ring, serif (styled) name, "@user · mood".
+            sm.hero (not pp.hero): the public page's hero pulls the avatar up
+            -51px into its cover band — under this tab's sticky header the
+            full 96px ring must sit clear of it. */}
+        <section className={sm.hero} aria-label="My profile">
+          <div className={pp.avatarRing}>
+            <div className={pp.avatarGap}>
+              {/* Profile pages render the animated WebP (motion-gated, §5.4). */}
+              <Avatar avatar={me.avatar} name={me.display_name} size={96} animated />
+            </div>
+          </div>
+          <h2 className={pp.heroName}>
+            <StyledName userId={me.id} style={me.name_style} name={me.display_name} />
+          </h2>
+          <p className={pp.handleLine}>
+            <span>@{me.username}</span>
+            {mood ? (
               <>
-                {' · '}
-                <span className={idm.idMood}>
-                  <span aria-hidden>{state.moodState.mood.emoji}</span> {state.moodState.mood.label}
+                <span aria-hidden>·</span>
+                <span className={pp.moodWord}>
+                  {mood.label} <span aria-hidden>{mood.emoji}</span>
                 </span>
               </>
             ) : null}
           </p>
-          <a href="#pf-details" className={idm.editBtn}>
-            Edit profile
-          </a>
+          {/* Scrapbook lines: real recent activity in words (never counters);
+              the bio stands in when there is nothing recent. */}
+          {ritual.length > 0 ? (
+            <div className={sm.ritualLines}>
+              {ritual.map((a, i) => (
+                <span key={a.id} className={sm.ritualLine}>
+                  <span
+                    className={`${sm.ritualDot}${i === 1 ? ` ${sm.ritualDotAlt}` : ''}`}
+                    aria-hidden
+                  />
+                  <span>{ritualText(a)}</span>
+                </span>
+              ))}
+            </div>
+          ) : me.bio ? (
+            <div className={sm.ritualLines}>
+              <span className={sm.ritualLine}>
+                <span className={sm.ritualDot} aria-hidden />
+                <span>{me.bio}</span>
+              </span>
+            </div>
+          ) : null}
         </section>
 
-        <h2 className={idm.sectionLabel}>Avatar</h2>
-        <div className="card">
-          {me.avatar.status === 'processing' ? (
-            <p className="muted small" style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 0 }}>
-              <span className="spinner" /> Processing — it will pop in when ready.
-            </p>
-          ) : me.avatar.status === 'failed' ? (
-            <p className="error-text">Processing failed. The previous avatar is kept.</p>
-          ) : null}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <input
-              ref={fileRef}
-              type="file"
-              hidden
-              accept="image/gif,image/webp,image/apng,image/png,image/jpeg,video/mp4"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) pickAvatar(f);
-                e.target.value = '';
-              }}
-            />
-            <button type="button" className="btn" onClick={() => fileRef.current?.click()}>
-              Upload new
-            </button>
-            {me.avatar.status === 'ready' ? (
-              <button type="button" className="btn btn-danger" onClick={() => void removeAvatar()}>
-                Remove
-              </button>
-            ) : null}
-          </div>
-          {avatarError ? <p className="error-text">{avatarError}</p> : null}
-          <p className="muted small" style={{ marginBottom: 0 }}>
-            GIF, WebP, APNG, PNG, JPEG or MP4 — animated sources become a live avatar.
-          </p>
-        </div>
-
-        <h2 className={idm.sectionLabel}>Details</h2>
-        {/* id: the identity header's Edit-profile pill jumps here. */}
-        <div className="card" id="pf-details" style={{ scrollMarginTop: 72 }}>
-          <div className="field">
-            <label htmlFor="pf-name">Display name</label>
-            <input
-              id="pf-name"
-              className="input"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              maxLength={100}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="pf-bio">Bio</label>
-            <textarea
-              id="pf-bio"
-              className="input"
-              rows={3}
-              value={bio}
-              onChange={(e) => setBio(e.target.value)}
-              maxLength={1000}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="pf-area">Area</label>
-            <input
-              id="pf-area"
-              className="input"
-              placeholder="e.g. Indiranagar"
-              value={area}
-              onChange={(e) => setArea(e.target.value)}
-              maxLength={AREA_MAX_CHARS}
-            />
-            <p className="muted small" style={{ margin: '2px 0 0' }}>
-              Only used to match &ldquo;my area&rdquo; beacons — never shown on your profile, never
-              GPS. Leave it empty to opt out.
-            </p>
-          </div>
-          <div className="field">
-            {/* v0.8a §1.58: animated display name with a live preview.
-                'surprise' rotates daily — same style for every viewer. */}
-            <label htmlFor="pf-name-style">Name style</label>
-            <select
-              id="pf-name-style"
-              className="input"
-              value={nameStyle}
-              onChange={(e) => setNameStyle(e.target.value as NameStyle)}
-            >
-              {NAME_STYLES.map((s) => (
-                <option key={s} value={s}>
-                  {s === 'none'
-                    ? 'Off'
-                    : s === 'surprise'
-                      ? 'Surprise me (changes daily)'
-                      : s[0].toUpperCase() + s.slice(1)}
-                </option>
-              ))}
-            </select>
-            {nameStyle !== 'none' && me ? (
-              <p style={{ margin: '6px 0 0', fontSize: 16, fontWeight: 600 }}>
-                <StyledName
-                  userId={me.id}
-                  style={nameStyle}
-                  name={displayName.trim() || me.display_name}
-                />
-              </p>
-            ) : null}
-            <p className="muted small" style={{ margin: '2px 0 0' }}>
-              Shows on your profile, chat headers and group messages. Reduced-motion viewers see
-              a calm static tint instead.
-            </p>
-          </div>
-          <div className="field">
-            <label htmlFor="pf-motion">Animated avatars</label>
-            <select
-              id="pf-motion"
-              className="input"
-              value={motion}
-              onChange={(e) => setMotion(e.target.value as AvatarMotion)}
-            >
-              <option value="auto">Auto — play (respects reduce-motion)</option>
-              <option value="reduced">Reduced — play on hover only</option>
-              <option value="off">Off — always static</option>
-            </select>
-          </div>
-          {error ? <p className="error-text">{error}</p> : null}
-          {saved ? <p className="ok-text">Saved.</p> : null}
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={busy || !displayName.trim()}
-            onClick={() => void save()}
-          >
-            {busy ? 'Saving…' : 'Save'}
-          </button>
-        </div>
-
-        {/* v0.8a §1.57: the mood picker entry point — the chip auto-expires
-            (~4 h); the fade time shows inside the sheet, owner-only. */}
-        <h2 className={idm.sectionLabel}>Mood</h2>
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            {state.moodState?.mood ? (
-              <p style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <MoodChip mood={state.moodState.mood} />
-                {state.moodState.expires_at ? (
-                  <span className={idm.moodFade}>
-                    fades by{' '}
-                    {new Date(state.moodState.expires_at).toLocaleTimeString([], {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </span>
-                ) : null}
-              </p>
-            ) : (
-              <>
-                <strong>No mood set</strong>
-                <p className="muted small" style={{ margin: '4px 0 0' }}>
-                  A chip that says how you are — presets, your own word, 🎢 swing mode or 🍻
-                  drunk mode. It fades on its own, no trace.
-                </p>
-              </>
-            )}
-          </div>
-          <button type="button" className="btn" onClick={() => setMoodOpen(true)}>
-            {state.moodState?.mood ? 'Change' : 'Set a mood'}
-          </button>
-        </div>
-        {moodOpen ? <MoodSheet onClose={() => setMoodOpen(false)} /> : null}
-
-        {/* v0.5a §1.37: interests, work/skills, the 3-GIF strip. */}
-        <ProfileEditor />
-
-        <h2 className={idm.sectionLabel}>Friends</h2>
-        {/* v1.1 Royal: navigation cards become chevron settings rows. */}
-        <Link href="/connections" className={idm.settingsRow}>
-          <span className={idm.rowText}>
+        {/* Edit profile / Connections — the two outline pills (ref 11). */}
+        <div className={sm.pillRow}>
+          <Link href="/settings/account" className={pp.pillBtn}>
+            Edit profile
+          </Link>
+          <Link href="/connections" className={pp.pillBtn}>
             Connections
-            <span className={idm.rowHint}>
-              Friend requests and your people — friends also include everyone you DM.
+          </Link>
+        </div>
+
+        {/* Proto 11: POSTS / GALLERY / INTERESTS segmented row + square grid.
+            Pictures only — never a numeric count (PSYCHOLOGY rule 3). */}
+        <div className={sm.tabbed}>
+          <div className={sm.segRow} role="tablist" aria-label="Profile sections">
+            {SEGMENTS.map((s) => (
+              <button
+                key={s.key}
+                type="button"
+                role="tab"
+                aria-selected={seg === s.key}
+                className={seg === s.key ? `${sm.segTab} ${sm.segTabActive}` : sm.segTab}
+                onClick={() => setSeg(s.key)}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+
+          {seg === 'posts' ? (
+            <div key="posts" className={sm.tabPanel} role="tabpanel" aria-label="Posts">
+              {postPics === null ? null : postPics.length === 0 ? (
+                <p className={sm.tabEmpty}>Nothing posted yet</p>
+              ) : (
+                <div className={sm.mediaGrid}>
+                  {postPics.map((a) => (
+                    <span key={a.id} className={sm.mediaTile}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={a.thumb_url ?? a.url} alt="" loading="lazy" />
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : seg === 'gallery' ? (
+            <div key="gallery" className={sm.tabPanel} role="tabpanel" aria-label="Gallery">
+              {galleryPics === null ? null : galleryPics.length === 0 ? (
+                <p className={sm.tabEmpty}>Nothing saved yet</p>
+              ) : (
+                <div className={sm.mediaGrid}>
+                  {galleryPics.map((item) => (
+                    <span key={item.attachment.id} className={sm.mediaTile}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={item.attachment.thumb_url ?? item.attachment.url}
+                        alt=""
+                        loading="lazy"
+                      />
+                    </span>
+                  ))}
+                </div>
+              )}
+              <Link href="/gallery" className={sm.moreRow}>
+                My gallery <span aria-hidden>›</span>
+              </Link>
+            </div>
+          ) : (
+            <div key="interests" className={sm.tabPanel} role="tabpanel" aria-label="Interests">
+              {profile === null ? null : profile.interests.length === 0 ? (
+                <p className={sm.tabEmpty}>
+                  No interests picked yet — <Link href="/settings/account">add some</Link>
+                </p>
+              ) : (
+                <div className={sm.chipWrap}>
+                  {profile.interests.map((tag) => (
+                    <span key={tag} className={sm.chip}>
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* §1.37: the 3-photo strip — animation gated by my own settings. */}
+        {profile && profile.media.length > 0 ? (
+          <div className={st.gifStrip}>
+            {profile.media.map((m) => (
+              <span key={m.id} className={st.gifTile}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={animateStrip ? m.url : m.thumb_url ?? m.url} alt="" loading="lazy" />
+              </span>
+            ))}
+          </div>
+        ) : null}
+
+        {/* RECENTLY — the §1.59 activity rows (server-resolved per viewer;
+            the strip's own footnote covers Privacy → Activity). */}
+        <div className={pp.flat}>
+          <ActivityStrip username={me.username} isMe />
+        </div>
+
+        {/* Everything that left this page stays one tap away. */}
+        <div className={pp.section}>
+          <Link href="/gallery" className={idm.settingsRow}>
+            <span className={idm.rowText}>
+              My gallery
+              <span className={idm.rowHint}>
+                Everything you&rsquo;ve shared, plus auto-saved stories — only you see it.
+              </span>
             </span>
-          </span>
-          <span className={idm.rowChevron} aria-hidden>
-            ›
-          </span>
-        </Link>
+            <span className={idm.rowChevron} aria-hidden>
+              <ChevronRight />
+            </span>
+          </Link>
+          <Link href="/things" className={idm.settingsRow}>
+            <span className={idm.rowText}>
+              Things you can do
+              <span className={idm.rowHint}>
+                Every feature on this server, one line each, with a Try-it link.
+              </span>
+            </span>
+            <span className={idm.rowChevron} aria-hidden>
+              <ChevronRight />
+            </span>
+          </Link>
+        </div>
 
         {/* v0.6 §1.46: one tap pings up to 3 friends to call you out of a
             boring situation — the one push that cuts through mutes. */}
         <RescueCard />
-
-        {/* v1.0a (#94): the private gallery — my media + story auto-saves. */}
-        <Link href="/gallery" className={idm.settingsRow}>
-          <span className={idm.rowText}>
-            🖼 My gallery
-            <span className={idm.rowHint}>
-              Everything you’ve shared, plus auto-saved stories — only you see it.
-            </span>
-          </span>
-          <span className={idm.rowChevron} aria-hidden>
-            ›
-          </span>
-        </Link>
-
-        {/* v0.8a §1.61: the feature directory — search + Try-it deep links. */}
-        <Link href="/things" className={idm.settingsRow}>
-          <span className={idm.rowText}>
-            ✨ Things you can do
-            <span className={idm.rowHint}>
-              Every feature on this server, one line each, with a Try-it link.
-            </span>
-          </span>
-          <span className={idm.rowChevron} aria-hidden>
-            ›
-          </span>
-        </Link>
-
-        <h2 className={idm.sectionLabel}>Notifications</h2>
-        <div className="card">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <strong>
-                Push notifications
-                {pushStatus === 'on' ? (
-                  <span className="ok-text" style={{ marginLeft: 8 }}>ON</span>
-                ) : pushStatus === 'off' ? (
-                  <span className="muted" style={{ marginLeft: 8, fontSize: 13 }}>OFF</span>
-                ) : pushStatus === 'blocked' ? (
-                  <span className="error-text" style={{ marginLeft: 8 }}>Blocked by browser</span>
-                ) : null}
-              </strong>
-              <p className="muted small" style={{ margin: '4px 0 0' }}>
-                {pushStatus === 'unsupported'
-                  ? 'Not supported in this browser.'
-                  : 'Messages, incoming calls, sparked plans and wave nudges when the app is closed — rings depend on this.'}
-              </p>
-            </div>
-            {pushStatus !== 'blocked' ? (
-              <button
-                type="button"
-                className={`btn${pushStatus === 'on' ? '' : ' btn-primary'}`}
-                disabled={pushStatus === 'unsupported' || pushBusy || pushStatus === null}
-                onClick={() => void togglePush()}
-              >
-                {pushStatus === null ? '…' : pushStatus === 'on' ? 'Disable' : 'Enable'}
-              </button>
-            ) : null}
-          </div>
-          {pushStatus === 'blocked' ? (
-            <p className="muted small" style={{ marginBottom: 0 }}>
-              {/* §1.56: 'denied' cannot be re-asked from the page — per-browser
-                  unblock steps, keyed on the UA. */}
-              {unblockSteps()}
-            </p>
-          ) : null}
-          {avatarEdit ? (
-            <ImageEditSheet
-              source={avatarEdit}
-              fileName={avatarEdit.name}
-              lockedAspect={1}
-              onCancel={() => setAvatarEdit(null)}
-              onDone={(file) => {
-                setAvatarEdit(null);
-                void uploadAvatar(file);
-              }}
-            />
-          ) : null}
-          {askPush ? (
-            <PushExplainerSheet
-              onClose={() => {
-                setAskPush(false);
-                refreshPushStatus();
-              }}
-              onResult={() => refreshPushStatus()}
-            />
-          ) : null}
-        </div>
-
-        {/* v0.7.1 (§1.55, FEATURES #89): find out BEFORE a call fails. */}
-        <Link href="/settings/calls" className={idm.settingsRow}>
-          <span className={idm.rowText}>
-            Call self-test
-            <span className={idm.rowHint}>
-              Checks mic &amp; camera permission, secure context, and whether this server&rsquo;s
-              call relay is reachable from your network — in plain words.
-            </span>
-          </span>
-          <span className={idm.rowChevron} aria-hidden>
-            ›
-          </span>
-        </Link>
-
-        <h2 className={idm.sectionLabel}>Privacy &amp; safety</h2>
-        {/* v0.9 (§1.70–§1.73): passkeys, two-factor, recovery codes, QR
-            phone-approvals and the device list, one page. */}
-        <Link href="/settings/security" className={idm.settingsRow}>
-          <span className={idm.rowText}>
-            🔑 Security
-            <span className={idm.rowHint}>
-              Passkeys, two-factor codes, recovery codes, signing a laptop in from your phone —
-              and every device you&rsquo;re signed in on.
-            </span>
-          </span>
-          <span className={idm.rowChevron} aria-hidden>
-            ›
-          </span>
-        </Link>
-        <Link href="/settings/privacy" className={idm.settingsRow}>
-          <span className={idm.rowText}>
-            Privacy settings
-            <span className={idm.rowHint}>
-              Read receipts, last seen, typing, invites, beacon audience, groups — plus your
-              blocked list.
-            </span>
-          </span>
-          <span className={idm.rowChevron} aria-hidden>
-            ›
-          </span>
-        </Link>
-
-        {/* v0.8b §1.69: Help & feedback — tickets to the operator; answers
-            arrive as the 🛟 Bored Chat Support conversation. */}
-        <h2 className={idm.sectionLabel}>Help</h2>
-        <Link href="/settings/help" className={idm.settingsRow}>
-          <span className={idm.rowText}>
-            🛟 Help &amp; feedback
-            <span className={idm.rowHint}>
-              A bug, a question, an idea, or a safety worry — straight to whoever runs this server.
-            </span>
-          </span>
-          <span className={idm.rowChevron} aria-hidden>
-            ›
-          </span>
-        </Link>
-
-        <h2 className={idm.sectionLabel}>Account</h2>
-        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-          <div style={{ flex: 1 }}>
-            <strong>@{me.username}</strong>
-            <p className="muted small" style={{ margin: '4px 0 0' }}>{me.email}</p>
-          </div>
-        </div>
-        {/* Royal: sign out is a danger-text row, not a filled button. */}
-        <button
-          type="button"
-          className={`${idm.settingsRow} ${idm.rowDanger}`}
-          onClick={() => {
-            void logout().then(() => router.replace('/login'));
-          }}
-        >
-          Sign out
-        </button>
       </div>
     </div>
   );
 }
 
-export default function ProfileSettingsPage() {
+export default function ProfileTabPage() {
   return (
     <TabPage active="profile">
-      <ProfileSettings />
+      <OwnProfile />
     </TabPage>
   );
 }

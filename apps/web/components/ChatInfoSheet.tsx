@@ -166,9 +166,13 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
   const channelRole = conv.participants.find((p) => p.user.id === meId)?.role ?? 'member';
   const channelAdmin = channelRole === 'owner' || channelRole === 'admin';
 
-  async function leaveChannel(): Promise<void> {
+  // Royal v2: the Leave row serves groups too — same §1.4 self-DELETE.
+  async function leaveConversation(): Promise<void> {
     if (leaveBusy) return;
-    if (!window.confirm('Leave this channel? You can rejoin with an invite link.')) return;
+    const confirmText = isChannel
+      ? 'Leave this channel? You can rejoin with an invite link.'
+      : 'Leave this group?';
+    if (!window.confirm(confirmText)) return;
     setLeaveBusy(true);
     setError(null);
     try {
@@ -180,7 +184,9 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
       setError(
         err instanceof ApiError && err.code === 'owner_cannot_leave'
           ? 'The owner keeps the lights on — a channel can never be headless.'
-          : 'Could not leave the channel.'
+          : isChannel
+            ? 'Could not leave the channel.'
+            : 'Could not leave the group.'
       );
       setLeaveBusy(false);
     }
@@ -322,22 +328,12 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
           </button>
         </div>
 
-        {/* Owner fix round: the group's face lives at the top of its own
-            sheet — admins set a photo or a GIF (same pipeline as user
-            avatars, §1.4); everyone else just sees it. */}
+        {/* Royal v2 (proto 13): the group's face is a centered hero — the
+            avatar itself is the tap target for admins (camera badge), the
+            serif name under it, the "tap to change" caption below. Same §1.4
+            photo/GIF pipeline and handlers as the Owner fix round. */}
         {showAvatarSection ? (
-          <section className={cm.grpAvatarRow} aria-label={isChannel ? 'Channel photo' : 'Group photo'}>
-            <Avatar avatar={conv.avatar} name={conv.title ?? 'Group'} size={56} animated />
-            <div className={cm.grpAvatarText}>
-              <strong>{conv.title ?? (isChannel ? 'Channel' : 'Group')}</strong>
-              {gaPending || conv.avatar.status === 'processing' ? (
-                <span className="muted small">Processing… the new photo pops in when ready.</span>
-              ) : canEditGroupAvatar ? (
-                <span className="muted small">
-                  GIF, WebP, APNG, PNG, JPEG or MP4 — animated files become a live photo.
-                </span>
-              ) : null}
-            </div>
+          <section className={cm.grpHero} aria-label={isChannel ? 'Channel photo' : 'Group photo'}>
             {canEditGroupAvatar ? (
               <>
                 <input
@@ -353,13 +349,27 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
                 />
                 <button
                   type="button"
-                  className="btn"
+                  className={cm.grpHeroTap}
+                  aria-label="Change photo or GIF"
                   disabled={gaBusy || gaPending}
                   onClick={() => gaFileRef.current?.click()}
                 >
-                  {gaBusy ? 'Uploading…' : 'Change photo or GIF'}
+                  <Avatar avatar={conv.avatar} name={conv.title ?? 'Group'} size={84} animated />
+                  <span className={cm.grpHeroBadge} aria-hidden>
+                    <CameraBadgeIcon />
+                  </span>
                 </button>
               </>
+            ) : (
+              <Avatar avatar={conv.avatar} name={conv.title ?? 'Group'} size={84} animated />
+            )}
+            <strong className={cm.grpHeroName}>{conv.title ?? (isChannel ? 'Channel' : 'Group')}</strong>
+            {gaBusy || gaPending || conv.avatar.status === 'processing' ? (
+              <span className={cm.grpHeroHint}>
+                {gaBusy ? 'Uploading…' : 'Processing… the new photo pops in when ready.'}
+              </span>
+            ) : canEditGroupAvatar ? (
+              <span className={cm.grpHeroHint}>Photo or GIF · tap to change</span>
             ) : null}
           </section>
         ) : null}
@@ -372,9 +382,18 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
           <GroupSettingsSection conv={conv} meId={meId} />
         ) : null}
 
-        {/* Owner fix round: admins grow the group right from the sheet —
-            inline people search, one Add per row (§1.4 add participants). */}
-        {plainGroup && groupAdmin ? <AddPeopleSection conv={conv} /> : null}
+        {/* Royal v2 (proto 13): MEMBERS rows with OWNER/MOD chips; admins grow
+            the group from the "+ add people" header action (same §1.4 add
+            participants flow and copy as the last round). */}
+        {conv.type === 'group' ? (
+          <MembersSection
+            conv={conv}
+            meId={meId}
+            ghost={ghost}
+            canAdd={plainGroup && groupAdmin}
+            onNavigate={onClose}
+          />
+        ) : null}
 
         {isChannel ? (
           <>
@@ -383,42 +402,35 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
               Only the owner and admins post; everyone reads and reacts. People join through invite
               links — there&rsquo;s no member counter here, just members.
             </p>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-              {channelAdmin ? (
-                <>
-                  <InviteButton className="btn" label="Share invite" conversationId={conv.id} />
-                  <button type="button" className="btn" onClick={() => setMembersOpen(true)}>
-                    Members &amp; admins
-                  </button>
-                </>
-              ) : null}
-              {channelRole !== 'owner' ? (
-                <button
-                  type="button"
-                  className="btn btn-danger"
-                  disabled={leaveBusy}
-                  onClick={() => void leaveChannel()}
-                >
-                  {leaveBusy ? 'Leaving…' : 'Leave channel'}
+            {channelAdmin ? (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+                <InviteButton className="btn" label="Share invite" conversationId={conv.id} />
+                <button type="button" className="btn" onClick={() => setMembersOpen(true)}>
+                  Members &amp; admins
                 </button>
-              ) : null}
-            </div>
+              </div>
+            ) : null}
           </>
         ) : null}
 
+        {/* Royal v2 (proto 13): theme & wallpaper as 64×88 visual swatch
+            tiles — the picked one wears the white border; names ride
+            aria-labels. Behavior (personal prefs PATCH) unchanged. */}
         <div className={sheetStyles.sheetLabel}>
-          Theme <span className={exp.personalTag}>👀 only you see this</span>
+          Theme <span className={exp.personalTag}>only you see this</span>
         </div>
-        <div className={exp.swatchGrid} role="radiogroup" aria-label="Chat theme (your view only)">
+        <div className={cm.swGrid} role="radiogroup" aria-label="Chat theme (your view only)">
           <button
             type="button"
             role="radio"
             aria-checked={!prefs?.theme}
-            className={`${exp.swatch}${!prefs?.theme ? ` ${exp.swatchOn}` : ''}`}
+            aria-label="Default"
+            title="Default"
+            className={`${cm.sw}${!prefs?.theme ? ` ${cm.swOn}` : ''}`}
             onClick={() => void patch({ theme: null })}
           >
-            <span className={exp.swatchDot} style={{ background: 'var(--panel-2)' }} />
-            Default
+            <span className={cm.swFill} style={{ background: 'var(--chat-bg)' }} aria-hidden />
+            <span className={cm.swPill} aria-hidden />
           </button>
           {CHAT_THEMES.map((t) => (
             <button
@@ -426,28 +438,31 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
               type="button"
               role="radio"
               aria-checked={prefs?.theme === t}
-              className={`${exp.swatch}${prefs?.theme === t ? ` ${exp.swatchOn}` : ''}`}
+              aria-label={THEME_INFO[t].label}
+              title={THEME_INFO[t].label}
+              className={`${cm.sw}${prefs?.theme === t ? ` ${cm.swOn}` : ''}`}
               onClick={() => void patch({ theme: t })}
             >
-              <span className={exp.swatchDot} style={{ background: THEME_INFO[t].swatch }} />
-              {THEME_INFO[t].label}
+              <span className={cm.swFill} style={{ background: THEME_INFO[t].swatch }} aria-hidden />
+              <span className={cm.swPill} aria-hidden />
             </button>
           ))}
         </div>
 
         <div className={sheetStyles.sheetLabel}>
-          Wallpaper <span className={exp.personalTag}>👀 only you see this</span>
+          Wallpaper <span className={exp.personalTag}>only you see this</span>
         </div>
-        <div className={exp.swatchGrid} role="radiogroup" aria-label="Chat wallpaper (your view only)">
+        <div className={cm.swGrid} role="radiogroup" aria-label="Chat wallpaper (your view only)">
           <button
             type="button"
             role="radio"
             aria-checked={!prefs?.wallpaper}
-            className={`${exp.swatch}${!prefs?.wallpaper ? ` ${exp.swatchOn}` : ''}`}
+            aria-label="None"
+            title="None"
+            className={`${cm.sw}${!prefs?.wallpaper ? ` ${cm.swOn}` : ''}`}
             onClick={() => void patch({ wallpaper: null })}
           >
-            <span className={exp.wpPreview} />
-            None
+            <span className={cm.swFill} style={{ background: 'var(--chat-bg)' }} aria-hidden />
           </button>
           {CHAT_WALLPAPERS.map((w) => (
             <button
@@ -455,11 +470,25 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
               type="button"
               role="radio"
               aria-checked={prefs?.wallpaper === w}
-              className={`${exp.swatch}${prefs?.wallpaper === w ? ` ${exp.swatchOn}` : ''}`}
+              aria-label={WALLPAPER_INFO[w].label}
+              title={WALLPAPER_INFO[w].label}
+              className={`${cm.sw}${prefs?.wallpaper === w ? ` ${cm.swOn}` : ''}`}
               onClick={() => void patch({ wallpaper: w })}
             >
-              <span className={`${exp.wpPreview} ${wallpaperClassName(exp, w)}`} />
-              {WALLPAPER_INFO[w].label}
+              <span
+                className={`${cm.swFill} ${wallpaperClassName(exp, w)}`}
+                // The real stars tile (110/70/160px) puts ~no star inside a
+                // 64×88 swatch — same denser tiling fix as the old preview.
+                style={
+                  w === 'stars'
+                    ? {
+                        backgroundSize: '24px 24px, 15px 15px, 36px 36px',
+                        backgroundPosition: '3px 4px, 10px 11px, 19px 7px',
+                      }
+                    : undefined
+                }
+                aria-hidden
+              />
             </button>
           ))}
         </div>
@@ -512,7 +541,7 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
             paints behind the bubbles under a scrim, visually replacing the
             wallpaper while set (both survive in prefs). */}
         <div className={sheetStyles.sheetLabel}>
-          Background <span className={exp.personalTag}>👀 only you see this</span>
+          Background <span className={exp.personalTag}>only you see this</span>
         </div>
         <div className={idm.bgRow}>
           {prefs?.background ? (
@@ -569,7 +598,7 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
         {bgError ? <p className="error-text">{bgError}</p> : null}
 
         <div className={sheetStyles.sheetLabel}>
-          Nicknames <span className={exp.personalTag}>👀 only you see these</span>
+          Nicknames <span className={exp.personalTag}>only you see these</span>
         </div>
         {members.map((p) => (
           <div key={p.user.id} className={exp.nickRow}>
@@ -638,6 +667,20 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
         </p>
 
         {error ? <p className="error-text">{error}</p> : null}
+
+        {/* Royal v2 (proto 13): the Leave row — full-width, danger red. The
+            owner can't leave (the server refuses owner_cannot_leave). */}
+        {(isChannel && channelRole !== 'owner') ||
+        (conv.type === 'group' && !support && myRole !== 'owner') ? (
+          <button
+            type="button"
+            className={cm.leaveRow}
+            disabled={leaveBusy}
+            onClick={() => void leaveConversation()}
+          >
+            {leaveBusy ? 'Leaving…' : isChannel ? 'Leave channel' : 'Leave group'}
+          </button>
+        ) : null}
       </div>
       {membersOpen ? (
         <ChannelMembersSheet conv={conv} meId={meId} onClose={() => setMembersOpen(false)} />
@@ -659,11 +702,25 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
   );
 }
 
-/** Owner fix round: "Add people" for group admins — the same debounced
- * GET /api/users?q= every people-picker uses, with a per-row Add that POSTs
- * §1.4 add-participants one person at a time so each row can tell its own
- * story (added / invite-only / full). */
-function AddPeopleSection({ conv }: { conv: ConversationListItem }) {
+/** Royal v2 members section (proto 13): rows with 44px faces and OWNER
+ * (gradient chip) / MOD (outline chip) roles, "+ add people" as the header
+ * action. The add flow is the Owner-fix-round one unchanged: the same
+ * debounced GET /api/users?q= every people-picker uses, with a per-row Add
+ * that POSTs §1.4 add-participants one person at a time so each row can tell
+ * its own story (added / invite-only / full). */
+function MembersSection({
+  conv,
+  meId,
+  ghost,
+  canAdd,
+  onNavigate,
+}: {
+  conv: ConversationListItem;
+  meId: string;
+  ghost: boolean;
+  canAdd: boolean;
+  onNavigate: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [results, setResults] = useState<UserPublic[]>([]);
@@ -742,15 +799,61 @@ function AddPeopleSection({ conv }: { conv: ConversationListItem }) {
     }
   }
 
+  const members = conv.participants.filter((p) => p.left_at === null);
+
   return (
     <>
-      <div className={sheetStyles.sheetLabel}>➕ Add people</div>
-      {!open ? (
-        <button type="button" className="btn" style={{ marginBottom: 10 }} onClick={() => setOpen(true)}>
-          Add people to this group
-        </button>
-      ) : (
-        <div className={cm.addPeople}>
+      <div className={cm.secHead}>
+        <div className={sheetStyles.sheetLabel}>Members</div>
+        {canAdd ? (
+          <button
+            type="button"
+            className={cm.secHeadBtn}
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+          >
+            + Add people
+          </button>
+        ) : null}
+      </div>
+
+      {members.map((p) => {
+        const chip = p.role === 'owner' ? 'Owner' : p.role === 'admin' ? 'Mod' : null;
+        const self = p.user.id === meId;
+        const who = (
+          <>
+            <Avatar avatar={p.user.avatar} name={p.user.display_name} size={44} />
+            <span className={cm.memberName}>{self ? 'You' : p.user.display_name}</span>
+          </>
+        );
+        return (
+          <div key={p.user.id} className={cm.memberRow}>
+            {/* Faces/names open the profile — never in 👻 ghost groups (§1.68). */}
+            {!ghost && !self && p.user.username ? (
+              <Link
+                href={`/u/${encodeURIComponent(p.user.username)}`}
+                className={cm.memberWho}
+                aria-label={`Open ${p.user.display_name}’s profile`}
+                onClick={onNavigate}
+              >
+                {who}
+              </Link>
+            ) : (
+              <span className={cm.memberWho}>{who}</span>
+            )}
+            {chip ? (
+              <span
+                className={`${cm.roleChip}${p.role === 'owner' ? ` ${cm.roleChipOwner}` : ''}`}
+              >
+                {chip}
+              </span>
+            ) : null}
+          </div>
+        );
+      })}
+
+      {open ? (
+        <div className={cm.addPeople} style={{ marginTop: 8 }}>
           <input
             className="input"
             type="search"
@@ -806,8 +909,23 @@ function AddPeopleSection({ conv }: { conv: ConversationListItem }) {
             line tells the group.
           </p>
         </div>
-      )}
+      ) : null}
       {error ? <p className="error-text">{error}</p> : null}
     </>
+  );
+}
+
+/* Royal v2: the hero's camera badge (decorative — the button carries the label). */
+function CameraBadgeIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M4 8 a2 2 0 0 1 2 -2 h2 l1.5 -2 h5 L16 6 h2 a2 2 0 0 1 2 2 v9 a2 2 0 0 1 -2 2 H6 a2 2 0 0 1 -2 -2 Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="12.5" r="3.2" stroke="currentColor" strokeWidth="1.7" />
+    </svg>
   );
 }

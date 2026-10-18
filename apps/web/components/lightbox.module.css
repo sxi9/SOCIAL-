@@ -53,32 +53,114 @@
   -webkit-user-drag: none;
 }
 
+/* v2 (proto 42): close orb left, centered zoom hint, ··· overflow right. */
 .topBar {
   position: absolute;
-  top: calc(8px + env(safe-area-inset-top));
-  right: calc(8px + env(safe-area-inset-right));
+  top: calc(10px + env(safe-area-inset-top));
+  left: calc(12px + env(safe-area-inset-left));
+  right: calc(12px + env(safe-area-inset-right));
   display: flex;
+  align-items: center;
   gap: 8px;
   z-index: 1;
 }
 
-.barBtn {
+.orb {
   appearance: none;
   border: none;
-  border-radius: 999px;
-  padding: 8px 14px;
-  font: inherit;
-  font-size: 14px;
-  color: #fff;
-  background: rgba(255, 255, 255, 0.16);
-  backdrop-filter: blur(6px);
-  cursor: pointer;
-  text-decoration: none;
-  min-height: 40px;
+  border-radius: 50%;
+  width: 38px;
+  height: 38px;
+  flex: none;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+  line-height: 0;
 }
 
-.barBtn:active {
+.orb:active {
   background: rgba(255, 255, 255, 0.28);
+}
+
+.hint {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.72);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The ··· popover (just "Open original" for now). */
+.menuWrap {
+  position: relative;
+  flex: none;
+}
+
+.menuBackdrop {
+  position: fixed;
+  inset: 0;
+  border: none;
+  background: transparent;
+  cursor: default;
+  z-index: 1;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  top: 44px;
+  z-index: 2;
+  min-width: 160px;
+  background: #1a1e2a;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  padding: 6px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+.menu a {
+  display: block;
+  padding: 9px 12px;
+  border-radius: 8px;
+  color: #f3f5f9;
+  font-size: 14px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.menu a:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* proto 42: bottom action row — icon over 11.5px label. */
+.bottomBar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  display: flex;
+  justify-content: center;
+  gap: 38px;
+  z-index: 1;
+}
+
+.action {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  color: #fff;
+  font-size: 11.5px;
+  text-decoration: none;
+}
+
+.action:active {
+  opacity: 0.7;
 }

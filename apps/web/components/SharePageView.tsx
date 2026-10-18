@@ -71,6 +71,22 @@ function fmt(iso: string): string {
   });
 }
 
+// v2 (proto 07): the state note beside the wordmark names what this is.
+function headMeta(page: SharePage): string {
+  switch (page.type) {
+    case 'post':
+      return 'shared post, logged out';
+    case 'beacon':
+      return 'shared beacon, logged out';
+    case 'listing':
+      return 'board listing, logged out';
+    case 'story':
+      return 'shared story, logged out';
+    default:
+      return 'shared group, logged out';
+  }
+}
+
 export default function SharePageView({
   page,
   token,
@@ -82,13 +98,15 @@ export default function SharePageView({
 }) {
   return (
     <main className={cm.sharePage}>
+      {/* proto 07: lowercase serif wordmark · state note · Sign in pill.
+          Viewing stays free; every INTERACTION still gates to /register. */}
       <header className={cm.shareHead}>
         <Link href="/" className={cm.shareBrand}>
-          Bored Chat
+          bored.
         </Link>
-        <span className="muted small">chat for when the group chat is dead</span>
-        <Link href={gate(deepLink(page, path))} className={`btn btn-primary ${cm.shareJoin}`}>
-          Join free
+        <span className={cm.shareHeadMeta}>{headMeta(page)}</span>
+        <Link href={`/login?next=${encodeURIComponent(path)}`} className={`btn btn-primary ${cm.shareJoin}`}>
+          Sign in
         </Link>
       </header>
 
@@ -122,7 +140,8 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
   switch (page.type) {
     case 'post':
       return (
-        <article className={cm.shareCard}>
+        <>
+          <article className={cm.shareCard}>
           <AuthorChip chip={page.author} label={fmt(page.created_at)} />
           {page.body ? <p className={cm.shareBody}>{page.body}</p> : null}
           <MediaGrid media={page.media} />
@@ -147,16 +166,48 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
               })}
             </div>
           ) : null}
-          <div className={cm.shareMetaRow}>{page.location_label ? <span>📍 {page.location_label}</span> : null}</div>
-          <div className={cm.shareGate}>
-            <Link href={next} className="btn btn-primary">
-              React or comment — join free
+          {page.location_label ? (
+            <div className={cm.shareMetaRow}>
+              <span>📍 {page.location_label}</span>
+            </div>
+          ) : null}
+          {/* proto 07: React / Reply read like the real post row — every tap
+              still lands on the same /register?next= gate. */}
+          <div className={cm.shareActions}>
+            <Link href={next} className={cm.shareAct}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path
+                  d="M12 19.5 C7.2 15.9 4.3 13 4.3 9.9 a4.1 4.1 0 0 1 7.1 -2.8 L12 7.8 l0.6 -0.7 a4.1 4.1 0 0 1 7.1 2.8 c0 3.1 -2.9 6 -7.7 9.6 Z"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              React
             </Link>
-            <Link href={next} className="btn">
-              See more from @{page.author.username}
+            <Link href={next} className={cm.shareAct}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path
+                  d="M12 4.5 c4.9 0 8.2 2.8 8.2 6.5 c0 3.7 -3.3 6.5 -8.2 6.5 c-0.9 0 -1.8 -0.1 -2.6 -0.3 L5.5 19 l1 -3.2 c-1.7 -1.2 -2.7 -3 -2.7 -4.8 C3.8 7.3 7.1 4.5 12 4.5 Z"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              Reply
             </Link>
+            <span className={cm.shareActNote}>sign in to interact</span>
           </div>
-        </article>
+          </article>
+          {/* proto 07: the invite-framed join card under the post. */}
+          <aside className={cm.shareWorld}>
+            <h2 className={cm.shareWorldTitle}>See the rest of {page.author.display_name}&rsquo;s world</h2>
+            <p className={cm.shareWorldSub}>This link is your way in — joining takes a minute, and it&rsquo;s free.</p>
+            <Link href={next} className={`btn btn-primary ${cm.shareWorldCta}`}>
+              Join Bored Chat
+            </Link>
+          </aside>
+        </>
       );
     case 'beacon': {
       const live = page.status === 'open';

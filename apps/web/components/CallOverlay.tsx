@@ -1,11 +1,12 @@
 'use client';
 
 // v0.6 calls (API.md §1.42 + §2.12) + v0.7.1 reliability (§1.55–§1.56,
-// FEATURES #87–#90b): the incoming-ring overlay (works anywhere — mounted by
-// GlobalOverlays inside AppShell), the full in-call screen (local preview +
-// remote mesh grid, mute/camera/flip/end, honest connectivity states, TURN
-// honesty banner, push-off note), the DRAGGABLE floating pill (avatar, live
-// timer, mute, hang-up, video thumbnail / browser PiP), and the transient
+// FEATURES #87–#90b), reskinned to Royal v2 (proto refs 22–26): the
+// full-screen incoming ring (blurred avatar backdrop, pulsing ring), the
+// in-call screen (centered 1:1 voice, two-half split video with tap-to-swap
+// focus + a draggable 86×120 PiP, 2×2 group grid with an active-speaker
+// ring), honest connectivity states, TURN honesty banner, push-off note,
+// the DRAGGABLE green minimized pill ("tap to return"), and the transient
 // ended-call card. All media state lives in lib/webrtc.ts (a module
 // singleton — the call survives full app navigation); this component only
 // renders store.callUi / store.callInvite and re-grabs streams when
@@ -15,6 +16,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
@@ -39,7 +41,6 @@ import {
   toggleMic,
 } from '@/lib/webrtc';
 import Avatar from './Avatar';
-import Mascot from './Mascot';
 import Portal from './Portal';
 import styles from './calls.module.css';
 
@@ -61,8 +62,19 @@ export default function CallOverlay() {
 
 const KIND_LABEL: Record<CallKind, string> = { audio: 'Voice call', video: 'Video call' };
 
+/** Enter/Space activation for the tap-to-swap video tiles. */
+function keyActivate(fn: () => void) {
+  return (e: ReactKeyboardEvent<HTMLElement>) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      fn();
+    }
+  };
+}
+
 // ---------------------------------------------------------------------------
-// Incoming ring
+// Incoming ring (proto 22): full-screen bg-deep, blurred avatar backdrop,
+// pulsing avatar ring (static under reduced motion), 66px decline/accept.
 // ---------------------------------------------------------------------------
 
 function IncomingRing() {
@@ -73,48 +85,52 @@ function IncomingRing() {
   const conv = state.conversations.get(invite.conversation_id);
   const caller = conv?.participants.find((p) => p.user.id === invite.from_user)?.user ?? null;
   const callerName = caller?.display_name ?? 'Someone';
-  const where = conv && conv.type !== 'dm' ? ` in ${conversationTitle(conv, state.me?.id)}` : '';
+  const where = conv && conv.type !== 'dm' ? ` · ${conversationTitle(conv, state.me?.id)}` : '';
 
   return (
     <div className={styles.ringBackdrop} role="dialog" aria-modal="true" aria-label="Incoming call">
-      <div className={styles.ringCard}>
-        <span className={reduced ? undefined : styles.ringMascot} aria-hidden>
-          <Mascot state="wave" size={104} />
+      {caller ? (
+        <span className={styles.ringBlur} aria-hidden>
+          <Avatar avatar={caller.avatar} name={callerName} size={300} />
         </span>
-        {caller ? <Avatar avatar={caller.avatar} name={callerName} size={48} animated /> : null}
+      ) : null}
+      <div className={styles.ringBody}>
+        {caller ? (
+          <span
+            className={`${styles.ringAvatar}${reduced ? '' : ` ${styles.ringAvatarPulse}`}`}
+            aria-hidden
+          >
+            <Avatar avatar={caller.avatar} name={callerName} size={104} animated />
+          </span>
+        ) : null}
         <h2 className={styles.ringTitle}>{callerName}</h2>
         <p className={styles.ringSub}>
-          {KIND_LABEL[invite.kind]}
+          incoming {invite.kind === 'video' ? 'video' : 'voice'} call
           {where}
         </p>
-        <span className={styles.ringPulse} aria-hidden>
-          <span />
-          <span />
-          <span />
-        </span>
-        <div className={styles.ringActions}>
-          <button
-            type="button"
-            className={styles.ringAction}
-            onClick={() => void rejectIncoming()}
-          >
-            <span className={`${styles.roundBtn} ${styles.reject}`} aria-hidden>
-              <PhoneDownIcon />
-            </span>
-            Decline
-          </button>
-          <button
-            type="button"
-            className={styles.ringAction}
-            onClick={() => void joinCall(invite.call_id, invite.kind)}
-            autoFocus
-          >
-            <span className={`${styles.roundBtn} ${styles.accept}`} aria-hidden>
-              <PhoneIcon />
-            </span>
-            Accept
-          </button>
-        </div>
+      </div>
+      <div className={styles.ringActions}>
+        <button
+          type="button"
+          className={styles.ringAction}
+          onClick={() => void rejectIncoming()}
+        >
+          <span className={`${styles.roundBtn} ${styles.reject}`} aria-hidden>
+            <PhoneDownIcon />
+          </span>
+          Decline
+        </button>
+        <button
+          type="button"
+          className={styles.ringAction}
+          onClick={() => void joinCall(invite.call_id, invite.kind)}
+          autoFocus
+        >
+          <span className={`${styles.roundBtn} ${styles.accept}`} aria-hidden>
+            <PhoneIcon />
+          </span>
+          Accept
+        </button>
       </div>
     </div>
   );
@@ -174,7 +190,7 @@ function PushOffNote() {
     <p className={styles.pushNote} role="note">
       <span>
         Notifications are off — you won&rsquo;t be rung when the app is closed.{' '}
-        <Link href="/settings/profile">Turn them on</Link>
+        <Link href="/settings/notifications">Turn them on</Link>
       </span>
       <button
         type="button"
@@ -188,13 +204,99 @@ function PushOffNote() {
   );
 }
 
+const EMPTY_IDS: string[] = [];
+
+/** Active-speaker detection for the group-grid ring (proto 25): a local
+ * AnalyserNode per remote stream, sampled a few times a second. Pure view
+ * layer — it never touches lib/webrtc — and any failure (autoplay policy,
+ * missing AudioContext) just means no ring. */
+function useSpeakingIds(peerIds: string[], version: number, enabled: boolean): Set<string> {
+  const [speaking, setSpeaking] = useState<Set<string>>(() => new Set());
+  const key = peerIds.join('|');
+  useEffect(() => {
+    if (!enabled || peerIds.length === 0) {
+      setSpeaking((prev) => (prev.size === 0 ? prev : new Set<string>()));
+      return;
+    }
+    let ctx: AudioContext | null = null;
+    const probes: Array<{ id: string; node: AnalyserNode; data: Uint8Array }> = [];
+    try {
+      ctx = new AudioContext();
+      for (const id of peerIds) {
+        const stream = getRemoteStream(id);
+        if (!stream || stream.getAudioTracks().length === 0) continue;
+        const node = ctx.createAnalyser();
+        node.fftSize = 256;
+        ctx.createMediaStreamSource(stream).connect(node);
+        probes.push({ id, node, data: new Uint8Array(node.fftSize) });
+      }
+      if (ctx.state === 'suspended') void ctx.resume().catch(() => undefined);
+    } catch {
+      probes.length = 0;
+    }
+    if (!ctx || probes.length === 0) {
+      if (ctx) void ctx.close().catch(() => undefined);
+      return;
+    }
+    const owned = ctx;
+    const timer = window.setInterval(() => {
+      const next = new Set<string>();
+      for (const p of probes) {
+        try {
+          p.node.getByteTimeDomainData(p.data);
+        } catch {
+          continue;
+        }
+        let sum = 0;
+        for (let i = 0; i < p.data.length; i += 1) {
+          const v = (p.data[i] - 128) / 128;
+          sum += v * v;
+        }
+        if (Math.sqrt(sum / p.data.length) > 0.05) next.add(p.id);
+      }
+      setSpeaking((prev) =>
+        prev.size === next.size && Array.from(next).every((id) => prev.has(id)) ? prev : next,
+      );
+    }, 260);
+    return () => {
+      window.clearInterval(timer);
+      void owned.close().catch(() => undefined);
+    };
+    // peerIds is folded into `key`; version re-runs when streams change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, version, enabled]);
+  return speaking;
+}
+
 function CallScreen() {
   const state = useAppState();
   const now = useNow(1000);
   const ui = state.callUi;
+
+  // 1:1 video layout state (proto 24): null = two-half split (the default);
+  // otherwise that party fills and the other rides the draggable PiP.
+  const [focus, setFocus] = useState<'remote' | 'local' | null>(null);
+  const [pipPos, setPipPos] = useState<{ x: number; y: number } | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const pipDragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    x: number;
+    y: number;
+  } | null>(null);
+  const pipMovedRef = useRef(false);
+
+  const speakingIds = useSpeakingIds(
+    ui?.peer_ids ?? EMPTY_IDS,
+    ui?.media_version ?? 0,
+    (ui?.peer_ids.length ?? 0) > 1 && ui?.phase !== 'ended',
+  );
+
   if (!ui || ui.phase === 'ended') return null;
+  const me = state.me;
   const conv = state.conversations.get(ui.conversation_id);
-  const title = conv ? conversationTitle(conv, state.me?.id) : 'Call';
+  const title = conv ? conversationTitle(conv, me?.id) : 'Call';
   const duration = durationLabel(ui.answered_at, now);
   const status =
     ui.phase === 'ringing'
@@ -202,17 +304,29 @@ function CallScreen() {
         ? 'Ringing…'
         : 'Calling…'
       : connStatusLabel(ui.conn_state, duration);
+  const statusLive = ui.phase !== 'ringing' && ui.conn_state === 'connected' && duration !== null;
 
   const nameOf = (userId: string): string =>
     conv?.participants.find((p) => p.user.id === userId)?.user.display_name ?? 'Peer';
   const avatarOf = (userId: string) =>
     conv?.participants.find((p) => p.user.id === userId)?.user ?? null;
+  const badgeOf = (userId: string): string | null =>
+    ui.reconnecting_ids.includes(userId)
+      ? 'reconnecting…'
+      : // My view of the pair wins; otherwise the peer's own relayed
+        // call.state report (§2.12) — their tile is honest about THEIR
+        // network too.
+        PEER_STATE_BADGE[ui.peer_states[userId] ?? 'connected'];
 
   const peerIds = ui.peer_ids;
+  const voiceCentered = !ui.is_group && ui.kind === 'audio';
+  const videoSplit = !ui.is_group && ui.kind === 'video';
+  // Group video gets a "You" tile in the grid (proto 25); voice doesn't.
+  const tileCount = peerIds.length + (ui.kind === 'video' && !videoSplit ? 1 : 0);
   const gridClass =
-    peerIds.length <= 1
+    tileCount <= 1
       ? styles.grid
-      : peerIds.length <= 4
+      : tileCount <= 4
         ? `${styles.grid} ${styles.grid2}`
         : `${styles.grid} ${styles.grid9}`;
 
@@ -220,15 +334,116 @@ function CallScreen() {
   // their streams) whenever lib/webrtc mutates media.
   void ui.media_version;
 
+  const voiceUser = (peerIds[0] ? avatarOf(peerIds[0]) : null) ??
+    conv?.participants.find((p) => p.user.id !== me?.id)?.user ??
+    null;
+  const voiceBadge = peerIds[0] ? badgeOf(peerIds[0]) : null;
+  const remoteId = peerIds[0] ?? null;
+
+  /** One remote party's media + name chip + honesty badge. */
+  const renderPeerInner = (id: string) => {
+    const user = avatarOf(id);
+    const video = ui.kind === 'video';
+    const hasVideo = video && remoteHasVideo(id);
+    const speaking = speakingIds.has(id);
+    const badge = badgeOf(id);
+    return (
+      <>
+        <RemoteMedia userId={id} version={ui.media_version} video={video} />
+        {!hasVideo ? (
+          <div className={styles.tileFace}>
+            {user ? <Avatar avatar={user.avatar} name={user.display_name} size={64} /> : null}
+          </div>
+        ) : null}
+        <span className={styles.tileName}>
+          {nameOf(id)}
+          {speaking ? ' · speaking' : video && !hasVideo ? ' · cam off' : ''}
+        </span>
+        {badge ? <span className={styles.tileBadge}>{badge}</span> : null}
+      </>
+    );
+  };
+
+  /** My own camera (mirrored) + "You" chip; avatar on panel when cam off. */
+  const renderYouInner = () => (
+    <>
+      <LocalPreview version={ui.media_version} camOn={ui.cam_on} />
+      {!ui.cam_on ? (
+        <div className={styles.tileFace}>
+          {me ? <Avatar avatar={me.avatar} name={me.display_name} size={64} /> : null}
+        </div>
+      ) : null}
+      <span className={styles.tileName}>You{ui.cam_on ? '' : ' · cam off'}</span>
+    </>
+  );
+
+  // ---- draggable PiP (focus mode, proto 24): same capture-on-threshold
+  // pattern as the pill, so a plain tap still swaps. ----
+  function onPipPointerDown(e: ReactPointerEvent<HTMLDivElement>): void {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const wr = wrap.getBoundingClientRect();
+    pipDragRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      x: rect.left - wr.left,
+      y: rect.top - wr.top,
+    };
+    pipMovedRef.current = false;
+  }
+
+  function onPipPointerMove(e: ReactPointerEvent<HTMLDivElement>): void {
+    const d = pipDragRef.current;
+    const wrap = wrapRef.current;
+    if (!d || !wrap) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    if (!pipMovedRef.current) {
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      pipMovedRef.current = true;
+      try {
+        e.currentTarget.setPointerCapture(d.pointerId);
+      } catch {
+        /* pointer already gone — the drag just ends */
+      }
+    }
+    const wr = wrap.getBoundingClientRect();
+    const r = e.currentTarget.getBoundingClientRect();
+    const maxX = Math.max(8, wr.width - r.width - 8);
+    const maxY = Math.max(8, wr.height - r.height - 8);
+    setPipPos({
+      x: Math.min(Math.max(8, d.x + dx), maxX),
+      y: Math.min(Math.max(8, d.y + dy), maxY),
+    });
+  }
+
+  function onPipPointerUp(): void {
+    pipDragRef.current = null;
+  }
+
+  function onPipTap(): void {
+    if (pipMovedRef.current) {
+      pipMovedRef.current = false;
+      return; // that was a drag, not a tap
+    }
+    setFocus(focus === 'remote' ? 'local' : 'remote');
+  }
+
   return (
     <div className={styles.callScreen} role="dialog" aria-modal="true" aria-label={`${KIND_LABEL[ui.kind]} — ${title}`}>
       <div className={styles.callTop}>
-        <div className={styles.callTitle}>
-          <h2>{title}</h2>
-          <p>
-            {KIND_LABEL[ui.kind]} · {status}
+        {ui.is_group ? (
+          <h2 className={styles.topTitle}>{title} · group call</h2>
+        ) : (
+          <span className={styles.topSpacer} aria-hidden />
+        )}
+        {!voiceCentered ? (
+          <p className={`${styles.topStatus}${statusLive ? ` ${styles.topStatusLive}` : ''}`}>
+            {status}
           </p>
-        </div>
+        ) : null}
         <button
           type="button"
           className={styles.minBtn}
@@ -239,50 +454,123 @@ function CallScreen() {
         </button>
       </div>
 
-      {/* gridWrap anchors the self-camera PiP INSIDE the video area, so it
-          can never cover the notice lines (TURN warning, push-off note,
-          failure reason) that sit between the grid and the controls. */}
-      <div className={styles.gridWrap}>
-        <div className={gridClass}>
-          {peerIds.length === 0 ? (
-          <div className={styles.tile}>
-            <div className={styles.tileFace}>
-              <Mascot state={ui.phase === 'ringing' ? 'watch' : 'idle'} size={84} />
-              <span className="muted small">{status}</span>
-            </div>
-          </div>
-        ) : (
-          peerIds.map((id) => {
-            const user = avatarOf(id);
-            return (
-              <div key={id} className={styles.tile}>
-                <RemoteMedia userId={id} version={ui.media_version} video={ui.kind === 'video'} />
-                {ui.kind !== 'video' || !remoteHasVideo(id) ? (
-                  <div className={styles.tileFace}>
-                    {user ? <Avatar avatar={user.avatar} name={user.display_name} size={64} /> : null}
-                  </div>
-                ) : null}
-                <span className={styles.tileName}>{nameOf(id)}</span>
-                {(() => {
-                  // My view of the pair wins; otherwise the peer's own
-                  // relayed call.state report (§2.12) — their tile is honest
-                  // about THEIR network too.
-                  const badge = ui.reconnecting_ids.includes(id)
-                    ? 'reconnecting…'
-                    : PEER_STATE_BADGE[ui.peer_states[id] ?? 'connected'];
-                  return badge ? <span className={styles.tileBadge}>{badge}</span> : null;
-                })()}
+      {voiceCentered ? (
+        // Centered 1:1 voice (proto 23): blurred backdrop, ringed avatar,
+        // serif name, green timer. Hidden sinks keep the remote audio alive.
+        <div className={styles.voiceBody}>
+          {voiceUser ? (
+            <span className={styles.ringBlur} aria-hidden>
+              <Avatar avatar={voiceUser.avatar} name={voiceUser.display_name} size={300} />
+            </span>
+          ) : null}
+          <span className={styles.voiceAvatar}>
+            {voiceUser ? (
+              <Avatar avatar={voiceUser.avatar} name={voiceUser.display_name} size={112} animated />
+            ) : null}
+          </span>
+          <h2 className={styles.voiceName}>{voiceUser?.display_name ?? title}</h2>
+          <p className={`${styles.voiceStatus}${statusLive ? ` ${styles.voiceStatusLive}` : ''}`}>
+            {status}
+          </p>
+          {voiceBadge ? <p className={styles.voiceBadge}>{voiceBadge}</p> : null}
+          <PillAudio peerIds={peerIds} version={ui.media_version} />
+        </div>
+      ) : (
+        // gridWrap anchors the floating PiP INSIDE the video area, so it can
+        // never cover the notice lines (TURN warning, push-off note, failure
+        // reason) that sit between the grid and the controls.
+        <div className={styles.gridWrap} ref={wrapRef}>
+          {videoSplit ? (
+            remoteId === null ? (
+              // Still ringing: my own camera full-bleed while the top bar
+              // says "Calling…".
+              <div className={styles.splitStack}>
+                <div className={styles.splitTile}>{renderYouInner()}</div>
               </div>
-            );
-          })
+            ) : focus === null ? (
+              <div className={styles.splitStack}>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className={styles.splitTile}
+                  aria-label={`Show ${nameOf(remoteId)} full screen`}
+                  onClick={() => setFocus('remote')}
+                  onKeyDown={keyActivate(() => setFocus('remote'))}
+                >
+                  {renderPeerInner(remoteId)}
+                </div>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className={styles.splitTile}
+                  aria-label="Show your video full screen"
+                  onClick={() => setFocus('local')}
+                  onKeyDown={keyActivate(() => setFocus('local'))}
+                >
+                  {renderYouInner()}
+                </div>
+                <span className={styles.swapHint} aria-hidden>
+                  tap a tile to swap
+                </span>
+              </div>
+            ) : (
+              <>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className={styles.focusTile}
+                  aria-label="Back to split view"
+                  onClick={() => setFocus(null)}
+                  onKeyDown={keyActivate(() => setFocus(null))}
+                >
+                  {focus === 'remote' ? renderPeerInner(remoteId) : renderYouInner()}
+                </div>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className={styles.focusPip}
+                  aria-label={
+                    focus === 'remote'
+                      ? 'Swap your video to full screen'
+                      : `Swap ${nameOf(remoteId)} to full screen`
+                  }
+                  style={pipPos ? { left: pipPos.x, top: pipPos.y, right: 'auto' } : undefined}
+                  onPointerDown={onPipPointerDown}
+                  onPointerMove={onPipPointerMove}
+                  onPointerUp={onPipPointerUp}
+                  onPointerCancel={onPipPointerUp}
+                  onClick={onPipTap}
+                  onKeyDown={keyActivate(onPipTap)}
+                >
+                  {focus === 'remote' ? renderYouInner() : renderPeerInner(remoteId)}
+                </div>
+              </>
+            )
+          ) : (
+            <div className={gridClass}>
+              {peerIds.length === 0 ? (
+                <div className={styles.tile}>
+                  <div className={styles.tileFace}>
+                    <span className="muted small">{status}</span>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {peerIds.map((id) => (
+                    <div
+                      key={id}
+                      className={`${styles.tile}${speakingIds.has(id) ? ` ${styles.tileSpeaking}` : ''}`}
+                    >
+                      {renderPeerInner(id)}
+                    </div>
+                  ))}
+                  {ui.kind === 'video' ? <div className={styles.tile}>{renderYouInner()}</div> : null}
+                </>
+              )}
+            </div>
           )}
         </div>
-        {ui.kind === 'video' ? (
-          <div className={styles.pip} aria-label="Your camera preview">
-            <LocalPreview version={ui.media_version} camOn={ui.cam_on} />
-          </div>
-        ) : null}
-      </div>
+      )}
 
       {/* TURN honesty (§1.55, FEATURES #90): inline + non-blocking — the
           caller learns BEFORE anyone picks up, never via a silent failure. */}
@@ -300,23 +588,31 @@ function CallScreen() {
       <div className={styles.controls}>
         <button
           type="button"
-          className={`${styles.ctl}${ui.mic_on ? '' : ` ${styles.ctlOff}`}`}
+          className={styles.ctl}
           aria-label={ui.mic_on ? 'Mute microphone' : 'Unmute microphone'}
           aria-pressed={!ui.mic_on}
           onClick={toggleMic}
         >
-          {ui.mic_on ? <MicIcon /> : <MicOffIcon />}
+          <span className={`${styles.ctlOrb}${ui.mic_on ? '' : ` ${styles.ctlOrbOff}`}`} aria-hidden>
+            {ui.mic_on ? <MicIcon /> : <MicOffIcon />}
+          </span>
+          {ui.kind === 'audio' ? <span className={styles.ctlLabel}>Mute</span> : null}
         </button>
         {ui.kind === 'video' ? (
           <>
             <button
               type="button"
-              className={`${styles.ctl}${ui.cam_on ? '' : ` ${styles.ctlOff}`}`}
+              className={styles.ctl}
               aria-label={ui.cam_on ? 'Turn camera off' : 'Turn camera on'}
               aria-pressed={!ui.cam_on}
               onClick={toggleCam}
             >
-              {ui.cam_on ? <CamIcon /> : <CamOffIcon />}
+              <span
+                className={`${styles.ctlOrb}${ui.cam_on ? '' : ` ${styles.ctlOrbOff}`}`}
+                aria-hidden
+              >
+                {ui.cam_on ? <CamIcon /> : <CamOffIcon />}
+              </span>
             </button>
             <button
               type="button"
@@ -324,17 +620,22 @@ function CallScreen() {
               aria-label="Flip camera"
               onClick={() => void flipCamera()}
             >
-              <FlipIcon />
+              <span className={styles.ctlOrb} aria-hidden>
+                <FlipIcon />
+              </span>
             </button>
           </>
         ) : null}
         <button
           type="button"
-          className={`${styles.ctl} ${styles.ctlEnd}`}
+          className={styles.ctl}
           aria-label="End call"
           onClick={() => void hangUp()}
         >
-          <PhoneDownIcon />
+          <span className={`${styles.ctlOrb} ${styles.ctlOrbEnd}`} aria-hidden>
+            <PhoneDownIcon />
+          </span>
+          {ui.kind === 'audio' ? <span className={styles.ctlLabel}>End</span> : null}
         </button>
       </div>
     </div>
@@ -371,16 +672,26 @@ function LocalPreview({ version, camOn }: { version: number; camOn: boolean }) {
       void el.play().catch(() => undefined);
     }
   }, [version]);
-  return <video ref={ref} autoPlay playsInline muted style={camOn ? undefined : { opacity: 0.25 }} />;
+  return (
+    <video
+      ref={ref}
+      autoPlay
+      playsInline
+      muted
+      className={styles.mirror}
+      style={camOn ? undefined : { opacity: 0.25 }}
+    />
+  );
 }
 
 // ---------------------------------------------------------------------------
-// Minimized floating pill (v0.7.1 — FEATURES #87): draggable, avatar, live
-// timer, mute, hang-up; video keeps a thumbnail (+ browser PiP where
-// supported); tap expands. The RTCPeerConnections live in the lib/webrtc
-// module singleton, so the call itself survives any navigation — this pill
-// merely keeps it on screen. Position persists across remounts/pages in a
-// module variable (per-session UI convenience, not state).
+// Minimized floating pill (v0.7.1 — FEATURES #87, reskinned per proto 26):
+// green-tinted, pulsing, "name · timer · tap to return", mute, hang-up;
+// video keeps a thumbnail (+ browser PiP where supported); tap expands.
+// Still draggable — the RTCPeerConnections live in the lib/webrtc module
+// singleton, so the call itself survives any navigation; this pill merely
+// keeps it on screen. Position persists across remounts/pages in a module
+// variable (per-session UI convenience, not state).
 // ---------------------------------------------------------------------------
 
 let pillPos: { x: number; y: number } | null = null;
@@ -422,6 +733,8 @@ function CallPill() {
   const peerUser =
     conv?.participants.find((p) => p.user.id === ui.peer_ids[0])?.user ??
     (conv && state.me ? conv.participants.find((p) => p.user.id !== state.me?.id)?.user ?? null : null);
+  const who = conv ? conversationTitle(conv, state.me?.id) : peerUser?.display_name ?? null;
+  const pillLabel = [who, label, 'tap to return'].filter(Boolean).join(' · ');
 
   function onPointerDown(e: ReactPointerEvent<HTMLDivElement>): void {
     const target = e.target as HTMLElement;
@@ -498,7 +811,11 @@ function CallPill() {
     <div
       ref={wrapRef}
       className={styles.pillWrap}
-      style={pillPos ? { left: pillPos.x, top: pillPos.y, right: 'auto', bottom: 'auto' } : undefined}
+      style={
+        pillPos
+          ? { left: pillPos.x, top: pillPos.y, right: 'auto', bottom: 'auto', transform: 'none' }
+          : undefined
+      }
       role="group"
       aria-label="Ongoing call"
       onPointerDown={onPointerDown}
@@ -519,7 +836,7 @@ function CallPill() {
         ) : (
           <PhoneIcon />
         )}
-        <span className={styles.pillTime}>{label}</span>
+        <span className={styles.pillTime}>{pillLabel}</span>
       </button>
       <button
         type="button"

@@ -14,24 +14,21 @@ import {
   joinBeacon,
   leaveBeacon,
   refreshBeacons,
-  vibeEmojiOf,
   vibeLabelOf,
 } from '@/lib/beacons';
 import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
 import Avatar from './Avatar';
-import BeaconCreateSheet from './BeaconCreateSheet';
 import BeaconDetailSheet from './BeaconDetailSheet';
 import ReportSheet from './ReportSheet';
 import styles from './beacons.module.css';
 
-const PILE_MAX = 5;
+const PILE_MAX = 3;
 
 export default function BeaconStrip() {
   const state = useAppState();
   const now = useNow(30_000);
-  const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
     void refreshBeacons();
@@ -53,20 +50,15 @@ export default function BeaconStrip() {
   });
 
   if (items.length === 0) {
+    // Royal v2: the dashed "+ I'm bored" pill below is the create affordance,
+    // so an empty strip only ever shows the quiet radar fact (never two CTAs).
     const radar = state.radarCount ?? 0;
+    if (radar === 0) return null;
     return (
-      <div className={`${styles.radarLine} ${styles.radarNothing} ${styles.beaconVars}`}>
-        {radar > 0 ? (
-          <span>
-            🔥 {radar} {radar === 1 ? 'plan' : 'plans'} live around you
-          </span>
-        ) : (
-          <span>Nothing&rsquo;s brewing right now. Fix that?</span>
-        )}
-        <button type="button" className={styles.radarCta} onClick={() => setCreateOpen(true)}>
-          I&rsquo;m bored
-        </button>
-        {createOpen ? <BeaconCreateSheet onClose={() => setCreateOpen(false)} /> : null}
+      <div className={`${styles.radarLine} ${styles.beaconVars}`}>
+        <span>
+          {radar} {radar === 1 ? 'plan' : 'plans'} live around you
+        </span>
       </div>
     );
   }
@@ -144,10 +136,20 @@ function BeaconCard({ beacon: b, now }: { beacon: Beacon; now: number }) {
   const recentEdit = state.beaconEdits.get(b.id);
   const editNote = recentEdit && Date.now() - recentEdit.at < 60_000;
 
+  // Royal v2 (ref 10): "Jonas · chai run · Dolores Park" title + the quiet
+  // "needs N more to spark" meta line (faces, never counters).
+  const title = sparked
+    ? `IT’S ON 🎉 · ${vibeLabelOf(b)}`
+    : `${creatorName} · ${vibeLabelOf(b)}${b.location ? ` · ${b.location.label}` : ''}`;
+  const metaParts: string[] = [];
+  if (!sparked && b.my_state === 'creator') metaParts.push('your beacon');
+  if (!sparked) metaParts.push(b.needs > 0 ? `needs ${b.needs} more to spark` : 'sparking any moment');
+  metaParts.push(countdown);
+
   return (
     <div
       role="listitem"
-      className={`${styles.card} ${styles.cardRel}${b.my_state === 'creator' ? ` ${styles.cardMine}` : ''}${sparked ? ` ${styles.cardSparked}` : ''}`}
+      className={`${styles.card} ${styles.cardRel}${!sparked ? ` ${styles.cardLive}` : ''}${sparked ? ` ${styles.cardSparked}` : ''}`}
       // FEATURES #60: tapping the card expands the detail sheet (Who's in,
       // edit, spark-now). Inner buttons/links keep their own behavior, and
       // clicks from PORTALED children (the sheets render into <body> but
@@ -160,13 +162,55 @@ function BeaconCard({ beacon: b, now }: { beacon: Beacon; now: number }) {
       }}
     >
       <div className={styles.cardTop}>
-        <span className={styles.vibeEmoji} aria-hidden>
-          {vibeEmojiOf(b)}
-        </span>
+        <Avatar avatar={b.creator.avatar} name={b.creator.display_name} size={46} />
         <span className={styles.cardTitle}>
-          {sparked ? 'IT’S ON 🎉' : `${creatorName} · ${vibeLabelOf(b)}`}
+          <strong>{title}</strong>
+          <span className={`${styles.cardMeta}${soon && !sparked ? ` ${styles.cardMetaSoon}` : ''}${b.needs === 1 && !sparked ? ` ${styles.needsOne}` : ''}`}>
+            {metaParts.join(' · ')}
+          </span>
         </span>
-        <span className={`${styles.countdown}${soon ? ` ${styles.countdownSoon}` : ''}`}>{countdown}</span>
+        <span className={styles.cardSide}>
+          {/* FEATURES #60: the pile is a button — tap to see WHO is in. */}
+          {pile.length > 0 ? (
+            <button
+              type="button"
+              className={styles.pile}
+              key={b.joiner_count}
+              aria-label={`${b.joiner_count} in — see who`}
+              style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+              onClick={() => setDetail(true)}
+            >
+              {pile.map((j) => (
+                <span key={j.id} className={styles.pilePop}>
+                  <Avatar avatar={j.avatar} name={j.display_name} size={26} />
+                </span>
+              ))}
+              {overflow > 0 ? <span className={styles.pileMore}>+{overflow}</span> : null}
+            </button>
+          ) : null}
+          {sparked && b.conversation_id ? (
+            <button
+              type="button"
+              className={`${styles.joinBtn} ${styles.joinSm} ${styles.sparkBtn}`}
+              onClick={() => router.push(`/c/${b.conversation_id}`)}
+            >
+              Open chat
+            </button>
+          ) : !sparked && b.my_state === 'joined' ? (
+            <button type="button" className={`${styles.joinBtn} ${styles.joinSm} ${styles.joinedBtn} ${styles.joinPop}`} disabled>
+              You&rsquo;re in
+            </button>
+          ) : !sparked && b.my_state === 'none' ? (
+            <button
+              type="button"
+              className={`${styles.joinBtn} ${styles.joinSm}`}
+              disabled={joinBusy}
+              onClick={() => void join()}
+            >
+              Join
+            </button>
+          ) : null}
+        </span>
         <button
           type="button"
           className={styles.cardKebab}
@@ -210,71 +254,17 @@ function BeaconCard({ beacon: b, now }: { beacon: Beacon; now: number }) {
 
       {editNote ? (
         <span className={styles.editedNote} role="status">
-          ✏️ plan updated
+          plan updated
         </span>
       ) : b.edited_at ? (
-        <span className={styles.editedNote}>✏️ edited</span>
+        <span className={styles.editedNote}>edited</span>
       ) : null}
       {b.note ? <p className={styles.cardNote}>{b.note}</p> : null}
-      {b.location ? (
-        <span className={styles.ritualTag}>📍 {b.location.label}</span>
-      ) : null}
       {b.ritual ? (
         <span className={styles.ritualTag}>
-          🔁 ritual{b.ritual.count > 0 ? ` · ${b.ritual.count} so far` : ''}
+          ritual{b.ritual.count > 0 ? ` · ${b.ritual.count} so far` : ''}
         </span>
       ) : null}
-
-      <div className={styles.cardPeople}>
-        {/* FEATURES #60: the pile is a button — tap to see WHO is in. */}
-        <button
-          type="button"
-          className={styles.pile}
-          key={b.joiner_count}
-          aria-label={`${b.joiner_count} in — see who`}
-          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
-          onClick={() => setDetail(true)}
-        >
-          <span className={styles.pilePop}>
-            <Avatar avatar={b.creator.avatar} name={b.creator.display_name} size={28} />
-          </span>
-          {pile.map((j) => (
-            <span key={j.id} className={styles.pilePop}>
-              <Avatar avatar={j.avatar} name={j.display_name} size={28} />
-            </span>
-          ))}
-          {overflow > 0 ? <span className={styles.pileMore}>+{overflow}</span> : null}
-        </button>
-        {!sparked && b.needs > 0 ? (
-          <span className={`${styles.needs}${b.needs === 1 ? ` ${styles.needsOne}` : ''}`}>
-            needs {b.needs} more 🔥
-          </span>
-        ) : null}
-      </div>
-
-      <div className={styles.cardActions}>
-        {sparked && b.conversation_id ? (
-          <button
-            type="button"
-            className={`${styles.joinBtn} ${styles.sparkBtn}`}
-            onClick={() => router.push(`/c/${b.conversation_id}`)}
-          >
-            Open the plan →
-          </button>
-        ) : b.my_state === 'creator' ? (
-          <button type="button" className={`${styles.joinBtn} ${styles.joinedBtn}`} disabled>
-            Your beacon · watching the pile
-          </button>
-        ) : b.my_state === 'joined' ? (
-          <button type="button" className={`${styles.joinBtn} ${styles.joinedBtn} ${styles.joinPop}`} disabled>
-            You&rsquo;re in 🙌
-          </button>
-        ) : (
-          <button type="button" className={styles.joinBtn} disabled={joinBusy} onClick={() => void join()}>
-            I&rsquo;m in 🙋
-          </button>
-        )}
-      </div>
       {err ? <p className="error-text" style={{ margin: 0 }}>{err}</p> : null}
     </div>
   );

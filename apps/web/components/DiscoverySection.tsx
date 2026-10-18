@@ -69,14 +69,19 @@ export default function DiscoverySection() {
 
   return (
     <section aria-label="Bored Together">
+      {/* Royal v2 (ref 10): serif section head + the honest one-liner. */}
+      <div className={styles.sectionHead}>
+        <h2>Bored together</h2>
+        <p>strangers nearby who opted in — never your friends</p>
+      </div>
       <div className={styles.boredCard}>
         <div className={styles.boredHead}>
-          <Mascot state="watch" size={56} />
+          <Mascot state="watch" size={48} />
           <div>
-            <h2>Bored now?</h2>
+            <h3>Bored now?</h3>
             <p>
               {live
-                ? 'You are discoverable to other bored people — wave at someone.'
+                ? 'You are discoverable to other bored people — say hi to someone.'
                 : 'Meet someone else who is bored right now. Opt in for an hour, lapse silently.'}
             </p>
           </div>
@@ -86,8 +91,7 @@ export default function DiscoverySection() {
             NEVER a toast (toasts confirm my own actions only). */}
         {state.discoveryNudgeAt !== null ? (
           <p className={cm.nudgeLine} role="status">
-            <span aria-hidden>👀</span>
-            <span>Someone in the pool waved at you… wave around and see what happens.</span>
+            <span>Someone in the pool waved at you… say hi around and see what happens.</span>
             <button
               type="button"
               className={cm.nudgeDismiss}
@@ -102,7 +106,7 @@ export default function DiscoverySection() {
         {/* Binding client rule (§1.44): the aggregate shows PRE-opt-in only. */}
         {!live && agg && agg.better_percent !== null ? (
           <p className={styles.encourage}>
-            💡 {agg.better_percent}% of people here said chatting with a stranger was{' '}
+            {agg.better_percent}% of people here said chatting with a stranger was{' '}
             <strong>better than they expected</strong>.
           </p>
         ) : null}
@@ -119,16 +123,16 @@ export default function DiscoverySection() {
               Go invisible
             </button>
             <button type="button" className="btn btn-primary" onClick={() => setRouletteOpen(true)}>
-              🎲 Roulette
+              Roulette
             </button>
           </div>
         ) : (
           <div className={styles.boredActions}>
             <button type="button" className="btn btn-primary" onClick={() => setOptinOpen(true)}>
-              👋 Make me discoverable
+              Make me discoverable
             </button>
             <button type="button" className="btn" onClick={() => setRouletteOpen(true)}>
-              🎲 Roulette
+              Roulette
             </button>
           </div>
         )}
@@ -208,7 +212,7 @@ function OptinSheet({ onClose }: { onClose: () => void }) {
     >
       <div className={bcn.sheet} role="dialog" aria-modal="true" aria-label="Become discoverable">
         <div className={bcn.sheetHead}>
-          <h2>👋 Bored together</h2>
+          <h2>Bored together</h2>
           <button type="button" className={bcn.sheetClose} aria-label="Close" onClick={onClose}>
             ×
           </button>
@@ -221,7 +225,7 @@ function OptinSheet({ onClose }: { onClose: () => void }) {
         </p>
         {!live && agg && agg.better_percent !== null ? (
           <p className={styles.encourage}>
-            💡 {agg.better_percent}% said it was better than they expected.
+            {agg.better_percent}% said it was better than they expected.
           </p>
         ) : null}
         <div className={styles.scopeRow} role="radiogroup" aria-label="Who can see your card">
@@ -232,7 +236,7 @@ function OptinSheet({ onClose }: { onClose: () => void }) {
             className={`${styles.scopeChip}${scope === 'area' ? ` ${styles.scopeOn}` : ''}`}
             onClick={() => setScope('area')}
           >
-            📍 My area{hasArea ? '' : ' (set it first)'}
+            My area{hasArea ? '' : ' (set it first)'}
           </button>
           <button
             type="button"
@@ -241,7 +245,7 @@ function OptinSheet({ onClose }: { onClose: () => void }) {
             className={`${styles.scopeChip}${scope === 'public' ? ` ${styles.scopeOn}` : ''}`}
             onClick={() => setScope('public')}
           >
-            🌍 Anyone
+            Anyone
           </button>
         </div>
         {/* v0.8b §1.65: optional vibe chips — "looking to: 🚶 walk". Tap the
@@ -297,6 +301,10 @@ function OptinSheet({ onClose }: { onClose: () => void }) {
 
 function CardStack({ cards }: { cards: DiscoveryCard[] | null }) {
   const [reporting, setReporting] = useState<string | null>(null);
+  // Royal v2 (ref 10): one Hinge-style card at a time. "Pass" is the old
+  // scroll-on, made explicit — a LOCAL skip only; the server hears nothing
+  // and nobody is notified (no rejection surface, ADR-015 holds).
+  const [passed, setPassed] = useState<Set<string>>(new Set());
   // v0.8b §1.65: filters only ever NARROW the mutual-reachability pool —
   // area match, ≥1 shared public interest, or a what-for vibe. No age/gender
   // filters exist because no such fields exist.
@@ -304,6 +312,7 @@ function CardStack({ cards }: { cards: DiscoveryCard[] | null }) {
 
   function apply(next: CardFilters): void {
     setFilters(next);
+    setPassed(new Set()); // a fresh pool restarts the walk
     void refreshCards(next);
   }
 
@@ -317,7 +326,7 @@ function CardStack({ cards }: { cards: DiscoveryCard[] | null }) {
         aria-pressed={filters.area}
         onClick={() => apply({ ...filters, area: !filters.area })}
       >
-        📍 My area
+        My area
       </button>
       <button
         type="button"
@@ -325,7 +334,7 @@ function CardStack({ cards }: { cards: DiscoveryCard[] | null }) {
         aria-pressed={filters.interests}
         onClick={() => apply({ ...filters, interests: !filters.interests })}
       >
-        🤝 Shared interests
+        Shared interests
       </button>
       {DISCOVERY_VIBES.map((v) => (
         <button
@@ -349,6 +358,10 @@ function CardStack({ cards }: { cards: DiscoveryCard[] | null }) {
       </>
     );
   }
+
+  const visible = cards.filter((c) => !passed.has(c.user.id));
+  const card = visible[0] ?? null;
+
   if (cards.length === 0) {
     return (
       <>
@@ -356,7 +369,17 @@ function CardStack({ cards }: { cards: DiscoveryCard[] | null }) {
         <p className={styles.emptyPool}>
           {anyFilter
             ? 'Nobody matches those filters right now — loosen them, or just scroll the whole pool.'
-            : 'Nobody else is bored right now — your card is up, so someone may wave at you. Try Roulette meanwhile?'}
+            : 'Nobody else is bored right now — your card is up, so someone may say hi to you. Try Roulette meanwhile?'}
+        </p>
+      </>
+    );
+  }
+  if (card === null) {
+    return (
+      <>
+        {filterRow}
+        <p className={styles.emptyPool}>
+          That&rsquo;s everyone bored right now — check back in a bit.
         </p>
       </>
     );
@@ -364,11 +387,12 @@ function CardStack({ cards }: { cards: DiscoveryCard[] | null }) {
   return (
     <>
       {filterRow}
-      <div className={styles.stack} aria-label="Bored people near you">
-        {cards.map((card) => (
-          <StackCard key={card.user.id} card={card} onReport={() => setReporting(card.user.id)} />
-        ))}
-      </div>
+      <HingeCard
+        key={card.user.id}
+        card={card}
+        onPass={() => setPassed((prev) => new Set(prev).add(card.user.id))}
+        onReport={() => setReporting(card.user.id)}
+      />
       {reporting ? (
         <ReportSheet target={{ kind: 'user', user_id: reporting }} onClose={() => setReporting(null)} />
       ) : null}
@@ -376,7 +400,17 @@ function CardStack({ cards }: { cards: DiscoveryCard[] | null }) {
   );
 }
 
-function StackCard({ card, onReport }: { card: DiscoveryCard; onReport: () => void }) {
+/** Royal v2 (ref 10): the ~200px photo card — name over the scrim, Pass /
+ * Say hi underneath. "Say hi" IS the §1.44 wave (mutual-only, silent). */
+function HingeCard({
+  card,
+  onPass,
+  onReport,
+}: {
+  card: DiscoveryCard;
+  onPass: () => void;
+  onReport: () => void;
+}) {
   const [busy, setBusy] = useState(false);
 
   async function wave(): Promise<void> {
@@ -402,43 +436,56 @@ function StackCard({ card, onReport }: { card: DiscoveryCard; onReport: () => vo
     }
   }
 
+  // "night owl · film photos · 0.3 mi"-style meta: note, what-for, overlaps.
+  const metaParts: string[] = [];
+  if (card.note) metaParts.push(card.note);
+  if (card.vibe) metaParts.push(`looking to ${VIBE_LABEL[card.vibe].toLowerCase()}`);
+  for (const tag of card.shared_interests.slice(0, 2)) metaParts.push(`${tag}, like you`);
+  const meta = metaParts.length > 0 ? metaParts.join(' · ') : 'Bored. That’s the whole bio.';
+
+  const photo = card.user.avatar.static_url;
+
   return (
-    <article className={styles.card}>
-      {/* Animated avatar — the §5 motion rules gate inside Avatar. */}
-      <Avatar avatar={card.user.avatar} name={card.user.display_name} size={72} animated />
-      <h3 className={styles.cardName}>{card.user.display_name}</h3>
-      <span className={styles.cardUser}>@{card.user.username}</span>
-      <p className={styles.cardNote}>{card.note || 'Bored. That’s the whole bio.'}</p>
-      {/* v0.8b §1.65: their what-for chip + the already-public interest overlap. */}
-      {card.vibe ? (
-        <span className={cm.vibeTag}>
-          <span aria-hidden>{VIBE_EMOJI[card.vibe]}</span> looking to: {VIBE_LABEL[card.vibe].toLowerCase()}
-        </span>
-      ) : null}
-      {card.shared_interests.length > 0 ? (
-        <span className={cm.sharedTags} aria-label="You both like">
-          {card.shared_interests.map((tag) => (
-            <span key={tag} className={cm.sharedTag}>
-              you both like {tag}
-            </span>
-          ))}
-        </span>
-      ) : null}
-      {card.waved ? (
-        <span className={styles.wavedChip}>
-          <span aria-hidden>👋</span> Waved
-        </span>
-      ) : (
+    <article className={styles.hingeCard}>
+      <div className={styles.hingePhoto}>
+        {photo ? (
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img src={photo} alt="" loading="lazy" />
+        ) : (
+          <span className={styles.hingeFallback}>
+            {/* Animated avatar — the §5 motion rules gate inside Avatar. */}
+            <Avatar avatar={card.user.avatar} name={card.user.display_name} size={84} animated />
+          </span>
+        )}
+        <span className={styles.hingeScrim} aria-hidden />
+        <div className={styles.hingeName}>
+          <h3>{card.user.display_name} · bored too</h3>
+          <p>{meta}</p>
+        </div>
+      </div>
+      <div className={styles.hingeActions}>
         <button
           type="button"
-          className={styles.waveBtn}
-          disabled={busy}
-          onClick={() => void wave()}
-          aria-label={`Wave at ${card.user.display_name}`}
+          className={styles.passBtn}
+          aria-label={`Pass on ${card.user.display_name} — show the next person. They are never told.`}
+          onClick={onPass}
         >
-          <span aria-hidden>👋</span> Wave
+          Pass
         </button>
-      )}
+        {card.waved ? (
+          <span className={styles.wavedChip}>Said hi</span>
+        ) : (
+          <button
+            type="button"
+            className={styles.sayHiBtn}
+            disabled={busy}
+            onClick={() => void wave()}
+            aria-label={`Wave at ${card.user.display_name}`}
+          >
+            Say hi
+          </button>
+        )}
+      </div>
       <div className={styles.cardSafety}>
         <button type="button" onClick={onReport}>
           Report
@@ -505,7 +552,7 @@ function RouletteSheet({ onClose, onOptin }: { onClose: () => void; onOptin: () 
     >
       <div className={bcn.sheet} role="dialog" aria-modal="true" aria-label="Bored roulette">
         <div className={bcn.sheetHead}>
-          <h2>🎲 Bored roulette</h2>
+          <h2>Bored roulette</h2>
           <button type="button" className={bcn.sheetClose} aria-label="Close" onClick={onClose}>
             ×
           </button>
@@ -563,7 +610,7 @@ function RouletteSheet({ onClose, onOptin }: { onClose: () => void; onOptin: () 
                 style={{ marginTop: 12, width: '100%' }}
                 onClick={onOptin}
               >
-                👋 Make me discoverable first
+                Make me discoverable first
               </button>
             ) : null}
             <button

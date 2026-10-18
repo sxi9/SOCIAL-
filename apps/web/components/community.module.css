@@ -14,9 +14,9 @@
 .anonRow {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 13px;
   width: 100%;
-  padding: 12px 14px;
+  padding: 12px 20px;
   border: none;
   border-bottom: 1px solid var(--border);
   background: transparent;
@@ -27,7 +27,7 @@
 }
 
 .anonRow:hover {
-  background: var(--panel-2);
+  background: var(--panel);
 }
 
 .anonRowText {
@@ -39,7 +39,10 @@
 }
 
 .anonRowText strong {
-  font-size: 14px;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .anonRowText span {
@@ -56,15 +59,16 @@
   flex: none;
 }
 
-/* The masked avatar: server-blurred pixels inside a dashed ghost ring. */
+/* The masked avatar: server-blurred pixels in a 46px circle on a muted
+   tinted bg (Royal v2 — the dashed ring retired). */
 .maskedAvatar {
   position: relative;
-  width: 44px;
-  height: 44px;
+  width: 46px;
+  height: 46px;
   flex: none;
   border-radius: 50%;
   overflow: hidden;
-  border: 2px dashed var(--accent);
+  border: 1px solid var(--border);
   background: var(--panel-2);
   display: inline-flex;
   align-items: center;
@@ -94,17 +98,18 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  background:
-    radial-gradient(ellipse at 20% 0%, rgba(111, 140, 255, 0.07), transparent 55%),
-    radial-gradient(ellipse at 90% 100%, rgba(111, 140, 255, 0.05), transparent 50%);
+  background: var(--chat-bg);
 }
 
+/* Royal v2 reveal thread: ordinary royal bubbles — panel incoming with the
+   5px tail, white-gradient outgoing with ink text. */
 .anonBubble {
   max-width: min(78%, 440px);
-  padding: 9px 12px;
+  padding: 8px 12px;
   border-radius: 16px;
+  border-bottom-left-radius: 5px;
   background: var(--bubble-in);
-  border: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  border: 1px solid transparent;
   align-self: flex-start;
   font-size: 15px;
   white-space: pre-wrap;
@@ -113,8 +118,10 @@
 
 .anonBubbleMine {
   align-self: flex-end;
-  background: var(--bubble-out);
-  border-style: solid;
+  background: var(--accent-grad);
+  color: var(--accent-ink);
+  border-bottom-left-radius: 16px;
+  border-bottom-right-radius: 5px;
   border-color: transparent;
 }
 
@@ -125,6 +132,10 @@
   margin-top: 3px;
   font-size: 10.5px;
   color: var(--muted);
+}
+
+.anonBubbleMine .anonBubbleMeta {
+  color: color-mix(in srgb, var(--accent-ink) 62%, transparent);
 }
 
 .anonRiddleAnswer {
@@ -145,10 +156,10 @@
 }
 
 .anonGameCard {
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  border-radius: 16px;
   background: var(--panel);
-  padding: 12px;
+  padding: 14px;
   margin: 4px 0;
   display: flex;
   flex-direction: column;
@@ -158,7 +169,7 @@
 
 .anonGameCard h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: 14.5px;
 }
 
 .anonTimerBar {
@@ -340,12 +351,78 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel);
-  padding: 14px 10px 12px;
+  padding: 16px 10px 12px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
   text-align: center;
+}
+
+/* v2 (proto 32): the mood word under the name — plain text, never a pill. */
+.suggMood {
+  font-size: 12.5px;
+  color: var(--body-soft);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* v2 (proto 32): outline Connect pill, full card width. */
+.suggBtn {
+  width: 100%;
+  margin-top: 4px;
+  border: 1px solid var(--border-accent);
+  background: transparent;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.suggBtn:hover {
+  background: var(--accent-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .suggBtn {
+    transition: none;
+  }
+}
+
+/* v2 (proto 32): the dashed "invite a friend" card closing the grid. */
+.suggInvite {
+  border: 1.5px dashed #4a5060;
+  background: transparent;
+  padding: 0;
+}
+
+.suggInviteBtn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 176px;
+  padding: 16px 10px;
+  background: none;
+  border: none;
+  border-radius: inherit;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.suggInviteBtn strong {
+  color: var(--text);
+  font-size: 13.5px;
 }
 
 .suggDismiss {
@@ -714,25 +791,35 @@
   border: 1px dashed var(--border);
 }
 
+/* Royal v2: visibility is a 4-SEGMENT control (Private/Invite/Public/Ghost).
+   The emoji icons hide (no emoji as UI icons); the per-mode hints stay in the
+   DOM for screen readers, visually clipped — except the ghost note, which
+   renders as the caption under the control (prototype 13). */
 .visGrid {
+  position: relative;
   display: flex;
-  flex-direction: column;
   gap: 8px;
-  margin: 6px 0 10px;
+  margin: 6px 0 64px;
 }
 
 .visOpt {
+  flex: 1;
+  min-width: 0;
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--panel);
+  border-radius: 999px;
+  background: transparent;
   color: var(--text);
-  padding: 10px 12px;
-  text-align: left;
+  padding: 9px 4px;
+  text-align: center;
   cursor: pointer;
   font: inherit;
+}
+
+.visOpt > span[aria-hidden]:first-child {
+  display: none;
 }
 
 .visOpt:disabled {
@@ -741,23 +828,57 @@
 }
 
 .visOptOn {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--border-strong);
+  background: var(--panel-2);
+}
+
+/* The current mode renders disabled (nothing to switch to) — keep it lit. */
+.visOptOn:disabled {
+  opacity: 1;
+  cursor: default;
 }
 
 .visOptText {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: block;
+  min-width: 0;
 }
 
 .visOptText strong {
-  font-size: 13.5px;
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
+/* Hints: screen-reader only… */
 .visOptText span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* …except the ghost note, shown as the caption under the whole control.
+   pointer-events: none keeps the caption from widening the Ghost button's
+   tap target (it stays readable to screen readers). */
+.visOpt:last-child .visOptText span {
+  left: 0;
+  right: 0;
+  top: calc(100% + 8px);
+  width: auto;
+  height: auto;
+  clip-path: none;
+  white-space: normal;
   font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: left;
   color: var(--muted);
+  pointer-events: none;
 }
 
 /* ---------------------------------------------------------------------------
@@ -769,7 +890,9 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 0 16px calc(28px + env(safe-area-inset-bottom));
+  padding: 0 20px calc(28px + env(safe-area-inset-bottom));
+  /* v2 (proto 07): share pages live on the deep bg. */
+  background: var(--bg-deeper);
 }
 
 .shareHead {
@@ -777,31 +900,115 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 14px 0;
+  padding: 12px 0;
 }
 
+/* v2 (proto 07): the lowercase serif wordmark. */
 .shareBrand {
-  font-weight: 800;
-  font-size: 17px;
-  letter-spacing: 0.2px;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 22px;
+  line-height: 1;
+  letter-spacing: 0.01em;
   color: var(--text);
   text-decoration: none;
 }
 
+/* The state note beside the wordmark ("shared post, logged out"). */
+.shareHeadMeta {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .shareJoin {
   margin-left: auto;
+  flex: none;
 }
 
 .shareCard {
   width: min(560px, 100%);
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: 20px;
   background: var(--panel);
   box-shadow: var(--shadow);
   padding: 18px 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* v2 (proto 07): the gated React / Reply row closing a post card. */
+.shareActions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  margin-top: 2px;
+}
+
+.shareAct {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--body-soft);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.shareAct svg {
+  flex: none;
+}
+
+.shareActNote {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: right;
+}
+
+/* v2 (proto 07): the "see the rest of their world" invite card. */
+.shareWorld {
+  width: min(560px, 100%);
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 22px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.shareWorldTitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 20px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.shareWorldSub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.shareWorldCta {
+  width: 100%;
+  margin-top: 10px;
+  padding: 12px 16px;
+  font-size: 15px;
 }
 
 .shareAuthor {
@@ -1069,16 +1276,61 @@
   font-size: 12.5px;
 }
 
-/* v1.0 (#78c): the full Find-people page — same cards, responsive grid. */
+/* v1.0 (#78c): the full Find-people page — v2 (proto 32): two cards across
+   on phones, fluid from tablet up. */
 .suggGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 10px;
-  padding: 4px 2px 10px;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  padding: 4px 0 10px;
+}
+
+@media (min-width: 700px) {
+  .suggGrid {
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  }
 }
 
 .suggGrid .suggCard {
   width: auto;
+}
+
+/* ---------------------------------------------------------------------------
+   v2 Connections (proto 33): request pills, dashed empty-state card, rows
+--------------------------------------------------------------------------- */
+
+/* Dashed affordance card ("No more requests — share your link"). */
+.dashCard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  border: 1.5px dashed #4a5060;
+  border-radius: 14px;
+  background: transparent;
+  padding: 13px 14px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dashCard svg {
+  flex: none;
+}
+
+.dashCardText {
+  flex: 1;
+  min-width: 0;
+}
+
+.dashCardAction {
+  flex: none;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1173,4 +1425,418 @@
 .memberLink:hover span,
 .memberLink:focus-visible span {
   text-decoration: underline;
+}
+
+/* ===========================================================================
+   Royal v2 — chat info (members/roles/swatches/leave), forward sheet,
+   new-chat page, anonymous inbox
+=========================================================================== */
+
+/* Subpage serif title (new chat / anonymous inbox headers). */
+.pageTitle {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 20px;
+}
+
+/* Section label row with a trailing text action (+ ADD PEOPLE). */
+.secHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.secHeadBtn {
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+/* Member rows: 44px face, name, role chip right. */
+.memberRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  min-height: 56px;
+  border-bottom: 1px solid var(--border);
+}
+
+.memberRow:last-of-type {
+  border-bottom: none;
+}
+
+.memberWho {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.memberName {
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.roleChip {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+}
+
+.roleChipOwner {
+  background: var(--accent-grad);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+
+/* Theme & wallpaper swatches: 64×88 tiles, white border when picked. */
+.swGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 6px 0 12px;
+}
+
+.sw {
+  position: relative;
+  width: 64px;
+  height: 88px;
+  flex: none;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  padding: 0;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--chat-bg);
+}
+
+.swOn {
+  border: 2px solid var(--accent);
+}
+
+.swFill {
+  position: absolute;
+  inset: 0;
+}
+
+.swPill {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  width: 26px;
+  height: 11px;
+  border-radius: 999px;
+  background: var(--accent-grad);
+}
+
+/* The Leave row: full-width, danger red. */
+.leaveRow {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding: 13px 0 4px;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: var(--danger);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.leaveRow:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ---- forward sheet (proto 15): quoted preview, recent-avatar row with
+   check badges, gradient Send ---- */
+
+.fwdQuote {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 10px;
+}
+
+.fwdTargets {
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  padding: 6px 2px 10px;
+  scrollbar-width: thin;
+}
+
+.fwdTarget {
+  flex: none;
+  width: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11.5px;
+}
+
+.fwdFace {
+  position: relative;
+  display: inline-flex;
+  border-radius: 50%;
+}
+
+.fwdBadge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--ok);
+  color: #10231a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--panel);
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 130ms ease, transform 130ms ease;
+}
+
+.fwdTargetOn .fwdBadge {
+  opacity: 1;
+  transform: none;
+}
+
+.fwdTargetName {
+  max-width: 64px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fwdTargetOn .fwdTargetName {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ---- new chat page (proto 14) ---- */
+
+.ncSearchWrap {
+  padding: 12px 20px 4px;
+}
+
+.ncSearchInput {
+  border-radius: 999px;
+}
+
+.ncRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 10px 20px;
+  min-height: 56px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ncRow:hover {
+  background: var(--panel);
+}
+
+.ncIcon {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+  flex: none;
+}
+
+.ncChevron {
+  margin-left: auto;
+  color: var(--faint);
+  flex: none;
+  line-height: 0;
+}
+
+.secLabel {
+  padding: 14px 20px 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.personRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 20px;
+  min-height: 60px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.personRow:hover {
+  background: var(--panel);
+}
+
+.personRow:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.personText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.personText strong {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.personSub {
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.personSubOnline {
+  color: var(--ok);
+}
+
+/* ---- anonymous inbox (proto 16) ---- */
+
+.anonInfoCard {
+  margin: 12px 20px;
+  padding: 11px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--body-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fwdBadge {
+    transition: none;
+  }
+}
+
+/* Royal v2 (proto 13): the chat-info hero — centered avatar with a camera
+   badge (admins), serif name, tap-to-change caption. */
+.grpHero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  padding: 4px 0 14px;
+}
+
+.grpHeroTap {
+  position: relative;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 50%;
+  line-height: 0;
+}
+
+.grpHeroTap:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.grpHeroBadge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  border: 2.5px solid var(--panel);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.grpHeroName {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 20px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grpHeroHint {
+  font-size: 12.5px;
+  color: var(--muted);
 }

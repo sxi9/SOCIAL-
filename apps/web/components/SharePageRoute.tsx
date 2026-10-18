@@ -95,7 +95,7 @@ export async function ShareRoute({
       <main className={cm.sharePage}>
         <header className={cm.shareHead}>
           <Link href="/" className={cm.shareBrand}>
-            Bored Chat
+            bored.
           </Link>
         </header>
         <div className={cm.shareCard} style={{ textAlign: 'center' }}>

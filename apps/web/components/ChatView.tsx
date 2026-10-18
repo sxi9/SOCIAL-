@@ -106,7 +106,8 @@ import soc from './social.module.css';
 import wtc from './watch.module.css';
 
 const LONG_PRESS_MS = 420;
-const SWIPE_REPLY_PX = 64;
+const SWIPE_REPLY_PX = 48;
+const SWIPE_MAX_PX = 72;
 const JUMP_PAGE_CAP = 12; // at most this many before_seq pages per jump
 
 const TTL_SHORT: Record<number, string> = {
@@ -674,7 +675,7 @@ export default function ChatView({ conversationId }: { conversationId: string })
           aria-label="Chat settings"
           onClick={() => setInfoOpen(true)}
         >
-          <GearIcon />
+          <MoreIcon />
         </button>
       </header>
 
@@ -1129,7 +1130,10 @@ function MessageRow({
   const [editBusy, setEditBusy] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
   const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const swipeRef = useRef<{ x: number; y: number; fired: boolean } | null>(null);
+  // Royal v2 swipe-to-reply: pointer-based horizontal drag; the visual slide
+  // is transform-only (none under reduced motion — the gesture still works).
+  const dragRef = useRef<{ id: number; x: number; y: number; armed: boolean } | null>(null);
+  const [swipeX, setSwipeX] = useState(0);
   const bubbleWrapRef = useRef<HTMLDivElement | null>(null);
   const own = message.sender_id === meId;
   // v0.8a §1.58 mood-reactive bubbles: tap a drunk sender's crooked bubble to
@@ -1475,18 +1479,19 @@ function MessageRow({
       ) : null}
       {message.reply_context ? (
         // §1.29: server-resolved context — tap jumps to the original.
+        // Royal v2: a 2px left bar inside the bubble (white; ink on outgoing).
         <button
           type="button"
-          className={soc.replyCard}
+          className={styles.replyQuote}
           onClick={() => onJump(message.reply_context!.seq)}
           aria-label="See the message this replies to"
         >
-          <span className={soc.replyAuthor}>
+          <span className={styles.replyQuoteAuthor}>
             {message.reply_context.author
               ? nameFor(message.reply_context.author.id, message.reply_context.author.display_name)
               : 'System'}
           </span>
-          <span className={`${soc.replyExcerpt}${message.reply_context.deleted ? ` ${soc.replyDeleted}` : ''}`}>
+          <span className={`${styles.replyQuoteExcerpt}${message.reply_context.deleted ? ` ${styles.replyQuoteDeleted}` : ''}`}>
             {message.reply_context.deleted
               ? 'message deleted'
               : message.reply_context.excerpt ?? kindLabel(message.reply_context.type)}
@@ -1498,9 +1503,17 @@ function MessageRow({
           <span aria-hidden>💌</span> Time capsule
         </span>
       ) : null}
-      {message.attachments.map((att) => (
-        <AttachmentView key={att.id} attachment={att} doodle={message.metadata.doodle === true} />
-      ))}
+      {message.attachments.map((att) =>
+        att.kind === 'audio' ? (
+          // Royal v2 voice note: 30px play orb + 3px bars + duration right —
+          // a pure .voiceWrap restyle around AudioBubble's untouched markup.
+          <span key={att.id} className={styles.voiceWrap}>
+            <AttachmentView attachment={att} doodle={false} />
+          </span>
+        ) : (
+          <AttachmentView key={att.id} attachment={att} doodle={message.metadata.doodle === true} />
+        )
+      )}
       {message.metadata.link_preview ? <PreviewCard preview={message.metadata.link_preview} /> : null}
       {message.metadata.rescue === true ? (
         // v0.6 §1.46: the rescue SOS card — one tap starts the call back.
@@ -1614,29 +1627,60 @@ function MessageRow({
     <div
       className={`${styles.row}${own ? ` ${styles.own}` : ''}${fresh ? ` ${styles.enter}` : ''}`}
       id={`msg-${message.conversation_id}-${message.seq}`}
-      // §1.29 swipe-to-reply (touch): a clean horizontal right-swipe arms the
-      // composer's reply chip. Desktop uses the message menu instead.
-      onTouchStart={(e) => {
-        if (!onReply) return;
-        const t = e.touches[0];
-        swipeRef.current = { x: t.clientX, y: t.clientY, fired: false };
+      // §1.29 swipe-to-reply, Royal v2: pointer-based. A clean horizontal
+      // right-drag >48px sets the reply draft on release; the bubble slides
+      // and a reply glyph fades in while dragging. Mouse pointers are left
+      // alone (text selection); vertical pans stay native (touch-action).
+      onPointerDown={(e) => {
+        if (!onReply || e.pointerType === 'mouse') return;
+        dragRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY, armed: false };
       }}
-      onTouchMove={(e) => {
-        const sw = swipeRef.current;
-        if (!sw || sw.fired || !onReply) return;
-        const t = e.touches[0];
-        const dx = t.clientX - sw.x;
-        const dy = Math.abs(t.clientY - sw.y);
-        if (dx > SWIPE_REPLY_PX && dy < 40) {
-          sw.fired = true;
-          onReply(message);
+      onPointerMove={(e) => {
+        const d = dragRef.current;
+        if (!d || e.pointerId !== d.id || !onReply) return;
+        const dx = e.clientX - d.x;
+        const dy = Math.abs(e.clientY - d.y);
+        if (!d.armed) {
+          if (dx > 12 && dx > dy * 1.4) {
+            d.armed = true;
+            try {
+              e.currentTarget.setPointerCapture(e.pointerId);
+            } catch {
+              /* capture is best-effort */
+            }
+          } else if (dy > 14) {
+            dragRef.current = null; // vertical scroll wins
+            return;
+          } else {
+            return;
+          }
         }
+        setSwipeX(Math.max(0, Math.min(dx, SWIPE_MAX_PX)));
       }}
-      onTouchEnd={() => {
-        swipeRef.current = null;
+      onPointerUp={(e) => {
+        const d = dragRef.current;
+        dragRef.current = null;
+        if (d?.armed && onReply && e.clientX - d.x > SWIPE_REPLY_PX) onReply(message);
+        setSwipeX(0);
+      }}
+      onPointerCancel={() => {
+        dragRef.current = null;
+        setSwipeX(0);
       }}
     >
-      <div className={styles.msgCol}>
+      {onReply && swipeX > 0 ? (
+        <span
+          className={styles.swipeGlyph}
+          style={{ opacity: Math.min(1, swipeX / SWIPE_REPLY_PX) }}
+          aria-hidden
+        >
+          <ReplyGlyphIcon />
+        </span>
+      ) : null}
+      <div
+        className={`${styles.msgCol}${swipeX > 0 ? ` ${styles.msgColDrag}` : ''}`}
+        style={!reducedMotion && swipeX > 0 ? { transform: `translateX(${swipeX}px)` } : undefined}
+      >
         <div ref={bubbleWrapRef} className={`${styles.bubbleWrap}${flash ? ` ${soc.flash}` : ''}`}>
           {bubbleContent}
           <button
@@ -2078,14 +2122,26 @@ function BoltIcon() {
   );
 }
 
-function GearIcon() {
+/* Royal v2 header system: everything beyond call/video sits behind one "···". */
+function MoreIcon() {
   return (
-    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
-      <circle cx="10" cy="10" r="2.6" stroke="currentColor" strokeWidth="1.5" />
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="5.5" cy="12" r="1.7" fill="currentColor" />
+      <circle cx="12" cy="12" r="1.7" fill="currentColor" />
+      <circle cx="18.5" cy="12" r="1.7" fill="currentColor" />
+    </svg>
+  );
+}
+
+/* The swipe-to-reply glyph (decorative). */
+function ReplyGlyphIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
       <path
-        d="M10 2.8 L10.9 4.9 a5.4 5.4 0 0 1 2.3 1 l2.2 -0.6 L16.6 7.8 l-1.6 1.6 a5.4 5.4 0 0 1 0 1.2 l1.6 1.6 -1.2 2.5 -2.2 -0.6 a5.4 5.4 0 0 1 -2.3 1 L10 17.2 9.1 15.1 a5.4 5.4 0 0 1 -2.3 -1 l-2.2 0.6 -1.2 -2.5 1.6 -1.6 a5.4 5.4 0 0 1 0 -1.2 L3.4 7.8 4.6 5.3 l2.2 0.6 a5.4 5.4 0 0 1 2.3 -1 Z"
+        d="M10 7 L5 11.5 L10 16 M5.5 11.5 H14 a5 5 0 0 1 5 5 V18"
         stroke="currentColor"
-        strokeWidth="1.3"
+        strokeWidth="1.7"
+        strokeLinecap="round"
         strokeLinejoin="round"
       />
     </svg>

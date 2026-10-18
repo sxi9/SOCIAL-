@@ -1,19 +1,24 @@
-/* v0.6 calls (API.md §1.42 + §2.12) — incoming overlay, in-call screen,
-   floating pill, header buttons. Bored Blob language: soft panels, round
-   controls, one accent. Every animation stills under reduced motion. */
+/* v0.6 calls (API.md §1.42 + §2.12), reskinned to Royal v2 (proto refs
+   22–26 + 28): full-screen incoming ring over a blurred avatar, centered
+   voice call, split/PiP video with tap-to-swap, 2×2 group grid with a
+   speaking ring, green minimized pill, and the self-test cards. Every
+   keyframe referenced here is DEFINED here — CSS modules localize animation
+   names, so a globals.css keyframe can't be reached from this file — and
+   every animation stills under reduced motion (hard contract). */
 
-/* ---- incoming ring overlay (works anywhere — GlobalOverlays) ---- */
+/* ---- incoming ring: full-screen bg-deep + blurred avatar (ref 22) ---- */
 
 .ringBackdrop {
   position: fixed;
   inset: 0;
   z-index: 70;
-  background: rgba(5, 8, 16, 0.78);
-  backdrop-filter: blur(6px);
+  background: var(--bg-deep);
+  color: var(--text);
+  overflow: hidden;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 24px 16px;
+  padding: calc(76px + env(safe-area-inset-top)) 20px calc(44px + env(safe-area-inset-bottom));
   animation: call-fade 180ms ease;
 }
 
@@ -23,49 +28,57 @@
   }
 }
 
-.ringCard {
-  width: 100%;
-  max-width: 340px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 26px;
-  box-shadow: var(--shadow);
-  padding: 26px 20px calc(22px + env(safe-area-inset-bottom));
-  text-align: center;
+/* Oversized avatar, heavily blurred, glowing behind the real one. */
+.ringBlur {
+  position: absolute;
+  top: -40px;
+  left: 50%;
+  transform: translateX(-50%);
+  filter: blur(72px) saturate(1.15);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.ringBody {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  text-align: center;
 }
 
-/* The mascot "rings": a gentle pendulum wiggle, like a phone on a table. */
-.ringMascot {
-  animation: ring-wiggle 1.15s ease-in-out infinite;
-  transform-origin: 50% 85%;
+/* Silver ring around the caller; pulses outward while ringing. */
+.ringAvatar {
+  display: inline-flex;
+  border-radius: 50%;
+  padding: 5px;
+  border: 2px solid var(--border-accent);
+  margin-bottom: 14px;
 }
 
-@keyframes ring-wiggle {
-  0%,
+.ringAvatarPulse {
+  animation: ringPulse 1.6s ease-out infinite;
+}
+
+@keyframes ringPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.28);
+  }
+  75% {
+    box-shadow: 0 0 0 22px rgba(255, 255, 255, 0);
+  }
   100% {
-    transform: rotate(0deg);
-  }
-  20% {
-    transform: rotate(-7deg) translateY(-2px);
-  }
-  40% {
-    transform: rotate(6deg);
-  }
-  60% {
-    transform: rotate(-4deg) translateY(-1px);
-  }
-  80% {
-    transform: rotate(3deg);
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
   }
 }
 
 .ringTitle {
-  margin: 4px 0 0;
-  font-size: 19px;
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 22px;
+  color: var(--text);
 }
 
 .ringSub {
@@ -74,68 +87,37 @@
   font-size: 13.5px;
 }
 
-.ringPulse {
-  display: inline-flex;
-  gap: 5px;
-  margin-top: 2px;
-}
-
-.ringPulse span {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: ring-dot 1.2s ease-in-out infinite;
-}
-
-.ringPulse span:nth-child(2) {
-  animation-delay: 0.18s;
-}
-
-.ringPulse span:nth-child(3) {
-  animation-delay: 0.36s;
-}
-
-@keyframes ring-dot {
-  0%,
-  100% {
-    opacity: 0.35;
-    transform: scale(0.8);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.15);
-  }
-}
-
 .ringActions {
+  position: relative;
+  margin-top: auto;
+  width: 100%;
+  max-width: 330px;
   display: flex;
-  gap: 36px;
-  margin-top: 16px;
+  justify-content: space-between;
 }
 
 .ringAction {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 7px;
+  gap: 10px;
   background: none;
   border: none;
-  color: var(--muted);
+  color: var(--body-soft);
   font-size: 12.5px;
   cursor: pointer;
   padding: 0;
 }
 
 .roundBtn {
-  width: 62px;
-  height: 62px;
+  width: 66px;
+  height: 66px;
   border-radius: 50%;
   border: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: #0e1018;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
   transition: transform 120ms ease, filter 120ms ease;
 }
@@ -146,6 +128,18 @@
   filter: brightness(1.08);
 }
 
+/* Keyboard/autofocus indicator as a soft round halo on the orb itself —
+   the default rectangle outline fights the round 66px buttons (ref 22). */
+.ringAction:focus-visible {
+  outline: none;
+}
+
+.ringAction:focus-visible .roundBtn {
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.55),
+    0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
 .accept {
   background: var(--ok);
 }
@@ -154,44 +148,54 @@
   background: var(--danger);
 }
 
-/* ---- in-call screen ---- */
+/* ---- in-call screen (refs 23–25) ---- */
 
 .callScreen {
   position: fixed;
   inset: 0;
   z-index: 69;
-  background: #070a12;
-  color: #e8ecf4;
+  background: var(--bg-deep);
+  color: var(--text);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .callTop {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 16px;
-  padding-top: calc(12px + env(safe-area-inset-top));
+  padding: 10px 16px;
+  padding-top: calc(10px + env(safe-area-inset-top));
+  min-height: 44px;
 }
 
-.callTitle {
+.topTitle {
   flex: 1;
   min-width: 0;
-}
-
-.callTitle h2 {
   margin: 0;
-  font-size: 16px;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 18px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.callTitle p {
-  margin: 1px 0 0;
-  font-size: 12.5px;
-  color: #9aa4bd;
+.topSpacer {
+  flex: 1;
+}
+
+.topStatus {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.topStatusLive {
+  color: var(--ok);
 }
 
 .minBtn {
@@ -204,9 +208,59 @@
   cursor: pointer;
 }
 
-/* gridWrap: the positioning context for the self-camera PiP, so the PiP is
-   clipped to the VIDEO AREA and can never cover the notice lines (TURN
-   warning / push-off note / failure reason) rendered below the grid. */
+/* -- centered 1:1 voice call (ref 23) -- */
+
+.voiceBody {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 11vh;
+  gap: 6px;
+  text-align: center;
+}
+
+.voiceAvatar {
+  display: inline-flex;
+  border-radius: 50%;
+  padding: 5px;
+  border: 2px solid var(--border-accent);
+  margin-bottom: 14px;
+  position: relative;
+}
+
+.voiceName {
+  position: relative;
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 24px;
+}
+
+.voiceStatus {
+  position: relative;
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.voiceStatusLive {
+  color: var(--ok);
+}
+
+.voiceBadge {
+  position: relative;
+  margin: 2px 0 0;
+  color: #ffd166;
+  font-size: 12.5px;
+}
+
+/* gridWrap: the positioning context for the video layouts, so the floating
+   PiP is clipped to the VIDEO AREA and can never cover the notice lines
+   (TURN warning / push-off note / failure reason) rendered below it. */
 .gridWrap {
   position: relative;
   flex: 1;
@@ -214,7 +268,7 @@
   display: flex;
 }
 
-/* Remote grid: 1 tile fills, 2–4 → 2 columns, 5–9 → 3 (mesh caps at 8). */
+/* Remote grid (group calls): 2–4 tiles → 2×2, 5+ → 3 columns (mesh cap 8). */
 .grid {
   flex: 1;
   min-width: 0;
@@ -242,21 +296,34 @@
 
 .tile {
   position: relative;
-  border-radius: 16px;
+  border-radius: 14px;
   overflow: hidden;
-  background: #121828;
+  background: var(--panel);
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 0;
 }
 
-.tile video {
+/* Active-speaker ring (ref 25) — inset so it follows the tile radius. */
+.tileSpeaking {
+  box-shadow: inset 0 0 0 2px var(--ok);
+}
+
+.tile video,
+.splitTile video,
+.focusTile video,
+.focusPip video {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* Local preview mirrors, like a mirror does. */
+.mirror {
+  transform: scaleX(-1);
 }
 
 .tileFace {
@@ -274,6 +341,7 @@
   bottom: 8px;
   z-index: 2;
   background: rgba(0, 0, 0, 0.45);
+  color: #fff;
   border-radius: 999px;
   padding: 3px 10px;
   font-size: 12px;
@@ -295,103 +363,192 @@
   color: #ffd166;
 }
 
-/* Local preview: PiP when others are on screen; a grid tile when alone.
-   Positioned within .gridWrap (NOT the screen) — see gridWrap note. */
-.pip {
+/* -- 1:1 video (ref 24): two-half split by default, tap a tile to focus -- */
+
+.splitStack {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.splitTile {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.swapHint {
   position: absolute;
-  right: 14px;
+  right: 10px;
   bottom: 10px;
-  width: 96px;
-  aspect-ratio: 3 / 4;
+  z-index: 3;
+  background: rgba(0, 0, 0, 0.45);
+  color: #d5d9e4;
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 11.5px;
+  pointer-events: none;
+}
+
+/* Focused party fills; the other rides the draggable PiP top-right. */
+.focusTile {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.focusPip {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 86px;
+  height: 120px;
   border-radius: 14px;
   overflow: hidden;
-  background: #121828;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: var(--panel);
+  border: 1px solid rgba(255, 255, 255, 0.4);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
   z-index: 3;
+  cursor: pointer;
+  touch-action: none; /* the PiP IS the drag surface */
+  user-select: none;
 }
 
-.pip video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transform: scaleX(-1);
-}
-
-.mirror {
-  transform: scaleX(-1);
+.focusPip .tileName {
+  left: 6px;
+  bottom: 5px;
+  padding: 2px 7px;
+  font-size: 10px;
 }
 
 .callStatus {
   text-align: center;
-  color: #9aa4bd;
+  color: var(--muted);
   font-size: 13.5px;
   padding: 6px 16px 0;
 }
 
+/* -- control orbs: 56px, 11px labels on voice calls (refs 23–25) -- */
+
 .controls {
   display: flex;
   justify-content: center;
+  align-items: flex-start;
   gap: 18px;
-  padding: 16px 16px calc(18px + env(safe-area-inset-bottom));
+  padding: 14px 16px calc(18px + env(safe-area-inset-bottom));
 }
 
 .ctl {
-  width: 52px;
-  height: 52px;
-  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  background: none;
   border: none;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+}
+
+.ctlOrb {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
   background: rgba(255, 255, 255, 0.1);
-  color: #fff;
+  color: var(--text);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
-  transition: background 120ms ease;
+  transition: background 120ms ease, transform 130ms ease;
 }
 
-.ctl:hover {
+.ctl:hover .ctlOrb {
   background: rgba(255, 255, 255, 0.18);
 }
 
-.ctlOff {
+.ctl:active .ctlOrb {
+  transform: scale(0.92);
+}
+
+.ctlOrbOff {
   background: #fff;
   color: #0b0e14;
 }
 
-.ctlEnd {
-  background: var(--danger);
-  width: 62px;
+.ctl:hover .ctlOrbOff {
+  background: #fff;
 }
 
-/* ---- minimized floating pill (v0.7.1 #87: draggable, avatar, timer, mute,
-   hang-up, video thumbnail/PiP; z 69 per the globals.css scale) ---- */
+.ctlOrbEnd {
+  background: var(--danger);
+  color: #2a0d10;
+}
+
+.ctl:hover .ctlOrbEnd {
+  background: var(--danger);
+  filter: brightness(1.08);
+}
+
+.ctlLabel {
+  font-size: 11px;
+  color: var(--body-soft);
+}
+
+/* ---- minimized pill (ref 26): green-tinted, pulseGlow, tap to return.
+   Still draggable (v0.7.1 #87) — defaults to a top banner over the tabs. ---- */
 
 .pillWrap {
   position: fixed;
-  right: 14px;
-  bottom: calc(96px + env(safe-area-inset-bottom));
+  left: 50%;
+  top: calc(10px + env(safe-area-inset-top));
+  transform: translateX(-50%);
   z-index: 69;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: var(--panel);
-  border: 1px solid var(--border);
+  width: min(480px, calc(100vw - 24px));
+  background:
+    linear-gradient(rgba(76, 212, 160, 0.12), rgba(76, 212, 160, 0.12)),
+    var(--panel);
+  border: 1px solid rgba(76, 212, 160, 0.5);
   color: var(--text);
   border-radius: 999px;
   padding: 5px 6px;
-  box-shadow: var(--shadow);
+  animation: pulseGlow 2.4s ease-in-out infinite;
   touch-action: none; /* the pill IS the drag surface */
   user-select: none;
 }
 
+/* Local green-tinted twin of the globals pulseGlow (module-scoped names). */
+@keyframes pulseGlow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(76, 212, 160, 0.35);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(76, 212, 160, 0);
+  }
+}
+
 .pillMain {
+  flex: 1;
   display: inline-flex;
   align-items: center;
   gap: 8px;
   background: none;
   border: none;
-  color: inherit;
+  color: var(--ok);
   padding: 4px 6px 4px 4px;
   font-size: 13px;
   font-weight: 600;
@@ -401,7 +558,12 @@
 }
 
 .pillTime {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .pillCtl {
@@ -430,7 +592,7 @@
 
 .pillEnd {
   background: var(--danger);
-  color: #fff;
+  color: #2a0d10;
 }
 
 .pillThumb {
@@ -439,7 +601,7 @@
   height: 34px;
   border-radius: 10px;
   overflow: hidden;
-  background: #121828;
+  background: var(--panel-2);
   flex: none;
 }
 
@@ -485,7 +647,7 @@
   margin: 0;
   padding: 6px 16px 0;
   text-align: center;
-  color: #9aa4bd;
+  color: var(--muted);
   font-size: 12.5px;
 }
 
@@ -605,20 +767,176 @@
   cursor: pointer;
 }
 
+/* ---- settings → call self-test cards (ref 28) ---- */
+
+.stVerdict {
+  margin: 12px 4px 0;
+  font-weight: 600;
+}
+
+.stCard {
+  margin-top: 12px;
+}
+
+.stHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.stHead strong {
+  font-size: 15px;
+}
+
+.stWord {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.stDetail {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* Mic level bars — decorative micWave while the mic check passes. */
+.micBars {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 26px;
+  margin-top: 12px;
+}
+
+.micBars span {
+  width: 5px;
+  border-radius: 3px;
+  background: var(--ok);
+  opacity: 0.35;
+  transform-origin: bottom;
+}
+
+.micBars span:nth-child(1) { height: 40%; }
+.micBars span:nth-child(2) { height: 70%; }
+.micBars span:nth-child(3) { height: 55%; }
+.micBars span:nth-child(4) { height: 85%; }
+.micBars span:nth-child(5) { height: 60%; }
+.micBars span:nth-child(6) { height: 90%; }
+.micBars span:nth-child(7) { height: 45%; }
+
+.micBarsLive span {
+  opacity: 1;
+  animation: micWave 1s ease-in-out infinite;
+}
+
+.micBarsLive span:nth-child(2) { animation-delay: 0.1s; }
+.micBarsLive span:nth-child(3) { animation-delay: 0.2s; }
+.micBarsLive span:nth-child(4) { animation-delay: 0.3s; }
+.micBarsLive span:nth-child(5) { animation-delay: 0.4s; }
+.micBarsLive span:nth-child(6) { animation-delay: 0.5s; }
+.micBarsLive span:nth-child(7) { animation-delay: 0.6s; }
+
+@keyframes micWave {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.stPlay {
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.stPreview {
+  position: relative;
+  margin-top: 12px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--panel-2);
+  aspect-ratio: 16 / 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stPreview video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+
+.stPreviewBtn {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 1;
+  border: 1px solid var(--border-strong);
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.stPreviewNote {
+  margin: 0;
+  padding: 0 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.stRow {
+  padding: 8px 0;
+}
+
+.stRow + .stRow {
+  border-top: 1px solid var(--border);
+}
+
+.stRowMain {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 14.5px;
+}
+
+.stGlyph {
+  font-weight: 700;
+}
+
+/* ---- reduced motion: everything stills (hard contract) ---- */
+
 @media (prefers-reduced-motion: reduce) {
   .ringBackdrop,
-  .endCard {
-    animation: none;
-  }
-
-  .ringMascot,
-  .ringPulse span,
-  .joinChip {
+  .endCard,
+  .ringAvatarPulse,
+  .pillWrap,
+  .joinChip,
+  .micBarsLive span {
     animation: none;
   }
 
   .ringAction:hover .roundBtn,
-  .ringAction:focus-visible .roundBtn {
+  .ringAction:focus-visible .roundBtn,
+  .ctl:active .ctlOrb {
     transform: none;
   }
 }

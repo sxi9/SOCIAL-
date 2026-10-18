@@ -8,6 +8,17 @@ import { api } from '@/lib/api';
 import { logout } from '@/lib/connection';
 import { formatTime } from '@/lib/format';
 import AppShell from '@/components/AppShell';
+import sm from '@/components/settings.module.css';
+
+const CHEV = { stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', fill: 'none' } as const;
+
+function ChevronLeft() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+      <path d="M14.5 6 L8.5 12 L14.5 18" {...CHEV} />
+    </svg>
+  );
+}
 
 function SessionsSettings() {
   const router = useRouter();
@@ -46,10 +57,11 @@ function SessionsSettings() {
   return (
     <div className="page">
       <header className="topbar">
-        <Link href="/settings/profile" className="btn btn-ghost btn-icon" aria-label="Back">
-          ←
+        {/* Royal v2 IA: reached from Devices & security. */}
+        <Link href="/settings/security" className="btn btn-ghost btn-icon" aria-label="Back">
+          <ChevronLeft />
         </Link>
-        <h1>Devices</h1>
+        <h1 className={sm.title}>Devices</h1>
       </header>
       <div className="settings-section">
         <p className="muted small">

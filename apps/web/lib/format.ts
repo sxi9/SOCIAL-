@@ -4,7 +4,9 @@ export function formatTime(iso: string): string {
   const d = new Date(iso);
   const now = new Date();
   const sameDay = d.toDateString() === now.toDateString();
-  if (sameDay) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  // Royal v2 (ref 08): list times stay compact — "9:41", no AM/PM, no
+  // leading zero (locale hour12 noise reads as clutter at 12px).
+  if (sameDay) return `${d.getHours() % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')}`;
   const sameYear = d.getFullYear() === now.getFullYear();
   return d.toLocaleDateString([], sameYear ? { month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric' });
 }

@@ -218,19 +218,17 @@ export default function ImageEditSheet({
   return (
     <Portal>
       <div className={st.backdrop} role="dialog" aria-modal="true" aria-label="Edit photo">
+        {/* v2 (proto 43): Cancel left, serif title centered, symmetric spacer. */}
         <div className={st.topRow}>
-          <button type="button" className={st.ghostBtn} onClick={onCancel}>
+          <button type="button" className={st.textBtn} onClick={onCancel}>
             Cancel
           </button>
-          <span style={{ flex: 1 }} />
-          <button
-            type="button"
-            className={st.ghostBtn}
-            aria-label="Rotate 90 degrees"
-            onClick={() => setRotation((r) => (r + 90) % 360)}
-          >
-            ⟳ Rotate
-          </button>
+          <span className={st.title} aria-hidden>
+            Edit
+          </span>
+          <span className={st.sideSpacer} aria-hidden>
+            Cancel
+          </span>
         </div>
 
         <div className={st.frame} ref={frameRef}>
@@ -285,7 +283,7 @@ export default function ImageEditSheet({
                 type="button"
                 role="radio"
                 aria-checked={aspect === a.ratio}
-                className={`${st.ghostBtn}${aspect === a.ratio ? ` ${st.ghostOn}` : ''}`}
+                className={`${st.chipBtn}${aspect === a.ratio ? ` ${st.chipOn}` : ''}`}
                 onClick={() => setAspect(a.ratio)}
               >
                 {a.label}
@@ -294,11 +292,42 @@ export default function ImageEditSheet({
           </div>
         ) : null}
 
+        {/* proto 43: tool orbs with tiny labels (just Rotate for now). */}
+        <div className={st.orbRow}>
+          <span className={st.orbTool}>
+            <button
+              type="button"
+              className={st.orbBtn}
+              aria-label="Rotate 90 degrees"
+              onClick={() => setRotation((r) => (r + 90) % 360)}
+            >
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path
+                  d="M18.9 12 a6.9 6.9 0 1 1 -2 -4.85"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                />
+                <path
+                  d="M17.3 3.9 v3.5 h-3.5"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+            <span className={st.orbLabel} aria-hidden>
+              Rotate
+            </span>
+          </span>
+        </div>
+
         <div className={st.bottomRow}>
           <button
             type="button"
             className="btn btn-primary"
-            style={{ width: '100%' }}
+            style={{ width: '100%', padding: '12px 16px', fontSize: 15 }}
             disabled={!crop || busy || error}
             onClick={() => void apply()}
           >

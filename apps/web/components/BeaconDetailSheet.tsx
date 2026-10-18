@@ -19,7 +19,6 @@ import {
   joinBeacon,
   leaveBeacon,
   sparkNow,
-  vibeEmojiOf,
   vibeLabelOf,
 } from '@/lib/beacons';
 import { copyShareLink } from '@/lib/share';
@@ -173,18 +172,49 @@ export default function BeaconDetailSheet({
       >
         <div className={styles.sheet} role="dialog" aria-modal="true" aria-label="Beacon details">
           <div className={styles.sheetHead}>
-            <h2>
-              <span aria-hidden>{vibeEmojiOf(beacon)}</span> {vibeLabelOf(beacon)}
-              {sparked ? ' · IT’S ON 🎉' : ''}
-            </h2>
+            {/* Royal v2 (ref 35): plain serif "Beacon" title. */}
+            <h2>Beacon</h2>
             <button type="button" className={styles.sheetClose} aria-label="Close" onClick={onClose}>
               ×
             </button>
           </div>
 
+          {/* Royal v2 (ref 35): decorative map strip — pulsing pin + the
+              place pill (the chip keeps its link-out behavior). The pulse
+              stills under prefers-reduced-motion. */}
+          {beacon.location ? (
+            <div className={styles.mapStrip} aria-hidden={false}>
+              <span className={styles.mapPin} aria-hidden />
+              <LocationChip location={beacon.location} />
+            </div>
+          ) : null}
+
+          {/* By-line: avatar + serif name + the when/needs meta (ref 35). */}
+          <Link
+            href={`/u/${encodeURIComponent(beacon.creator.username)}`}
+            className={styles.detailBy}
+          >
+            <Avatar avatar={beacon.creator.avatar} name={beacon.creator.display_name} size={46} />
+            <span className={styles.detailByName}>
+              <strong>
+                {mine ? 'You' : beacon.creator.display_name} · {vibeLabelOf(beacon)}
+                {sparked ? ' · it’s on 🎉' : ''}
+              </strong>
+              <span>
+                {new Date(beacon.starts_at).toLocaleString([], {
+                  weekday: 'short',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}{' '}
+                · {whenLine}
+                {!sparked && beacon.needs > 0 ? ` · needs ${beacon.needs} more to spark` : ''}
+              </span>
+            </span>
+          </Link>
+
           {edited ? (
             <p className={styles.editedNote} role="status">
-              ✏️ plan updated
+              plan updated
               {recentEdit && recentEdit.changed.length > 0
                 ? ` — ${recentEdit.changed
                     .map((f) =>
@@ -202,82 +232,44 @@ export default function BeaconDetailSheet({
             </p>
           ) : null}
 
-          <div className={styles.detailFactRow}>
-            <span>By</span>
-            <Link
-              href={`/u/${encodeURIComponent(beacon.creator.username)}`}
-              className={styles.whoRow}
-              style={{ padding: 0, flex: 1, minWidth: 0 }}
-            >
-              <Avatar avatar={beacon.creator.avatar} name={beacon.creator.display_name} size={28} />
-              <span className={styles.whoName}>
-                {mine ? 'You' : beacon.creator.display_name}
-                <span>@{beacon.creator.username}</span>
-              </span>
-            </Link>
-          </div>
-          <div className={styles.detailFactRow}>
-            <span>When</span>
-            <span>
-              {new Date(beacon.starts_at).toLocaleString([], {
-                weekday: 'short',
-                hour: '2-digit',
-                minute: '2-digit',
-              })}{' '}
-              · {whenLine}
-            </span>
-          </div>
-          {beacon.location ? (
-            <div className={styles.detailFactRow}>
-              <span>Where</span>
-              <LocationChip location={beacon.location} />
-            </div>
-          ) : null}
           {beacon.note ? (
             <div className={styles.detailFactRow}>
               <span>Note</span>
               <span>{beacon.note}</span>
             </div>
           ) : null}
-          {!sparked ? (
-            <div className={styles.detailFactRow}>
-              <span>Sparks</span>
-              <span>
-                {beacon.needs > 0
-                  ? `needs ${beacon.needs} more 🔥 (${beacon.joiner_count} of ${beacon.spark_threshold} in)`
-                  : 'any moment now'}
-              </span>
-            </div>
-          ) : null}
 
           {/* Who's in — the FULL list, join order; every face is a door to a
-              profile with Connect/Message (blocked pairs 404 there, §1.14). */}
-          <div className={styles.sheetLabel}>Who&rsquo;s in</div>
-          {joinersError ? (
-            <p className={styles.receiptMuted}>{joinersError}</p>
-          ) : joiners === null ? (
-            <p className={styles.receiptMuted}>Looking…</p>
-          ) : joiners.length === 0 ? (
-            <p className={styles.receiptMuted}>No one yet — be the first 🙋</p>
-          ) : (
-            joiners.map((u) => (
-              <Link
-                key={u.id}
-                href={`/u/${encodeURIComponent(u.username)}`}
-                className={styles.whoRow}
-                aria-label={`${u.display_name} — open profile`}
-              >
-                <Avatar avatar={u.avatar} name={u.display_name} size={34} />
-                <span className={styles.whoName}>
-                  {u.id === state.me?.id ? 'You' : u.display_name}
-                  <span>@{u.username}</span>
-                </span>
-                <span className={styles.whoHint} aria-hidden>
-                  profile →
-                </span>
-              </Link>
-            ))
-          )}
+              profile with Connect/Message (blocked pairs 404 there, §1.14).
+              Royal v2 (ref 35): rendered as the roles-style card. */}
+          <div className={styles.rolesCard}>
+            <div className={styles.rolesLabel}>Who&rsquo;s in</div>
+            {joinersError ? (
+              <p className={styles.receiptMuted}>{joinersError}</p>
+            ) : joiners === null ? (
+              <p className={styles.receiptMuted}>Looking…</p>
+            ) : joiners.length === 0 ? (
+              <p className={styles.receiptMuted}>No one yet — be the first</p>
+            ) : (
+              joiners.map((u) => (
+                <Link
+                  key={u.id}
+                  href={`/u/${encodeURIComponent(u.username)}`}
+                  className={styles.whoRow}
+                  aria-label={`${u.display_name} — open profile`}
+                >
+                  <Avatar avatar={u.avatar} name={u.display_name} size={34} />
+                  <span className={styles.whoName}>
+                    {u.id === state.me?.id ? 'You' : u.display_name}
+                    <span>@{u.username}</span>
+                  </span>
+                  <span className={styles.whoHint} aria-hidden>
+                    profile →
+                  </span>
+                </Link>
+              ))
+            )}
+          </div>
 
           {error ? <p className="error-text">{error}</p> : null}
 
@@ -290,7 +282,7 @@ export default function BeaconDetailSheet({
               style={{ width: '100%', marginTop: 10 }}
               onClick={() => void copyShareLink('beacon', beacon.id)}
             >
-              🔗 Copy a public link
+              Copy a public link
             </button>
           ) : null}
 
@@ -317,7 +309,7 @@ export default function BeaconDetailSheet({
                   disabled={busy}
                   onClick={() => setConfirmSpark(true)}
                 >
-                  ⚡ Start with whoever&rsquo;s here
+                  Start with whoever&rsquo;s here
                 </button>
               ) : null}
               {confirmSpark ? (
@@ -331,14 +323,14 @@ export default function BeaconDetailSheet({
                       Not yet
                     </button>
                     <button type="button" className={styles.sparkNowBtn} style={{ marginTop: 0 }} disabled={busy} onClick={() => void doSparkNow()}>
-                      {busy ? 'Starting…' : 'Start it ⚡'}
+                      {busy ? 'Starting…' : 'Start it'}
                     </button>
                   </div>
                 </div>
               ) : null}
               <div className={styles.confirmRow} style={{ marginTop: 10 }}>
                 <button type="button" className="btn" disabled={busy} onClick={() => setEditOpen(true)}>
-                  ✏️ Edit the plan
+                  Edit the plan
                 </button>
                 <button type="button" className="btn btn-danger" disabled={busy} onClick={() => void doCancel()}>
                   Take it down
@@ -349,25 +341,29 @@ export default function BeaconDetailSheet({
 
           {!mine && open ? (
             beacon.my_state === 'joined' ? (
-              <div className={styles.confirmRow} style={{ marginTop: 10 }}>
+              <div className={styles.pillRow}>
                 <button type="button" className={`${styles.joinBtn} ${styles.joinedBtn}`} disabled>
-                  You&rsquo;re in 🙌
+                  You&rsquo;re in
                 </button>
                 <button type="button" className="btn" disabled={busy} onClick={() => void doLeave()}>
                   Never mind
                 </button>
               </div>
             ) : (
-              <button
-                type="button"
-                className={styles.joinBtn}
-                style={{ width: '100%', marginTop: 10 }}
-                disabled={busy}
-                onClick={() => void doJoin()}
-              >
-                I&rsquo;m in 🙋
-              </button>
+              <div className={styles.pillRow}>
+                <button type="button" className={styles.joinBtn} disabled={busy} onClick={() => void doJoin()}>
+                  Join
+                </button>
+              </div>
             )
+          ) : null}
+
+          {/* Royal v2 (ref 35): the quiet ownership/expiry line. */}
+          {open ? (
+            <p className={styles.detailFoot}>
+              Expires in {fmtCountdown(beacon.expires_at, now)} · only{' '}
+              {mine ? 'you' : beacon.creator.display_name} can edit or end it
+            </p>
           ) : null}
 
           {editOpen ? <BeaconEditSheet beacon={beacon} onClose={() => setEditOpen(false)} /> : null}

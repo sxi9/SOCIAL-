@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type {
   Attachment,
   CreatePreviewResponse,
@@ -19,6 +19,7 @@ import { EMOJI_GRID } from '@/lib/emoji';
 import { firstUrl, formatDuration } from '@/lib/format';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
+import Portal from './Portal';
 import PreviewCard from './PreviewCard';
 import ScheduleSheet, { type ScheduleDraft } from './ScheduleSheet';
 import styles from './chat.module.css';
@@ -512,15 +513,31 @@ export default function Composer({
   const showMic =
     recSupported && conversationId !== undefined && body.trim().length === 0 && hydrated.length === 0;
 
-  const plusItems: { action: PlusAction; icon: string; label: string }[] = [
-    { action: 'doodle', icon: '✏️', label: 'Doodle' },
-    { action: 'vibe', icon: '🎭', label: 'Vibe check' },
+  // Royal v2: the "+" opens a 3-col attach grid sheet of stroke-icon tiles —
+  // same EXISTING actions as the old popover list, plus Photo (the upload
+  // input) and Schedule, which both lived on the composer row before.
+  const plusTiles: { key: string; action?: PlusAction; label: string; icon: ReactNode }[] = [
+    { key: 'photo', label: 'Photo', icon: <PhotoTileIcon /> },
+    { key: 'doodle', action: 'doodle', label: 'Doodle', icon: <DoodleTileIcon /> },
+    { key: 'vibe', action: 'vibe', label: 'Vibe check', icon: <VibeTileIcon /> },
     // §1.35: games are not startable in channels (peers, not audiences).
-    ...(hideGames ? [] : [{ action: 'ttt' as PlusAction, icon: '🎮', label: 'Tic-tac-toe' }]),
-    { action: 'puzzle', icon: '🧩', label: 'Daily puzzle' },
-    // v0.7 (§1.52): drop a pin — "join me here", with the on-my-way reply.
-    { action: 'location', icon: '📍', label: 'Join me here' },
+    ...(hideGames ? [] : [{ key: 'ttt', action: 'ttt' as PlusAction, label: 'Game', icon: <GameTileIcon /> }]),
+    { key: 'puzzle', action: 'puzzle', label: 'Puzzle', icon: <PuzzleTileIcon /> },
+    { key: 'location', action: 'location', label: 'Location', icon: <PinTileIcon /> },
+    ...(conversationId ? [{ key: 'schedule', label: 'Schedule', icon: <ClockTileIcon /> }] : []),
   ];
+
+  function onTile(key: string, action?: PlusAction): void {
+    setPlusOpen(false);
+    if (key === 'photo') {
+      fileInputRef.current?.click();
+    } else if (key === 'schedule') {
+      if (canSend) setScheduleOpen(true);
+      else setError('Write the message first, then schedule it.');
+    } else if (action) {
+      onPlusAction?.(action);
+    }
+  }
 
   const scheduleDraft: ScheduleDraft | null = (() => {
     const payload = buildPayload();
@@ -673,10 +690,17 @@ export default function Composer({
         </div>
       ) : null}
       {rec ? (
-        <div className={exp.recordBar} role="status">
-          <span className={exp.recordDot} aria-hidden />
-          <span>{formatDuration(recMs)}</span>
-          <span className={`${exp.recordHint}${rec.cancelArmed ? ` ${exp.recordHintCancel}` : ''}`}>
+        // Royal v2 recording bar: red blinking dot + timer + live wave bars +
+        // slide-to-cancel hint. Same recording logic, same copy.
+        <div className={styles.recBar} role="status">
+          <span className={styles.recDot} aria-hidden />
+          <span className={styles.recTimer}>{formatDuration(recMs)}</span>
+          <span className={styles.recWave} aria-hidden>
+            {Array.from({ length: 10 }).map((_, i) => (
+              <span key={i} style={{ animationDelay: `${(i % 5) * 110}ms` }} />
+            ))}
+          </span>
+          <span className={`${styles.recHint}${rec.cancelArmed ? ` ${styles.recHintCancel}` : ''}`}>
             {rec.cancelArmed ? 'Release to cancel' : 'Slide left to cancel · release to send'}
           </span>
         </div>
@@ -698,46 +722,33 @@ export default function Composer({
               </svg>
             </button>
             {plusOpen ? (
-              <>
+              // Royal v2: a 3-col attach grid bottom sheet (portals to body).
+              <Portal>
                 <button
                   type="button"
-                  className={styles.pickerBackdrop}
+                  className={styles.attachBackdrop}
                   aria-label="Close menu"
                   onClick={() => setPlusOpen(false)}
                 />
-                <div className={exp.plusPop} role="menu" aria-label="More message types">
-                  {plusItems.map((item) => (
-                    <button
-                      key={item.action}
-                      type="button"
-                      role="menuitem"
-                      className={exp.plusItem}
-                      onClick={() => {
-                        setPlusOpen(false);
-                        onPlusAction(item.action);
-                      }}
-                    >
-                      <span aria-hidden>{item.icon}</span>
-                      {item.label}
-                    </button>
-                  ))}
-                  {conversationId ? (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className={exp.plusItem}
-                      onClick={() => {
-                        setPlusOpen(false);
-                        if (canSend) setScheduleOpen(true);
-                        else setError('Write the message first, then schedule it.');
-                      }}
-                    >
-                      <span aria-hidden>🕑</span>
-                      Schedule send
-                    </button>
-                  ) : null}
+                <div className={styles.attachSheet} role="menu" aria-label="More message types">
+                  <div className={styles.attachGrid}>
+                    {plusTiles.map((tile) => (
+                      <button
+                        key={tile.key}
+                        type="button"
+                        role="menuitem"
+                        className={styles.attachTile}
+                        onClick={() => onTile(tile.key, tile.action)}
+                      >
+                        <span className={styles.attachTileIcon} aria-hidden>
+                          {tile.icon}
+                        </span>
+                        {tile.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </>
+              </Portal>
             ) : null}
           </span>
         ) : null}
@@ -787,26 +798,30 @@ export default function Composer({
             e.target.value = '';
           }}
         />
-        <button
-          type="button"
-          className={`btn btn-icon ${styles.attachBtn}`}
-          aria-label="Attach a file"
-          disabled={disabled}
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-            <path
-              d="M13.5 5.5 L7.6 11.4 a2.3 2.3 0 0 0 3.25 3.25 L16.4 9.1 a4 4 0 0 0 -5.65 -5.65 L5 9.2"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-            />
-          </svg>
-        </button>
+        {/* Royal v2: with the "+" grid present, uploads live on its Photo
+            tile — the standalone paperclip renders only without the grid. */}
+        {!onPlusAction ? (
+          <button
+            type="button"
+            className={`btn btn-icon ${styles.attachBtn}`}
+            aria-label="Attach a file"
+            disabled={disabled}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+              <path
+                d="M13.5 5.5 L7.6 11.4 a2.3 2.3 0 0 0 3.25 3.25 L16.4 9.1 a4 4 0 0 0 -5.65 -5.65 L5 9.2"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        ) : null}
         <textarea
           ref={textRef}
           className={styles.composerInput}
-          placeholder="Message"
+          placeholder={mentionsEnabled ? 'Message… try @' : 'Message'}
           rows={1}
           value={body}
           autoFocus={autoFocus}
@@ -847,18 +862,19 @@ export default function Composer({
           }}
         />
         {mentionToken && mentionResults.length > 0 ? (
-          <div className={soc.mentionPop} role="listbox" aria-label="Mention someone">
+          // Royal v2: autocomplete is a horizontal CHIP row above the input.
+          <div className={styles.mentionChips} role="listbox" aria-label="Mention someone">
             {mentionResults.map((u, i) => (
               <button
                 key={u.id}
                 type="button"
                 role="option"
                 aria-selected={i === mentionIdx}
-                className={`${soc.mentionRow}${i === mentionIdx ? ` ${soc.mentionRowActive}` : ''}`}
+                className={`${styles.mentionChip}${i === mentionIdx ? ` ${styles.mentionChipActive}` : ''}`}
                 onMouseEnter={() => setMentionIdx(i)}
                 onClick={() => pickMention(u)}
               >
-                <Avatar avatar={u.avatar} name={u.display_name} size={26} />
+                <Avatar avatar={u.avatar} name={u.display_name} size={22} />
                 {u.display_name} <span>@{u.username}</span>
               </button>
             ))}
@@ -912,5 +928,74 @@ export default function Composer({
         />
       ) : null}
     </div>
+  );
+}
+
+/* ---- Royal v2 attach-grid tile icons: 24-viewBox strokes, 1.7px, round
+   caps — the Tabs.tsx family. No emoji as UI icons. ---- */
+
+function PhotoTileIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <rect x="3.5" y="5" width="17" height="14" rx="3" stroke="currentColor" strokeWidth="1.7" />
+      <circle cx="9" cy="10" r="1.7" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M6 18 L11.5 12.8 L15 16 L17.5 13.8 L20.5 16.6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function DoodleTileIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M15.5 5.2 L18.8 8.5 L8.6 18.7 L4.6 19.4 L5.3 15.4 Z" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M13.6 7.1 L16.9 10.4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function VibeTileIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="12" r="8.2" stroke="currentColor" strokeWidth="1.7" />
+      <circle cx="9" cy="10" r="1.1" fill="currentColor" />
+      <circle cx="15" cy="10" r="1.1" fill="currentColor" />
+      <path d="M8.4 14.2 a4.4 4.4 0 0 0 7.2 0" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function GameTileIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M9.3 4 V20 M14.7 4 V20 M4 9.3 H20 M4 14.7 H20" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PuzzleTileIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="12" r="8.2" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M9.6 9.4 a2.4 2.4 0 1 1 3.3 2.2 c-0.6 0.25 -0.9 0.6 -0.9 1.3 V13.6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      <circle cx="12" cy="16.4" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+function PinTileIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M12 21 C8 16.6 5.5 13.4 5.5 10.2 a6.5 6.5 0 0 1 13 0 C18.5 13.4 16 16.6 12 21 Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+      <circle cx="12" cy="10" r="2.4" stroke="currentColor" strokeWidth="1.7" />
+    </svg>
+  );
+}
+
+function ClockTileIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="12" r="8.2" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M12 7.4 V12 L15.4 14.2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }

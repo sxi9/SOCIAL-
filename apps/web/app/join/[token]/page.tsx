@@ -7,7 +7,6 @@
 import type { Metadata } from 'next';
 import { headers } from 'next/headers';
 import { INVITE_TOKEN_REGEX, InvitePublicResponseSchema, type InvitePublic } from '@socialchat/shared';
-import AuthScene from '@/components/AuthScene';
 import JoinClient from './JoinClient';
 
 export const dynamic = 'force-dynamic';
@@ -95,12 +94,10 @@ export async function generateMetadata({ params }: JoinPageProps): Promise<Metad
   };
 }
 
+// v2 Royal (proto 31): the share-link page is its own deep-bg stranger view —
+// header, centered card, locked grid — no longer the AuthScene mood stage.
 export default async function JoinPage({ params }: JoinPageProps) {
   const { token } = await params;
   const invite = await fetchInvite(token);
-  return (
-    <AuthScene>
-      <JoinClient token={token} invite={invite} />
-    </AuthScene>
-  );
+  return <JoinClient token={token} invite={invite} />;
 }

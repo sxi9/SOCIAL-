@@ -111,6 +111,27 @@ function PublicProfile({ username }: { username: string }) {
   // someone else's rides their (per-viewer resolved) UserPublic.
   const shownMood = isMe ? state.me?.mood ?? null : shown?.mood ?? null;
 
+  // v2 (proto 30): shared interests get the white-border chip. My own public
+  // tags are fetched once, client-side; when unavailable every chip renders
+  // standard — purely presentational, nothing new is revealed either way.
+  const [myInterests, setMyInterests] = useState<Set<string> | null>(null);
+  const myUsername = state.me?.username ?? null;
+  const theirInterestCount = profile?.interests.length ?? 0;
+  useEffect(() => {
+    if (isMe || !myUsername || theirInterestCount === 0) return;
+    let cancelled = false;
+    void api
+      .get<UserProfileResponse>(`/api/users/${encodeURIComponent(myUsername)}`)
+      .then((res) => {
+        if (cancelled) return;
+        setMyInterests(new Set((res.profile?.interests ?? []).map((t) => t.toLowerCase())));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isMe, myUsername, theirInterestCount]);
+
   async function block(): Promise<void> {
     if (!shown || blockBusy) return;
     setMenu(false);
@@ -164,7 +185,12 @@ function PublicProfile({ username }: { username: string }) {
     switch (connState.kind) {
       case 'none':
         return (
-          <button type="button" className={pp.pillBtn} disabled={actionBusy} onClick={() => void connect()}>
+          <button
+            type="button"
+            className={`${pp.pillBtn} ${pp.pillPrimary}`}
+            disabled={actionBusy}
+            onClick={() => void connect()}
+          >
             Connect
           </button>
         );
@@ -187,7 +213,12 @@ function PublicProfile({ username }: { username: string }) {
       case 'incoming':
         // Their request to me — connect() auto-accepts it server-side (§1.28).
         return (
-          <button type="button" className={pp.pillBtn} disabled={actionBusy} onClick={() => void connect()}>
+          <button
+            type="button"
+            className={`${pp.pillBtn} ${pp.pillPrimary}`}
+            disabled={actionBusy}
+            onClick={() => void connect()}
+          >
             Accept request
           </button>
         );
@@ -214,55 +245,71 @@ function PublicProfile({ username }: { username: string }) {
 
   return (
     <div className="page">
-      <header className="topbar">
-        <Link href="/" className="btn btn-ghost btn-icon" aria-label="Back">
-          ←
-        </Link>
-        <h1>Profile</h1>
-        {shown && !isMe && !blocked ? (
-          <div className={bz.cardRel}>
-            <button
-              type="button"
-              className="btn btn-ghost btn-icon"
-              aria-label="Profile options"
-              onClick={() => setMenu((v) => !v)}
-            >
-              ⋯
-            </button>
-            {menu ? (
-              <>
-                <button
-                  type="button"
-                  className={bz.menuBackdrop}
-                  aria-label="Close menu"
-                  onClick={() => setMenu(false)}
-                />
-                <div className={bz.cardMenu} role="menu" style={{ right: 0, top: 36 }}>
-                  <button type="button" role="menuitem" className={bz.menuDanger} onClick={() => void block()}>
-                    Block @{shown.username}
-                  </button>
+      {/* v2 (proto 30): cover band with floating back orb + ··· overflow —
+          the sticky topbar retired on this screen; heading stays for SRs. */}
+      <div className={pp.cover}>
+        <div className={pp.coverBar}>
+          <Link href="/" className={pp.orbBtn} aria-label="Back">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <path
+                d="M14.5 5.5 8 12l6.5 6.5"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </Link>
+          <h1 className={pp.srOnly}>Profile</h1>
+          {shown && !isMe && !blocked ? (
+            <div className={bz.cardRel}>
+              <button
+                type="button"
+                className={pp.orbBtn}
+                aria-label="Profile options"
+                onClick={() => setMenu((v) => !v)}
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                  <circle cx="5.5" cy="12" r="1.6" />
+                  <circle cx="12" cy="12" r="1.6" />
+                  <circle cx="18.5" cy="12" r="1.6" />
+                </svg>
+              </button>
+              {menu ? (
+                <>
                   <button
                     type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMenu(false);
-                      setReport(true);
-                    }}
-                  >
-                    Report
-                  </button>
-                </div>
-              </>
-            ) : null}
-          </div>
-        ) : isMe ? (
-          <Link href="/settings/profile" className="btn btn-ghost">
-            Edit
-          </Link>
-        ) : (
-          <span />
-        )}
-      </header>
+                    className={bz.menuBackdrop}
+                    aria-label="Close menu"
+                    onClick={() => setMenu(false)}
+                  />
+                  <div className={bz.cardMenu} role="menu" style={{ right: 0, top: 40 }}>
+                    <button type="button" role="menuitem" className={bz.menuDanger} onClick={() => void block()}>
+                      Block @{shown.username}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setMenu(false);
+                        setReport(true);
+                      }}
+                    >
+                      Report
+                    </button>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          ) : isMe ? (
+            <Link href="/settings/account" className={pp.coverPill}>
+              Edit
+            </Link>
+          ) : (
+            <span />
+          )}
+        </div>
+      </div>
       {report && shown ? (
         <ReportSheet target={{ kind: 'user', user_id: shown.id }} onClose={() => setReport(false)} />
       ) : null}
@@ -358,34 +405,57 @@ function PublicProfile({ username }: { username: string }) {
             <AnonSendSheet userId={shown.id} displayName={shown.display_name} onClose={() => setAnonOpen(false)} />
           ) : null}
 
-          {/* Full-width outline pills (the reference's "Edit profile" style). */}
-          <div className={pp.actions}>
-            {isMe ? (
-              <Link href="/settings/profile" className={pp.pillBtn}>
+          {/* v2 (proto 30): interest chips sit right under the identity —
+              shared tags wear the white border + a " · shared" word. */}
+          {profile && profile.interests.length > 0 ? (
+            <div className={pp.intChips}>
+              {profile.interests.map((tag) => {
+                const shared = !isMe && myInterests !== null && myInterests.has(tag.toLowerCase());
+                return (
+                  <span key={tag} className={shared ? `${pp.intChip} ${pp.intChipShared}` : pp.intChip}>
+                    {tag}
+                    {shared ? (
+                      <span className={pp.sharedWord}>
+                        <span aria-hidden>· </span>shared
+                      </span>
+                    ) : null}
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
+
+          {/* proto 30: Connect (filled) / Message (outline) / anon orb in one
+              row; own profile keeps the stacked outline pill. */}
+          {isMe ? (
+            <div className={pp.actions}>
+              <Link href="/settings/account" className={pp.pillBtn}>
                 Edit profile
               </Link>
-            ) : (
-              <>
-                {connectButton}
-                <button type="button" className={pp.pillBtn} disabled={actionBusy} onClick={() => void message()}>
-                  Message
-                </button>
-                {/* v0.8b §1.62: the anonymous reveal game — words first, face later. */}
-                <button type="button" className={pp.pillBtn} onClick={() => setAnonOpen(true)}>
-                  👻 Send anonymously
-                </button>
-                {actionError ? (
-                  <p className="error-text" style={{ width: '100%', margin: 0 }}>
-                    {actionError}
-                  </p>
-                ) : null}
-              </>
-            )}
-          </div>
+            </div>
+          ) : (
+            <div className={pp.actionsRow}>
+              {connectButton}
+              <button type="button" className={pp.pillBtn} disabled={actionBusy} onClick={() => void message()}>
+                Message
+              </button>
+              {/* v0.8b §1.62: the anonymous reveal game — words first, face
+                  later. The mask emoji is content (the anon system's masks). */}
+              <button type="button" className={pp.anonOrb} aria-label="Send anonymously" onClick={() => setAnonOpen(true)}>
+                <span aria-hidden>👻</span>
+              </button>
+              {actionError ? (
+                <p className="error-text" style={{ width: '100%', margin: 0 }}>
+                  {actionError}
+                </p>
+              ) : null}
+            </div>
+          )}
 
           {/* §1.37: the 3-GIF strip — animation gated by the VIEWER's settings. */}
           {profile && profile.media.length > 0 ? (
             <div className={pp.section}>
+              <h3 className={pp.sectionLabel}>Pics</h3>
               <div className={st.gifStrip}>
                 {profile.media.map((m) => (
                   <ProfileGif key={m.id} media={m} />
@@ -397,19 +467,6 @@ function PublicProfile({ username }: { username: string }) {
           {shown.bio ? (
             <div className={pp.section}>
               <p className={pp.bioText}>{shown.bio}</p>
-            </div>
-          ) : null}
-
-          {profile && profile.interests.length > 0 ? (
-            <div className={pp.section}>
-              <h3 className={pp.sectionLabel}>Into</h3>
-              <div className={st.interestChips}>
-                {profile.interests.map((tag) => (
-                  <span key={tag} className="chip">
-                    {tag}
-                  </span>
-                ))}
-              </div>
             </div>
           ) : null}
 
