@@ -13,7 +13,7 @@ import {
 import { api, ApiError, safeNext } from '@/lib/api';
 import { onAuthenticated } from '@/lib/connection';
 import { setMe } from '@/lib/store';
-import AuthScene, { useAuthFx } from '@/components/AuthScene';
+import AuthScene, { EyeIcon, SceneFooter, SceneMascot, useAuthFx } from '@/components/AuthScene';
 import Mascot, { caretPoint, type MascotHandle, type MascotState } from '@/components/Mascot';
 import RecoveryCodes from '@/components/RecoveryCodes';
 import authStyles from '@/components/auth.module.css';
@@ -140,9 +140,9 @@ function RegisterForm() {
   if (reveal) {
     return (
       <div>
-        <div className={authStyles.mascotRow}>
-          <Mascot ref={mascotRef} state={fx.party ? 'party' : 'celebrate'} size={96} />
-        </div>
+        <SceneMascot>
+          <Mascot ref={mascotRef} state={fx.party ? 'party' : 'celebrate'} size={86} />
+        </SceneMascot>
         <h2 className={authStyles.formTitle}>Save your recovery codes</h2>
         <p className="muted small" style={{ margin: '0 0 4px' }}>
           You&rsquo;re in, @{username}! One thing first: these 6 codes are your way back in if you
@@ -163,18 +163,19 @@ function RegisterForm() {
 
   return (
     <form onSubmit={(e) => void submit(e)}>
-      <div className={authStyles.mascotRow}>
-        {/* v0.7 (§1.54): the wordmark's word drives the ambient mascot. */}
+      {/* Royal v2: the mascot lives above the wordmark (portal). v0.7 (§1.54):
+          the wordmark's word drives the ambient mascot. */}
+      <SceneMascot>
         <Mascot
           ref={mascotRef}
           state={fx.party ? 'party' : mascot === 'watch' && fx.wordMascot ? fx.wordMascot : mascot}
-          size={96}
+          size={86}
         />
-      </div>
+      </SceneMascot>
       <h2 className={authStyles.formTitle}>Join the fun</h2>
       {inviteToken ? (
         <p className={authStyles.inviteNote}>
-          <span aria-hidden>🎟️</span> You&rsquo;ve been invited — your chat opens right after sign-up.
+          You&rsquo;ve been invited — your chat opens right after sign-up.
         </p>
       ) : null}
       <div className="field">
@@ -254,13 +255,14 @@ function RegisterForm() {
             type="button"
             className={authStyles.pwToggle}
             aria-pressed={showPw}
+            aria-label="Show password"
             onClick={() => {
               const next = !showPw;
               setShowPw(next);
               setMascot(next ? 'peek' : 'cover');
             }}
           >
-            {showPw ? 'hide' : 'show'}
+            <EyeIcon />
           </button>
         </div>
       </div>
@@ -268,12 +270,15 @@ function RegisterForm() {
       <button className={`btn btn-primary ${authStyles.btnBlock}`} type="submit" disabled={busy}>
         {busy ? 'Creating…' : 'Create account'}
       </button>
-      <p className={`muted small ${authStyles.switchLine}`}>
-        Already have an account?{' '}
-        <Link href={`/login${search.get('next') ? `?next=${encodeURIComponent(safeNext(search.get('next')))}` : ''}`}>
-          Sign in
-        </Link>
-      </p>
+      {/* Royal v2: the sign-in door lives UNDER the card. */}
+      <SceneFooter>
+        <p className={authStyles.footLine}>
+          Already have an account?{' '}
+          <Link href={`/login${search.get('next') ? `?next=${encodeURIComponent(safeNext(search.get('next')))}` : ''}`}>
+            Sign in
+          </Link>
+        </p>
+      </SceneFooter>
     </form>
   );
 }

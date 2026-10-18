@@ -1,29 +1,24 @@
-/* The Bored Blob — pure SVG + CSS. Static pose transforms live OUTSIDE the
-   motion media query (a reduced-motion visitor still gets the right pose,
-   instantly); every transition/animation is wrapped in
-   `prefers-reduced-motion: no-preference`. Transform/opacity only. */
+/* The Bored Blob (Royal v2) — pure SVG + CSS, armless ivory face from the
+   design prototype. Static pose rules live OUTSIDE the motion media query (a
+   reduced-motion visitor still gets the right pose, instantly); every
+   animation is wrapped in `prefers-reduced-motion: no-preference`.
+   Transform/opacity only. Mood idle animations reuse the global Royal
+   keyframes (floaty / hopUp / wobble in globals.css). */
 
 .root {
   display: block;
   overflow: visible;
-  /* v1.1 Royal: ivory blob, silver limbs, ink features. */
-  --m-limb: #c3c9d8;
-  --m-lid: #e2e6f0;
+  /* Prototype palette: flat ivory body, ink features, pink blush, blue tear. */
+  --m-body: #f3f5f9;
   --m-ink: #12141c;
-  --m-blush: rgba(242, 166, 176, 0.55);
-}
-
-@media (prefers-color-scheme: light) {
-  .root {
-    --m-limb: #b4bac9;
-    --m-lid: #dde1ec;
-    --m-ink: #12141c;
-  }
+  --m-blush: #f2a6b0;
+  --m-tear: #8fb7e8;
 }
 
 /* State classes (one is always present on .root): idle, watch, cover, peek,
-   yawn, shake, wince, celebrate, party, wave, drowsy. Several need no CSS of
-   their own — they exist so selectors below can key off them. */
+   yawn, shake, wince, celebrate, party, wave, drowsy, droop, happy,
+   lookaround, drunk. Several need no CSS of their own — they exist so
+   selectors below can key off them. */
 .idle,
 .watch,
 .cover,
@@ -37,7 +32,8 @@
 .drowsy,
 .droop,
 .happy,
-.lookaround {
+.lookaround,
+.drunk {
   /* marker classes */
 }
 
@@ -45,42 +41,41 @@
 
 .inner {
   transform-box: fill-box;
-  transform-origin: 50% 85%;
+  transform-origin: 50% 60%;
 }
 
 .bodyBlob {
+  fill: var(--m-body);
   transform-box: fill-box;
   transform-origin: 50% 100%;
 }
 
-.eyeWhite {
-  fill: #fff;
+.eyeWrap {
+  /* carries the eye-tracking inline translate (set from JS) */
 }
 
-.pupil {
+.eyeDot {
   fill: var(--m-ink);
+  /* blinks squash the dot itself (WAAPI scaleY) around its own center */
+  transform-box: fill-box;
+  transform-origin: center;
 }
 
-.lid {
-  fill: var(--m-lid);
-  transform: translateY(0);
+.brow,
+.eyeArc,
+.mouthStroke,
+.shadeBridge,
+.shadeArms {
+  stroke: var(--m-ink);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
 }
 
 .brow {
-  stroke: var(--m-limb);
-  stroke-width: 3.2;
-  stroke-linecap: round;
-  fill: none;
   transform-box: fill-box;
   transform-origin: 50% 50%;
-}
-
-.happyEye,
-.mouthStroke {
-  stroke: var(--m-ink);
-  stroke-width: 3.4;
-  stroke-linecap: round;
-  fill: none;
 }
 
 .mouthFill {
@@ -94,7 +89,7 @@
 
 .blush {
   fill: var(--m-blush);
-  /* v1.1 Royal: blush belongs to the tipsy/festive faces only. */
+  /* blush belongs to the tipsy/festive faces only */
   opacity: 0;
 }
 
@@ -104,141 +99,46 @@
   opacity: 1;
 }
 
-.limb {
-  fill: none;
-  stroke: var(--m-limb);
-  stroke-width: 10;
-  stroke-linecap: round;
+.tear {
+  fill: var(--m-tear);
+  opacity: 0.9;
 }
 
-.hand {
-  fill: var(--m-limb);
+/* ---- static poses (always applied — correct under reduced motion too) ---- */
+
+/* Drowsy / wince: half-squashed dots stand in for lowered lids. */
+.drowsy .eyeDot {
+  transform: scaleY(0.45);
 }
 
-/* Arm pivots sit roughly on the shoulder (local 0,0) — fill-box percentages
-   chosen from each arm's geometry bounds. */
-.armL,
-.armR {
-  transform-box: fill-box;
-}
-
-.armL {
-  transform-origin: 86% 0%;
-}
-
-.armR {
-  transform-origin: 14% 0%;
-}
-
-/* ---- poses (static, always applied) ---- */
-
-/* Password focus: arms swing up, hands over the eyes; lids close behind the
-   hands so even a slightly-off landing never shows a staring pupil. */
-.cover .armL,
-.peek .armL {
-  transform: rotate(-169deg) scale(1.3);
-}
-
-.cover .armR {
-  transform: rotate(169deg) scale(1.3);
-}
-
-.cover .lid,
-.peek .lidL {
-  transform: translateY(21px);
-}
-
-/* "Show password": the right hand parts and the right eye peeks out. */
-.peek .armR {
-  transform: rotate(118deg) scale(1.08);
-}
-
-.drowsy .lid {
-  transform: translateY(11px);
-}
-
-.yawn .lid {
-  transform: translateY(21px);
-}
-
-.wince .lidL {
-  transform: translateY(15px);
-}
-
-.wince .lidR {
-  transform: translateY(13px);
-}
-
-.shake .lid {
-  transform: translateY(5px);
-}
-
-.shake .browL {
-  transform: rotate(16deg) translateY(2.5px);
-}
-
-.shake .browR {
-  transform: rotate(-16deg) translateY(2.5px);
-}
-
-.wince .browL {
-  transform: rotate(10deg) translateY(1px);
-}
-
-.wince .browR {
-  transform: rotate(-18deg) translateY(3px);
-}
-
-.yawn .browL,
-.yawn .browR,
-.celebrate .browL,
-.celebrate .browR {
-  transform: translateY(-3px);
-}
-
-.wave .armR {
-  transform: rotate(-140deg);
-}
-
-/* v0.7 wordmark states (static poses — correct under reduced motion too). */
-
-/* Sad: outer brow ends droop, half lids, frown (mouth map), slight sag. */
-.droop .browL {
-  transform: rotate(-14deg) translateY(2px);
-}
-
-.droop .browR {
-  transform: rotate(14deg) translateY(2px);
-}
-
-.droop .lid {
-  transform: translateY(8px);
-}
-
-.droop .inner {
-  transform: translateY(3px);
-}
-
-/* Happy: brows up + grin (mouth map). */
-.happy .browL,
-.happy .browR {
-  transform: translateY(-3px);
-}
-
-.celebrate .armL,
-.party .armL {
-  transform: rotate(140deg);
-}
-
-.celebrate .armR,
-.party .armR {
-  transform: rotate(-140deg);
+.wince .eyeDot {
+  transform: scaleY(0.55);
 }
 
 /* Party: sunglasses drop onto the face; brows hide underneath. */
 .shades {
   opacity: 0;
-  transform: translateY(-30px);
+  transform: translateY(-16px);
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+}
+
+.shades rect {
+  fill: var(--m-ink);
+  stroke: rgba(255, 255, 255, 0.3);
+  stroke-width: 1;
+}
+
+.shadeBridge,
+.shadeArms {
+  stroke-width: 2;
+}
+
+.shadeSheen {
+  stroke: rgba(255, 255, 255, 0.6);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  fill: none;
 }
 
 .party .shades {
@@ -246,36 +146,46 @@
   transform: translateY(0);
 }
 
-.party .browL,
-.party .browR {
+.party .brow {
   opacity: 0;
 }
 
 /* ---- motion (only when the visitor is fine with it) ---- */
 
 @media (prefers-reduced-motion: no-preference) {
-  .lid,
   .brow {
-    transition: transform 200ms ease, opacity 160ms ease;
-  }
-
-  .armL,
-  .armR {
-    transition: transform 340ms cubic-bezier(0.34, 1.45, 0.5, 1);
+    transition: opacity 160ms ease;
   }
 
   .shades {
     transition: transform 520ms cubic-bezier(0.3, 1.6, 0.4, 1), opacity 200ms ease;
   }
 
-  .bodyBlob {
-    animation: breathe 4.5s ease-in-out infinite;
-  }
-
   .mouth {
     animation: mouth-pop 180ms ease;
   }
 
+  /* Mood idles — the prototype's exact animation table (global keyframes). */
+  .idle .inner,
+  .watch .inner,
+  .lookaround .inner {
+    animation: floaty 3.6s ease-in-out infinite;
+  }
+
+  .happy .inner,
+  .wave .inner {
+    animation: hopUp 1.5s ease-in-out infinite;
+  }
+
+  .droop .inner {
+    animation: floaty 5s ease-in-out infinite;
+  }
+
+  .drunk .inner {
+    animation: wobble 1.5s ease-in-out infinite;
+  }
+
+  /* One-shots + party. */
   .shake .inner {
     animation: head-shake 460ms ease;
   }
@@ -296,22 +206,14 @@
     animation: party-bob 0.52s ease-in-out infinite;
   }
 
-  .wave .armR {
-    animation: arm-wave 1.5s ease-in-out infinite;
+  .droop .tear {
+    animation: tear-drip 2.6s ease-in infinite;
   }
 
-  .party .armL {
-    animation: arm-dance-l 0.52s ease-in-out infinite;
-  }
-
-  .party .armR {
-    animation: arm-dance-r 0.52s ease-in-out infinite;
-  }
-
-  /* Lonely: pupils dart around looking for company. CSS animations beat the
+  /* Lonely: eyes dart around looking for company. CSS animations beat the
      eye-tracking inline transform while active (cascade rule), so this wins
      cleanly and hands control back when the state changes. */
-  .lookaround .pupil {
+  .lookaround .eyeWrap {
     animation: look-around 2.6s ease-in-out infinite;
   }
 }
@@ -322,26 +224,16 @@
     transform: translateX(0);
   }
   22% {
-    transform: translateX(-3.2px);
+    transform: translateX(-2.6px);
   }
   48% {
-    transform: translateX(-3.2px);
+    transform: translateX(-2.6px);
   }
   64% {
-    transform: translateX(3.2px);
+    transform: translateX(2.6px);
   }
   86% {
-    transform: translateX(3.2px);
-  }
-}
-
-@keyframes breathe {
-  0%,
-  100% {
-    transform: scale(1, 1);
-  }
-  50% {
-    transform: scale(1.015, 0.982);
+    transform: translateX(2.6px);
   }
 }
 
@@ -392,13 +284,13 @@
     transform: translateY(0);
   }
   25% {
-    transform: translateY(-11px);
+    transform: translateY(-9px);
   }
   50% {
     transform: translateY(0);
   }
   70% {
-    transform: translateY(-5px);
+    transform: translateY(-4px);
   }
   85% {
     transform: translateY(0);
@@ -424,69 +316,24 @@
     transform: translateY(0) rotate(-2deg);
   }
   50% {
-    transform: translateY(-5px) rotate(2deg);
+    transform: translateY(-4px) rotate(2deg);
   }
 }
 
-@keyframes arm-wave {
-  0%,
+@keyframes tear-drip {
+  0% {
+    transform: translateY(0);
+    opacity: 0;
+  }
+  25% {
+    opacity: 0.9;
+  }
+  80% {
+    transform: translateY(8px);
+    opacity: 0.9;
+  }
   100% {
-    transform: rotate(-124deg);
-  }
-  50% {
-    transform: rotate(-160deg);
-  }
-}
-
-@keyframes arm-dance-l {
-  0%,
-  100% {
-    transform: rotate(124deg);
-  }
-  50% {
-    transform: rotate(156deg);
-  }
-}
-
-@keyframes arm-dance-r {
-  0%,
-  100% {
-    transform: rotate(-156deg);
-  }
-  50% {
-    transform: rotate(-124deg);
-  }
-}
-
-
-/* ---- v1.1 Royal: drunk mood + sad tear ---- */
-.tear {
-  fill: #8fb7e8;
-  opacity: 0.9;
-}
-
-.drunk .blush {
-  fill: rgba(242, 166, 176, 0.85);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .drunk .inner {
-    animation: wobble 1.5s ease-in-out infinite;
-    transform-box: fill-box;
-    transform-origin: 50% 60%;
-  }
-  .droop .tear,
-  .tear {
-    animation: tearDrip 2.6s ease-in infinite;
-  }
-  @keyframes tearDrip {
-    0% { transform: translateY(0); opacity: 0; }
-    25% { opacity: 0.9; }
-    80% { transform: translateY(10px); opacity: 0.9; }
-    100% { transform: translateY(14px); opacity: 0; }
-  }
-  @keyframes wobble {
-    0%, 100% { transform: rotate(-4deg); }
-    50% { transform: rotate(4deg) translateY(-3px); }
+    transform: translateY(11px);
+    opacity: 0;
   }
 }

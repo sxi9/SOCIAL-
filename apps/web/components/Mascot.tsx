@@ -1,32 +1,39 @@
 'use client';
 
-// The Bored Blob — the mascot that makes the auth pages feel alive. Pure SVG
-// + CSS + a single rAF spring for eye tracking; no libraries, no assets.
+// The Bored Blob (Royal v2) — the armless ivory face from the design
+// prototype. Pure SVG + CSS + a single rAF spring for eye tracking; no
+// libraries, no assets. Geometry is the prototype's exactly: viewBox
+// "0 0 92 76", flat #f3f5f9 body, solid ink dot eyes (r=4 at 35/57, cy 38),
+// per-mood brow + mouth stroke paths (#12141c, 2.5, round caps).
 //
 // Prop-driven state machine (pages set `state`):
 //   idle | watch  ambient: eyes track the pointer, random blinks, and after
 //                 10 quiet seconds the blob yawns then goes drowsy-lidded
-//                 until activity (it IS Bored Chat).
-//   cover         arms rise and hands cover the eyes (password focus).
-//   peek          one hand parts and the right eye peeks ("show password").
+//                 until activity (it IS Bored Chat). Bored face row.
+//   cover         both eyes become closed arcs (password focus — no arms to
+//                 cover with any more).
+//   peek          left eye closed, right eye peeks ("show password").
 //   yawn          forced yawn (also fired internally by the idle timer).
-//   shake         quick head-shake + brows down (login error). One-shot:
+//   shake         quick head-shake + sad-slant brows (login error). One-shot:
 //                 the page flips back to its ambient state after ~900ms.
-//   wince         squint + wobbly mouth (username taken). One-shot as above.
-//   celebrate     happy bounce, arcs for eyes, arms up (auth success).
-//   party         sunglasses drop, arms dance, body bobs (logo easter egg).
-//   wave          right arm waves (join page greeter).
+//   wince         squint + squiggle mouth (username taken). One-shot as above.
+//   celebrate     happy brows + big grin + blush + bounce (auth success).
+//   party         sunglasses drop + grin + blush, body bobs (logo easter egg).
+//   wave          greeter (join page) — renders as the happy row.
+//   droop         sad row: slanted brows, frown, the tear.
+//   happy         happy row: curved brows + smile, hopUp bob.
+//   lookaround    bored row, eyes darting (Lonely).
+//   drunk         wonky brows + squiggle mouth + blush + wobble.
 //
 // Tiny imperative API via ref: `lookAt(point|null)` aims the eyes at a
 // viewport coordinate (the focused input's caret) instead of the pointer.
 //
-// Reduced motion = static mascot: correct pose per state, pupils centered,
-// no rAF, no blinks, no idle-yawn sequence; CSS transitions/animations are
-// disabled by the module's media query.
+// Reduced motion = static mascot: correct pose per state, eyes centered,
+// no rAF, no blinks, no idle-yawn sequence; CSS animations are disabled by
+// the module's media query.
 import {
   forwardRef,
   useEffect,
-  useId,
   useImperativeHandle,
   useRef,
   useState,
@@ -60,7 +67,7 @@ export interface MascotHandle {
 
 interface MascotProps {
   state?: MascotState;
-  /** Rendered width/height in px (viewBox is fixed). */
+  /** Rendered width in px (height follows the prototype's 86:72 ratio). */
   size?: number;
   className?: string;
 }
@@ -70,7 +77,8 @@ type Phase = 'awake' | 'yawning' | 'drowsy';
 
 const IDLE_MS = 10_000;
 const YAWN_MS = 1_700;
-const GAZE_RADIUS = 3.4; // max pupil offset in SVG user units (capped gaze)
+const GAZE_RADIUS = 3; // max eye offset in SVG user units (capped gaze)
+const EYE_LINE = 38 / 76; // eye row as a fraction of the viewBox height
 
 /** Approximate caret position of a text input, in viewport coordinates. */
 export function caretPoint(input: HTMLInputElement): { x: number; y: number } {
@@ -104,18 +112,65 @@ export function caretPoint(input: HTMLInputElement): { x: number; y: number } {
 
 let measureCtx: CanvasRenderingContext2D | null = null;
 
+// ---- the prototype's face tables (exact paths) ----
+
+const BROWS = {
+  bored: 'M28 28 h12 M52 28 h12',
+  happy: 'M28 27 q6 -4 12 0 M52 27 q6 -4 12 0',
+  sad: 'M28 30 L40 26 M64 30 L52 26',
+  drunk: 'M28 26 q6 4 12 -2 M52 25 q6 5 12 -1',
+} as const;
+
+type Mouth = 'flat' | 'smile' | 'grin' | 'frown' | 'squiggle' | 'o' | 'yawn';
+type EyeMode = 'open' | 'closed' | 'peek';
+
+const MOUTH_PATHS: Record<Exclude<Mouth, 'o' | 'yawn'>, string> = {
+  flat: 'M39 53 h14',
+  smile: 'M37 50 q9 10 18 0',
+  grin: 'M37 50 q9 12 18 0',
+  frown: 'M38 57 q8 -8 16 0',
+  squiggle: 'M37 53 q4 4 8 0 q4 -4 8 0',
+};
+
+// Closed-eye arcs (there are no hands to cover with any more).
+const ARC_L = 'M31 39 q4 3 8 0';
+const ARC_R = 'M53 39 q4 3 8 0';
+
+interface Face {
+  brow: string;
+  mouth: Mouth;
+  eyes: EyeMode;
+}
+
+const FACES: Record<Expression, Face> = {
+  idle: { brow: BROWS.bored, mouth: 'flat', eyes: 'open' },
+  watch: { brow: BROWS.bored, mouth: 'flat', eyes: 'open' },
+  lookaround: { brow: BROWS.bored, mouth: 'flat', eyes: 'open' },
+  drowsy: { brow: BROWS.bored, mouth: 'flat', eyes: 'open' }, // + CSS half-squash
+  yawn: { brow: BROWS.bored, mouth: 'yawn', eyes: 'closed' },
+  cover: { brow: BROWS.bored, mouth: 'o', eyes: 'closed' },
+  peek: { brow: BROWS.bored, mouth: 'o', eyes: 'peek' },
+  happy: { brow: BROWS.happy, mouth: 'smile', eyes: 'open' },
+  wave: { brow: BROWS.happy, mouth: 'smile', eyes: 'open' },
+  celebrate: { brow: BROWS.happy, mouth: 'grin', eyes: 'open' },
+  party: { brow: BROWS.happy, mouth: 'grin', eyes: 'open' },
+  droop: { brow: BROWS.sad, mouth: 'frown', eyes: 'open' },
+  shake: { brow: BROWS.sad, mouth: 'frown', eyes: 'open' },
+  wince: { brow: BROWS.sad, mouth: 'squiggle', eyes: 'open' },
+  drunk: { brow: BROWS.drunk, mouth: 'squiggle', eyes: 'open' },
+};
+
 const Mascot = forwardRef<MascotHandle, MascotProps>(function Mascot(
-  { state = 'idle', size = 120, className },
+  { state = 'idle', size = 86, className },
   ref,
 ) {
   const reduced = useReducedMotion();
-  const gid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const svgRef = useRef<SVGSVGElement | null>(null);
   const faceRef = useRef<SVGGElement | null>(null);
-  const pupilLRef = useRef<SVGCircleElement | null>(null);
-  const pupilRRef = useRef<SVGCircleElement | null>(null);
-  const lidLRef = useRef<SVGRectElement | null>(null);
-  const lidRRef = useRef<SVGRectElement | null>(null);
+  const gazeLRef = useRef<SVGGElement | null>(null);
+  const gazeRRef = useRef<SVGGElement | null>(null);
+  const eyeLRef = useRef<SVGCircleElement | null>(null);
+  const eyeRRef = useRef<SVGCircleElement | null>(null);
   const overrideRef = useRef<{ x: number; y: number } | null>(null);
   const kickRef = useRef<(() => void) | null>(null);
 
@@ -181,17 +236,18 @@ const Mascot = forwardRef<MascotHandle, MascotProps>(function Mascot(
         : state
     : state;
 
-  // ---- random blinks (ambient + awake only) ----
+  // ---- random blinks (ambient + awake only): brief scaleY squash of the
+  // ink dots (transform-box fill-box, origin center — set in the module) ----
   useEffect(() => {
     if (reduced || !ambient || phase !== 'awake') return;
     let t: ReturnType<typeof setTimeout>;
     const blink = (): void => {
-      for (const el of [lidLRef.current, lidRRef.current]) {
+      for (const el of [eyeLRef.current, eyeRRef.current]) {
         el?.animate(
           [
-            { transform: 'translateY(0px)' },
-            { transform: 'translateY(20px)', offset: 0.45 },
-            { transform: 'translateY(0px)' },
+            { transform: 'scaleY(1)' },
+            { transform: 'scaleY(0.12)', offset: 0.45 },
+            { transform: 'scaleY(1)' },
           ],
           { duration: 150, easing: 'ease-in-out' },
         );
@@ -207,7 +263,7 @@ const Mascot = forwardRef<MascotHandle, MascotProps>(function Mascot(
     return () => clearTimeout(t);
   }, [reduced, ambient, phase]);
 
-  // ---- eye tracking: pointer (or caret override) → spring-eased pupils ----
+  // ---- eye tracking: pointer (or caret override) → spring-eased eyes ----
   useEffect(() => {
     if (reduced) return;
     const svg = svgRef.current;
@@ -226,8 +282,8 @@ const Mascot = forwardRef<MascotHandle, MascotProps>(function Mascot(
 
     const apply = (): void => {
       const t = `translate(${pos.x.toFixed(2)}px, ${pos.y.toFixed(2)}px)`;
-      if (pupilLRef.current) pupilLRef.current.style.transform = t;
-      if (pupilRRef.current) pupilRRef.current.style.transform = t;
+      if (gazeLRef.current) gazeLRef.current.style.transform = t;
+      if (gazeRRef.current) gazeRRef.current.style.transform = t;
       if (faceRef.current) {
         faceRef.current.style.transform = `translate(${(pos.x * 0.45).toFixed(2)}px, ${(pos.y * 0.45).toFixed(2)}px)`;
       }
@@ -241,7 +297,7 @@ const Mascot = forwardRef<MascotHandle, MascotProps>(function Mascot(
       const focus = overrideRef.current ?? (hasPointer ? pointer : null);
       if (focus && rect && rect.width > 0) {
         const cx = rect.left + rect.width / 2;
-        const cy = rect.top + rect.height * 0.43; // eye line
+        const cy = rect.top + rect.height * EYE_LINE;
         const dx = focus.x - cx;
         const dy = focus.y - cy;
         const dist = Math.hypot(dx, dy);
@@ -296,144 +352,71 @@ const Mascot = forwardRef<MascotHandle, MascotProps>(function Mascot(
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('resize', refreshRect);
       window.removeEventListener('scroll', refreshRect);
-      if (pupilLRef.current) pupilLRef.current.style.transform = '';
-      if (pupilRRef.current) pupilRRef.current.style.transform = '';
+      if (gazeLRef.current) gazeLRef.current.style.transform = '';
+      if (gazeRRef.current) gazeRRef.current.style.transform = '';
       if (faceRef.current) faceRef.current.style.transform = '';
     };
   }, [reduced]);
 
-  const happyEyes = expr === 'celebrate';
-  const mouth: 'smile' | 'o' | 'yawn' | 'flat' | 'frown' | 'wobble' | 'grin' =
-    expr === 'yawn'
-      ? 'yawn'
-      : expr === 'drowsy'
-        ? 'flat'
-        : expr === 'shake' || expr === 'droop'
-          ? 'frown'
-          : expr === 'wince' || expr === 'drunk'
-            ? 'wobble'
-            : expr === 'celebrate' || expr === 'party' || expr === 'wave' || expr === 'happy'
-              ? 'grin'
-              : expr === 'cover' || expr === 'peek'
-                ? 'o'
-                : expr === 'lookaround'
-                  ? 'flat'
-                  : 'smile';
+  const face = FACES[expr];
+  const leftClosed = face.eyes !== 'open';
+  const rightClosed = face.eyes === 'closed';
 
   return (
     <svg
       ref={svgRef}
       className={`${styles.root} ${styles[expr] ?? ''}${className ? ` ${className}` : ''}`}
       width={size}
-      height={size}
-      viewBox="0 0 120 120"
+      height={Math.round(size * (72 / 86))}
+      viewBox="0 0 92 76"
       aria-hidden
       focusable="false"
     >
-      <defs>
-        <radialGradient id={`${gid}bg`} cx="38%" cy="28%" r="80%">
-          {/* v1.1 Royal: ivory/silver blob (was blue). */}
-          <stop offset="0%" stopColor="#ffffff" />
-          <stop offset="55%" stopColor="#f3f5f9" />
-          <stop offset="100%" stopColor="#d9deea" />
-        </radialGradient>
-        <clipPath id={`${gid}el`}>
-          <ellipse cx="44" cy="52" rx="8" ry="9" />
-        </clipPath>
-        <clipPath id={`${gid}er`}>
-          <ellipse cx="76" cy="52" rx="8" ry="9" />
-        </clipPath>
-      </defs>
       <g className={styles.inner}>
+        {/* The armless ivory blob — flat fill, no gradient, no highlight. */}
         <path
           className={styles.bodyBlob}
-          d="M60 16 C84 16 102 32 103 58 C104 86 88 106 60 106 C32 106 16 86 17 58 C18 32 36 16 60 16 Z"
-          fill={`url(#${gid}bg)`}
-        />
-        <path
-          d="M38 30 Q50 20 66 24"
-          stroke="rgba(255,255,255,0.8)"
-          strokeWidth="5"
-          strokeLinecap="round"
-          fill="none"
+          d="M46 6 C69 6 85 21 85 42 C85 61 69 71 46 71 C23 71 7 61 7 42 C7 21 23 6 46 6 Z"
         />
         <g ref={faceRef}>
-          <path className={`${styles.brow} ${styles.browL}`} d="M36 39 Q44 34 52 38" />
-          <path className={`${styles.brow} ${styles.browR}`} d="M68 38 Q76 34 84 39" />
-          {happyEyes ? (
-            <>
-              <path className={styles.happyEye} d="M36 54 Q44 45 52 54" />
-              <path className={styles.happyEye} d="M68 54 Q76 45 84 54" />
-            </>
+          <path className={styles.brow} d={face.brow} />
+          {leftClosed ? (
+            <path className={styles.eyeArc} d={ARC_L} />
           ) : (
-            <>
-              <g clipPath={`url(#${gid}el)`}>
-                <ellipse className={styles.eyeWhite} cx="44" cy="52" rx="8" ry="9" />
-                <circle ref={pupilLRef} className={styles.pupil} cx="44" cy="53" r="3.6" />
-                <rect
-                  ref={lidLRef}
-                  className={`${styles.lid} ${styles.lidL}`}
-                  x="34"
-                  y="16"
-                  width="20"
-                  height="26"
-                />
-              </g>
-              <g clipPath={`url(#${gid}er)`}>
-                <ellipse className={styles.eyeWhite} cx="76" cy="52" rx="8" ry="9" />
-                <circle ref={pupilRRef} className={styles.pupil} cx="76" cy="53" r="3.6" />
-                <rect
-                  ref={lidRRef}
-                  className={`${styles.lid} ${styles.lidR}`}
-                  x="66"
-                  y="16"
-                  width="20"
-                  height="26"
-                />
-              </g>
-            </>
+            <g ref={gazeLRef} className={styles.eyeWrap}>
+              <circle ref={eyeLRef} className={styles.eyeDot} cx="35" cy="38" r="4" />
+            </g>
           )}
-          <ellipse className={styles.blush} cx="34" cy="63" rx="5" ry="3" />
-          <ellipse className={styles.blush} cx="86" cy="63" rx="5" ry="3" />
+          {rightClosed ? (
+            <path className={styles.eyeArc} d={ARC_R} />
+          ) : (
+            <g ref={gazeRRef} className={styles.eyeWrap}>
+              <circle ref={eyeRRef} className={styles.eyeDot} cx="57" cy="38" r="4" />
+            </g>
+          )}
+          {/* Blush (drunk / party / celebrate — via CSS opacity). */}
+          <circle className={styles.blush} cx="30" cy="48" r="4" />
+          <circle className={styles.blush} cx="62" cy="48" r="4" />
           {expr === 'droop' ? (
-            /* v1.1 Royal: the sad tear (#8fb7e8), slow drip under reduced-motion-safe CSS. */
-            <ellipse className={styles.tear} cx="82" cy="66" rx="3" ry="5" />
+            /* The sad tear (#8fb7e8), slow drip under reduced-motion-safe CSS. */
+            <ellipse className={styles.tear} cx="63" cy="47" rx="2.5" ry="4" />
           ) : null}
-          <g className={styles.mouth} key={mouth}>
-            {mouth === 'smile' ? (
-              <path className={styles.mouthStroke} d="M49 75 Q60 84 71 75" />
-            ) : mouth === 'grin' ? (
-              <path className={styles.mouthFill} d="M47 74 Q60 92 73 74 Z" />
-            ) : mouth === 'yawn' ? (
-              <ellipse className={styles.mouthFill} cx="60" cy="79" rx="9" ry="12" />
-            ) : mouth === 'flat' ? (
-              <path className={styles.mouthStroke} d="M53 78 L67 78" />
-            ) : mouth === 'frown' ? (
-              <path className={styles.mouthStroke} d="M49 81 Q60 73 71 81" />
-            ) : mouth === 'wobble' ? (
-              <path className={styles.mouthStroke} d="M48 79 q6 -5 12 0 q6 5 12 0" />
+          <g className={styles.mouth} key={face.mouth}>
+            {face.mouth === 'o' ? (
+              <circle className={styles.mouthFill} cx="46" cy="54" r="2.6" />
+            ) : face.mouth === 'yawn' ? (
+              <ellipse className={styles.mouthFill} cx="46" cy="55" rx="4" ry="5.5" />
             ) : (
-              <circle className={styles.mouthFill} cx="60" cy="78" r="3.5" />
+              <path className={styles.mouthStroke} d={MOUTH_PATHS[face.mouth]} />
             )}
           </g>
+          {/* Party sunglasses, scaled to the new geometry. */}
           <g className={styles.shades}>
-            <rect x="33" y="44" width="22" height="14" rx="6" fill="#131726" stroke="rgba(255,255,255,0.3)" strokeWidth="1.4" />
-            <rect x="65" y="44" width="22" height="14" rx="6" fill="#131726" stroke="rgba(255,255,255,0.3)" strokeWidth="1.4" />
-            <path d="M55 49 Q60 45 65 49" stroke="#131726" strokeWidth="3" fill="none" />
-            <path d="M33 49 L25 46 M87 49 L95 46" stroke="#131726" strokeWidth="3" strokeLinecap="round" fill="none" />
-            <path d="M37 48 L43 48 M69 48 L75 48" stroke="rgba(255,255,255,0.8)" strokeWidth="2" strokeLinecap="round" />
-          </g>
-        </g>
-        <g transform="translate(32 80)">
-          <g className={styles.armL}>
-            <path className={styles.limb} d="M0 0 Q-7 10 -5 21" />
-            <circle className={styles.hand} cx="-5" cy="23" r="8" />
-          </g>
-        </g>
-        <g transform="translate(88 80)">
-          <g className={styles.armR}>
-            <path className={styles.limb} d="M0 0 Q7 10 5 21" />
-            <circle className={styles.hand} cx="5" cy="23" r="8" />
+            <rect x="27" y="33" width="16" height="10" rx="3.5" />
+            <rect x="49" y="33" width="16" height="10" rx="3.5" />
+            <path className={styles.shadeBridge} d="M43 36.5 q3 -2 6 0" />
+            <path className={styles.shadeArms} d="M27 36 L22 33.5 M65 36 L70 33.5" />
+            <path className={styles.shadeSheen} d="M30 36 h6 M52 36 h6" />
           </g>
         </g>
       </g>

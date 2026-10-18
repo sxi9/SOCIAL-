@@ -1,17 +1,24 @@
 'use client';
 
-// Shared LIVING scenery for /login, /register and /join/:token — animated
-// gradient, a pointer-reactive mesh (two blurred radial layers), the floating
-// blob/avatar cluster, a rotating-tagline brand block, a gently 3D-tilting
-// frosted card, and a 5-taps-on-the-logo party mode. Pure CSS/SVG/WAAPI, no
-// assets. All of it is behind prefers-reduced-motion (reduced = static scene,
-// no parallax, instant transitions) and every listener is passive, rAF-
-// throttled and torn down on unmount.
+// Shared Royal v2 scenery for /login, /register and /join/:token — a calm
+// centered column on var(--bg): the per-mood ambient backdrop (stars / rain /
+// drifting blobs), a slot for the page's mascot, the flipping serif wordmark
+// "{mood}." with its mood-synced tagline, the solid panel card, and a slot
+// for the page's below-card line. Pure CSS/SVG/WAAPI, no assets. Everything
+// animated sits behind prefers-reduced-motion (reduced = static scene,
+// instant transitions) and every listener is passive and torn down on
+// unmount.
 //
 // Pages drive page-level effects through useAuthFx(): `party` (logo easter
 // egg — mascots should switch to their party state), `burst()` (confetti from
 // the card on register success), `lift()` (the card floats away as the app
 // routes in) and `reducedMotion` (so pages can route instantly instead).
+//
+// Pages place content OUTSIDE the card through two portal slots:
+//   <SceneMascot>  → above the wordmark (the page's living mascot)
+//   <SceneFooter>  → under the card ("New here? Join the fun" etc.)
+// Both render nothing until the scene mounts (SSR output stays slot-free, so
+// hydration always matches).
 import {
   createContext,
   useCallback,
@@ -23,6 +30,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import type { WORDMARK_WORDS } from '@socialchat/shared';
 import { useReducedMotion } from '@/lib/useReducedMotion';
 import type { MascotState } from './Mascot';
@@ -55,6 +63,41 @@ export function useAuthFx(): AuthFx {
   return useContext(AuthFxContext);
 }
 
+// ---- scene slots (portal targets above the wordmark / under the card) ----
+
+interface SceneSlots {
+  mascot: HTMLDivElement | null;
+  footer: HTMLDivElement | null;
+}
+
+const SceneSlotContext = createContext<SceneSlots>({ mascot: null, footer: null });
+
+/** Renders its children in the scene's mascot spot, above the wordmark. */
+export function SceneMascot({ children }: { children: ReactNode }) {
+  const { mascot } = useContext(SceneSlotContext);
+  return mascot ? createPortal(children, mascot) : null;
+}
+
+/** Renders its children in the scene's below-card spot. */
+export function SceneFooter({ children }: { children: ReactNode }) {
+  const { footer } = useContext(SceneSlotContext);
+  return footer ? createPortal(children, footer) : null;
+}
+
+/** The Royal v2 show/hide-password eye (replaces the old text toggle). */
+export function EyeIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <path
+        d="M3 12c2.2-4 5.2-6 9-6s6.8 2 9 6c-2.2 4-5.2 6-9 6s-6.8-2-9-6Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+      />
+      <circle cx="12" cy="12" r="2.6" stroke="currentColor" strokeWidth="1.7" />
+    </svg>
+  );
+}
+
 // v1.1 Royal: taglines are MOOD-SYNCED — one per wordmark word, flipped on
 // the same clock (index 0 = Bored doubles as the SSR text, so hydration
 // always matches).
@@ -64,13 +107,6 @@ const WORD_TAGLINE: Record<(typeof WORDMARK_WORDS)[number], string> = {
   Sad: 'rain check? we got you',
   Drunk: 'maybe text the group first',
 };
-
-function greetingFor(hour: number): string {
-  if (hour >= 5 && hour < 11) return 'good morning — the blob woke up before you did';
-  if (hour >= 11 && hour < 17) return 'good afternoon — procrastinate responsibly';
-  if (hour >= 17 && hour < 23) return 'good evening — prime lurking hours';
-  return 'good 3am, insomniac — the blob never sleeps either';
-}
 
 interface ConfettiPiece {
   dx: number;
@@ -85,8 +121,7 @@ interface ConfettiPiece {
 const CONFETTI_COLORS = ['#6f8cff', '#4cd4a0', '#ff6b96', '#b78cff', '#ffd166', '#7ae0ff'];
 
 // §1.54: Bored = idle (null → the page's ambient state wins), Sad = droop,
-// Excited = bounce (celebrate), Happy = smile, Lonely = look around,
-// Hyped = party. State changes ride the same tick as the roll.
+// Happy = smile, Drunk = wobble. State changes ride the same tick as the roll.
 const WORD_MASCOT: Record<(typeof WORDMARK_WORDS)[number], MascotState | null> = {
   Bored: null,
   Happy: 'happy',
@@ -103,128 +138,22 @@ const WORD_BG: Record<(typeof WORDMARK_WORDS)[number], 'none' | 'stars' | 'rain'
   Drunk: 'blobs',
 };
 
-function FloatingFace({ className, hue }: { className: string; hue: string }) {
-  return (
-    <svg className={className} width="54" height="54" viewBox="0 0 54 54" fill="none" aria-hidden>
-      <circle cx="27" cy="27" r="25" fill={hue} opacity="0.28" />
-      <circle cx="27" cy="27" r="25" stroke={hue} strokeWidth="1.6" opacity="0.55" />
-      <circle cx="19.5" cy="23" r="2.6" fill={hue} />
-      <circle cx="34.5" cy="23" r="2.6" fill={hue} />
-      <path d="M18 33 a9.5 9.5 0 0 0 18 0" stroke={hue} strokeWidth="2.4" strokeLinecap="round" fill="none" />
-    </svg>
-  );
-}
-
 export default function AuthScene({ children }: { children: ReactNode }) {
   const reduced = useReducedMotion();
-  const sceneRef = useRef<HTMLDivElement | null>(null);
   const [tagline, setTagline] = useState(WORD_TAGLINE.Bored);
-  const [greeting, setGreeting] = useState<string | null>(null);
   const [party, setParty] = useState(false);
   const [lifted, setLifted] = useState(false);
   const [word, setWord] = useState<(typeof WORDMARK_WORDS)[number]>('Bored');
   const [pieces, setPieces] = useState<ConfettiPiece[] | null>(null);
-  const [tiltReady, setTiltReady] = useState(false);
-  const [tiltOn, setTiltOn] = useState(false);
+  const [mascotHost, setMascotHost] = useState<HTMLDivElement | null>(null);
+  const [footerHost, setFooterHost] = useState<HTMLDivElement | null>(null);
   const tapsRef = useRef<number[]>([]);
   const burstTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Tagline + time-aware greeting: client-side after mount (no hydration
-  // mismatch — the server always renders TAGLINES[0] and a blank greeting).
-  useEffect(() => {
-    setGreeting(greetingFor(new Date().getHours()));
-  }, []);
 
   // v1.1 Royal: the tagline rides the mood clock (same tick as the word).
   useEffect(() => {
     setTagline(WORD_TAGLINE[word]);
   }, [word]);
-
-  // Pointer-reactive mesh + card tilt: one passive pointermove listener feeds
-  // a normalized target; a self-stopping rAF loop eases --mx/--my on the
-  // scene element (transform-only consumers in CSS). Optional devicemotion
-  // tilt joins the same target once the visitor opts in.
-  useEffect(() => {
-    if (reduced) return;
-    const el = sceneRef.current;
-    if (!el) return;
-    const target = { x: 0, y: 0 };
-    const cur = { x: 0, y: 0 };
-    let raf: number | null = null;
-    let baseBeta: number | null = null;
-
-    const apply = (): void => {
-      el.style.setProperty('--mx', cur.x.toFixed(4));
-      el.style.setProperty('--my', cur.y.toFixed(4));
-    };
-    const tick = (): void => {
-      cur.x += (target.x - cur.x) * 0.12;
-      cur.y += (target.y - cur.y) * 0.12;
-      if (Math.abs(target.x - cur.x) < 0.002 && Math.abs(target.y - cur.y) < 0.002) {
-        cur.x = target.x;
-        cur.y = target.y;
-        apply();
-        raf = null;
-        return;
-      }
-      apply();
-      raf = requestAnimationFrame(tick);
-    };
-    const kick = (): void => {
-      if (raf == null) raf = requestAnimationFrame(tick);
-    };
-    const onMove = (e: PointerEvent): void => {
-      target.x = (e.clientX / window.innerWidth) * 2 - 1;
-      target.y = (e.clientY / window.innerHeight) * 2 - 1;
-      kick();
-    };
-    const onOrient = (e: DeviceOrientationEvent): void => {
-      if (e.gamma == null || e.beta == null) return;
-      if (baseBeta == null) baseBeta = e.beta;
-      target.x = Math.max(-1, Math.min(1, e.gamma / 24));
-      target.y = Math.max(-1, Math.min(1, (e.beta - baseBeta) / 24));
-      kick();
-    };
-    window.addEventListener('pointermove', onMove, { passive: true });
-    if (tiltOn) window.addEventListener('deviceorientation', onOrient);
-    return () => {
-      if (raf != null) cancelAnimationFrame(raf);
-      window.removeEventListener('pointermove', onMove);
-      if (tiltOn) window.removeEventListener('deviceorientation', onOrient);
-      el.style.removeProperty('--mx');
-      el.style.removeProperty('--my');
-    };
-  }, [reduced, tiltOn]);
-
-  // Offer the (permission-gated, optional) device-tilt toggle only on
-  // coarse-pointer devices that expose orientation events.
-  useEffect(() => {
-    if (reduced) return;
-    if (typeof window.DeviceOrientationEvent === 'undefined') return;
-    if (!window.matchMedia('(pointer: coarse)').matches) return;
-    setTiltReady(true);
-  }, [reduced]);
-
-  const enableTilt = useCallback(async (): Promise<void> => {
-    try {
-      const DOE = (
-        window as unknown as {
-          DeviceOrientationEvent?: { requestPermission?: () => Promise<string> };
-        }
-      ).DeviceOrientationEvent;
-      if (DOE?.requestPermission) {
-        const verdict = await DOE.requestPermission();
-        if (verdict !== 'granted') {
-          setTiltReady(false);
-          return;
-        }
-      }
-      setTiltOn(true);
-    } catch {
-      /* declined or unsupported — stay pointer-only */
-    }
-    setTiltReady(false);
-  }, []);
 
   // Easter egg: 5 taps on the logo within 3s → party mode until unmount.
   const onLogoTap = useCallback((): void => {
@@ -271,72 +200,64 @@ export default function AuthScene({ children }: { children: ReactNode }) {
     [party, reduced, burst, lift, word],
   );
 
+  const slots = useMemo<SceneSlots>(
+    () => ({ mascot: mascotHost, footer: footerHost }),
+    [mascotHost, footerHost],
+  );
+
   return (
     <AuthFxContext.Provider value={fx}>
-      <div ref={sceneRef} className={`${styles.scene}${party ? ` ${styles.party}` : ''}`}>
-        <div className={styles.mesh} aria-hidden>
-          <span className={styles.meshA} />
-          <span className={styles.meshB} />
-        </div>
-        <div className={styles.blobs} aria-hidden>
-          <span className={`${styles.blob} ${styles.b1}`} />
-          <span className={`${styles.blob} ${styles.b2}`} />
-          <span className={`${styles.blob} ${styles.b3}`} />
-          <FloatingFace className={`${styles.face} ${styles.f1}`} hue="#c7cdda" />
-          <FloatingFace className={`${styles.face} ${styles.f2}`} hue="#8f96a8" />
-          <FloatingFace className={`${styles.face} ${styles.f3}`} hue="#e4e8f1" />
-        </div>
-        {/* v1.1 Royal: per-mood ambient layer — none under reduced motion. */}
-        {!reduced ? <MoodBackdrop kind={WORD_BG[word]} /> : null}
-        <div className={styles.content}>
-          <header className={styles.brand}>
-            <h1 className={styles.title}>
-              {/* v1.1 Royal (§1.54 machinery kept): "{mood}." — the word
-                  rolls on the mood clock, the dot never moves (fixed-width
-                  slot); static "Bored." under reduced motion and in SSR. */}
-              <button type="button" className={styles.logoBtn} onClick={onLogoTap}>
-                <Wordmark onWordChange={setWord} />
-                <span className={styles.logoDot}>.</span>
-              </button>
-            </h1>
-            <p className={styles.pitch}>{tagline}</p>
-            <p className={styles.greeting}>{greeting ?? ' '}</p>
-          </header>
-          <div className={styles.cardWrap}>
-            <div className={`${styles.card}${lifted ? ` ${styles.cardLift}` : ''}`}>{children}</div>
-            {pieces ? (
-              <div className={styles.confetti} aria-hidden>
-                {pieces.map((p, i) => (
-                  <i
-                    key={i}
-                    className={styles.piece}
-                    style={
-                      {
-                        '--dx': `${p.dx.toFixed(1)}px`,
-                        '--dyu': `${p.dyu.toFixed(1)}px`,
-                        '--dyd': `${p.dyd.toFixed(1)}px`,
-                        '--rz': `${p.rot.toFixed(0)}deg`,
-                        '--s': p.scale.toFixed(2),
-                        background: p.color,
-                        animationDelay: `${p.delay.toFixed(0)}ms`,
-                      } as CSSProperties
-                    }
-                  />
-                ))}
-              </div>
-            ) : null}
+      <SceneSlotContext.Provider value={slots}>
+        <div className={`${styles.scene}${party ? ` ${styles.party}` : ''}`}>
+          {/* v1.1 Royal: per-mood ambient layer — none under reduced motion. */}
+          {!reduced ? <MoodBackdrop kind={WORD_BG[word]} /> : null}
+          <div className={styles.content}>
+            <header className={styles.brand}>
+              {/* The page's mascot portals in here, above the wordmark. */}
+              <div ref={setMascotHost} className={styles.mascotSlot} />
+              <h1 className={styles.title}>
+                {/* "{mood}." — the word rolls on the mood clock (§1.54
+                    machinery kept), lowercased by CSS, the dot never moves;
+                    static "bored." under reduced motion and in SSR. */}
+                <button type="button" className={styles.logoBtn} onClick={onLogoTap}>
+                  <Wordmark onWordChange={setWord} />
+                  <span className={styles.logoDot}>.</span>
+                </button>
+              </h1>
+              <p className={styles.pitch}>{tagline}</p>
+            </header>
+            <div className={styles.cardWrap}>
+              <div className={`${styles.card}${lifted ? ` ${styles.cardLift}` : ''}`}>{children}</div>
+              {pieces ? (
+                <div className={styles.confetti} aria-hidden>
+                  {pieces.map((p, i) => (
+                    <i
+                      key={i}
+                      className={styles.piece}
+                      style={
+                        {
+                          '--dx': `${p.dx.toFixed(1)}px`,
+                          '--dyu': `${p.dyu.toFixed(1)}px`,
+                          '--dyd': `${p.dyd.toFixed(1)}px`,
+                          '--rz': `${p.rot.toFixed(0)}deg`,
+                          '--s': p.scale.toFixed(2),
+                          background: p.color,
+                          animationDelay: `${p.delay.toFixed(0)}ms`,
+                        } as CSSProperties
+                      }
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            {/* The page's below-card line(s) portal in here. */}
+            <div ref={setFooterHost} className={styles.footSlot} />
           </div>
         </div>
-        {tiltReady && !tiltOn ? (
-          <button type="button" className={styles.tiltBtn} onClick={() => void enableTilt()}>
-            tilt to move the background
-          </button>
-        ) : null}
-      </div>
+      </SceneSlotContext.Provider>
     </AuthFxContext.Provider>
   );
 }
-
 
 /* v1.1 Royal: the mood backdrop — absolutely positioned, pointer-events
  * none; stars twinkle, rain falls, drunk blobs drift. Deterministic layout
@@ -344,11 +265,11 @@ export default function AuthScene({ children }: { children: ReactNode }) {
  * since this renders client-side only anyway, but determinism keeps renders
  * stable). */
 const STAR_SPOTS = [
-  [8, 12], [22, 30], [37, 8], [52, 22], [66, 14], [80, 28], [90, 10], [14, 46], [72, 42], [45, 38],
+  [8, 12], [22, 30], [37, 8], [52, 22], [66, 14], [80, 28], [90, 10], [14, 46],
 ] as const;
 const RAIN_SPOTS = [
-  [6, 0.0, 1.1], [18, 0.3, 1.3], [29, 0.6, 1.2], [41, 0.15, 1.45], [53, 0.45, 1.15],
-  [64, 0.75, 1.3], [75, 0.2, 1.25], [86, 0.55, 1.4], [94, 0.9, 1.2],
+  [6, 0.0, 1.1], [22, 0.3, 1.3], [38, 0.6, 1.2], [54, 0.15, 1.45], [70, 0.45, 1.15],
+  [88, 0.75, 1.3],
 ] as const;
 
 function MoodBackdrop({ kind }: { kind: 'none' | 'stars' | 'rain' | 'blobs' }) {

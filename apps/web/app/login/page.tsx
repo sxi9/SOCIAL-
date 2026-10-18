@@ -33,7 +33,7 @@ import {
   passkeyAutofillSupported,
   passkeysSupported,
 } from '@/lib/webauthn';
-import AuthScene, { useAuthFx } from '@/components/AuthScene';
+import AuthScene, { EyeIcon, SceneFooter, SceneMascot, useAuthFx } from '@/components/AuthScene';
 import Mascot, { caretPoint, type MascotHandle, type MascotState } from '@/components/Mascot';
 import QrCode from '@/components/QrCode';
 import authStyles from '@/components/auth.module.css';
@@ -379,16 +379,17 @@ function LoginForm() {
     setBusy(false);
   }
 
+  // Royal v2: the mascot lives ABOVE the wordmark (SceneMascot portals it out
+  // of the card). v0.7 (§1.54): while ambient ('watch'), it reacts to the
+  // flipping wordmark's current word; interactions always win.
   const mascotEl = (
-    <div className={authStyles.mascotRow}>
-      {/* v0.7 (§1.54): while ambient ('watch'), the mascot reacts to the
-          flipping wordmark's current word; interactions always win. */}
+    <SceneMascot>
       <Mascot
         ref={mascotRef}
         state={fx.party ? 'party' : mascot === 'watch' && fx.wordMascot ? fx.wordMascot : mascot}
-        size={96}
+        size={86}
       />
-    </div>
+    </SceneMascot>
   );
 
   const backRow = (label: string) => (
@@ -455,9 +456,9 @@ function LoginForm() {
     const url =
       link && typeof window !== 'undefined' ? `${window.location.origin}${link.url}` : null;
     return (
-      <div>
+      <div className={ap.qrPane}>
         {mascotEl}
-        <h2 className={authStyles.formTitle}>Log in with your phone</h2>
+        <h2 className={authStyles.formTitle}>Log in by QR</h2>
         <p className="muted small" style={{ margin: '0 0 12px' }}>
           On your phone, where you&rsquo;re already signed in: scan this, or type the short code
           under Settings → Security → &ldquo;Approve a laptop&rdquo;.
@@ -489,7 +490,13 @@ function LoginForm() {
             </p>
           </>
         )}
-        {backRow('Back to sign in')}
+        <button
+          type="button"
+          className={`btn ${ap.outlineBtn} ${ap.pwInstead}`}
+          onClick={backToPassword}
+        >
+          Use password instead
+        </button>
       </div>
     );
   }
@@ -570,13 +577,14 @@ function LoginForm() {
               type="button"
               className={authStyles.pwToggle}
               aria-pressed={showPw}
+              aria-label="Show password"
               onClick={() => {
                 const next = !showPw;
                 setShowPw(next);
                 setMascot(next ? 'peek' : 'cover');
               }}
             >
-              {showPw ? 'hide' : 'show'}
+              <EyeIcon />
             </button>
           </div>
         </div>
@@ -588,11 +596,11 @@ function LoginForm() {
     );
   }
 
-  // mode === 'password' (default)
+  // mode === 'password' (default) — the Royal v2 login card: no heading, the
+  // mascot + "{mood}." wordmark above the card carry the brand.
   return (
     <form onSubmit={(e) => void submitPassword(e)}>
       {mascotEl}
-      <h2 className={authStyles.formTitle}>Welcome back</h2>
       <div className="field">
         <label htmlFor="login-id">Username or email</label>
         <input
@@ -635,13 +643,14 @@ function LoginForm() {
             type="button"
             className={authStyles.pwToggle}
             aria-pressed={showPw}
+            aria-label="Show password"
             onClick={() => {
               const next = !showPw;
               setShowPw(next);
               setMascot(next ? 'peek' : 'cover');
             }}
           >
-            {showPw ? 'hide' : 'show'}
+            <EyeIcon />
           </button>
         </div>
       </div>
@@ -655,41 +664,49 @@ function LoginForm() {
       </div>
       <div className={ap.altBtns}>
         {canPasskey ? (
-          <button type="button" className="btn" disabled={busy} onClick={() => void passkeyClick()}>
-            <span aria-hidden>🔑</span> Sign in with passkey
+          <button
+            type="button"
+            className={`btn ${ap.outlineBtn}`}
+            disabled={busy}
+            onClick={() => void passkeyClick()}
+          >
+            Sign in with a passkey
           </button>
         ) : null}
         <button
           type="button"
-          className="btn"
+          className={`btn ${ap.outlineBtn}`}
           disabled={busy}
           onClick={() => {
             setMode('qr');
             setError(null);
           }}
         >
-          <span aria-hidden>📱</span> Log in with phone
+          Log in with phone · QR
         </button>
       </div>
 
-      <p className={`muted small ${authStyles.switchLine}`}>
-        New here?{' '}
-        <Link href={`/register${search.get('next') ? `?next=${encodeURIComponent(safeNext(search.get('next')))}` : ''}`}>
-          Create an account
-        </Link>
-        {' · '}
-        <button
-          type="button"
-          className={ap.backBtn}
-          style={{ padding: 0 }}
-          onClick={() => {
-            setMode('recover');
-            setError(null);
-          }}
-        >
-          Lost everything?
-        </button>
-      </p>
+      {/* Royal v2: the sign-up door + the recovery door live UNDER the card. */}
+      <SceneFooter>
+        <p className={authStyles.footLine}>
+          New here?{' '}
+          <Link href={`/register${search.get('next') ? `?next=${encodeURIComponent(safeNext(search.get('next')))}` : ''}`}>
+            Join the fun
+          </Link>
+        </p>
+        <p className={authStyles.footLineSmall}>
+          <button
+            type="button"
+            className={authStyles.footBtn}
+            onClick={() => {
+              setMode('recover');
+              setError(null);
+            }}
+          >
+            Lost everything?
+          </button>
+        </p>
+      </SceneFooter>
     </form>
   );
 }

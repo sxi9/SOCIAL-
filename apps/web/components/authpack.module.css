@@ -14,7 +14,7 @@
 .qr {
   display: block;
   background: #fff;
-  border-radius: 12px;
+  border-radius: 20px; /* Royal v2: the prototype's white QR tile */
   /* The white quiet zone is part of the SVG viewBox; the border just frames it. */
   border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   max-width: 100%;
@@ -42,9 +42,9 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 14px 0 10px;
-  color: var(--muted);
-  font-size: 12.5px;
+  margin: 12px 0;
+  color: color-mix(in srgb, var(--muted) 72%, var(--bg));
+  font-size: 12px;
 }
 
 .orRow::before,
@@ -52,12 +52,36 @@
   content: '';
   flex: 1;
   height: 1px;
-  background: color-mix(in srgb, var(--border) 85%, transparent);
+  background: var(--border);
 }
 
 .altBtns {
   display: grid;
-  gap: 8px;
+  gap: 12px;
+}
+
+/* Royal v2 outline pill (the prototype's secondary button). */
+.outlineBtn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 11px 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  justify-content: center;
+}
+
+/* The QR panel's centered "Use password instead" door. */
+.pwInstead {
+  display: flex;
+  margin: 18px auto 0;
+  padding: 11px 24px;
+}
+
+/* QR panel: centered column, like the prototype. */
+.qrPane {
+  text-align: center;
 }
 
 .backRow {
@@ -100,12 +124,13 @@
 
 .codeItem {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 15px;
+  font-size: 14px;
+  letter-spacing: 0.08em;
   text-align: center;
-  padding: 8px 6px;
-  border-radius: 10px;
-  border: 1px dashed color-mix(in srgb, var(--border) 90%, transparent);
-  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  padding: 11px 6px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
   user-select: all;
   overflow-wrap: anywhere;
 }
