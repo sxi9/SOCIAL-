@@ -49,6 +49,12 @@
   --panel: #1a1e2a;
   --panel-2: #232838;
   --chat-bg: #171a24;
+  /* v2 handoff additions */
+  --bg-deep: #0e1018; /* calls, admin, share pages */
+  --bg-deeper: #0a0c11;
+  --body-soft: #c9cdd8;
+  --border-strong: #3a4052;
+  --info: #8fb7e8;
   --border: #2a2f3e;
   --border-accent: rgba(255, 255, 255, 0.3);
   --text: #f3f5f9;
@@ -81,6 +87,11 @@
     --panel: #ffffff;
     --panel-2: #eef1f8;
     --chat-bg: #eef0f6;
+    --bg-deep: #e9ecf4;
+    --bg-deeper: #e2e6f0;
+    --body-soft: #3c4556;
+    --border-strong: #c3cbdc;
+    --info: #3f6ea6;
     --border: #d9dfec;
     --border-accent: rgba(18, 20, 28, 0.35);
     --text: #17202f;
