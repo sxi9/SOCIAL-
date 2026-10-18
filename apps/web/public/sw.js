@@ -10,7 +10,7 @@
  * offline fallback, and cache immutable static assets on first use.
  * /api and /ws are never cached (REST is the durable path; sync is seq-based).
  */
-const SHELL_CACHE = 'socialchat-shell-v1';
+const SHELL_CACHE = 'socialchat-shell-v2'; // bump = every cached page/asset is dropped on activate
 const SHELL_URLS = ['/', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -78,12 +78,37 @@ self.addEventListener('fetch', (event) => {
         if (res.ok) {
           const cache = await caches.open(SHELL_CACHE);
           await cache.put(req, res.clone());
+        } else if (res.status === 404 && url.pathname.startsWith('/_next/static/')) {
+          // Self-heal after a deploy (2026-10-18): a navigation that fell back
+          // to a CACHED page (the server was restarting) references chunk
+          // hashes that no longer exist — the page sits on an unstyled
+          // "Loading…" forever. Drop every cached page so the next load is
+          // fresh, and reload the windows we control, once.
+          await healStaleShell();
         }
         return res;
       })()
     );
   }
 });
+
+let healing = false;
+async function healStaleShell() {
+  if (healing) return;
+  healing = true;
+  try {
+    const cache = await caches.open(SHELL_CACHE);
+    for (const key of await cache.keys()) {
+      if (!new URL(key.url).pathname.startsWith('/_next/static/')) await cache.delete(key);
+    }
+    const wins = await self.clients.matchAll({ type: 'window' });
+    await Promise.all(wins.map((w) => w.navigate(w.url).catch(() => undefined)));
+  } finally {
+    setTimeout(() => {
+      healing = false;
+    }, 10000);
+  }
+}
 
 /* v0.7.1 ring push (API.md §1.55 + §2.9, FEATURES #88). Payloads carry a
  * `kind` discriminator from this release on; kind-less payloads stay plain
