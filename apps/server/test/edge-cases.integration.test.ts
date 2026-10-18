@@ -209,8 +209,8 @@ describe.runIf(infra)('v0.2 audited edge cases', () => {
   });
 
   it('DELETE /api/conversations/:id — a group admin deletes for everyone; members 403; DMs 400', async () => {
-    const admin = await register(`edg_da_${run}`);
-    const member = await register(`edg_db_${run}`);
+    const admin = await register(`edg_dla_${run}`);
+    const member = await register(`edg_dlb_${run}`);
     const conv = await app.inject({
       method: 'POST',
       url: '/api/conversations',
