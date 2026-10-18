@@ -148,7 +148,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 ## 📋 v1.0c — Calls pack
 
 102. Call history: global Calls tab + per-chat log (in/out/missed, duration), callback from missed row
-103. Ringtone + text notification sounds (bundled, self-hosted); per-chat override; mute/pushGuard parity
+103. ✅ Ringtone + text notification sounds — shipped early (2026-10-18): Web-Audio-synthesized tones (no audio files), ringtone choice + ringback + text tone + vibrate in Settings → Notifications & sounds, per-chat override in chat settings, mute parity; device-local prefs (`apps/web/lib/sounds.ts`)
 104. Mid-call audio↔video switch (consent prompt on upgrade)
 105. 1:1 video layouts: draggable PiP + two-half split, tap-to-swap focus
 

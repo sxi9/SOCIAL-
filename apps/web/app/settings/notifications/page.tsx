@@ -3,16 +3,26 @@
 // Settings → Notifications & sounds (Royal v2 IA, proto ref 49). The push
 // row + the re-askable explainer moved here from the old profile-settings
 // page, behavior intact (v0.7.1 §1.56, FEATURES #90b; v1.0 re-ask).
-// Ringtones/text tones ship with the Calls pack — a muted note, not a fake
-// row. Design rule carried over: we never notify about something you
-// can't act on (PSYCHOLOGY §2).
+// FEATURES #103: ringtone choice (with Play), text tone and vibrate rows —
+// device-local prefs in lib/sounds.ts (synthesized, nothing downloaded).
+// Design rule carried over: we never notify about something you can't act
+// on (PSYCHOLOGY §2).
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { disablePush, getPushSubscription, pushSupported } from '@/lib/push';
 import { PushExplainerSheet } from '@/components/PushExplainer';
 import { toast } from '@/lib/toast';
+import {
+  RING_CHOICES,
+  getSoundPrefs,
+  previewSound,
+  setSoundPrefs,
+  type RingChoice,
+  type SoundPrefs,
+} from '@/lib/sounds';
 import AppShell from '@/components/AppShell';
 import sm from '@/components/settings.module.css';
+import seg from '@/components/beacons.module.css';
 
 const S = { stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', fill: 'none' } as const;
 
@@ -50,6 +60,16 @@ function NotificationSettings() {
   const [pushStatus, setPushStatus] = useState<'on' | 'off' | 'blocked' | 'unsupported' | null>(null);
   const [pushBusy, setPushBusy] = useState(false);
   const [askPush, setAskPush] = useState(false); // v1.0: re-askable enable
+  // #103: sounds are per-device; read after mount so SSR never sees storage.
+  const [sounds, setSounds] = useState<SoundPrefs | null>(null);
+  const canVibrate = typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function';
+  useEffect(() => {
+    setSounds(getSoundPrefs());
+  }, []);
+  function chooseRing(ring: RingChoice): void {
+    setSounds(setSoundPrefs({ ring }));
+    void previewSound(ring);
+  }
 
   useEffect(() => {
     refreshPushStatus();
@@ -148,7 +168,96 @@ function NotificationSettings() {
         </p>
       ) : null}
 
-      <p className={sm.noteLine}>Ringtones &amp; text tones arrive with the Calls pack.</p>
+      {/* #103: sounds. Each choice previews itself — the tap is the user
+          gesture that unlocks audio in this browser. */}
+      <div className={sm.sectionLabel}>Sounds</div>
+      <div className={sm.setList}>
+        <div className={sm.setRow}>
+          <div className={sm.setMain}>
+            <div className={sm.setTitle}>Ringtone</div>
+            <p className={sm.setHint}>Plays while Bored Chat is open and a call comes in.</p>
+            <div className={seg.segRow} role="radiogroup" aria-label="Ringtone" style={{ marginTop: 10 }}>
+              {RING_CHOICES.map((c) => (
+                <button
+                  key={c.key}
+                  type="button"
+                  role="radio"
+                  aria-checked={sounds?.ring === c.key}
+                  className={`${seg.segBtn}${sounds?.ring === c.key ? ` ${seg.segOn}` : ''}`}
+                  disabled={sounds === null}
+                  onClick={() => chooseRing(c.key)}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className={sm.setRow}>
+          <div className={sm.setMain}>
+            <div className={sm.setTitle}>
+              Message sound
+              {sounds ? (
+                sounds.text ? (
+                  <span className="ok-text" style={{ marginLeft: 8 }}>ON</span>
+                ) : (
+                  <span className="muted" style={{ marginLeft: 8, fontSize: 13 }}>OFF</span>
+                )
+              ) : null}
+            </div>
+            <p className={sm.setHint}>
+              A short tone for new messages in other chats. Muted chats stay silent; each chat can override this in its settings.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className="btn"
+              disabled={sounds === null}
+              onClick={() => void previewSound('text')}
+              aria-label="Play message sound"
+            >
+              Play
+            </button>
+            <button
+              type="button"
+              className={`btn${sounds?.text ? '' : ' btn-primary'}`}
+              disabled={sounds === null}
+              onClick={() => setSounds(setSoundPrefs({ text: !sounds?.text }))}
+            >
+              {sounds === null ? '…' : sounds.text ? 'Disable' : 'Enable'}
+            </button>
+          </div>
+        </div>
+        {canVibrate ? (
+          <div className={sm.setRow}>
+            <div className={sm.setMain}>
+              <div className={sm.setTitle}>
+                Vibrate for calls
+                {sounds ? (
+                  sounds.vibrate ? (
+                    <span className="ok-text" style={{ marginLeft: 8 }}>ON</span>
+                  ) : (
+                    <span className="muted" style={{ marginLeft: 8, fontSize: 13 }}>OFF</span>
+                  )
+                ) : null}
+              </div>
+              <p className={sm.setHint}>Buzz along with the ringtone (even before you tap the screen).</p>
+            </div>
+            <button
+              type="button"
+              className={`btn${sounds?.vibrate ? '' : ' btn-primary'}`}
+              disabled={sounds === null}
+              onClick={() => setSounds(setSoundPrefs({ vibrate: !sounds?.vibrate }))}
+            >
+              {sounds === null ? '…' : sounds.vibrate ? 'Disable' : 'Enable'}
+            </button>
+          </div>
+        ) : null}
+      </div>
+      <p className={sm.noteLine}>
+        Sounds play while the app is open in this browser. When it&rsquo;s closed, your phone&rsquo;s own notification sound takes over (push notifications above).
+      </p>
       <p className={sm.noteLine}>We never notify you about something you can&rsquo;t act on.</p>
 
       {askPush ? (

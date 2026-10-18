@@ -123,7 +123,9 @@ Client state/libs (`lib/`): `connection.ts` (WS client: reconnect+sync,
 presence chunking, 1008 handling, event routing) · `store.ts`/`useStore.ts`
 (in-memory + IndexedDB via `db.ts`; delivered receipts only after durable
 store) · `api.ts` (fetch wrapper adding X-Requested-With) · `webrtc.ts`
-(per-peer RTCPeerConnection mesh, signaling via `signals.ts`) · feature libs
+(per-peer RTCPeerConnection mesh, signaling via `signals.ts`) · `sounds.ts`
+(#103: synthesized ringtone/ringback/text tone, store-driven ringer,
+device-local prefs + per-chat override) · feature libs
 (`beacons`, `feed`, `stories`, `listings`, `connections`, `discovery`,
 `scheduled`, `prefs`, `push`, `reactions`, `effects`, `watch`, `emoji`,
 `blurhash`, `format`, `ids`, `useNow`, `useReducedMotion`, `admin`).

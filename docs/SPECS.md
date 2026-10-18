@@ -236,10 +236,15 @@ reportable. Comments die with the story.
 **Call history (102):** `call_sessions` style log (caller, callees, in/out/
 missed, duration) → per-chat header entry + global Calls tab; owner-only
 delete of own history rows. Missed-call row doubles as callback button.
-**Sounds (103):** bundled self-hosted ringtone + message-notification
-sounds (ship small OGG/MP3 assets in-repo); settings: ring choice, text
-sound on/off, per-chat override; respects mute, quiet digests, and never
-plays for blocked senders (pushGuard parity).
+**Sounds (103) — SHIPPED 2026-10-18:** ringtone + message-notification
+sounds, synthesized with the Web Audio API instead of shipped OGG/MP3
+assets (no binary blobs, nothing to license, zero deps); settings: ring
+choice (Classic/Soft/Pulse/Off, each previews on tap), text sound on/off,
+vibrate, per-chat override (Default/On/Off in chat settings); respects the
+server-side mute, never dings for the chat on screen, own sends, system
+rows, or mid-call; blocked senders never reach the client (server-enforced).
+Prefs are device-local (localStorage), by design — a sound is a device
+choice. Caller hears a standard ringback while the callee's phone rings.
 **Audio↔video switch (104):** mid-call upgrade to video prompts the other
 side (consent), downgrade is instant; renegotiation over the existing
 signaling channel (ADR-014/017 patterns).

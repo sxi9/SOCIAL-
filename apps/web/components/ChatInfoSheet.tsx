@@ -31,6 +31,7 @@ import { useRouter } from 'next/navigation';
 import { api, ApiError } from '@/lib/api';
 import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
 import { THEME_INFO, WALLPAPER_INFO, updatePrefs, wallpaperClassName } from '@/lib/prefs';
+import { getChatSoundOverride, setChatSoundOverride, type ChatSoundOverride } from '@/lib/sounds';
 import * as store from '@/lib/store';
 import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
@@ -59,6 +60,16 @@ interface ChatInfoSheetProps {
 }
 
 export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProps) {
+  // FEATURES #103: per-chat text-tone override (device-local, lib/sounds).
+  const [soundOverride, setSoundOverride] = useState<ChatSoundOverride | null>(null);
+  useEffect(() => {
+    setSoundOverride(getChatSoundOverride(conv.id));
+  }, [conv.id]);
+  function chooseSound(value: ChatSoundOverride | null): void {
+    setChatSoundOverride(conv.id, value);
+    setSoundOverride(value);
+  }
+
   const state = useAppState();
   const router = useRouter();
   const prefs = state.prefs.get(conv.id);
@@ -489,6 +500,32 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
                 }
                 aria-hidden
               />
+            </button>
+          ))}
+        </div>
+
+        {/* #103: text tone for THIS chat — Default follows Settings →
+            Notifications & sounds; a server-side mute still wins. */}
+        <div className={sheetStyles.sheetLabel}>
+          Message sound <span className={exp.personalTag}>only on this device</span>
+        </div>
+        <div className={sheetStyles.segRow} role="radiogroup" aria-label="Message sound for this chat">
+          {(
+            [
+              { value: null, label: 'Default' },
+              { value: 'on', label: 'On' },
+              { value: 'off', label: 'Off' },
+            ] as { value: ChatSoundOverride | null; label: string }[]
+          ).map((o) => (
+            <button
+              key={o.label}
+              type="button"
+              role="radio"
+              aria-checked={soundOverride === o.value}
+              className={`${sheetStyles.segBtn}${soundOverride === o.value ? ` ${sheetStyles.segOn}` : ''}`}
+              onClick={() => chooseSound(o.value)}
+            >
+              {o.label}
             </button>
           ))}
         </div>

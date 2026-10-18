@@ -24,6 +24,7 @@ import { onRouletteExpired, refreshOptin } from './discovery';
 import { adoptIncomingPost, refreshFeed } from './feed';
 import { registerEventSender } from './signals';
 import * as store from './store';
+import { dingForMessage } from './sounds';
 import { refreshStories } from './stories';
 import { handleWatchEvent } from './watch';
 import { handleCallEvent, teardownCall } from './webrtc';
@@ -441,6 +442,10 @@ export async function adoptConversationById(
 
 async function onMsgNew(message: Message): Promise<void> {
   store.applyMessage(message);
+  // FEATURES #103: text tone — every "should it ding?" rule (own sends,
+  // system rows, the chat on screen, mute, per-chat override, on a call)
+  // lives in lib/sounds.ts.
+  dingForMessage(message);
   try {
     const max = await db.storeMessages(message.conversation_id, [message]);
     // Receipt honesty: delivered only after the IndexedDB write committed.
