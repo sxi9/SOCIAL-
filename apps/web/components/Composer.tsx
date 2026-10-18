@@ -90,6 +90,8 @@ export default function Composer({
   const [body, setBody] = useState(initialBody ?? '');
   const [attachments, setAttachments] = useState<Attachment[]>(initialAttachments ?? []);
   const [uploading, setUploading] = useState(0);
+  /** Byte progress (0-100) of the upload in flight; null = none / processing. */
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [preview, setPreviewState] = useState<LinkPreview | null>(initialPreview ?? null);
@@ -297,7 +299,8 @@ export default function Composer({
         const up = await maybeConvertImage(file); // v1.0a #91: HEIC → JPEG
         const form = new FormData();
         form.append('file', up, up.name);
-        const res = await api.postForm<UploadResponse>('/api/uploads', form);
+        setUploadPct(0);
+        const res = await api.uploadForm<UploadResponse>('/api/uploads', form, setUploadPct);
         setAttachments((prev) => [...prev, res.attachment]);
       } catch (err) {
         if (err instanceof HeicUnreadableError) setError(err.message);
@@ -306,6 +309,7 @@ export default function Composer({
         else setError(`Could not upload ${file.name}.`);
       } finally {
         setUploading((n) => n - 1);
+        setUploadPct(null);
       }
     }
   }
@@ -466,7 +470,8 @@ export default function Composer({
     try {
       const form = new FormData();
       form.append('file', new File([blob], `voice-note.${ext}`, { type: mime }));
-      const res = await api.postForm<UploadResponse>('/api/uploads', form);
+      setUploadPct(0);
+      const res = await api.uploadForm<UploadResponse>('/api/uploads', form, setUploadPct);
       const payload: ComposerPayload = { type: 'audio', attachment_ids: [res.attachment.id] };
       if (armedEffect) payload.metadata = { effect: armedEffect };
       const ok = await onSubmit(payload);
@@ -671,7 +676,8 @@ export default function Composer({
                   try {
                     const form = new FormData();
                     form.append('file', file, file.name);
-                    const res = await api.postForm<UploadResponse>('/api/uploads', form);
+                    setUploadPct(0);
+                    const res = await api.uploadForm<UploadResponse>('/api/uploads', form, setUploadPct);
                     setAttachments((prev) => prev.map((a) => (a.id === target.id ? res.attachment : a)));
                   } catch {
                     setError('Could not save the edited image.');
@@ -683,8 +689,27 @@ export default function Composer({
             />
           ) : null}
           {uploading > 0 ? (
-            <span className={styles.attachmentChip}>
-              <span className="spinner" />
+            // Owner ask 2026-10-18: show real upload progress. Bytes leaving
+            // the device fill the bar; the spinner covers the server's
+            // processing after 100% (sniff, thumb, blurhash).
+            <span
+              className={`${styles.attachmentChip} ${styles.uploadChip}`}
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={uploadPct ?? undefined}
+              aria-label="Uploading"
+            >
+              {uploadPct !== null && uploadPct < 100 ? (
+                <>
+                  <span className={styles.uploadBar} aria-hidden>
+                    <span style={{ width: `${uploadPct}%` }} />
+                  </span>
+                  <span className={styles.uploadPct}>{uploadPct}%</span>
+                </>
+              ) : (
+                <span className="spinner" />
+              )}
             </span>
           ) : null}
         </div>

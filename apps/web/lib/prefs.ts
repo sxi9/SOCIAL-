@@ -2,6 +2,8 @@
 // everything here changes MY view only — never serialized to anyone else;
 // prefs.updated fans to my own sockets for cross-device sync.
 import type {
+  SetSharedAppearanceRequest,
+  SharedAppearanceResponse,
   ChatTheme,
   ChatWallpaper,
   ConversationPrefs,
@@ -35,6 +37,20 @@ export async function updatePrefs(conversationId: string, change: UpdatePrefsReq
 }
 
 /** My nickname for a user in this conversation, else their display name. */
+/** #95b: the theme/wallpaper everyone in the conversation sees (DM: either
+ * side; group: admins). The response patches the store; the server also fans
+ * conv.appearance to every member, this device included. */
+export async function updateSharedAppearance(
+  conversationId: string,
+  change: SetSharedAppearanceRequest,
+): Promise<void> {
+  const res = await api.patch<SharedAppearanceResponse>(
+    `/api/conversations/${conversationId}/appearance`,
+    change,
+  );
+  store.setSharedAppearance(conversationId, res.theme, res.wallpaper);
+}
+
 export function displayNameFor(prefs: ConversationPrefs | undefined, user: Pick<UserPublic, 'id' | 'display_name'>): string {
   return prefs?.nicknames[user.id] ?? user.display_name;
 }

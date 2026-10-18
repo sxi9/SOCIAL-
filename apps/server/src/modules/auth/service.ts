@@ -2,7 +2,7 @@
 // httpOnly cookie, sha256 stored, 30-day sliding expiry.
 import { createHash, randomBytes } from 'node:crypto';
 import argon2 from 'argon2';
-import { eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { WS_CLOSE_CODES } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
@@ -106,4 +106,14 @@ export async function revokeSession(sessionId: string): Promise<void> {
 export async function revokeAllSessions(userId: string): Promise<void> {
   await db.delete(schema.sessions).where(eq(schema.sessions.userId, userId));
   await publishUserSessionsClose(userId, WS_CLOSE_CODES.UNAUTHENTICATED);
+}
+
+/** Every session but one (the device that just changed the password stays
+ * signed in; the rest close with 4401 like any revocation). */
+export async function revokeOtherSessions(userId: string, keepSessionId: string): Promise<void> {
+  const rows = await db
+    .delete(schema.sessions)
+    .where(and(eq(schema.sessions.userId, userId), ne(schema.sessions.id, keepSessionId)))
+    .returning({ id: schema.sessions.id });
+  for (const r of rows) await publishSessionClose(r.id, WS_CLOSE_CODES.UNAUTHENTICATED);
 }

@@ -11,6 +11,7 @@ import {
   CHAT_BG_VIDEO_MAX_BYTES,
   CHAT_BG_VIDEO_MAX_DURATION_S,
   MAX_IMAGE_BYTES,
+  SetSharedAppearanceRequestSchema,
   SetSharedBackgroundRequestSchema,
   UpdatePrefsRequestSchema,
   type ConversationPrefs,
@@ -53,7 +54,11 @@ async function loadPrefs(convId: string, userId: string): Promise<ConversationPr
   // the same read clients already use for backgrounds.
   let sharedBackground: ConversationPrefs['shared_background'] = null;
   const [conv] = await db
-    .select({ bg: schema.conversations.sharedBackgroundAttachmentId })
+    .select({
+      bg: schema.conversations.sharedBackgroundAttachmentId,
+      theme: schema.conversations.sharedTheme,
+      wallpaper: schema.conversations.sharedWallpaper,
+    })
     .from(schema.conversations)
     .where(eq(schema.conversations.id, convId))
     .limit(1);
@@ -72,6 +77,9 @@ async function loadPrefs(convId: string, userId: string): Promise<ConversationPr
     nicknames,
     background,
     shared_background: sharedBackground,
+    // #95b: the conversation-wide palette (my theme/wallpaper above override).
+    shared_theme: (conv?.theme ?? null) as ConversationPrefs['shared_theme'],
+    shared_wallpaper: (conv?.wallpaper ?? null) as ConversationPrefs['shared_wallpaper'],
   };
 }
 
@@ -240,6 +248,57 @@ export async function prefsRoutes(fastify: FastifyInstance): Promise<void> {
         { t: 'conv.background', d: { conversation_id: convId, background } },
       );
       return { background };
+    },
+  );
+
+  // #95b PATCH /api/conversations/:id/appearance — theme + wallpaper the WHOLE
+  // conversation sees. Same setter rule as the shared background (DM/channel:
+  // any active member; group: admins → 403 not_admin). Omitted = unchanged,
+  // null = clear. Fans conv.appearance to every ACTIVE member; each member's
+  // own prefs.theme/wallpaper still override for their view.
+  app.patch(
+    '/api/conversations/:id/appearance',
+    {
+      preHandler: requireAuth,
+      schema: { params: IdParams, body: SetSharedAppearanceRequestSchema },
+    },
+    async (req) => {
+      const { user } = authed(req);
+      const convId = req.params.id;
+      const part = await requireActiveParticipant(convId, user.id);
+      const [conv] = await db
+        .select()
+        .from(schema.conversations)
+        .where(eq(schema.conversations.id, convId))
+        .limit(1);
+      if (!conv) throw badRequest('bad_conversation');
+      if (conv.type === 'group' && part.role !== 'owner' && part.role !== 'admin') {
+        throw forbidden('not_admin');
+      }
+      const theme = req.body.theme === undefined ? conv.sharedTheme : req.body.theme;
+      const wallpaper = req.body.wallpaper === undefined ? conv.sharedWallpaper : req.body.wallpaper;
+      await db
+        .update(schema.conversations)
+        .set({ sharedTheme: theme, sharedWallpaper: wallpaper })
+        .where(eq(schema.conversations.id, convId));
+      const members = await db
+        .select({ userId: schema.conversationParticipants.userId })
+        .from(schema.conversationParticipants)
+        .where(
+          and(
+            eq(schema.conversationParticipants.conversationId, convId),
+            sql`${schema.conversationParticipants.leftAt} IS NULL`,
+          ),
+        );
+      const out = {
+        theme: theme as ConversationPrefs['shared_theme'],
+        wallpaper: wallpaper as ConversationPrefs['shared_wallpaper'],
+      };
+      await publishToUsers(
+        members.map((m) => m.userId),
+        { t: 'conv.appearance', d: { conversation_id: convId, ...out } },
+      );
+      return out;
     },
   );
 }

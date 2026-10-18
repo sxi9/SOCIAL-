@@ -30,7 +30,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { api, ApiError } from '@/lib/api';
 import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
-import { THEME_INFO, WALLPAPER_INFO, updatePrefs, wallpaperClassName } from '@/lib/prefs';
+import { THEME_INFO, WALLPAPER_INFO, updatePrefs, updateSharedAppearance, wallpaperClassName } from '@/lib/prefs';
 import { getChatSoundOverride, setChatSoundOverride, type ChatSoundOverride } from '@/lib/sounds';
 import * as store from '@/lib/store';
 import { toast } from '@/lib/toast';
@@ -220,6 +220,104 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
     }
   }
 
+  // #95b: the shared palette (everyone sees it). DM: either side; group:
+  // admins — the server says 403 not_admin otherwise.
+  async function patchShared(change: { theme?: ChatTheme | null; wallpaper?: ChatWallpaper | null }): Promise<void> {
+    setError(null);
+    try {
+      await updateSharedAppearance(conv.id, change);
+    } catch (err) {
+      setError(
+        err instanceof ApiError && err.code === 'not_admin'
+          ? 'Only group admins can change what everyone sees.'
+          : 'That change did not save — try again.',
+      );
+    }
+  }
+
+  function renderThemeGrid(value: ChatTheme | null, onPick: (t: ChatTheme | null) => void, label: string) {
+    return (
+      <div className={cm.swGrid} role="radiogroup" aria-label={label}>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={value === null}
+          aria-label="Default"
+          title="Default"
+          className={`${cm.sw}${value === null ? ` ${cm.swOn}` : ''}`}
+          onClick={() => onPick(null)}
+        >
+          <span className={cm.swFill} style={{ background: 'var(--chat-bg)' }} aria-hidden />
+          <span className={cm.swPill} aria-hidden />
+        </button>
+        {CHAT_THEMES.map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="radio"
+            aria-checked={value === t}
+            aria-label={THEME_INFO[t].label}
+            title={THEME_INFO[t].label}
+            className={`${cm.sw}${value === t ? ` ${cm.swOn}` : ''}`}
+            onClick={() => onPick(t)}
+          >
+            <span className={cm.swFill} style={{ background: THEME_INFO[t].swatch }} aria-hidden />
+            <span className={cm.swPill} aria-hidden />
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  function renderWallpaperGrid(
+    value: ChatWallpaper | null,
+    onPick: (w: ChatWallpaper | null) => void,
+    label: string,
+  ) {
+    return (
+      <div className={cm.swGrid} role="radiogroup" aria-label={label}>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={value === null}
+          aria-label="None"
+          title="None"
+          className={`${cm.sw}${value === null ? ` ${cm.swOn}` : ''}`}
+          onClick={() => onPick(null)}
+        >
+          <span className={cm.swFill} style={{ background: 'var(--chat-bg)' }} aria-hidden />
+        </button>
+        {CHAT_WALLPAPERS.map((w) => (
+          <button
+            key={w}
+            type="button"
+            role="radio"
+            aria-checked={value === w}
+            aria-label={WALLPAPER_INFO[w].label}
+            title={WALLPAPER_INFO[w].label}
+            className={`${cm.sw}${value === w ? ` ${cm.swOn}` : ''}`}
+            onClick={() => onPick(w)}
+          >
+            <span
+              className={`${cm.swFill} ${wallpaperClassName(exp, w)}`}
+              // The real stars tile (110/70/160px) puts ~no star inside a
+              // 64×88 swatch — same denser tiling fix as the old preview.
+              style={
+                w === 'stars'
+                  ? {
+                      backgroundSize: '24px 24px, 15px 15px, 36px 36px',
+                      backgroundPosition: '3px 4px, 10px 11px, 19px 7px',
+                    }
+                  : undefined
+              }
+              aria-hidden
+            />
+          </button>
+        ))}
+      </div>
+    );
+  }
+
   async function saveNickname(targetId: string, raw: string): Promise<void> {
     const value = raw.trim().slice(0, NICKNAME_MAX_CHARS);
     const current = prefs?.nicknames[targetId] ?? '';
@@ -233,6 +331,7 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
   }
 
   const myRole = conv.participants.find((p) => p.user.id === meId)?.role;
+  const canSetShared = conv.type !== 'group' || myRole === 'admin' || myRole === 'owner'; // #95b
   const canSetTtl = conv.type === 'dm' || myRole === 'admin' || myRole === 'owner';
 
   // Owner fix round: group photo/GIF, add-people, tappable member rows.
@@ -424,85 +523,54 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
           </>
         ) : null}
 
-        {/* Royal v2 (proto 13): theme & wallpaper as 64×88 visual swatch
-            tiles — the picked one wears the white border; names ride
-            aria-labels. Behavior (personal prefs PATCH) unchanged. */}
-        <div className={sheetStyles.sheetLabel}>
-          Theme <span className={exp.personalTag}>only you see this</span>
-        </div>
-        <div className={cm.swGrid} role="radiogroup" aria-label="Chat theme (your view only)">
-          <button
-            type="button"
-            role="radio"
-            aria-checked={!prefs?.theme}
-            aria-label="Default"
-            title="Default"
-            className={`${cm.sw}${!prefs?.theme ? ` ${cm.swOn}` : ''}`}
-            onClick={() => void patch({ theme: null })}
-          >
-            <span className={cm.swFill} style={{ background: 'var(--chat-bg)' }} aria-hidden />
-            <span className={cm.swPill} aria-hidden />
-          </button>
-          {CHAT_THEMES.map((t) => (
-            <button
-              key={t}
-              type="button"
-              role="radio"
-              aria-checked={prefs?.theme === t}
-              aria-label={THEME_INFO[t].label}
-              title={THEME_INFO[t].label}
-              className={`${cm.sw}${prefs?.theme === t ? ` ${cm.swOn}` : ''}`}
-              onClick={() => void patch({ theme: t })}
-            >
-              <span className={cm.swFill} style={{ background: THEME_INFO[t].swatch }} aria-hidden />
-              <span className={cm.swPill} aria-hidden />
-            </button>
-          ))}
-        </div>
+        {/* #95b: the palette EVERYONE sees (DM: either side; group: admins).
+            Royal v2 (proto 13) swatch tiles — the picked one wears the white
+            border; names ride aria-labels. A member's own choice under "Your
+            view" still wins for them alone. */}
+        <div className={sheetStyles.sheetLabel}>Theme 🌏 everyone sees this</div>
+        {canSetShared ? (
+          renderThemeGrid(prefs?.shared_theme ?? null, (t) => void patchShared({ theme: t }), 'Chat theme (everyone)')
+        ) : (
+          <p className="muted small" style={{ margin: '0 0 8px' }}>
+            {prefs?.shared_theme
+              ? `${THEME_INFO[prefs.shared_theme].label} — set by a group admin.`
+              : 'Default. Group admins can set one for everyone.'}
+          </p>
+        )}
 
-        <div className={sheetStyles.sheetLabel}>
-          Wallpaper <span className={exp.personalTag}>only you see this</span>
-        </div>
-        <div className={cm.swGrid} role="radiogroup" aria-label="Chat wallpaper (your view only)">
-          <button
-            type="button"
-            role="radio"
-            aria-checked={!prefs?.wallpaper}
-            aria-label="None"
-            title="None"
-            className={`${cm.sw}${!prefs?.wallpaper ? ` ${cm.swOn}` : ''}`}
-            onClick={() => void patch({ wallpaper: null })}
-          >
-            <span className={cm.swFill} style={{ background: 'var(--chat-bg)' }} aria-hidden />
-          </button>
-          {CHAT_WALLPAPERS.map((w) => (
-            <button
-              key={w}
-              type="button"
-              role="radio"
-              aria-checked={prefs?.wallpaper === w}
-              aria-label={WALLPAPER_INFO[w].label}
-              title={WALLPAPER_INFO[w].label}
-              className={`${cm.sw}${prefs?.wallpaper === w ? ` ${cm.swOn}` : ''}`}
-              onClick={() => void patch({ wallpaper: w })}
-            >
-              <span
-                className={`${cm.swFill} ${wallpaperClassName(exp, w)}`}
-                // The real stars tile (110/70/160px) puts ~no star inside a
-                // 64×88 swatch — same denser tiling fix as the old preview.
-                style={
-                  w === 'stars'
-                    ? {
-                        backgroundSize: '24px 24px, 15px 15px, 36px 36px',
-                        backgroundPosition: '3px 4px, 10px 11px, 19px 7px',
-                      }
-                    : undefined
-                }
-                aria-hidden
-              />
-            </button>
-          ))}
-        </div>
+        <div className={sheetStyles.sheetLabel}>Wallpaper 🌏 everyone sees this</div>
+        {canSetShared ? (
+          renderWallpaperGrid(
+            prefs?.shared_wallpaper ?? null,
+            (w) => void patchShared({ wallpaper: w }),
+            'Chat wallpaper (everyone)',
+          )
+        ) : (
+          <p className="muted small" style={{ margin: '0 0 8px' }}>
+            {prefs?.shared_wallpaper
+              ? `${WALLPAPER_INFO[prefs.shared_wallpaper].label} — set by a group admin.`
+              : 'None. Group admins can set one for everyone.'}
+          </p>
+        )}
+
+        {/* §1.24 personal prefs stay: my view only, never serialized to anyone
+            else. Collapsed so the shared choice reads as THE chat's look. */}
+        <details className={idm.yourView}>
+          <summary className={idm.yourViewSummary}>
+            Your view <span className={exp.personalTag}>only you see this</span>
+          </summary>
+          <p className="muted small" style={{ margin: '6px 0 8px' }}>
+            Overrides the shared theme and wallpaper on this device only. Default = follow the chat.
+          </p>
+          <div className={sheetStyles.sheetLabel}>Theme</div>
+          {renderThemeGrid(prefs?.theme ?? null, (t) => void patch({ theme: t }), 'Chat theme (your view only)')}
+          <div className={sheetStyles.sheetLabel}>Wallpaper</div>
+          {renderWallpaperGrid(
+            prefs?.wallpaper ?? null,
+            (w) => void patch({ wallpaper: w }),
+            'Chat wallpaper (your view only)',
+          )}
+        </details>
 
         {/* #103: text tone for THIS chat — Default follows Settings →
             Notifications & sounds; a server-side mute still wins. */}

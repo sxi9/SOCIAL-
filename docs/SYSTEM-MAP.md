@@ -125,7 +125,9 @@ presence chunking, 1008 handling, event routing) · `store.ts`/`useStore.ts`
 store) · `api.ts` (fetch wrapper adding X-Requested-With) · `webrtc.ts`
 (per-peer RTCPeerConnection mesh, signaling via `signals.ts`) · `sounds.ts`
 (#103: synthesized ringtone/ringback/text tone, store-driven ringer,
-device-local prefs + per-chat override) · feature libs
+device-local prefs + per-chat override) · `theme.ts` (app-wide
+light/dark/system + accent, data-theme/data-accent on <html>, inline
+first-paint script in app/layout.tsx) · feature libs
 (`beacons`, `feed`, `stories`, `listings`, `connections`, `discovery`,
 `scheduled`, `prefs`, `push`, `reactions`, `effects`, `watch`, `emoji`,
 `blurhash`, `format`, `ids`, `useNow`, `useReducedMotion`, `admin`).

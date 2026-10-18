@@ -11,6 +11,7 @@ import { useRouter } from 'next/navigation';
 import {
   PASSKEYS_MAX,
   PASSKEY_NICKNAME_MAX_CHARS,
+  PASSWORD_MIN_LENGTH,
   TOTP_CODE_REGEX,
   type PasskeyInfo,
   type RecoveryCodesStatusResponse,
@@ -18,6 +19,7 @@ import {
 } from '@socialchat/shared';
 import { ApiError } from '@/lib/api';
 import {
+  changePassword,
   countdown,
   deletePasskey,
   isExpired,
@@ -357,6 +359,122 @@ function TotpDisableSheet({ onClose }: { onClose: () => void }) {
   );
 }
 
+// ---- §1.72 change-password sheet ------------------------------------------------
+
+function ChangePasswordSheet({ onClose }: { onClose: () => void }) {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const tooShort = next.length > 0 && next.length < PASSWORD_MIN_LENGTH;
+  const mismatch = confirm.length > 0 && confirm !== next;
+  const canSubmit =
+    !busy && current.length > 0 && next.length >= PASSWORD_MIN_LENGTH && confirm === next;
+
+  async function submit(e: FormEvent): Promise<void> {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await changePassword(current, next);
+      toast('Password changed — other devices were signed out');
+      onClose();
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'bad_credentials') {
+        setError('Current password is wrong.');
+      } else if (err instanceof ApiError && err.code === 'same_password') {
+        setError('That is already your password — pick a new one.');
+      } else if (err instanceof ApiError && err.status === 429) {
+        setError('Too many attempts — try again later.');
+      } else {
+        setError('Could not change the password — try again.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Portal>
+      <div
+        className={sheet.sheetBackdrop}
+        role="presentation"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onClose();
+        }}
+      >
+        <div className={sheet.sheet} role="dialog" aria-modal="true" aria-label="Change password">
+          <div className={sheet.sheetHead}>
+            <h2>Change password</h2>
+            <button type="button" className={sheet.sheetClose} aria-label="Close" onClick={onClose}>
+              ×
+            </button>
+          </div>
+          <form onSubmit={(e) => void submit(e)}>
+            <p className="muted small" style={{ marginTop: 0 }}>
+              Your current password proves it&rsquo;s really you. Every other signed-in device is
+              signed out; this one stays.
+            </p>
+            <div className="field">
+              <label htmlFor="chpw-current">Current password</label>
+              <input
+                id="chpw-current"
+                className="input"
+                type="password"
+                value={current}
+                onChange={(e) => setCurrent(e.target.value)}
+                autoComplete="current-password"
+                required
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="chpw-new">New password</label>
+              <input
+                id="chpw-new"
+                className="input"
+                type="password"
+                value={next}
+                onChange={(e) => setNext(e.target.value)}
+                autoComplete="new-password"
+                minLength={PASSWORD_MIN_LENGTH}
+                required
+              />
+              {tooShort ? (
+                <p className="muted small" style={{ margin: '4px 0 0' }}>
+                  At least {PASSWORD_MIN_LENGTH} characters.
+                </p>
+              ) : null}
+            </div>
+            <div className="field">
+              <label htmlFor="chpw-confirm">New password again</label>
+              <input
+                id="chpw-confirm"
+                className="input"
+                type="password"
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                autoComplete="new-password"
+                required
+              />
+              {mismatch ? (
+                <p className="error-text" style={{ margin: '4px 0 0' }}>
+                  The two passwords don&rsquo;t match.
+                </p>
+              ) : null}
+            </div>
+            {error ? <p className="error-text">{error}</p> : null}
+            <button type="submit" className="btn btn-primary" style={{ width: '100%' }} disabled={!canSubmit}>
+              {busy ? 'Changing…' : 'Change password'}
+            </button>
+          </form>
+        </div>
+      </div>
+    </Portal>
+  );
+}
+
 // ---- §1.72 regenerate sheet -----------------------------------------------------
 
 function RegenerateSheet({
@@ -484,6 +602,7 @@ function SecuritySettings() {
   // Recovery codes (§1.72).
   const [recStatus, setRecStatus] = useState<RecoveryCodesStatusResponse | null>(null);
   const [regenOpen, setRegenOpen] = useState(false);
+  const [chpwOpen, setChpwOpen] = useState(false); // §1.72 change password
 
   // TOTP (§1.73).
   const [totpSetupOpen, setTotpSetupOpen] = useState(false);
@@ -603,6 +722,20 @@ function SecuritySettings() {
           <Link href="/settings/sessions" className="btn">
             Open
           </Link>
+        </div>
+
+        {/* ---- §1.72 password ---- */}
+        <h2>Password</h2>
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <strong>Change password</strong>
+            <p className="muted small" style={{ margin: '4px 0 0' }}>
+              Needs your current password. Other signed-in devices are signed out when it changes.
+            </p>
+          </div>
+          <button type="button" className="btn" onClick={() => setChpwOpen(true)}>
+            Change
+          </button>
         </div>
 
         {/* ---- §1.70 passkeys ---- */}
@@ -839,6 +972,7 @@ function SecuritySettings() {
 
       {totpSetupOpen ? <TotpSetupSheet onClose={() => setTotpSetupOpen(false)} /> : null}
       {totpDisableOpen ? <TotpDisableSheet onClose={() => setTotpDisableOpen(false)} /> : null}
+      {chpwOpen ? <ChangePasswordSheet onClose={() => setChpwOpen(false)} /> : null}
       {regenOpen ? (
         <RegenerateSheet
           username={me.username}

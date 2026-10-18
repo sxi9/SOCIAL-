@@ -32,7 +32,8 @@ async function decodeToBitmap(file: File): Promise<ImageBitmap | HTMLImageElemen
   }
 }
 
-/** Thrown when this browser cannot decode a HEIC file (non-Safari). */
+/** Kept for call sites that still catch it; no longer thrown — the server
+ * converts what the browser cannot (see maybeConvertImage). */
 export class HeicUnreadableError extends Error {
   constructor() {
     super('This browser can’t read that photo format (HEIC) — convert it to JPEG and retry.');
@@ -46,26 +47,30 @@ export class HeicUnreadableError extends Error {
  */
 export async function maybeConvertImage(file: File): Promise<File> {
   if (!isHeic(file)) return file;
+  // 2026-10-18: the server converts HEIC too (libheif in the image), so a
+  // browser that cannot decode it (Chrome, Android, desktop) just sends the
+  // original — no more "convert it and retry" dead end. The in-browser path
+  // stays for Safari: it uploads less and skips the server round of work.
   let source: ImageBitmap | HTMLImageElement;
   try {
     source = await decodeToBitmap(file);
   } catch {
-    throw new HeicUnreadableError();
+    return file;
   }
   const width = 'naturalWidth' in source ? source.naturalWidth : source.width;
   const height = 'naturalHeight' in source ? source.naturalHeight : source.height;
-  if (!width || !height) throw new HeicUnreadableError();
+  if (!width || !height) return file;
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d');
-  if (!ctx) throw new HeicUnreadableError();
+  if (!ctx) return file;
   ctx.drawImage(source, 0, 0);
   if ('close' in source) source.close();
   const blob = await new Promise<Blob | null>((resolve) =>
     canvas.toBlob(resolve, 'image/jpeg', 0.9),
   );
-  if (!blob) throw new HeicUnreadableError();
+  if (!blob) return file;
   const name = file.name.replace(/\.hei[cf]$/i, '') + '.jpg';
   return new File([blob], name, { type: 'image/jpeg' });
 }

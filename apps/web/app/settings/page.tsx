@@ -101,6 +101,17 @@ function HelpIcon() {
   );
 }
 
+function PaletteIcon() {
+  return (
+    <svg width="19" height="19" viewBox="0 0 24 24" aria-hidden>
+      <path d="M12 3.5 a8.5 8.5 0 1 0 0 17 c1.3 0 1.9-.8 1.9-1.7 0-.6-.3-1-.6-1.4-.3-.4-.5-.8-.5-1.3 0-1 .8-1.7 1.8-1.7 h1.6 c2.1 0 3.8-1.6 3.8-3.6 C20 6.8 16.4 3.5 12 3.5z" {...S} />
+      <circle cx="7.5" cy="11" r="1.1" {...S} />
+      <circle cx="10" cy="7.3" r="1.1" {...S} />
+      <circle cx="14.5" cy="7.3" r="1.1" {...S} />
+    </svg>
+  );
+}
+
 function SettingsHome() {
   const state = useAppState();
   const router = useRouter();
@@ -129,6 +140,7 @@ function SettingsHome() {
     { href: '/settings/account', title: 'Account', icon: <PersonIcon /> },
     { href: '/settings/privacy', title: 'Privacy & safety', icon: <LockIcon /> },
     { href: '/settings/notifications', title: 'Notifications & sounds', icon: <BellIcon /> },
+    { href: '/settings/appearance', title: 'Appearance', icon: <PaletteIcon /> },
     { href: '/settings/chats', title: 'Chats', icon: <ChatIcon /> },
     { href: '/settings/calls', title: 'Calls', icon: <PhoneIcon /> },
     {

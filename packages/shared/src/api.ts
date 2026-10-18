@@ -1598,6 +1598,10 @@ export const ConversationPrefsSchema = z.object({
   // `background` above still overrides it locally. default(null) keeps old
   // payloads parsing clean.
   shared_background: AttachmentSchema.nullable().default(null),
+  // #95b: theme + wallpaper the WHOLE conversation sees (same setter rules as
+  // shared_background). My own theme/wallpaper above still win for my view.
+  shared_theme: ChatThemeSchema.nullable().default(null),
+  shared_wallpaper: ChatWallpaperSchema.nullable().default(null),
 });
 export type ConversationPrefs = z.infer<typeof ConversationPrefsSchema>;
 
@@ -3568,6 +3572,20 @@ export const SetSharedBackgroundRequestSchema = z.object({
 });
 export type SetSharedBackgroundRequest = z.infer<typeof SetSharedBackgroundRequestSchema>;
 
+// #95b: PATCH /api/conversations/:id/appearance — omitted = unchanged, null = clear.
+export const SetSharedAppearanceRequestSchema = z
+  .object({
+    theme: ChatThemeSchema.nullable().optional(),
+    wallpaper: ChatWallpaperSchema.nullable().optional(),
+  })
+  .refine((b) => b.theme !== undefined || b.wallpaper !== undefined, { message: 'nothing to change' });
+export type SetSharedAppearanceRequest = z.infer<typeof SetSharedAppearanceRequestSchema>;
+export const SharedAppearanceResponseSchema = z.object({
+  theme: ChatThemeSchema.nullable(),
+  wallpaper: ChatWallpaperSchema.nullable(),
+});
+export type SharedAppearanceResponse = z.infer<typeof SharedAppearanceResponseSchema>;
+
 // ---------------------------------------------------------------------------
 // Canvas stories — requests (v0.8b — API.md §1.66, FEATURES #79a, ADR-020)
 // ---------------------------------------------------------------------------
@@ -4094,6 +4112,16 @@ export type RecoveryCodesStatusResponse = z.infer<typeof RecoveryCodesStatusResp
 // able to mint fresh codes silently) and INVALIDATES the old set.
 export const RegenerateRecoveryCodesRequestSchema = z.object({ password: z.string().min(1) });
 export type RegenerateRecoveryCodesRequest = z.infer<typeof RegenerateRecoveryCodesRequestSchema>;
+
+// §1.72 change password while signed in: re-proves the current password and
+// signs out every OTHER device (this session stays).
+export const ChangePasswordRequestSchema = z.object({
+  current_password: z.string().min(1),
+  new_password: z.string().min(PASSWORD_MIN_LENGTH),
+});
+export type ChangePasswordRequest = z.infer<typeof ChangePasswordRequestSchema>;
+export const ChangePasswordResponseSchema = z.object({ ok: z.literal(true) });
+export type ChangePasswordResponse = z.infer<typeof ChangePasswordResponseSchema>;
 
 export const RecoveryCodesResponseSchema = z.object({
   recovery_codes: z.array(z.string()), // display form, shown ONCE

@@ -314,6 +314,10 @@ function handleFrame(raw: string): void {
       // v1.0a (#95): the shared chat background changed — all members get it.
       store.setSharedBackground(ev.d.conversation_id, ev.d.background);
       break;
+    case 'conv.appearance':
+      // #95b: the shared theme/wallpaper changed — all members get it.
+      store.setSharedAppearance(ev.d.conversation_id, ev.d.theme, ev.d.wallpaper);
+      break;
     case 'prefs.updated':
       store.setPrefs(ev.d.prefs);
       break;

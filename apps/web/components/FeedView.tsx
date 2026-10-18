@@ -513,6 +513,7 @@ function PostComposerCard({
   // v1.0a (#92): which attachment is open in the edit sheet (crop/rotate).
   const [editing, setEditing] = useState<Attachment | null>(null);
   const [uploading, setUploading] = useState(0);
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
   const [location, setLocation] = useState<Location | null>(null);
   // poll
   const [question, setQuestion] = useState('');
@@ -578,7 +579,8 @@ function PostComposerCard({
         const up = await maybeConvertImage(file); // v1.0a #91: HEIC → JPEG
         const form = new FormData();
         form.append('file', up, up.name);
-        const res = await api.postForm<UploadResponse>('/api/uploads', form);
+        setUploadPct(0);
+        const res = await api.uploadForm<UploadResponse>('/api/uploads', form, setUploadPct);
         setAttachments((prev) => (prev.length < POST_MAX_ATTACHMENTS ? [...prev, res.attachment] : prev));
       } catch (err) {
         if (err instanceof HeicUnreadableError) setError(err.message);
@@ -587,6 +589,7 @@ function PostComposerCard({
         else setError(`Could not upload ${file.name}.`);
       } finally {
         setUploading((n) => n - 1);
+        setUploadPct(null);
       }
     }
   }
@@ -840,7 +843,15 @@ function PostComposerCard({
               disabled={uploading > 0}
               onClick={() => fileRef.current?.click()}
             >
-              {uploading > 0 ? <span className="spinner" /> : <IconPlus size={20} />}
+              {uploading > 0 ? (
+                uploadPct !== null && uploadPct < 100 ? (
+                  <span className="small" aria-live="polite">{uploadPct}%</span>
+                ) : (
+                  <span className="spinner" />
+                )
+              ) : (
+                <IconPlus size={20} />
+              )}
             </button>
           ) : null}
         </div>

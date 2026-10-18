@@ -126,6 +126,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 82. Passkeys (WebAuthn): fingerprint/face login, password fallback
 83. QR cross-device login (scan with logged-in phone, WhatsApp-Web style)
 84. Recovery codes at signup (one-time, printable) for email-free account recovery
+84b. Change password while signed in (Settings → Devices & security; re-proves the current password, signs out other devices) — added 2026-10-18
 85. Optional TOTP 2FA (authenticator apps)
 86. OTP-READY admin settings: an Authentication section in the admin panel to configure delivery when available — SMTP (email verification, OTP, magic links, password reset) and an SMS-gateway slot — with per-feature toggles and a test-send button; all auth features flag off instance settings so enabling OTP later is configuration, not code
 
@@ -136,6 +137,8 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 93. Full-screen pinch-zoom viewer for profile/group pics
 94. Personal gallery ("My gallery"): private view over my own media + story auto-saver past 24h
 95. Shared chat backgrounds: "Set for everyone" (group: admins) fanned out live; per-user override stays
+95c. App-wide appearance: light / dark / system mode + accent palettes (Royal, Gold, Rose, Mint, Sky) in Settings → Appearance; device-local, applied before first paint (added 2026-10-18)
+95b. Shared chat theme + wallpaper (group: admins; DM: either side) — the whole chat's look, fanned out live via `conv.appearance`; each member's own theme/wallpaper still overrides under "Your view" (migration 0013, added 2026-10-18)
 96. Transparent undo-send pill on every message (5 s; drunk mode keeps 10 s)
 
 ## 📋 v1.0b — Stories pack

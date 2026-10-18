@@ -16,8 +16,10 @@ COPY apps/server apps/server
 RUN pnpm --filter @socialchat/shared build && pnpm --filter @socialchat/server build
 
 FROM node:22-bookworm-slim AS runtime
+# ffmpeg: video/audio jobs. libheif-examples: `heif-convert`, the server-side
+# HEIC->JPEG path for uploads from browsers that cannot decode HEIC themselves.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg \
+  && apt-get install -y --no-install-recommends ffmpeg libheif-examples \
   && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 # v0.8b (API.md §1.69, ADR-020): the running build's git commit, baked at

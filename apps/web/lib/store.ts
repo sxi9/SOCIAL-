@@ -847,6 +847,22 @@ export function setSharedBackground(
   emit();
 }
 
+/** #95b: conv.appearance patches the shared theme/wallpaper in place. */
+export function setSharedAppearance(
+  conversationId: string,
+  theme: ConversationPrefs['shared_theme'],
+  wallpaper: ConversationPrefs['shared_wallpaper'],
+): void {
+  const cur = state.prefs.get(conversationId);
+  if (!cur) return;
+  state.prefs = new Map(state.prefs).set(conversationId, {
+    ...cur,
+    shared_theme: theme,
+    shared_wallpaper: wallpaper,
+  });
+  emit();
+}
+
 // ---------------------------------------------------------------------------
 // Scheduled messages (v0.4 — API.md §1.26). Mine only; scheduled.updated
 // frames sync create/cancel/send across my devices.

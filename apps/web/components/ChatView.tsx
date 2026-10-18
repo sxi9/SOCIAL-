@@ -601,14 +601,14 @@ export default function ChatView({ conversationId }: { conversationId: string })
     conv.participants.some((p) => p.left_at === null && bubbleEffectFor(p.user.mood) === 'rain');
   const scrollClass = [
     styles.scroll,
-    background ? '' : wallpaperClassName(exp, prefs?.wallpaper),
+    background ? '' : wallpaperClassName(exp, prefs?.wallpaper ?? prefs?.shared_wallpaper),
     background || rainActive ? idm.scrollOverBg : '',
   ]
     .filter(Boolean)
     .join(' ');
 
   return (
-    <div className={`${styles.chatPage} ${themeClassName(exp, prefs?.theme)}`.trim()}>
+    <div className={`${styles.chatPage} ${themeClassName(exp, prefs?.theme ?? prefs?.shared_theme)}`.trim()}>
       <header className={styles.header}>
         <Link href="/" className={styles.back} aria-label="Back">
           <BackIcon />
@@ -1237,6 +1237,41 @@ function MessageRow({
     // kind). Calls exist for dm/group only, so the guard mirrors the header.
     const callRef = message.metadata.call_ref;
     const missedByMe = sys?.actor_id === meId; // I was the unanswered caller
+    if (callRef && conv.type !== 'channel') {
+      // Owner ask (2026-10-18): the missed-call row must say WHO called and
+      // when, as a card — not a bare pill. actor_id is the caller (server
+      // snapshot, §1.42); the name resolves through nicknames like any row.
+      const callerId = sys?.actor_id;
+      const caller = callerId ? conv.participants.find((p) => p.user.id === callerId)?.user : undefined;
+      const callerName = caller ? nameFor(caller.id, caller.display_name) : 'Someone';
+      const other = conv.participants.find((p) => p.user.id !== meId && p.left_at === null)?.user;
+      const calleeName =
+        conv.type === 'dm' && other ? nameFor(other.id, other.display_name) : 'the group';
+      const kindWord = callRef.kind === 'video' ? 'video call' : 'audio call';
+      const title = missedByMe ? `No answer` : `Missed ${kindWord}`;
+      const sub = missedByMe
+        ? `You called ${calleeName} · ${formatClock(message.created_at)}`
+        : `${callerName} called · ${formatClock(message.created_at)}`;
+      return (
+        <div className={cls.callCard} role="group" aria-label={`${title}: ${sub}`}>
+          <div className={`${cls.callCardIcon}${missedByMe ? '' : ` ${cls.callCardMissed}`}`} aria-hidden>
+            {callRef.kind === 'video' ? <VideoIcon /> : <PhoneIcon />}
+          </div>
+          <div className={cls.callCardMain}>
+            <div className={cls.callCardTitle}>{title}</div>
+            <div className={cls.callCardSub}>{sub}</div>
+          </div>
+          <button
+            type="button"
+            className={cls.callBackBtn}
+            onClick={() => void startCall(message.conversation_id, callRef.kind)}
+          >
+            {callRef.kind === 'video' ? <VideoIcon /> : <PhoneIcon />}
+            {missedByMe ? 'Call again' : 'Call back'}
+          </button>
+        </div>
+      );
+    }
     return (
       <div className={styles.system}>
         {callRef ? (

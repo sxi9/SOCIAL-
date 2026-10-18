@@ -22,7 +22,20 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Appearance (lib/theme.ts): set data-theme/data-accent from
+            localStorage BEFORE paint so there is no flash of the wrong
+            scheme. Same key + fallbacks as getThemePrefs(). */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "try{var p=JSON.parse(localStorage.getItem('bc.theme.v1')||'{}');var e=document.documentElement;" +
+              "if(p.mode==='light'||p.mode==='dark')e.setAttribute('data-theme',p.mode);" +
+              "if(['gold','rose','mint','sky'].indexOf(p.accent)>=0)e.setAttribute('data-accent',p.accent);}catch(_){}",
+          }}
+        />
+      </head>
       <body>
         <ServiceWorkerRegister />
         {children}

@@ -106,6 +106,14 @@ export function regenerateRecoveryCodes(password: string): Promise<RecoveryCodes
   return api.post<RecoveryCodesResponse>('/api/auth/recovery-codes', { password });
 }
 
+/** §1.72: change password while signed in; other devices get signed out. */
+export function changePassword(currentPassword: string, newPassword: string): Promise<{ ok: true }> {
+  return api.post<{ ok: true }>('/api/auth/password', {
+    current_password: currentPassword,
+    new_password: newPassword,
+  });
+}
+
 export function recoverAccount(usernameOrEmail: string, code: string): Promise<RecoverResponse> {
   return api.post<RecoverResponse>('/api/auth/recover', {
     username_or_email: usernameOrEmail,

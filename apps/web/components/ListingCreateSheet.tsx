@@ -74,6 +74,7 @@ export default function ListingCreateSheet({
   const [photos, setPhotos] = useState<Attachment[]>([]);
   const [editingPhoto, setEditingPhoto] = useState<Attachment | null>(null); // v1.0a #92
   const [uploading, setUploading] = useState(0);
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
   // place review
   const [placeName, setPlaceName] = useState('');
   const [rating, setRating] = useState<number | null>(null);
@@ -105,7 +106,9 @@ export default function ListingCreateSheet({
         const up = await maybeConvertImage(file); // v1.0a #91: HEIC → JPEG
         const form = new FormData();
         form.append('file', up, up.name);
-        const res = await api.postForm<UploadResponse>('/api/uploads', form);
+        setUploadPct(0);
+        const res = await api.uploadForm<UploadResponse>('/api/uploads', form, setUploadPct);
+        setUploadPct(null);
         if (res.attachment.kind !== 'image') {
           setError('Listing photos must be images.');
         } else {
@@ -448,7 +451,7 @@ export default function ListingCreateSheet({
                   disabled={uploading > 0}
                   onClick={() => fileRef.current?.click()}
                 >
-                  {uploading > 0 ? '…' : '+'}
+                  {uploading > 0 ? (uploadPct !== null && uploadPct < 100 ? `${uploadPct}%` : '…') : '+'}
                 </button>
               ) : null}
             </div>

@@ -219,6 +219,30 @@ export async function uploadRoutes(fastify: FastifyInstance): Promise<void> {
                 AND cp.user_id = ${user.id}
                 AND cp.left_at IS NULL
             )
+            -- §1.38 / v1.0a (#91): board listing photos — readable by whoever
+            -- may read the card (mirrors requireVisibleListing in
+            -- modules/listings): author not banned, no block either way, and
+            -- then a public card, a card in MY area, or a card I contacted
+            -- (contacters keep reading closed/expired cards — the DM context
+            -- must stay explicable). Without this branch every board photo
+            -- 404'd for everyone but its uploader.
+            OR EXISTS (
+              SELECT 1 FROM listings li
+              JOIN users au ON au.id = li.author_id
+              WHERE li.id = a.listing_id
+                AND au.banned_at IS NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM blocks bl
+                  WHERE (bl.blocker_id = ${user.id} AND bl.blocked_id = li.author_id)
+                     OR (bl.blocker_id = li.author_id AND bl.blocked_id = ${user.id}))
+                AND (
+                  li.is_public
+                  OR li.area = (SELECT vu.area FROM users vu WHERE vu.id = ${user.id})
+                  OR EXISTS (
+                    SELECT 1 FROM listing_contacts lc
+                    WHERE lc.listing_id = li.id AND lc.user_id = ${user.id})
+                )
+            )
           )
         LIMIT 1
       `)) as unknown as Record<string, unknown>[];

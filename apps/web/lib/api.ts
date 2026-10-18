@@ -56,10 +56,56 @@ async function request<T>(method: Method, path: string, body?: unknown, form?: F
   return data as T;
 }
 
+/** Multipart upload with byte-level progress (fetch cannot report upload
+ * progress; XHR can). Same contract as postForm: CSRF header, same-origin
+ * cookies, JSON body back, ApiError on non-2xx, NetworkError on failure.
+ * `onProgress` gets 0-100 as the bytes leave the device; the server-side
+ * processing after 100% (thumbs, sniff) is covered by the caller's spinner. */
+export function uploadForm<T>(
+  path: string,
+  form: FormData,
+  onProgress?: (percent: number) => void,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', path);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader('X-Requested-With', 'fetch');
+    xhr.responseType = 'text';
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress(Math.min(100, Math.round((e.loaded / e.total) * 100)));
+      };
+    }
+    xhr.onerror = () => reject(new NetworkError());
+    xhr.onabort = () => reject(new NetworkError());
+    xhr.onload = () => {
+      let data: unknown = null;
+      if (xhr.status !== 204 && xhr.responseText) {
+        try {
+          data = JSON.parse(xhr.responseText);
+        } catch {
+          data = null;
+        }
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        const err = (data ?? {}) as Partial<ApiErrorBody>;
+        reject(new ApiError(xhr.status, err.error ?? `http_${xhr.status}`, err.message));
+        return;
+      }
+      onProgress?.(100);
+      resolve(data as T);
+    };
+    xhr.send(form);
+  });
+}
+
 export const api = {
   get: <T>(path: string) => request<T>('GET', path),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
   postForm: <T>(path: string, form: FormData) => request<T>('POST', path, undefined, form),
+  /** postForm + upload progress (0-100). */
+  uploadForm,
   put: <T = unknown>(path: string, body?: unknown) => request<T>('PUT', path, body),
   patch: <T>(path: string, body: unknown) => request<T>('PATCH', path, body),
   del: <T = unknown>(path: string, body?: unknown) => request<T>('DELETE', path, body),

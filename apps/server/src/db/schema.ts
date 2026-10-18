@@ -295,6 +295,10 @@ export const conversations = pgTable(
       (): AnyPgColumn => attachments.id,
       { onDelete: 'set null' },
     ),
+    // #95b (migration 0013): shared theme + wallpaper — same audience and
+    // permission as the shared background; per-user prefs override locally.
+    sharedTheme: text('shared_theme'),
+    sharedWallpaper: text('shared_wallpaper'),
     // v0.8b (migration 0010, API.md §1.68, ADR-020): group visibility mode —
     // GROUPS ONLY (DMs/channels stay 'private', shape CHECK below). 'public'
     // and 'invite_only' power the §1.67 share pages; 'ghost' is unlisted

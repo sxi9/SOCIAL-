@@ -9,6 +9,8 @@ import {
   YOUTUBE_VIDEO_ID_REGEX,
 } from './constants.js';
 import {
+  ChatThemeSchema,
+  ChatWallpaperSchema,
   AnonMessageSchema,
   AnonThreadSchema,
   AttachmentSchema,
@@ -268,6 +270,18 @@ export const ConvBackgroundEventSchema = z.object({
   }),
 });
 export type ConvBackgroundEvent = z.infer<typeof ConvBackgroundEventSchema>;
+
+// #95b: the shared theme/wallpaper changed — to every ACTIVE member (same
+// audience as conv.background). Full replace of both fields.
+export const ConvAppearanceEventSchema = z.object({
+  t: z.literal('conv.appearance'),
+  d: z.object({
+    conversation_id: UuidSchema,
+    theme: ChatThemeSchema.nullable(),
+    wallpaper: ChatWallpaperSchema.nullable(),
+  }),
+});
+export type ConvAppearanceEvent = z.infer<typeof ConvAppearanceEventSchema>;
 
 // v0.4 (API.md §1.24): a chat-prefs change (theme / wallpaper / nicknames) —
 // to the OWNER's own sockets ONLY (prefs are personal, my-view-only state; no
@@ -587,6 +601,7 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
   PollUpdatedEventSchema,
   PrefsUpdatedEventSchema,
   ConvBackgroundEventSchema,
+  ConvAppearanceEventSchema,
   ScheduledUpdatedEventSchema,
   ConnectionUpdatedEventSchema,
   StoryNewEventSchema,

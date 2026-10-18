@@ -2,6 +2,10 @@
 // the first chunk, per-kind limits enforced during the stream, content-hashed
 // object keys, inline sharp processing for images.
 import { createHash } from 'node:crypto';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execa } from 'execa';
 import { PassThrough, type Readable } from 'node:stream';
 import { encode as encodeBlurhash } from 'blurhash';
 import sharp from 'sharp';
@@ -196,6 +200,30 @@ async function makeThumbAndBlurhash(
   }
 }
 
+/** HEVC HEIC -> JPEG through libheif (`heif-convert`, Debian libheif-examples).
+ * null when the tool is missing or the file is not decodable; multi-image
+ * containers (bursts, live photos) yield numbered outputs — the first is the
+ * primary image. */
+async function heicToJpeg(buf: Buffer): Promise<Buffer | null> {
+  const dir = await mkdtemp(join(tmpdir(), 'heic-'));
+  try {
+    const inPath = join(dir, 'in.heic');
+    const outPath = join(dir, 'out.jpg');
+    await writeFile(inPath, buf);
+    await execa('heif-convert', ['-q', '90', inPath, outPath], { timeout: 30_000 });
+    try {
+      return await readFile(outPath);
+    } catch {
+      const first = (await readdir(dir)).filter((f) => f.startsWith('out') && f.endsWith('.jpg')).sort()[0];
+      return first ? await readFile(join(dir, first)) : null;
+    }
+  } catch {
+    return null;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 /** EXIF strip + auto-rotate + thumb + blurhash (ARCHITECTURE §5, inline ~50ms). */
 async function processImage(buf: Buffer, sniff: SniffResult): Promise<ImageResult> {
   let original = buf;
@@ -228,8 +256,15 @@ async function processImage(buf: Buffer, sniff: SniffResult): Promise<ImageResul
     // v1.0a (#91): an image sharp cannot decode (HEVC-coded .heic — prebuilt
     // libvips has no HEVC codec) used to be stored VERBATIM: no thumb, no
     // dimensions, and most browsers can't render it — the "can't add photos
-    // from my iPhone" bug. Reject loudly instead; the web client converts
-    // HEIC to JPEG before upload, so a 415 here means a truly alien file.
+    // from my iPhone" bug. Owner ask 2026-10-18: Safari converts HEIC in the
+    // browser, but Chrome/Android/desktop cannot — so the SERVER converts
+    // too, via libheif's heif-convert (apt libheif-examples in the image).
+    // The stored original becomes a JPEG every browser renders. Only a
+    // truly alien file is still a 415.
+    if (sniff.mime === 'image/heic') {
+      const jpeg = await heicToJpeg(buf);
+      if (jpeg) return processImage(jpeg, { ...sniff, mime: 'image/jpeg', ext: 'jpg' });
+    }
     throw unsupportedMedia('image_undecodable');
   }
 

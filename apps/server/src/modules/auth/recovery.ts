@@ -16,6 +16,7 @@ import {
   RECOVERY_CODE_LEN,
   RECOVERY_CODES_COUNT,
   RECOVERY_LOGIN_RATE_PER_HOUR,
+  ChangePasswordRequestSchema,
   RecoverRequestSchema,
   RegenerateRecoveryCodesRequestSchema,
   RESET_TOKEN_TTL_S,
@@ -29,7 +30,7 @@ import { redis } from '../../redis.js';
 import { sendSupportMessage } from '../support/service.js';
 import { authed, requireAuth } from './guard.js';
 import { finishLogin } from './minting.js';
-import { ARGON2_OPTS, hashCode, revokeAllSessions } from './service.js';
+import { ARGON2_OPTS, hashCode, revokeAllSessions, revokeOtherSessions } from './service.js';
 
 const resetTokenKey = (token: string) => `reset:${token}`;
 
@@ -126,6 +127,34 @@ export async function recoveryRoutes(fastify: FastifyInstance): Promise<void> {
         'auth: recovery codes regenerated',
       );
       return { recovery_codes };
+    },
+  );
+
+  // §1.72 POST /api/auth/password — change password while signed in.
+  // Re-proves the current password (same posture as recovery-codes: a
+  // borrowed unlocked phone can't silently take the account), stores the new
+  // argon2id hash, and signs out every OTHER device — this session stays, so
+  // the user is not bounced to the login page by their own change.
+  app.post(
+    '/api/auth/password',
+    { preHandler: requireAuth, schema: { body: ChangePasswordRequestSchema } },
+    async (req) => {
+      const { user, session } = authed(req);
+      const rate = await fixedWindow(`chpw:${user.id}`, 5, 3600);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+      const ok = await argon2.verify(user.passwordHash, req.body.current_password);
+      if (!ok) throw new ApiError(401, 'bad_credentials');
+      if (req.body.current_password === req.body.new_password) {
+        throw new ApiError(400, 'same_password');
+      }
+      const passwordHash = await argon2.hash(req.body.new_password, ARGON2_OPTS);
+      await db
+        .update(schema.users)
+        .set({ passwordHash, updatedAt: new Date() })
+        .where(eq(schema.users.id, user.id));
+      await revokeOtherSessions(user.id, session.id);
+      req.log.warn({ userId: user.id, username: user.username }, 'auth: password changed');
+      return { ok: true as const };
     },
   );
 

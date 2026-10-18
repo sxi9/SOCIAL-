@@ -4,6 +4,7 @@ import { useEffect, type ReactNode } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { startConnection } from '@/lib/connection';
 import { installSoundEngine } from '@/lib/sounds';
+import { installTheme } from '@/lib/theme';
 import { useAppState } from '@/lib/useStore';
 import GlobalOverlays from './GlobalOverlays';
 
@@ -18,6 +19,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
     // FEATURES #103: ringtone / ringback / text tone follow the store from
     // here on (unlocks audio on the first gesture; see lib/sounds.ts).
     installSoundEngine();
+    installTheme();
   }, []);
 
   useEffect(() => {

@@ -191,7 +191,7 @@ uploaded photo renders broken/blank for everyone.
 **Cause:** iPhones shoot HEIC; sharp’s prebuilt libvips has no HEVC codec, so
 the server used to store the file VERBATIM — no thumb, no dimensions, and most
 browsers can’t render HEIC (fixed v1.0a #91).
-**Fix pattern:** the web client converts HEIC→JPEG before upload
+**Fix pattern (updated 2026-10-18):** the SERVER now converts HEIC→JPEG too (`modules/uploads/pipeline.ts` `heicToJpeg` via `heif-convert`, apt `libheif-examples` in `apps/server/Dockerfile`) — every browser can upload HEIC; a 415 now means heif-convert is missing from the image or the file is not an image at all. The web client still converts HEIC→JPEG before upload
 (`apps/web/lib/imageUpload.ts`, `maybeConvertImage` — wrap EVERY new image
 upload call site with it); the server now rejects undecodable images with
 `415 image_undecodable` (`modules/uploads/pipeline.ts`) instead of storing a

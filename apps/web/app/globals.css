@@ -79,9 +79,12 @@
 }
 
 /* Light scheme: not designed in the Royal pass (README) — equivalents
-   derived to keep light usable: ink-on-paper with charcoal accents. */
+   derived to keep light usable: ink-on-paper with charcoal accents.
+   Mode (owner ask 2026-10-18, lib/theme.ts): <html data-theme="light|dark">
+   forces a scheme; no attribute = follow the device (this media query).
+   The two rules below carry the SAME declarations — keep them in sync. */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme='dark']) {
     color-scheme: light;
     --bg: #f4f6fb;
     --panel: #ffffff;
@@ -111,6 +114,77 @@
     --ring-seen: #d9dfec;
     --shadow: 0 8px 24px rgba(23, 32, 47, 0.12);
   }
+}
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f4f6fb;
+  --panel: #ffffff;
+  --panel-2: #eef1f8;
+  --chat-bg: #eef0f6;
+  --bg-deep: #e9ecf4;
+  --bg-deeper: #e2e6f0;
+  --body-soft: #3c4556;
+  --border-strong: #c3cbdc;
+  --info: #3f6ea6;
+  --border: #d9dfec;
+  --border-accent: rgba(18, 20, 28, 0.35);
+  --text: #17202f;
+  --muted: #5e6a81;
+  --inactive: #8a93a6;
+  --faint: #aab2c2;
+  --accent: #12141c;
+  --accent-strong: #2c3140;
+  --accent-grad: linear-gradient(160deg, #1c2130, #3a4152);
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(18, 20, 28, 0.08);
+  --danger: #d64545;
+  --ok: #16906a;
+  --bubble-in: #e8ecf5;
+  --bubble-out: #1c2130;
+  --ring-live: conic-gradient(from 210deg, #1c2130, #8f96a8, #1c2130);
+  --ring-seen: #d9dfec;
+  --shadow: 0 8px 24px rgba(23, 32, 47, 0.12);
+}
+
+/* Accent palettes (owner ask 2026-10-18, lib/theme.ts): <html data-accent>
+   swaps ONLY the highlight tokens — buttons, own bubbles, live rings. No
+   attribute = Royal (white/silver on dark, charcoal on light). Each palette
+   reads on both schemes: the ink stays dark on these mid-light fills. */
+:root[data-accent='gold'] {
+  --accent: #f2c76b;
+  --accent-strong: #d9a94a;
+  --accent-grad: linear-gradient(160deg, #f7d58a, #d9a94a);
+  --accent-ink: #1a1405;
+  --accent-soft: rgba(242, 199, 107, 0.18);
+  --bubble-out: #f2c76b;
+  --ring-live: conic-gradient(from 210deg, #f2c76b, #8f6a1e, #f2c76b);
+}
+:root[data-accent='rose'] {
+  --accent: #f4a3b8;
+  --accent-strong: #e8788f;
+  --accent-grad: linear-gradient(160deg, #ffb3c6, #e8788f);
+  --accent-ink: #2a0d14;
+  --accent-soft: rgba(244, 163, 184, 0.18);
+  --bubble-out: #f4a3b8;
+  --ring-live: conic-gradient(from 210deg, #f4a3b8, #9a4a5c, #f4a3b8);
+}
+:root[data-accent='mint'] {
+  --accent: #8ee6c2;
+  --accent-strong: #5fcf9f;
+  --accent-grad: linear-gradient(160deg, #a6f0d3, #5fcf9f);
+  --accent-ink: #072117;
+  --accent-soft: rgba(142, 230, 194, 0.18);
+  --bubble-out: #8ee6c2;
+  --ring-live: conic-gradient(from 210deg, #8ee6c2, #2f7a5c, #8ee6c2);
+}
+:root[data-accent='sky'] {
+  --accent: #9ec3ff;
+  --accent-strong: #6f9fe8;
+  --accent-grad: linear-gradient(160deg, #b7d4ff, #6f9fe8);
+  --accent-ink: #081630;
+  --accent-soft: rgba(158, 195, 255, 0.18);
+  --bubble-out: #9ec3ff;
+  --ring-live: conic-gradient(from 210deg, #9ec3ff, #35578f, #9ec3ff);
 }
 
 * {
