@@ -213,6 +213,17 @@ sides see the shared one by default — the owner's ask.
 Undo pill for `UNDO_SEND_WINDOW_S` (5 s; shared constant) — generalizes the
 drunk-mode 10 s undo (drunk keeps 10). Undo = the existing delete-for-
 everyone path before anyone's watermark passes the seq.
+**Owner decision 2026-10-18: the undo pill is GONE from the chat UI** (both
+the 5 s and the drunk 10 s variant) — it was in the way on phones. The
+server route (`DELETE …/messages/:seq?undo=1`) and its window checks stay;
+do not re-add the pill. Same day: chats open at the first unread message
+(else the bottom), and the composer no longer autofocuses on touch devices
+(the keyboard was popping over the chat). **No `window.confirm()` anywhere**:
+every confirmation goes through `lib/confirm.ts` + `ConfirmSheet` (the
+browser box reads "<host> says" and looks like a system alert on phones).
+**Groups and channels are deletable** by a group admin / the channel owner
+(`DELETE /api/conversations/:id`, API.md §1.4) — the owner's ask; DMs stay
+undeletable (leave or block).
 
 ### v1.0b — Stories pack
 

@@ -208,6 +208,65 @@ describe.runIf(infra)('v0.2 audited edge cases', () => {
     expect((extra.json() as { error: string }).error).toBe('reaction_limit');
   });
 
+  it('DELETE /api/conversations/:id — a group admin deletes for everyone; members 403; DMs 400', async () => {
+    const admin = await register(`edg_da_${run}`);
+    const member = await register(`edg_db_${run}`);
+    const conv = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: CSRF,
+      cookies: { sid: admin.sid },
+      payload: { type: 'group', title: 'doomed lounge', user_ids: [member.userId] },
+    });
+    expect(conv.statusCode).toBe(201);
+    const groupId = (conv.json() as { conversation: { id: string } }).conversation.id;
+    expect((await sendMessage(member, groupId, 'last words')).statusCode).toBe(201);
+
+    const byMember = await app.inject({
+      method: 'DELETE',
+      url: `/api/conversations/${groupId}`,
+      headers: CSRF,
+      cookies: { sid: member.sid },
+    });
+    expect(byMember.statusCode).toBe(403);
+    const byAdmin = await app.inject({
+      method: 'DELETE',
+      url: `/api/conversations/${groupId}`,
+      headers: CSRF,
+      cookies: { sid: admin.sid },
+    });
+    expect(byAdmin.statusCode).toBe(204);
+    // Gone for everyone — the §1.14 404 shape, and nothing to list.
+    expect((await listMessages(member, groupId)).statusCode).toBe(404);
+    expect((await listMessages(admin, groupId)).statusCode).toBe(404);
+    const again = await app.inject({
+      method: 'DELETE',
+      url: `/api/conversations/${groupId}`,
+      headers: CSRF,
+      cookies: { sid: admin.sid },
+    });
+    expect(again.statusCode).toBe(404);
+
+    // DMs are not deletable.
+    const dm = await app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: CSRF,
+      cookies: { sid: admin.sid },
+      payload: { type: 'dm', user_id: member.userId },
+    });
+    expect(dm.statusCode).toBe(201);
+    const dmId = (dm.json() as { conversation: { id: string } }).conversation.id;
+    const dmDel = await app.inject({
+      method: 'DELETE',
+      url: `/api/conversations/${dmId}`,
+      headers: CSRF,
+      cookies: { sid: admin.sid },
+    });
+    expect(dmDel.statusCode).toBe(400);
+    expect((dmDel.json() as { error: string }).error).toBe('not_deletable');
+  });
+
   it('dedupe precedes status: expired-invite accept by an existing member → 200, use_count unchanged (§1.11)', async () => {
     // --- Group: an active member re-accepting a now-expired invite. ---
     const admin = await register(`edg_ga_${run}`);

@@ -18,6 +18,7 @@ import { toast } from '@/lib/toast';
 import { useReducedMotion } from '@/lib/useReducedMotion';
 import ReportSheet from './ReportSheet';
 import cm from './community.module.css';
+import { confirmDialog } from '@/lib/confirm';
 
 // The §1.21 doodle palette — the same four pens.
 const COLORS = ['#1f2430', '#e4573d', '#2f7de0', '#2fa36b'] as const;
@@ -196,7 +197,7 @@ export default function StoryCanvas({ story, meId, onInteracting }: StoryCanvasP
   }
 
   async function ban(user: UserLite): Promise<void> {
-    if (!window.confirm(`Ban ${user.display_name} from ALL your canvases, now and future? They won't be told.`)) return;
+    if (!(await confirmDialog(`Ban ${user.display_name} from ALL your canvases, now and future? They won't be told.`))) return;
     try {
       await canvasBan(user.id);
       toast('Banned from your canvases');

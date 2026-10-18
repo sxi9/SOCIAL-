@@ -75,6 +75,7 @@ import ReactionPicker from './ReactionPicker';
 import bz from './beacons.module.css';
 import st from './social.module.css';
 import tb from './topbar.module.css';
+import { confirmDialog } from '@/lib/confirm';
 
 const LONG_PRESS_MS = 420;
 
@@ -949,7 +950,7 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
 
   async function remove(): Promise<void> {
     setMenuOpen(false);
-    if (!window.confirm('Delete this post? Comments and reactions go with it.')) return;
+    if (!(await confirmDialog('Delete this post? Comments and reactions go with it.'))) return;
     try {
       await deletePost(post.id);
     } catch {

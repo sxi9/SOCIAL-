@@ -21,6 +21,7 @@ import {
 } from '@/lib/admin';
 import { formatBytes, formatTime } from '@/lib/format';
 import ad from '@/components/admin.module.css';
+import { confirmDialog } from '@/lib/confirm';
 
 export default function AdminUsersPage() {
   const [qDraft, setQDraft] = useState('');
@@ -74,7 +75,7 @@ export default function AdminUsersPage() {
       'grant-admin': `Make @${user.username} an admin? They get this whole operator surface (users, reports, logs, settings) and can grant it to others.`,
       'revoke-admin': `Remove the admin role from @${user.username}?`,
     };
-    if (!window.confirm(verb[action])) return;
+    if (!(await confirmDialog(verb[action]))) return;
     const note = window.prompt('Note for the audit log (optional):', '') ?? '';
     setBusyId(user.id);
     setError(null);

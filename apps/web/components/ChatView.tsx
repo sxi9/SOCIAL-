@@ -9,8 +9,6 @@ import {
   extractYoutubeVideoId,
   FORWARDABLE_MESSAGE_TYPES,
   MAX_MESSAGE_BODY_CHARS,
-  MOOD_DRUNK_UNDO_WINDOW_S,
-  UNDO_SEND_WINDOW_S,
   ON_MY_WAY_BODY,
   PAGE_SIZE_DEFAULT,
   PAGE_SIZE_MAX,
@@ -104,6 +102,7 @@ import idm from './identity.module.css';
 import exp from './expression.module.css';
 import soc from './social.module.css';
 import wtc from './watch.module.css';
+import { confirmDialog } from '@/lib/confirm';
 
 const LONG_PRESS_MS = 420;
 const SWIPE_REPLY_PX = 48;
@@ -127,6 +126,12 @@ export default function ChatView({ conversationId }: { conversationId: string })
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true);
+  // Phones: autofocusing the composer pops the keyboard over the chat the
+  // moment it opens (owner report, 2026-10-18). Only mouse/trackpad devices
+  // get the cursor placed for them; touch devices tap to type.
+  const [coarsePointer] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+  );
   const loadedForRef = useRef<string | null>(null);
   // Messages created after mount get the entrance animation; loaded history
   // renders instantly (chat.module.css .enter respects prefers-reduced-motion).
@@ -150,9 +155,10 @@ export default function ChatView({ conversationId }: { conversationId: string })
   const [forwarding, setForwarding] = useState<Message | null>(null);
   const [flashSeq, setFlashSeq] = useState<number | null>(null);
 
-  // v0.8a §1.57 drunk guardrails: the live 10 s undo pills on my own sends,
-  // and the pending cold-contact "you sure?" (its resolver, promise-style).
-  const [undoables, setUndoables] = useState<UndoableSend[]>([]);
+  // v0.8a §1.57 drunk guardrails: the pending cold-contact "you sure?" (its
+  // resolver, promise-style). The undo-send pill (#96 / drunk 10 s) was
+  // REMOVED by the owner on 2026-10-18 (SPECS.md standing decision); the
+  // server-side undo path (DELETE ...?undo=1) is untouched.
   const [drunkAsk, setDrunkAsk] = useState<{ resolve: (ok: boolean) => void } | null>(null);
   const reducedMotion = useReducedMotion();
 
@@ -213,6 +219,12 @@ export default function ChatView({ conversationId }: { conversationId: string })
     loadedForRef.current = conversationId;
     setNoMoreHistory(false);
     stickRef.current = true;
+    // Where to land once the window is in: the first unread message when
+    // there is one (so a chat continues where you left it), else the bottom.
+    // Captured NOW — the read-watermark effect below zeroes unread_count the
+    // moment the conversation is on screen.
+    const unreadAtOpen = conv.unread_count;
+    const lastSeqAtOpen = conv.last_seq;
     let cancelled = false;
     void (async () => {
       store.ensureMessagesEntry(conversationId);
@@ -237,6 +249,33 @@ export default function ChatView({ conversationId }: { conversationId: string })
       } catch {
         /* offline: the IDB window is what we have */
       }
+      if (cancelled) return;
+      // Land the view. Two frames: the first lets React commit the page,
+      // the second lets layout settle (the owner saw chats open at the TOP
+      // of the window on phones — the single bottom-pin ran before the
+      // bubbles had their final height).
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (cancelled) return;
+          const el = scrollRef.current;
+          if (!el) return;
+          if (unreadAtOpen > 0) {
+            const firstUnread = lastSeqAtOpen - unreadAtOpen + 1;
+            const node =
+              document.getElementById(`msg-${conversationId}-${firstUnread}`) ??
+              // More unread than the loaded window: everything loaded is new,
+              // so start at the oldest loaded bubble.
+              (el.querySelector<HTMLElement>(`[id^="msg-${conversationId}-"]`) ?? null);
+            if (node) {
+              stickRef.current = false;
+              node.scrollIntoView({ block: 'start' });
+              return;
+            }
+          }
+          stickRef.current = true;
+          el.scrollTop = el.scrollHeight;
+        })
+      );
     })();
     return () => {
       cancelled = true;
@@ -271,6 +310,28 @@ export default function ChatView({ conversationId }: { conversationId: string })
     if (el && stickRef.current) el.scrollTop = el.scrollHeight;
   }, [lastRenderedSeq, conversationId]);
 
+  // Keep the pin honest while bubbles change height AFTER the seq-driven pin
+  // ran — images and previews landing, fonts swapping, the composer growing.
+  // Every direct child of the scroll pane is observed (re-observed as rows
+  // come and go); while the user is near the bottom the pane follows.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (stickRef.current) el.scrollTop = el.scrollHeight;
+    });
+    const observeChildren = () => {
+      for (const child of Array.from(el.children)) ro.observe(child);
+    };
+    observeChildren();
+    const mo = new MutationObserver(observeChildren);
+    mo.observe(el, { childList: true });
+    return () => {
+      mo.disconnect();
+      ro.disconnect();
+    };
+  }, [conversationId]);
+
   const loadOlder = useCallback(async () => {
     if (!messages.length || loadingOlder) return;
     const oldest = messages[0].seq;
@@ -295,19 +356,6 @@ export default function ChatView({ conversationId }: { conversationId: string })
     }
   }, [messages, loadingOlder, conversationId]);
 
-  // v1.0a (#96): EVERY successful send gets a transparent undo pill — the
-  // §1.57 drunk undo generalized. Drunk keeps its longer window; the server
-  // re-checks the window at undo time either way.
-  const registerUndoable = useCallback((msg: Message | null) => {
-    if (!msg) return;
-    const windowS = isSelfDrunk() ? MOOD_DRUNK_UNDO_WINDOW_S : UNDO_SEND_WINDOW_S;
-    const snippet = messageSnippet(msg);
-    setUndoables((prev) => [
-      ...prev.filter((u) => u.until > Date.now() && u.seq !== msg.seq),
-      { seq: msg.seq, until: Date.now() + windowS * 1000, snippet },
-    ]);
-  }, []);
-
   // v0.8a §1.57 cold-contact confirm (binding UX contract): while drunk, a DM
   // not talked to in >30 d — or a brand-new one — gets a "you sure?" first.
   // Conversation.last_message_at IS the DTO flag; never a server rejection,
@@ -317,40 +365,6 @@ export default function ChatView({ conversationId }: { conversationId: string })
     if (!conv2 || !isSelfDrunk() || !isColdContact(conv2)) return true;
     return new Promise<boolean>((resolve) => setDrunkAsk({ resolve }));
   }, [conversationId]);
-
-  const undoSend = useCallback(
-    async (seq: number) => {
-      setUndoables((prev) => prev.filter((u) => u.seq !== seq));
-      try {
-        await api.del(`/api/conversations/${conversationId}/messages/${seq}?undo=1`);
-        // Optimistic vanish — the msg.updated frame confirms with the same
-        // vanishing DTO (metadata {"undone": true}; seq survives, rule 2).
-        const msg = store.state.messages.get(conversationId)?.find((m) => m.seq === seq);
-        if (msg) {
-          store.replaceMessage({
-            ...msg,
-            deleted_at: new Date().toISOString(),
-            body: null,
-            metadata: { undone: true },
-            attachments: [],
-            reactions: [],
-            stamps: [],
-            poll: null,
-            vibe: null,
-          });
-        }
-      } catch (err) {
-        if (err instanceof ApiError && err.code === 'undo_window_closed') {
-          toast('Too late — that one is out there now');
-        } else if (err instanceof ApiError && err.code === 'not_drunk') {
-          toast('Drunk mode already wore off — plain delete still works');
-        } else {
-          toast('Could not unsend it');
-        }
-      }
-    },
-    [conversationId]
-  );
 
   const submit = useCallback(
     async (payload: ComposerPayload): Promise<boolean> => {
@@ -365,11 +379,10 @@ export default function ChatView({ conversationId }: { conversationId: string })
         ...payload,
         ...(reply ? { reply_to_seq: reply.seq } : {}),
       });
-      registerUndoable(msg);
       setReplyTo(null);
       return true;
     },
-    [conversationId, confirmColdIfNeeded, registerUndoable]
+    [conversationId, confirmColdIfNeeded]
   );
 
   // §1.29 "tap the context to jump": page history by before_seq until the
@@ -444,10 +457,9 @@ export default function ChatView({ conversationId }: { conversationId: string })
       // §1.57: EVERY send while drunk is guarded — doodles and pins included.
       if (!(await confirmColdIfNeeded())) return;
       stickRef.current = true;
-      const msg = await sendMessage(conversationId, { client_msg_id: uuidv7(), ...req });
-      registerUndoable(msg);
+      await sendMessage(conversationId, { client_msg_id: uuidv7(), ...req });
     },
-    [conversationId, confirmColdIfNeeded, registerUndoable]
+    [conversationId, confirmColdIfNeeded]
   );
 
   // §1.27 tic-tac-toe challenge: DM = opponent implied; group = picker sheet.
@@ -830,16 +842,6 @@ export default function ChatView({ conversationId }: { conversationId: string })
         </div>
       ) : null}
 
-      {/* v0.8a §1.57: live 10 s undo pills on my drunk-mode sends — tap and
-          the message vanishes (no "deleted" stub, no trace). */}
-      {undoables.length > 0 ? (
-        <UndoPillRow
-          items={undoables}
-          onUndo={(seq) => void undoSend(seq)}
-          onPrune={() => setUndoables((prev) => prev.filter((u) => u.until > Date.now()))}
-        />
-      ) : null}
-
       {replyTo ? (
         <div className={soc.replyBar}>
           <button
@@ -872,7 +874,7 @@ export default function ChatView({ conversationId }: { conversationId: string })
         <Composer
           onSubmit={submit}
           onTyping={() => sendTyping(conversationId)}
-          autoFocus
+          autoFocus={!coarsePointer}
           conversationId={conversationId}
           onPlusAction={onPlusAction}
           mentionCandidates={mentionCandidates}
@@ -954,50 +956,6 @@ export default function ChatView({ conversationId }: { conversationId: string })
           onPick={(opponentId) => startTtt(opponentId)}
         />
       ) : null}
-    </div>
-  );
-}
-
-/** One undoable drunk-mode send (v0.8a §1.57). */
-interface UndoableSend {
-  seq: number;
-  until: number;
-  snippet: string;
-}
-
-/**
- * v0.8a §1.57: the undo pill row — its own component so the 1 s countdown
- * tick only runs while pills exist (ChatView itself stays on coarse clocks).
- */
-function UndoPillRow({
-  items,
-  onUndo,
-  onPrune,
-}: {
-  items: UndoableSend[];
-  onUndo: (seq: number) => void;
-  onPrune: () => void;
-}) {
-  const now = useNow(500);
-  useEffect(() => {
-    if (items.some((u) => u.until <= now)) onPrune();
-  }, [items, now, onPrune]);
-  const live = items.filter((u) => u.until > now);
-  if (live.length === 0) return null;
-  return (
-    <div className={idm.undoRow}>
-      {live.map((u) => (
-        <button
-          key={u.seq}
-          type="button"
-          className={idm.undoPill}
-          aria-label={`Unsend the last message (${Math.max(0, Math.ceil((u.until - now) / 1000))} seconds left)`}
-          onClick={() => onUndo(u.seq)}
-        >
-          <strong>↩ Undo</strong>
-          <span>· {Math.max(0, Math.ceil((u.until - now) / 1000))}s</span>
-        </button>
-      ))}
     </div>
   );
 }
@@ -1366,7 +1324,7 @@ function MessageRow({
   };
 
   const removeMessage = async (): Promise<void> => {
-    if (!window.confirm('Delete this message for everyone?')) return;
+    if (!(await confirmDialog('Delete this message for everyone?'))) return;
     try {
       await api.del(`/api/conversations/${message.conversation_id}/messages/${message.seq}`);
       // Optimistic tombstone — the msg.updated frame confirms (§1.30).

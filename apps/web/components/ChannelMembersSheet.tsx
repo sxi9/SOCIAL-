@@ -18,6 +18,7 @@ import * as store from '@/lib/store';
 import Avatar from './Avatar';
 import sheet from './beacons.module.css';
 import st from './social.module.css';
+import { confirmDialog } from '@/lib/confirm';
 
 const SEARCH_DEBOUNCE_MS = 300;
 
@@ -116,7 +117,7 @@ export default function ChannelMembersSheet({ conv, meId, onClose }: ChannelMemb
 
   async function remove(p: Participant): Promise<void> {
     if (busyId) return;
-    if (!window.confirm(`Remove ${p.user.display_name} from this channel?`)) return;
+    if (!(await confirmDialog(`Remove ${p.user.display_name} from this channel?`))) return;
     setBusyId(p.user.id);
     setError(null);
     try {

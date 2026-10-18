@@ -12,6 +12,7 @@ import { useAppState } from '@/lib/useStore';
 import { useReducedMotion } from '@/lib/useReducedMotion';
 import Avatar from './Avatar';
 import CallOverlay from './CallOverlay';
+import ConfirmSheet from './ConfirmSheet';
 import EffectOverlay from './EffectOverlay';
 import ExpectationFeedback from './ExpectationFeedback';
 import Mascot from './Mascot';
@@ -37,6 +38,8 @@ export default function GlobalOverlays() {
       <CallOverlay />
       {/* v0.7.1 (§1.56): THE shared toast host + the one-time push explainer. */}
       <Toast />
+      {/* The one confirm sheet behind lib/confirm.ts (no window.confirm anywhere). */}
+      <ConfirmSheet />
       <PushExplainer />
       {/* v0.8a (§1.61): the one-time first-run spotlight tour (device-local,
           skippable at every step, never repeats). */}

@@ -26,6 +26,7 @@ import SuggestionCards from '@/components/SuggestionCards';
 import TabPage from '@/components/TabPage';
 import bz from '@/components/beacons.module.css';
 import cm from '@/components/community.module.css';
+import { confirmDialog } from '@/lib/confirm';
 
 function ConnectionsView() {
   const state = useAppState();
@@ -124,9 +125,11 @@ function ConnectionsView() {
                 disabled={busyId !== null}
                 onClick={() => {
                   setMenuFor(null);
-                  if (window.confirm(`Remove ${conn.user.display_name} as a friend? They won't be told.`)) {
-                    void run(conn.id, () => removeConnection(conn), 'Could not remove.');
-                  }
+                  void confirmDialog(`Remove ${conn.user.display_name} as a friend? They won't be told.`).then(
+                    (ok) => {
+                      if (ok) void run(conn.id, () => removeConnection(conn), 'Could not remove.');
+                    }
+                  );
                 }}
               >
                 Remove

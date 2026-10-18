@@ -139,7 +139,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 95. Shared chat backgrounds: "Set for everyone" (group: admins) fanned out live; per-user override stays
 95c. App-wide appearance: light / dark / system mode + accent palettes (Royal, Gold, Rose, Mint, Sky) in Settings → Appearance; device-local, applied before first paint (added 2026-10-18)
 95b. Shared chat theme + wallpaper (group: admins; DM: either side) — the whole chat's look, fanned out live via `conv.appearance`; each member's own theme/wallpaper still overrides under "Your view" (migration 0013, added 2026-10-18)
-96. Transparent undo-send pill on every message (5 s; drunk mode keeps 10 s)
+96. ~~Transparent undo-send pill on every message (5 s; drunk mode keeps 10 s)~~ — pill REMOVED 2026-10-18 (owner decision, SPECS.md); the server undo path stays
 
 ## 📋 v1.0b — Stories pack
 

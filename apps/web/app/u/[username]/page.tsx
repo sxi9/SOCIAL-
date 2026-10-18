@@ -36,6 +36,7 @@ import bz from '@/components/beacons.module.css';
 import idm from '@/components/identity.module.css';
 import pp from '@/components/profilepage.module.css';
 import st from '@/components/social.module.css';
+import { confirmDialog } from '@/lib/confirm';
 
 function PublicProfile({ username }: { username: string }) {
   const state = useAppState();
@@ -229,12 +230,15 @@ function PublicProfile({ username }: { username: string }) {
             className={pp.pillBtn}
             disabled={actionBusy}
             onClick={() => {
-              if (window.confirm(`Remove ${shown?.display_name ?? 'them'} as a friend? They won't be told.`)) {
-                setActionBusy(true);
-                void removeConnection(connState.connection)
-                  .catch(() => setActionError('Could not remove.'))
-                  .finally(() => setActionBusy(false));
-              }
+              void confirmDialog(`Remove ${shown?.display_name ?? 'them'} as a friend? They won't be told.`).then(
+                (ok) => {
+                  if (!ok) return;
+                  setActionBusy(true);
+                  void removeConnection(connState.connection)
+                    .catch(() => setActionError('Could not remove.'))
+                    .finally(() => setActionBusy(false));
+                }
+              );
             }}
           >
             ✓ Friends

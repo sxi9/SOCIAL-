@@ -13,6 +13,7 @@ import {
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
+import { deleteAttachmentObjects } from '../../jobs/gc.js';
 import { isBlockedPair } from '../../lib/blocks.js';
 import {
   activeParticipantUserIds,
@@ -498,6 +499,58 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
       }
       const dto = await loadConversationDto(req.params.id, await viewCtxFor(user));
       return { conversation: dto };
+    },
+  );
+
+  // §1.4 DELETE /api/conversations/:id — delete a group (any admin) or a
+  // channel (its owner) for EVERYONE (owner ask, 2026-10-18). DMs are not
+  // deletable (400 not_deletable — leave or block instead). Order matters:
+  // mark every member left and fan conv.updated so each client drops the
+  // conversation (connection.ts: not active any more → remove), THEN
+  // hard-delete the row (messages, participants, pins, invites cascade;
+  // listings/beacons that pointed at it go null), then release attachment
+  // objects refcount-guarded — the §1.45 roulette-sweep recipe, by hand.
+  app.delete(
+    '/api/conversations/:id',
+    { preHandler: requireAuth, schema: { params: z.object({ id: z.string().uuid() }) } },
+    async (req, reply) => {
+      const { user } = authed(req);
+      const me = await requireActiveParticipant(req.params.id, user.id);
+      const [convRow] = await db
+        .select({ type: convs.type })
+        .from(convs)
+        .where(eq(convs.id, req.params.id))
+        .limit(1);
+      if (!convRow) throw notFound('conversation_not_found');
+      if (convRow.type === 'dm') throw badRequest('not_deletable');
+      const allowed =
+        convRow.type === 'channel' ? me.role === 'owner' : me.role === 'admin' || me.role === 'owner';
+      if (!allowed) throw forbidden('not_admin');
+
+      const members = await activeParticipantUserIds(req.params.id);
+      const atts = (await db.execute(sql`
+        SELECT a.id, a.original_key, a.thumb_key FROM attachments a
+        JOIN messages m ON m.id = a.message_id
+        WHERE m.conversation_id = ${req.params.id}
+      `)) as unknown as { id: string; original_key: string; thumb_key: string | null }[];
+
+      await db.execute(sql`
+        UPDATE conversation_participants SET
+          left_at = now(),
+          left_seq = (SELECT last_seq FROM conversations WHERE id = ${req.params.id})
+        WHERE conversation_id = ${req.params.id} AND left_at IS NULL
+      `);
+      await publishConversationToUsers(req.params.id, members, 'conv.updated');
+      await db.delete(convs).where(eq(convs.id, req.params.id));
+      for (const att of atts) {
+        // Rows are gone (cascade): the ref check sees only other owners.
+        await deleteAttachmentObjects({
+          id: att.id,
+          originalKey: att.original_key,
+          thumbKey: att.thumb_key,
+        } as Parameters<typeof deleteAttachmentObjects>[0]);
+      }
+      return reply.status(204).send();
     },
   );
 

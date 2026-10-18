@@ -32,6 +32,7 @@ import Stars from './Stars';
 import TeamUpSheet from './TeamUpSheet';
 import bz from './beacons.module.css';
 import st from './board.module.css';
+import { confirmDialog } from '@/lib/confirm';
 
 /** Originals every mainstream browser decodes (pre-HEIC-fix uploads aren't). */
 const BROWSER_SAFE_IMAGE = /^image\/(jpeg|png|webp|gif)$/i;
@@ -138,7 +139,7 @@ export default function ListingDetailSheet({
   async function close(): Promise<void> {
     setMenu(false);
     if (busy) return;
-    if (!window.confirm('Close this listing? It leaves the board quietly; your chats stay.')) return;
+    if (!(await confirmDialog('Close this listing? It leaves the board quietly; your chats stay.'))) return;
     setBusy(true);
     setError(null);
     try {
@@ -155,7 +156,7 @@ export default function ListingDetailSheet({
   async function remove(): Promise<void> {
     setMenu(false);
     if (busy) return;
-    if (!window.confirm('Delete this listing for good? This cannot be undone.')) return;
+    if (!(await confirmDialog('Delete this listing for good? This cannot be undone.'))) return;
     setBusy(true);
     setError(null);
     try {

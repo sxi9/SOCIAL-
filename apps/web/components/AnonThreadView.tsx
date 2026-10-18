@@ -34,6 +34,7 @@ import Avatar from './Avatar';
 import Portal from './Portal';
 import ReportSheet from './ReportSheet';
 import cm from './community.module.css';
+import { confirmDialog } from '@/lib/confirm';
 
 export default function AnonThreadView({ threadId }: { threadId: string }) {
   const state = useAppState();
@@ -131,7 +132,7 @@ export default function AnonThreadView({ threadId }: { threadId: string }) {
   }
 
   async function removeThread(): Promise<void> {
-    if (!window.confirm('Delete this whole game, for both of you? There is no archive.')) return;
+    if (!(await confirmDialog('Delete this whole game, for both of you? There is no archive.'))) return;
     try {
       await deleteAnonThread(threadId);
       toast('Gone — for both of you');
@@ -537,9 +538,12 @@ function GameCard({
             className="btn btn-primary"
             disabled={busy}
             onClick={() => {
-              if (window.confirm('Reveal yourself now? This can’t be undone.')) {
-                void run(() => revealNow(thread.id), 'Could not reveal.');
-              }
+              void confirmDialog('Reveal yourself now? This can’t be undone.', {
+                confirmLabel: 'Reveal',
+                danger: false,
+              }).then((ok) => {
+                if (ok) void run(() => revealNow(thread.id), 'Could not reveal.');
+              });
             }}
           >
             🎉 Reveal now

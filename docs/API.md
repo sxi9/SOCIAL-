@@ -638,6 +638,7 @@ the §1.72 `recovery_codes` once. The CLI reset remains the operator path.
 | `POST /api/conversations/:id/avatar` | multipart `file` (admin, groups; same rules as user avatar) | `202 {avatar:{status:'processing'}}`; completion via `conv.updated` |
 | `POST /api/conversations/:id/participants` | `{user_ids: string[]}` (admin; total ≤ 256) | `200 {conversation}`; sets each `join_seq = last_seq`; inserts a `system` message (bumps seq); WS `conv.updated` to members + `conv.new` to joiners |
 | `DELETE /api/conversations/:id/participants/:userId` | — (self = leave; admin = remove) | `204`; sets `left_at`; `system` message; WS `conv.updated` |
+| `DELETE /api/conversations/:id` | — | `204` — delete a **group** (any admin) or a **channel** (owner only) **for everyone** (owner ask, 2026-10-18). Every member is marked left and receives `conv.updated` (their client drops the conversation), then the row is hard-deleted (messages, participants, pins, invites cascade; listings/beacons that pointed at it go null) and media objects are released refcount-guarded — the §1.45 sweep recipe. DMs → `400 not_deletable` (leave or block instead); member without the role → `403 not_admin`; non-member or already gone → `404`. |
 
 ### 1.5 Messages
 
@@ -1428,7 +1429,7 @@ Groups keep the 256 cap.
 | `POST /api/conversations` | `{type:'channel', title}` | `201 {conversation}` — creator = `owner`; a channel starts with one member. No `user_ids`: **membership arrives through §1.11 invites** (an invite with a channel `conversation_id`; minting is owner/admin-only, mirroring the group rule). Invite accept at the cap → `400 channel_full`. |
 | `PUT /api/conversations/:id/participants/:userId/role` | `{role: 'admin'\|'member'}` | `200 {conversation}` + `conv.updated`. Channels: **owner only**; groups: any admin. `'owner'` is never assignable, the owner's own role never changeable → `400 bad_role_target`. |
 | `GET /api/conversations/:id/participants?cursor=&limit=&q=` | — | `200 {participants, next_cursor}` ordered by username; `q` = username/display-name prefix filter (powers §1.33 autocomplete). Channels: **owner/admin only** (`403 forbidden`); groups: any active participant. Blocked users are serialized normally here (membership is group function, §1.14) — but presence/typing/last-seen between blocked pairs stay suppressed. |
-| `DELETE /api/conversations/:id/participants/:userId` | (§1.4, extended) | self = leave (**anyone leaves freely, including admins**); owner/admins remove members; admins are removable by the owner only. The **owner cannot leave or be removed** → `403 owner_cannot_leave` (transfer/deletion is future scope — the channel must never be headless). |
+| `DELETE /api/conversations/:id/participants/:userId` | (§1.4, extended) | self = leave (**anyone leaves freely, including admins**); owner/admins remove members; admins are removable by the owner only. The **owner cannot leave or be removed** → `403 owner_cannot_leave` (transfer is future scope — the channel must never be headless; the owner's way out is `DELETE /api/conversations/:id`, §1.4). |
 
 **Channel rules (binding):**
 

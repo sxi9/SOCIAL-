@@ -29,6 +29,7 @@ import BeaconEditSheet from './BeaconEditSheet';
 import { LocationChip } from './LocationPicker';
 import Portal from './Portal';
 import styles from './beacons.module.css';
+import { confirmDialog } from '@/lib/confirm';
 
 export default function BeaconDetailSheet({
   beacon: initial,
@@ -144,7 +145,7 @@ export default function BeaconDetailSheet({
 
   async function doCancel(): Promise<void> {
     if (busy) return;
-    if (!window.confirm('Take this beacon down? Joiners get a quiet heads-up; everyone else just sees it go.')) return;
+    if (!(await confirmDialog('Take this beacon down? Joiners get a quiet heads-up; everyone else just sees it go.'))) return;
     setBusy(true);
     try {
       await cancelBeacon(beacon.id);

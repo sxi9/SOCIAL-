@@ -45,6 +45,7 @@ import sheetStyles from './beacons.module.css';
 import cm from './community.module.css';
 import exp from './expression.module.css';
 import idm from './identity.module.css';
+import { confirmDialog } from '@/lib/confirm';
 
 const TTL_LABELS: Record<number, string> = {
   3600: '1 hour',
@@ -77,6 +78,7 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
   const [ttlBusy, setTtlBusy] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false);
   const [leaveBusy, setLeaveBusy] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   // v0.8a §1.60 chat background: my own upload, image/GIF (≤ MAX_IMAGE_BYTES)
   // or a short clip (≤ 25 MB / ≤ 30 s). A pending video has no probed
@@ -177,13 +179,38 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
   const channelRole = conv.participants.find((p) => p.user.id === meId)?.role ?? 'member';
   const channelAdmin = channelRole === 'owner' || channelRole === 'admin';
 
+  // Owner ask (2026-10-18): delete the whole group (any admin) or channel
+  // (owner) for everyone — §1.4 DELETE /api/conversations/:id. The server
+  // marks everyone left, fans conv.updated (clients drop it) and hard-deletes.
+  async function deleteConversation(): Promise<void> {
+    if (deleteBusy) return;
+    const ok = await confirmDialog(
+      isChannel
+        ? 'Delete this channel for everyone? Every message and photo in it is gone for good.'
+        : 'Delete this group for everyone? Every message and photo in it is gone for good.',
+      { confirmLabel: isChannel ? 'Delete channel' : 'Delete group', danger: true }
+    );
+    if (!ok) return;
+    setDeleteBusy(true);
+    setError(null);
+    try {
+      await api.del(`/api/conversations/${conv.id}`);
+      store.removeConversation(conv.id);
+      onClose();
+      router.push('/');
+    } catch {
+      setError(isChannel ? 'Could not delete the channel.' : 'Could not delete the group.');
+      setDeleteBusy(false);
+    }
+  }
+
   // Royal v2: the Leave row serves groups too — same §1.4 self-DELETE.
   async function leaveConversation(): Promise<void> {
     if (leaveBusy) return;
     const confirmText = isChannel
       ? 'Leave this channel? You can rejoin with an invite link.'
       : 'Leave this group?';
-    if (!window.confirm(confirmText)) return;
+    if (!(await confirmDialog(confirmText))) return;
     setLeaveBusy(true);
     setError(null);
     try {
@@ -784,6 +811,18 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
             onClick={() => void leaveConversation()}
           >
             {leaveBusy ? 'Leaving…' : isChannel ? 'Leave channel' : 'Leave group'}
+          </button>
+        ) : null}
+        {/* Delete for everyone: channel owner, or any group admin (not the
+            support conversation). The owner's way out of a channel. */}
+        {(isChannel && channelRole === 'owner') || (conv.type === 'group' && !support && groupAdmin) ? (
+          <button
+            type="button"
+            className={cm.leaveRow}
+            disabled={deleteBusy}
+            onClick={() => void deleteConversation()}
+          >
+            {deleteBusy ? 'Deleting…' : isChannel ? 'Delete channel' : 'Delete group'}
           </button>
         ) : null}
       </div>

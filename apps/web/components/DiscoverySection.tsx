@@ -39,6 +39,7 @@ import ReportSheet from './ReportSheet';
 import bcn from './beacons.module.css';
 import cm from './community.module.css';
 import styles from './discovery.module.css';
+import { confirmDialog } from '@/lib/confirm';
 
 export default function DiscoverySection() {
   const state = useAppState();
@@ -428,7 +429,7 @@ function HingeCard({
   }
 
   async function block(): Promise<void> {
-    if (!window.confirm(`Block ${card.user.display_name}? They won't be told.`)) return;
+    if (!(await confirmDialog(`Block ${card.user.display_name}? They won't be told.`))) return;
     try {
       await blockUser(card.user.id);
     } catch {
