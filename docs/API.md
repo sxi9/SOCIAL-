@@ -1610,15 +1610,16 @@ profile page; the §1.14 blocked-pair 404 covers it wholesale.
 
 ### 1.41 Admin (v0.5b — ADR-013, FEATURES #54)
 
-The operator surface. **Adminhood is CLI-only**: `docker compose exec api node
-dist/cli.js grant-admin <username>` / `revoke-admin <username>` — there is no
-web path to promote anyone; shell access to the box is the root of trust
-(ADR-013). All `/api/admin/*` routes require `is_admin` **and** a
-non-suspended, non-banned account; for everyone else they answer
-`404 not_found` — the admin surface does not exist for non-admins (the §1.14
-shape). **Every admin action appends to the log ring.** Admin mutations
-targeting an admin account (including yourself) → `400 bad_admin_target` —
-demote via CLI first.
+The operator surface. **Adminhood** is flipped by `docker compose exec api
+node dist/cli.js grant-admin <username>` / `revoke-admin <username>` **or**,
+since the ADR-013 amendment (2026-10-18), by an admin from the web
+(`grant-admin` / `revoke-admin` below). The CLI stays the root of trust: it is
+the only way to revoke yourself or the last admin. All `/api/admin/*` routes
+require `is_admin` **and** a non-suspended, non-banned account; for everyone
+else they answer `404 not_found` — the admin surface does not exist for
+non-admins (the §1.14 shape). **Every admin action appends to the log ring.**
+Suspend/ban/password mutations targeting an admin account (including
+yourself) → `400 bad_admin_target` — remove the admin role first.
 
 **Binding boundary: admin routes NEVER expose private message content.** A
 reported message serializes who/where/when/what-kind — never its body; the
@@ -1633,6 +1634,9 @@ excludes message bodies for the same reason (see below; ADR-013).
 | `POST /api/admin/users/:id/unsuspend` | `{note? ≤500}` | `200 {user}` — clears `suspended_at`. Idempotent. |
 | `POST /api/admin/users/:id/ban` | `{note? ≤500}` | `200 {user}` — everything suspend does (sessions revoked, sockets `4401`, login → `403 account_banned`), **plus public invisibility**: profile `404`, listings/stories/posts hidden, excluded from search, beacon audiences and story/post/feed reads — enforced at serialization/fan-out time like every §1.13/§1.14 rule (nothing stored is rewritten; unban restores instantly). Conversation history and membership survive (messages are group function — the §1.14 principle; the ban stops the account, not the archive). |
 | `POST /api/admin/users/:id/unban` | `{note? ≤500}` | `200 {user}` — clears `banned_at` (and the invisibility with it). |
+| `POST /api/admin/users/:id/grant-admin` | `{note? ≤500}` | `200 {user}` — sets `is_admin` (ADR-013 amendment). `400 target_disabled` when the target is suspended or banned (lift the flag first). Idempotent. Ring: `admin.grant_admin`. |
+| `POST /api/admin/users/:id/revoke-admin` | `{note? ≤500}` | `200 {user}` — clears `is_admin`. `400 self_target` for your own account (the instance cannot decapitate itself from the web; use the CLI). Idempotent. Ring: `admin.revoke_admin`. |
+| `POST /api/admin/users/:id/password` | `{new_password ≥ PASSWORD_MIN_LENGTH}` | `200 {user}` — the web counterpart of `cli.js reset-password` with an operator-chosen password: argon2 (register params), **all sessions revoked** (rows deleted, sockets `4401`); the user logs in with the new password at once. `400 bad_admin_target` for admin targets (admins change their own in Settings). Ring: `admin.password_set` — **the password never reaches the ring or any log**. |
 | `GET /api/admin/reports?status=&cursor=&limit=` | `status` `open`\|`closed`, omitted = both | `200 {reports: AdminReport[], next_cursor}` — open first, then `created_at DESC`; each row joins reporter + the **metadata-only** target preview (§0 `AdminReport`). Reports outlive their targets (v0.3 design) — previews go null where the target is gone. |
 | `POST /api/admin/reports/:id/close` | `{note? ≤500}` | `200 {report}` — sets `closed_at`/`closed_by`/`close_note`. `409 report_closed` on re-close. |
 | `GET /api/admin/metrics` | — | `200 {metrics: AdminMetrics}` — 30-day series (`ADMIN_METRICS_WINDOW_DAYS`): registrations/day, **DAU proxy** (distinct users whose sessions were seen that day — sliding sessions make this approximate; documented honesty, not precision), messages/day; plus totals: users, open beacons, active listings, open reports, storage bytes. |

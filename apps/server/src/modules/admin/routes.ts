@@ -1,6 +1,7 @@
 // Admin routes (v0.5b — API.md §1.41, ADR-013, FEATURES #54). The operator
-// surface. Adminhood is CLI-only (grant-admin / revoke-admin — no web path);
-// all routes answer 404 to non-admins (the surface does not exist for them);
+// surface. Adminhood is granted/revoked here OR via the CLI (ADR-013
+// amendment, 2026-10-18 — the owner's call); all routes answer 404 to
+// non-admins (the surface does not exist for them);
 // EVERY admin action appends to the Redis log ring; admin mutations targeting
 // an admin account (including yourself) → 400 bad_admin_target. Binding
 // boundary: no private message content in any payload, ever.
@@ -8,11 +9,13 @@ import { eq, sql, type SQL } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
+import argon2 from 'argon2';
 import {
   ADMIN_METRICS_WINDOW_DAYS,
   AdminActionRequestSchema,
   AdminLogsQuerySchema,
   AdminReportsQuerySchema,
+  AdminSetPasswordRequestSchema,
   AdminUsersQuerySchema,
   CloseReportRequestSchema,
   SmtpTestSendRequestSchema,
@@ -24,7 +27,7 @@ import { db, schema } from '../../db/index.js';
 import { ApiError, badRequest, conflict, notFound } from '../../lib/errors.js';
 import { adminLog, readLogRing } from '../../lib/logring.js';
 import { authed } from '../auth/guard.js';
-import { revokeAllSessions } from '../auth/service.js';
+import { ARGON2_OPTS, revokeAllSessions } from '../auth/service.js';
 import {
   ADMIN_REPORT_SELECT,
   adminReportFromRaw,
@@ -153,6 +156,81 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
       },
     );
   }
+
+  // Adminhood from the web (ADR-013 amendment, 2026-10-18): grant/revoke flip
+  // users.is_admin exactly like the CLI. Guards: 404 unknown target; revoking
+  // YOURSELF → 400 self_target (an instance cannot decapitate itself from the
+  // web — the CLI remains the root of trust for that); granting a suspended/
+  // banned account → 400 target_disabled (lift the flag first). Idempotent,
+  // always ring-logged.
+  for (const action of ['grant-admin', 'revoke-admin'] as const) {
+    app.post(
+      `/api/admin/users/:id/${action}`,
+      { preHandler: requireAdmin, schema: { params: IdParams, body: AdminActionRequestSchema } },
+      async (req) => {
+        const { user } = authed(req);
+        const grant = action === 'grant-admin';
+        const [target] = await db
+          .select()
+          .from(schema.users)
+          .where(eq(schema.users.id, req.params.id))
+          .limit(1);
+        if (!target) throw notFound();
+        if (!grant && target.id === user.id) throw badRequest('self_target');
+        if (grant && (target.suspendedAt || target.bannedAt)) throw badRequest('target_disabled');
+        if (target.isAdmin !== grant) {
+          await db
+            .update(schema.users)
+            .set({ isAdmin: grant, updatedAt: new Date() })
+            .where(eq(schema.users.id, target.id));
+        }
+        adminLog(
+          { id: user.id, username: user.username },
+          grant ? 'admin.grant_admin' : 'admin.revoke_admin',
+          {
+            target_id: target.id,
+            target_username: target.username,
+            ...(req.body.note ? { note: req.body.note } : {}),
+          },
+        );
+        const row = await loadAdminUserRow(target.id);
+        return { user: row! };
+      },
+    );
+  }
+
+  // POST /api/admin/users/:id/password — the web counterpart of
+  // `cli.js reset-password` with an operator-chosen password: the register
+  // argon2 params, every session revoked (rows deleted, sockets 4401). Admin
+  // targets (yourself included) → 400 bad_admin_target: admins change their
+  // own password in Settings, and a stolen admin cookie must not be able to
+  // take over another admin. The password NEVER reaches the ring.
+  app.post(
+    '/api/admin/users/:id/password',
+    { preHandler: requireAdmin, schema: { params: IdParams, body: AdminSetPasswordRequestSchema } },
+    async (req) => {
+      const { user } = authed(req);
+      const [target] = await db
+        .select({ id: schema.users.id, username: schema.users.username, isAdmin: schema.users.isAdmin })
+        .from(schema.users)
+        .where(eq(schema.users.id, req.params.id))
+        .limit(1);
+      if (!target) throw notFound();
+      if (target.isAdmin) throw badRequest('bad_admin_target');
+      const passwordHash = await argon2.hash(req.body.new_password, ARGON2_OPTS);
+      await db
+        .update(schema.users)
+        .set({ passwordHash, updatedAt: new Date() })
+        .where(eq(schema.users.id, target.id));
+      await revokeAllSessions(target.id);
+      adminLog({ id: user.id, username: user.username }, 'admin.password_set', {
+        target_id: target.id,
+        target_username: target.username,
+      });
+      const row = await loadAdminUserRow(target.id);
+      return { user: row! };
+    },
+  );
 
   // §1.41 GET /api/admin/reports — open first, then created_at DESC; keyset
   // over (rank, created_at, id). Metadata-only target previews; previews go

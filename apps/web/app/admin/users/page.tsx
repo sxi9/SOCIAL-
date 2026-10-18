@@ -2,13 +2,16 @@
 
 // Admin users (§1.41). Search, IPs (until the 90-day GC nulls them), session
 // metadata, storage, and the suspend/ban levers. Last-seen is a COARSE bucket
-// by contract — liveness, not surveillance. Admin accounts can't be targeted
-// from here (bad_admin_target): demote via CLI first.
+// by contract — liveness, not surveillance. Admin accounts can't be
+// suspended/banned or have a password set from here (bad_admin_target):
+// remove their admin role first. Adminhood and password reset moved from
+// CLI-only to this page with the ADR-013 amendment (2026-10-18).
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AdminUserRow } from '@socialchat/shared';
-import { IP_RETENTION_DAYS } from '@socialchat/shared';
+import { IP_RETENTION_DAYS, PASSWORD_MIN_LENGTH } from '@socialchat/shared';
 import { ApiError } from '@/lib/api';
 import {
+  adminSetPassword,
   adminUserAction,
   adminUserExport,
   adminUsers,
@@ -26,6 +29,7 @@ export default function AdminUsersPage() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const fetchSeq = useRef(0);
 
   useEffect(() => {
@@ -62,26 +66,59 @@ export default function AdminUsersPage() {
   }
 
   async function act(user: AdminUserRow, action: AdminUserAction): Promise<void> {
-    const verb =
-      action === 'suspend'
-        ? `Suspend @${user.username}? All their sessions end immediately and they cannot log in until unsuspended.`
-        : action === 'ban'
-          ? `Ban @${user.username}? Everything suspend does, plus their public presence (profile, listings, stories, posts) disappears until unbanned.`
-          : action === 'unsuspend'
-            ? `Unsuspend @${user.username}?`
-            : `Unban @${user.username}?`;
-    if (!window.confirm(verb)) return;
+    const verb: Record<AdminUserAction, string> = {
+      suspend: `Suspend @${user.username}? All their sessions end immediately and they cannot log in until unsuspended.`,
+      ban: `Ban @${user.username}? Everything suspend does, plus their public presence (profile, listings, stories, posts) disappears until unbanned.`,
+      unsuspend: `Unsuspend @${user.username}?`,
+      unban: `Unban @${user.username}?`,
+      'grant-admin': `Make @${user.username} an admin? They get this whole operator surface (users, reports, logs, settings) and can grant it to others.`,
+      'revoke-admin': `Remove the admin role from @${user.username}?`,
+    };
+    if (!window.confirm(verb[action])) return;
     const note = window.prompt('Note for the audit log (optional):', '') ?? '';
     setBusyId(user.id);
     setError(null);
+    setNotice(null);
     try {
       const updated = await adminUserAction(user.id, action, note.slice(0, 500));
       setUsers((prev) => prev?.map((u) => (u.id === updated.id ? updated : u)) ?? prev);
     } catch (err) {
       if (err instanceof ApiError && err.code === 'bad_admin_target') {
-        setError('That account is an admin — demote via CLI (revoke-admin) first.');
+        setError('That account is an admin — remove their admin role first.');
+      } else if (err instanceof ApiError && err.code === 'self_target') {
+        setError('You cannot remove your own admin role — ask another admin, or use the CLI.');
+      } else if (err instanceof ApiError && err.code === 'target_disabled') {
+        setError('Lift the suspension or ban before making that account an admin.');
       } else {
         setError(`Could not ${action} @${user.username}.`);
+      }
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function setPassword(user: AdminUserRow): Promise<void> {
+    const pw = window.prompt(
+      `New password for @${user.username} (at least ${PASSWORD_MIN_LENGTH} characters). All their sessions end; tell them the password out of band.`,
+      '',
+    );
+    if (pw === null) return;
+    if (pw.length < PASSWORD_MIN_LENGTH) {
+      setError(`The password must be at least ${PASSWORD_MIN_LENGTH} characters.`);
+      return;
+    }
+    setBusyId(user.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const updated = await adminSetPassword(user.id, pw);
+      setUsers((prev) => prev?.map((u) => (u.id === updated.id ? updated : u)) ?? prev);
+      setNotice(`Password set for @${user.username}; their sessions were ended.`);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'bad_admin_target') {
+        setError('Admins change their own password in Settings.');
+      } else {
+        setError(`Could not set a password for @${user.username}.`);
       }
     } finally {
       setBusyId(null);
@@ -120,6 +157,11 @@ export default function AdminUsersPage() {
         />
       </div>
       {error ? <p className="error-text">{error}</p> : null}
+      {notice ? (
+        <p className="muted small" role="status">
+          {notice}
+        </p>
+      ) : null}
 
       {users === null ? (
         <p className="muted small" role="status">
@@ -197,11 +239,17 @@ export default function AdminUsersPage() {
                               Ban
                             </button>
                           )}
+                          <button type="button" className="btn" disabled={busyId === u.id} onClick={() => void setPassword(u)}>
+                            Set password
+                          </button>
+                          <button type="button" className="btn" disabled={busyId === u.id} onClick={() => void act(u, 'grant-admin')}>
+                            Make admin
+                          </button>
                         </>
                       ) : (
-                        <span className={ad.dim} style={{ fontSize: 12 }}>
-                          via CLI
-                        </span>
+                        <button type="button" className="btn" disabled={busyId === u.id} onClick={() => void act(u, 'revoke-admin')}>
+                          Remove admin
+                        </button>
                       )}
                       <button type="button" className="btn" disabled={busyId === u.id} onClick={() => void exportUser(u)}>
                         Export

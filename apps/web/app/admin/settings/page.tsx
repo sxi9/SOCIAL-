@@ -101,9 +101,9 @@ export default function AdminSettingsPage() {
         <code>.env</code> on the host (<code>./bored status</code> prints the same), not here.
       </p>
       <p className={ad.note} style={{ marginTop: 14 }}>
-        Adminhood itself is CLI-only: <code>node dist/cli.js grant-admin &lt;username&gt;</code> /{' '}
-        <code>revoke-admin &lt;username&gt;</code> — there is no web path to promote anyone
-        (ADR-013).
+        Adminhood is granted and removed from the Users tab (or via{' '}
+        <code>node dist/cli.js grant-admin &lt;username&gt;</code> / <code>revoke-admin</code>). The
+        CLI is the only way to remove your own role or the last admin (ADR-013, amended).
       </p>
     </div>
   );

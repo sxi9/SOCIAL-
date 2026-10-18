@@ -41,7 +41,13 @@ export async function adminUsers(q: string, cursor: string | null): Promise<Admi
   return api.get<AdminUsersResponse>(`/api/admin/users${qs ? `?${qs}` : ''}`);
 }
 
-export type AdminUserAction = 'suspend' | 'unsuspend' | 'ban' | 'unban';
+export type AdminUserAction =
+  | 'suspend'
+  | 'unsuspend'
+  | 'ban'
+  | 'unban'
+  | 'grant-admin'
+  | 'revoke-admin';
 
 export async function adminUserAction(
   id: string,
@@ -49,6 +55,15 @@ export async function adminUserAction(
   note: string
 ): Promise<AdminUserRow> {
   const res = await api.post<{ user: AdminUserRow }>(`/api/admin/users/${id}/${action}`, { note });
+  return res.user;
+}
+
+// ADR-013 amendment: the operator sets a known password; the server revokes
+// every session of the target. Admin targets → bad_admin_target.
+export async function adminSetPassword(id: string, newPassword: string): Promise<AdminUserRow> {
+  const res = await api.post<{ user: AdminUserRow }>(`/api/admin/users/${id}/password`, {
+    new_password: newPassword,
+  });
   return res.user;
 }
 

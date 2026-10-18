@@ -1,8 +1,10 @@
 // Entrypoint: ops commands (ARCHITECTURE §4). Password reset is CLI-only in
 // the MVP: prints a one-time temporary password and revokes all sessions.
 //   docker compose exec api node dist/cli.js reset-password <username>
-// v0.5b (API.md §1.41, ADR-013): adminhood is CLI-ONLY — shell access to the
-// box is the root of trust; there is no web path to promote anyone.
+// v0.5b (API.md §1.41, ADR-013): adminhood from the shell. Since the ADR-013
+// amendment (2026-10-18) admins can also grant/revoke from the web Users tab
+// and set a user's password there; the CLI stays the root of trust (it is the
+// only way to revoke the last admin, or yourself).
 //   docker compose exec api node dist/cli.js grant-admin <username>
 //   docker compose exec api node dist/cli.js revoke-admin <username>
 import { randomBytes } from 'node:crypto';

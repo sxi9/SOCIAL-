@@ -1,6 +1,6 @@
 # ADR-013: Admin — CLI-rooted operator surface, metadata-only, with bounded retention
 
-Status: accepted · Date: 2026-10-17
+Status: accepted · Date: 2026-10-17 · Amended 2026-10-18 (web adminhood + password set — see the end)
 
 ## Context
 
@@ -123,3 +123,20 @@ That last framing decided most of the calls below.
   admin build creates a body-reading code path, which keeps "the operator
   UI cannot read your messages" a reviewable claim about routes and
   serializers, not a policy promise.
+
+## Amendment — 2026-10-18: adminhood and password reset from the web
+
+The owner asked for the two CLI-only operations to be reachable from the
+admin panel. Decision: `POST /api/admin/users/:id/grant-admin` /
+`revoke-admin` and `POST /api/admin/users/:id/password` exist (API.md §1.41),
+wired to the Users tab. What this costs, stated plainly: a stolen admin
+session can now **replicate itself** (grant another account) and take over
+any non-admin account by setting its password — the two things the original
+decision was built to prevent. What is kept to bound that: `revoke-admin`
+refuses your own account (`self_target`), so an instance cannot be
+decapitated from the web and the CLI remains the root of trust for "who is
+admin"; `password` refuses admin targets (`bad_admin_target`), so one admin
+cookie cannot absorb another admin; granting requires a non-suspended,
+non-banned target; every call is ring-logged with actor and target (never the
+password). Operators who want the original posture back can treat the three
+routes as a one-line removal — nothing else depends on them.

@@ -533,6 +533,91 @@ describe.runIf(infra)('v0.5b local board + admin', () => {
       expect(res.json().error).toBe('bad_admin_target');
     });
 
+    it('web adminhood: set password, grant/revoke admin, and the guards', async () => {
+      // Set a password: the old cookie dies, the new password logs in.
+      expect((await get(target, '/api/users/me')).statusCode).toBe(200);
+      const setPw = await post(admin, `/api/admin/users/${target.userId}/password`, {
+        new_password: 'newpassword456',
+      });
+      expect(setPw.statusCode).toBe(200);
+      expect((await get(target, '/api/users/me')).statusCode).toBe(401);
+      const login = await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        headers: { ...CSRF, 'x-forwarded-for': nextIp() },
+        payload: { username_or_email: target.username, password: 'newpassword456' },
+      });
+      expect(login.statusCode).toBe(200);
+      target = { ...target, sid: login.cookies.find((c) => c.name === 'sid')!.value };
+      // Shorter than PASSWORD_MIN_LENGTH → 400 at the schema.
+      const short = await post(admin, `/api/admin/users/${target.userId}/password`, {
+        new_password: 'x',
+      });
+      expect(short.statusCode).toBe(400);
+
+      // Granting a suspended account is refused; lift the flag first.
+      expect((await post(admin, `/api/admin/users/${target.userId}/suspend`)).statusCode).toBe(200);
+      const disabled = await post(admin, `/api/admin/users/${target.userId}/grant-admin`);
+      expect(disabled.statusCode).toBe(400);
+      expect(disabled.json().error).toBe('target_disabled');
+      expect((await post(admin, `/api/admin/users/${target.userId}/unsuspend`)).statusCode).toBe(200);
+      const relogin = await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        headers: { ...CSRF, 'x-forwarded-for': nextIp() },
+        payload: { username_or_email: target.username, password: 'newpassword456' },
+      });
+      expect(relogin.statusCode).toBe(200);
+      target = { ...target, sid: relogin.cookies.find((c) => c.name === 'sid')!.value };
+
+      // Grant: the target gains the surface. Admin targets keep their
+      // password out of reach; nobody revokes themselves.
+      const grant = await post(admin, `/api/admin/users/${target.userId}/grant-admin`, {
+        note: 'co-op',
+      });
+      expect(grant.statusCode).toBe(200);
+      expect((grant.json() as { user: AdminUserRow }).user.is_admin).toBe(true);
+      expect((await get(target, '/api/admin/users')).statusCode).toBe(200);
+      const pwAdmin = await post(admin, `/api/admin/users/${target.userId}/password`, {
+        new_password: 'newpassword789',
+      });
+      expect(pwAdmin.statusCode).toBe(400);
+      expect(pwAdmin.json().error).toBe('bad_admin_target');
+      const self = await post(admin, `/api/admin/users/${admin.userId}/revoke-admin`);
+      expect(self.statusCode).toBe(400);
+      expect(self.json().error).toBe('self_target');
+
+      // Revoke: the surface vanishes again (404-shaped), idempotently.
+      const revoke = await post(admin, `/api/admin/users/${target.userId}/revoke-admin`);
+      expect(revoke.statusCode).toBe(200);
+      expect((revoke.json() as { user: AdminUserRow }).user.is_admin).toBe(false);
+      expect((await post(admin, `/api/admin/users/${target.userId}/revoke-admin`)).statusCode).toBe(200);
+      expect((await get(target, '/api/admin/users')).statusCode).toBe(404);
+      expect((await post(neighbor, `/api/admin/users/${target.userId}/grant-admin`)).statusCode).toBe(404);
+
+      // The ring carries the actions — and never the password.
+      const logs = await get(admin, '/api/admin/logs?limit=100');
+      const entries = (logs.json() as { entries: { msg: string }[] }).entries;
+      expect(entries.some((e) => e.msg === 'admin.password_set')).toBe(true);
+      expect(entries.some((e) => e.msg === 'admin.grant_admin')).toBe(true);
+      expect(entries.some((e) => e.msg === 'admin.revoke_admin')).toBe(true);
+      expect(JSON.stringify(entries)).not.toContain('newpassword456');
+
+      // Restore the suite's password so later tests keep logging in.
+      expect(
+        (await post(admin, `/api/admin/users/${target.userId}/password`, { new_password: 'password123' }))
+          .statusCode,
+      ).toBe(200);
+      const back = await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        headers: { ...CSRF, 'x-forwarded-for': nextIp() },
+        payload: { username_or_email: target.username, password: 'password123' },
+      });
+      expect(back.statusCode).toBe(200);
+      target = { ...target, sid: back.cookies.find((c) => c.name === 'sid')!.value };
+    });
+
     it('reports queue: metadata-only rows, close-with-note, 409 re-close', async () => {
       const created = await post(neighbor, '/api/reports', {
         kind: 'user',

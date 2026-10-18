@@ -3,7 +3,7 @@
 // Operator surface shell (v0.5b — API.md §1.41, ADR-013). HIDDEN ENTIRELY for
 // non-admins: nothing in the app links here, and the probe below mirrors the
 // server's 404 shape — a non-admin (or a guesser) sees a dead end, not a
-// login wall. Adminhood itself is CLI-only (grant-admin / revoke-admin).
+// login wall. Adminhood is granted on the Users tab or via the CLI (ADR-013).
 import { useEffect, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';

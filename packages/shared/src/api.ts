@@ -2675,6 +2675,15 @@ export const AdminActionRequestSchema = z.object({
 });
 export type AdminActionRequest = z.infer<typeof AdminActionRequestSchema>;
 
+// grant-admin / revoke-admin take the same AdminActionRequest body.
+// Body for POST /api/admin/users/:id/password (ADR-013 amendment): the
+// operator sets a KNOWN password — the web counterpart of `cli.js
+// reset-password`. The value is never ring-logged.
+export const AdminSetPasswordRequestSchema = z.object({
+  new_password: z.string().min(PASSWORD_MIN_LENGTH),
+});
+export type AdminSetPasswordRequest = z.infer<typeof AdminSetPasswordRequestSchema>;
+
 // §1.41 report queue row. Target previews are METADATA ONLY: a reported
 // message serializes who/where/when/what-kind — NEVER its body (the
 // reporter's own `reason` text is where quoted content lives, and it is the
