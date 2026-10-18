@@ -57,7 +57,20 @@
 	import socialchat
 }
 
-# Plain-HTTP fallback for local testing (no TLS, no cert dance).
+# Plain HTTP on port 80 (no TLS, no cert dance), two site blocks:
+#   * localhost:80 — local testing (http://localhost:HTTP_PORT) and tunnels
+#     that rewrite Host to localhost (cloudflared --http-host-header). Listed
+#     explicitly so Caddy does NOT add its automatic HTTP->HTTPS redirect for
+#     the DOMAIN=localhost default.
+#   * :80 catch-all — any TLS-terminating proxy in front that keeps the public
+#     Host header (Tailscale Funnel/Serve, a cloudflared named tunnel, nginx).
+#     Without it Caddy answered every other Host with a 308 to https:// — a
+#     redirect loop behind such a proxy. A real {$DOMAIN} still gets its own
+#     HTTP->HTTPS redirect: Caddy inserts that ahead of the catch-all.
 localhost:80 {
+	import socialchat
+}
+
+:80 {
 	import socialchat
 }

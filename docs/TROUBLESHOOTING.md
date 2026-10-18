@@ -50,6 +50,21 @@ postinstall scripts by default; native deps must be listed there.
 Fix: set `PUBLIC_ORIGIN` (./bored tunnel does it automatically). Verify:
 `curl -A TelegramBot <url> | grep og:` — og:image must be an absolute PUBLIC
 url. Telegram caches previews per-URL: always test with a FRESH link.
+**Shared links die after every reboot (new random *.trycloudflare.com host)** [hit]
+→ `cloudflared tunnel --url` (the quick tunnel `./bored tunnel` starts) gets a
+NEW random hostname on every start, so a reboot orphans every invite link, OG
+preview and enrolled passkey. Fix: publish Caddy through Tailscale Funnel —
+the node's `*.ts.net` name never changes and the Funnel config survives
+reboots: `tailscale funnel --bg --https=10000 http://127.0.0.1:$HTTP_PORT`
+(Funnel reaches the internet ONLY on 443, 8443 and 10000 — the CLI accepts
+other ports but the ingress never answers on them). Then set
+`PUBLIC_ORIGIN=https://<node>.ts.net:10000` in `.env` and run
+`docker compose up -d web api worker` (web = OG previews, api = WebAuthn
+origin/rpID). Needs the `:80` catch-all site in `Caddyfile`: Funnel keeps the
+public Host header (no `--http-host-header` equivalent) and a `localhost:80`-
+only Caddyfile answered it with a 308 redirect loop. Verify from a phone on
+mobile data: `/login` loads and a FRESH invite link previews; then
+`systemctl --user disable --now cloudflared-socialchat` / `./bored tunnel-stop`.
 
 ## Server correctness patterns (each was a real audit finding)
 
