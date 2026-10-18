@@ -31,6 +31,10 @@ Redis 7 (BullMQ), MinIO, FFmpeg/sharp, Caddy 2. Design docs live in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/API.md`](docs/API.md),
 [`docs/SCHEMA.sql`](docs/SCHEMA.sql); decisions in [`docs/adr/`](docs/adr/).
 
+Want to edit the code yourself? Start at
+[`docs/DEVELOPING.md`](docs/DEVELOPING.md) — dev setup with hot reload,
+where every file lives, and how to ship a change to your server.
+
 ---
 
 ## Deploy to a VPS in 5 minutes
