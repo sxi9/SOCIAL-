@@ -534,6 +534,15 @@ describe.runIf(infra)('v0.5b local board + admin', () => {
     });
 
     it('web adminhood: set password, grant/revoke admin, and the guards', async () => {
+      // The ban test above revoked the target's sessions: start from a live one.
+      const fresh = await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        headers: { ...CSRF, 'x-forwarded-for': nextIp() },
+        payload: { username_or_email: target.username, password: 'password123' },
+      });
+      expect(fresh.statusCode).toBe(200);
+      target = { ...target, sid: fresh.cookies.find((c) => c.name === 'sid')!.value };
       // Set a password: the old cookie dies, the new password logs in.
       expect((await get(target, '/api/users/me')).statusCode).toBe(200);
       const setPw = await post(admin, `/api/admin/users/${target.userId}/password`, {

@@ -8,6 +8,10 @@ import postgres from 'postgres';
 export async function applyMigrations(databaseUrl: string): Promise<void> {
   const sql = postgres(databaseUrl, { max: 1, onnotice: () => {} });
   try {
+    // Suites run in parallel forks and each applies the journal on boot: the
+    // session-level advisory lock serializes them (the second sees every
+    // file already journaled). Released with the connection in `finally`.
+    await sql`SELECT pg_advisory_lock(727272)`;
     await sql.unsafe(`
       CREATE TABLE IF NOT EXISTS _migrations (
         name       text PRIMARY KEY,
