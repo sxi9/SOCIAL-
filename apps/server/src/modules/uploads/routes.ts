@@ -205,6 +205,20 @@ export async function uploadRoutes(fastify: FastifyInstance): Promise<void> {
                   WHERE (bl.blocker_id = ${user.id} AND bl.blocked_id = pm.user_id)
                      OR (bl.blocker_id = pm.user_id AND bl.blocked_id = ${user.id}))
             )
+            -- v1.0a (#95): the conversation-level SHARED background — the one
+            -- object the whole conversation is told about (prefs read +
+            -- conv.background), so every ACTIVE member reads it, exactly the
+            -- audience that receives the frame. (The §1.60 personal
+            -- background stays uploader-only: nobody else ever gets its URL.)
+            -- Without this branch the other side of every chat 404'd the
+            -- background its partner had just set.
+            OR EXISTS (
+              SELECT 1 FROM conversations cb
+              JOIN conversation_participants cp ON cp.conversation_id = cb.id
+              WHERE cb.shared_background_attachment_id = a.id
+                AND cp.user_id = ${user.id}
+                AND cp.left_at IS NULL
+            )
           )
         LIMIT 1
       `)) as unknown as Record<string, unknown>[];

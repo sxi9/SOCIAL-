@@ -363,6 +363,27 @@ describe.runIf(infra)('v1.0a board photos + undecodable images', () => {
       const got = (prefs.json() as { prefs: { shared_background: { id: string } | null } }).prefs;
       expect(got.shared_background?.id).toBe(att);
     }
+    // ...and BOTH sides can fetch the bytes: the §1.6 media ACL admits every
+    // active member of the conversation (regression: only the uploader
+    // could, so the partner's chat 404'd the background it was just told
+    // about). A departed member gets nothing.
+    const bgPrefs = await app.inject({
+      method: 'GET',
+      url: `/api/conversations/${dmId}/prefs`,
+      cookies: { sid: b.sid },
+    });
+    const bgDto = (bgPrefs.json() as { prefs: { shared_background: { url: string; thumb_url: string | null } } })
+      .prefs.shared_background;
+    for (const who of [a, b]) {
+      for (const url of [bgDto.url, bgDto.thumb_url]) {
+        if (!url) continue;
+        const media = await app.inject({ method: 'GET', url, cookies: { sid: who.sid } });
+        expect(media.statusCode, `${url} for ${who === a ? 'setter' : 'partner'}`).toBe(200);
+      }
+    }
+    const c = await register(`va_bgc_${run}`);
+    const outsider = await app.inject({ method: 'GET', url: bgDto.url, cookies: { sid: c.sid } });
+    expect(outsider.statusCode).toBe(404);
     // someone else's upload cannot be my shared background
     const notMine = await app.inject({
       method: 'PATCH',

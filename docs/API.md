@@ -2387,7 +2387,7 @@ else, synced across my devices via `prefs.updated` (own sockets only).
 | Method & path | Request | Response |
 |---|---|---|
 | `PATCH /api/conversations/:id/prefs` | `{background_attachment_id?: uuid\|null}` (alongside the §1.24 fields; omitted = unchanged, `null` clears) | `200 {prefs}` — `prefs.background` resolves to the full `Attachment` (poster `thumb_url` included). Checks, in order, else `400 bad_background`: the attachment is **MINE** (`uploader_id = me` — own uploads only, ownership-checked), kind `image` (GIFs included, ≤ `MAX_IMAGE_BYTES`) or `video`, `status 'ready'` (a pending video has no probed duration yet — re-PATCH after `attachment.ready`), and for video: `size_bytes ≤ CHAT_BG_VIDEO_MAX_BYTES` (25 MB) **and** `duration_ms ≤ CHAT_BG_VIDEO_MAX_DURATION_S` (30 s). The upload itself rides the existing §1.6 pipeline unchanged (sniffed MIME, EXIF strip, worker poster). One attachment may back several of my chats. |
-| `PATCH /api/conversations/:id/background` | `{attachment_id: uuid\|null}` (v1.0a #95 — migration 0012) | `200 {background: Attachment\|null}` — the background **the whole conversation sees** (`conversations.shared_background_attachment_id`). DM/channel: any **active member**; group: admins only → else `403 not_admin`. Validation identical to the §1.60 personal background (`400 bad_background`). Served to everyone through the prefs read as `prefs.shared_background`; **my own `prefs.background` still overrides it for my view**. Fans WS `conv.background {conversation_id, background}` to every ACTIVE member (conversation-level state — deliberately NOT `prefs.updated`, which stays owner-only). GC: the orphan sweep anti-joins `conversations_shared_background_idx`, the 0009 pattern. |
+| `PATCH /api/conversations/:id/background` | `{attachment_id: uuid\|null}` (v1.0a #95 — migration 0012) | `200 {background: Attachment\|null}` — the background **the whole conversation sees** (`conversations.shared_background_attachment_id`). DM/channel: any **active member**; group: admins only → else `403 not_admin`. Validation identical to the §1.60 personal background (`400 bad_background`). Served to everyone through the prefs read as `prefs.shared_background`; **my own `prefs.background` still overrides it for my view**. **Media ACL:** `GET /api/media/:key` (§1.6) serves a shared background to every **active member** of that conversation (`conversation_participants.left_at IS NULL`) — the same audience that receives `conv.background` — on top of the uploader-only rule; this is the ONE background that other users hold a URL for. Fans WS `conv.background {conversation_id, background}` to every ACTIVE member (conversation-level state — deliberately NOT `prefs.updated`, which stays owner-only). GC: the orphan sweep anti-joins `conversations_shared_background_idx`, the 0009 pattern. |
 
 - **GC shield:** a referenced attachment cannot use the binding-column
   pattern (`attachments_orphan_idx`) — the reference points the other way
@@ -2395,9 +2395,11 @@ else, synced across my devices via `prefs.updated` (own sockets only).
   `conversation_prefs_background_idx`: `WHERE NOT EXISTS (SELECT 1 FROM
   conversation_prefs p WHERE p.background_attachment_id = a.id)`. Clearing
   the last reference re-orphans the attachment for the normal 24 h GC.
-- **Media ACL:** unchanged — the background is mine and personal, and
+- **Media ACL:** unchanged for the personal background — it is mine, and
   `GET /api/media/:key` already serves an uploader their own object. No
-  other user ever has a reason (or a URL) to fetch it.
+  other user ever has a reason (or a URL) to fetch it. The v1.0a #95
+  **shared** background is the exception: its ACL branch admits every active
+  member of the conversation (see the `PATCH …/background` row above).
 - **Render contract (binding):** the media paints the chat scroll background
   **behind** the §1.24 wallpaper layer slot (setting a background overrides
   the wallpaper visually; both survive in prefs), auto-dimmed under a scrim

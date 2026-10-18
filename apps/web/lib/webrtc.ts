@@ -619,18 +619,26 @@ export async function rejectIncoming(): Promise<void> {
 }
 
 /** Hang up / leave. The frame drops remote tiles instantly; REST is the
- * durable record (ring-cancel → missed; last member out → completed). */
+ * durable record (ring-cancel → missed; last member out → completed).
+ *
+ * The local teardown happens FIRST, before the durable POST is awaited: the
+ * user's hang-up must be instant no matter how long the server takes. On a
+ * stalled box the old order (await POST, then end) kept the call UI alive
+ * for 10+ s, and every extra tap on the hang-up button fired another
+ * POST /end (13 in 14 s on one call). Ending locally flips `phase` to
+ * 'ended' synchronously, so the guard above makes every repeat a no-op —
+ * exactly one durable POST per hang-up. */
 export async function hangUp(reason: 'completed' | 'failed' = 'completed'): Promise<void> {
   const ui = store.state.callUi;
   if (!ui || ui.phase === 'ended') return;
   const frame = ui.is_group && peers.size > 1 ? 'call.leave' : 'call.end';
   sendEvent({ t: frame, d: { call_id: ui.call_id } });
+  endLocally(ui.outgoing && ui.phase === 'ringing' ? 'cancelled' : 'ended');
   try {
     await api.post(`/api/calls/${ui.call_id}/end`, { reason });
   } catch {
     /* terminal already — idempotent server-side */
   }
-  endLocally(ui.outgoing && ui.phase === 'ringing' ? 'cancelled' : 'ended');
 }
 
 export function toggleMic(): void {
