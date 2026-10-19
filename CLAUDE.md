@@ -19,6 +19,7 @@ for any AI agent or developer: read it first, then the doc it points you to.
 | Why a decision was made | `docs/adr/ADR-001 … ADR-015` |
 | Capacity numbers + scaling runbook | `docs/SCALING.md` |
 | Hands-on dev setup (hot reload, file map, ship-to-server) | `docs/DEVELOPING.md` |
+| Where production runs, how it is deployed, the box's quirks and past incidents | `docs/CLAUDE-MEMORY.md` (mirror of the owner's Claude memory) |
 
 ## Golden rules (violating these breaks the product)
 
