@@ -17,6 +17,8 @@ Windows laptop tooling: `corepack enable` fails with EPERM (Program Files); use 
 
 **How to apply:** never run integration tests against the live DB; propose config changes on the box (PUBLIC_ORIGIN, restarts) rather than applying them unasked. See user saikrishna hardware.
 
+**Mirror rule (2026-10-19):** this memory is mirrored into the repo as `docs/CLAUDE-MEMORY.md` (commit 923c700; Dropzone has the same file, c0225ee, with the dropzone-server and tailscale-panel memories). When a deployment fact changes, update both the memory and the repo copy.
+
 ## tailscale-panel
 
 _Standalone Tailscale Panel project (repo sxi9/tailscale-panel, private) deployed on the Ubuntu host at port 8090 as a systemd user service; Dropzone is public via Funnel on 8443_
