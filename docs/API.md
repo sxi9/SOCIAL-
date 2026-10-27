@@ -558,8 +558,9 @@ ShareLink = { token, url, object: {type: 'post'|'beacon'|'listing'|'story'|'grou
   preview: 'teaser'|'full',   // migration 0014, decision 11 — set at mint, 'full' for every public object
   created_at }
 ShareLinkListItem = ShareLink & { label: string, live: boolean }  // GET /api/share-links/mine (§1.67):
-  // label from my own object; live = owner-side publicness check (audience / is_public / visibility /
-  // story expiry / author not banned) — the public read still re-checks everything live
+  // label from my own object; live = object exists + author not banned (post/plan/listing — an open
+  // token on a non-public one is owner-minted), group public|invite_only, story not expired — the
+  // public read still re-checks everything live
 
 // §1.67 — the unauthenticated page read (GET /api/share/:token/public).
 // Author chips carry NO ids and NO UserLite (username, display_name,
@@ -2614,39 +2615,55 @@ media.
 
 ### 1.67 Public share pages (v0.8b — ADR-020, FEATURES #79c)
 
-Every **PUBLIC-audience** post, beacon and listing can have ONE stable,
-revocable share token (`share_tokens`, migration 0010 — the ADR-007
-invite-token doctrine); stories only by the author's explicit mint, dying
-with the story; groups per §1.68. The web app serves SSR pages `/p/<token>`
-(`/s/<token>` for stories) with full OG/twitter tags; **`PUBLIC_ORIGIN`
-governs every absolute URL** (the §1.53 `publicOrigin()` rule + the
-TROUBLESHOOTING entry), and the SSR fetch re-sends `x-forwarded-for` (the
-house SSR-hop rule). **Friends-only content never gets a token** — and a
-token outlives nothing: every public read re-checks the object LIVE.
+Every post, beacon and listing can have ONE stable, revocable share token
+(`share_tokens`, migration 0010 — the ADR-007 invite-token doctrine): a
+**PUBLIC** one minted by anyone who can see it and always fully viewable; a
+**NON-public** one (friends-only post, friends/area plan, area-only listing)
+minted by its **owner only**, carrying the owner's **Teaser / Full** choice
+(`preview`, migration 0014, AUDIT-PLAN decision 11 — §1b, 2026-10-27).
+Stories only by the author's explicit mint, dying with the story; groups per
+§1.68 (private and ghost groups never). The web app serves SSR pages
+`/p/<token>` (`/s/<token>` for stories) with full OG/twitter tags and
+`noindex` (plus `robots.txt` disallowing `/p/`, `/s/`, `/join/`, `/api/`);
+**`PUBLIC_ORIGIN` governs every absolute URL** (the §1.53 `publicOrigin()`
+rule + the TROUBLESHOOTING entry), and the SSR fetch re-sends
+`x-forwarded-for` (the house SSR-hop rule). A token outlives nothing: every
+public read re-checks the object LIVE, and deleting/cancelling the object or
+narrowing a listing revokes in the same transaction (a post's audience and a
+plan's audience are immutable after creation, so those have no narrowing
+path).
 
 | Method & path | Request | Response |
 |---|---|---|
-| `POST /api/share-links` | `{type: 'post'\|'beacon'\|'listing'\|'story'\|'group', id, preview?: 'teaser'\|'full'}` | `200 {share_link: ShareLink}` — mint-or-return the object's ONE open token. `preview` (migration 0014, decision 11) is the sharer's Teaser/Full choice for a NON-public object, stored on a fresh mint only (an open token keeps the choice it was minted with — switching is revoke + re-mint, so a link already sent never silently widens); every mintable object is public today, so it is stored as `full` and the §1b non-public token path is what honours it. Authorization: post/beacon/listing → the object is PUBLIC (`audience:'public'` / `is_public`) AND visible to me → else `400 not_public` (invisible object → `404 not_found`, §1.14 shape); story → **author only** (`404` otherwise — "Create share link" is the author's act); group → owner/admin of a `public`\|`invite_only` group (`400 not_public` for private/ghost). |
-| `DELETE /api/share-links/:token` | — | `204` — revoke (idempotent): object author, or the group's owner/admins, or a §1.41 admin. The page and every gated media URL die instantly. Deleting the object, narrowing its audience, cancelling the beacon, or a group leaving `public`/`invite_only` revokes route-side in the same transaction. |
-| `GET /api/share-links/mine` | — | `200 {share_links: ShareLinkListItem[]}` — every OPEN token **I minted**, plus a **group's** token whenever I am one of its current admins (mint-or-return hands every admin the same per-object token and every admin may revoke it, so each can see it), newest first, ≤ `SHARE_LINKS_MINE_MAX` (100). `label` is a short human name from the object (post excerpt, "Plan · vibe", listing title, "Story — caption", "Group · title"); `live` is the **owner-side** publicness check — post/beacon audience, listing `is_public`, group `public`\|`invite_only`, story not expired, and the author not banned (anyone who can see a public object may mint its token, so the minter is not always the author) — the public read still re-checks everything live. A dead link shows `live:false` until ended. §1b (2026-10-27): the Settings → Privacy "Your share links" list; the ShareSheet's Stop sharing hits `DELETE` above. |
+| `POST /api/share-links` | `{type: 'post'\|'beacon'\|'listing'\|'story'\|'group', id, preview?: 'teaser'\|'full'}` | `200 {share_link: ShareLink}` — mint-or-return the object's ONE open token. `preview` (migration 0014, decision 11) is the sharer's Teaser/Full choice for a NON-public object — default `teaser` — stored on a fresh mint only (an open token keeps the choice it was minted with — switching is revoke + re-mint, so a link already sent never silently widens); a PUBLIC object ignores it and stores `full`. Authorization: post/beacon/listing → PUBLIC (`audience:'public'` / `is_public`) and visible to me → anyone may mint; NON-public → the **owner only** (author / host) → else `400 not_public`; invisible object → `404 not_found` (§1.14 shape); story → **author only** (`404` otherwise); group → owner/admin of a `public`\|`invite_only` group (`400 not_public` for private/ghost). |
+| `DELETE /api/share-links/:token` | — | `204` — revoke (idempotent): object author, or the group's owner/admins, or a §1.41 admin. The page and every gated media URL die instantly. Deleting the object, cancelling the beacon, a group leaving `public`/`invite_only`, or a listing's `is_public` changing **either way** (narrowing kills the public page; widening would silently turn an owner-minted Teaser link into the Full page — §1b) revokes route-side in the same transaction. |
+| `GET /api/share-links/mine` | — | `200 {share_links: ShareLinkListItem[]}` — every OPEN token **I minted**, plus a **group's** token whenever I am one of its current admins (mint-or-return hands every admin the same per-object token and every admin may revoke it, so each can see it), newest first, ≤ `SHARE_LINKS_MINE_MAX` (100). `label` is a short human name from the object (post excerpt, "Plan · vibe", listing title, "Story — caption", "Group · title"); `live` is the **owner-side** liveness check: post/plan/listing → the object still exists and its author is not banned (an open token on a NON-public one is owner-minted, and narrowing / deleting revokes route-side, so publicness is not re-checked here; anyone who can see a PUBLIC object may mint its token, so the minter is not always the author); group → `public`\|`invite_only`; story → not expired — the public read still re-checks everything live. A dead link shows `live:false` until ended. §1b (2026-10-27): the Settings → Privacy "Your share links" list; the ShareSheet's Stop sharing hits `DELETE` above. |
 | `GET /api/share/:token/public` | **UNAUTHENTICATED** | `200 {page: SharePage}` \| `404 share_not_found` — byte-identical for unknown, revoked, deleted, no-longer-public, expired-story, banned-author (no enumeration, no oracle). Live checks every read. Rate `SHARE_PUBLIC_RATE_PER_HOUR_PER_IP` (120). |
 | `GET /api/share/:token/media/:attachmentId?v=` | **UNAUTHENTICATED** | Streaming proxy (the §1.11 invite-avatar pattern) — serves the attachment **iff** the valid token's object owns it: post attachments, listing photos, the story attachment, or a public-group message attachment with `seq > public_since_seq`. Anything else `404`. `Cache-Control: private, max-age=300` (`SHARE_MEDIA_CACHE_TTL_S`). Rate `SHARE_MEDIA_RATE_PER_HOUR_PER_IP` (240). **No open media routes exist** — `/api/media/:key` stays authed. |
 | `GET /api/share/:token/avatar/:userId?v=static\|animated` | **UNAUTHENTICATED** | The author/sender avatar proxy, token-gated the same way (`:userId` must be the page's author or a rendered public message's sender — else `404`). |
 | `POST /api/share/:token/report` | **UNAUTHENTICATED** `{reason: 1..500}` | `204` — the non-user report: stored as a reports row with `reporter_id NULL`, `reporter_ip` (aged by the retention GC), kind `'share_page'`, and the resolved `{target_object_type, target_object_id}` + author snapshot → the §1.41 admin queue. Reason REQUIRED. **Hard rate limit** `SHARE_REPORT_RATE_PER_DAY_PER_IP` (5) → `429`. Unknown/revoked token → `404` (same shape as the page). |
 
-**Page contracts (binding).** Shapes in §0 `SharePage`. Author chips carry
-username + display_name + the token-gated avatar path — **no ids, no
-UserLite, no last-seen, no mood**. Beacon pages show `needs` (the §1.15
-utility number) and **no joiner faces or identities**; location renders the
-LABEL only (lat/lng never ship to strangers); poll options+counts render
-read-only (§1.50's counts-on-options rule). Viewing is free; **ANY
+**Page contracts (binding).** Shapes in §0 `SharePage`. Every variant carries
+the object's `id`; post/beacon/listing carry `preview` (`full` for every
+public object). Author chips carry username + display_name + the token-gated
+avatar path — **no ids, no UserLite, no last-seen, no mood**. Beacon pages
+show `needs` (the §1.15 utility number) and **no joiner faces or
+identities**; location renders the LABEL only (lat/lng never ship to
+strangers); poll options+counts render read-only (§1.50's counts-on-options
+rule). **A TEASER page** (`preview:'teaser'`, non-public objects, §1b
+decision 11) is trimmed server-side — post: the first 280 characters + the
+first PHOTO only, no video, no poll, no location; plan: host, vibe, when,
+coarse `area`, note, `needs` — no exact location; listing: kind, title,
+price, first photo, area, status — no body, no location — and the media
+proxy serves ONLY the attachments the page lists. Viewing is free; **ANY
 interaction** (react, comment, join, wave, profile, "see more") routes to
-`/register?next=<deep-link>` — after signup/login the client lands on the relevant
-tab (true per-object deep-link back is 📋 Wave 4.2/6; `SharePageView.deepLink()`
-returns tab roots today, not object routes). OG tags: og:title/description from the
-content (author display name + excerpt), og:image = the first gated media /
-avatar proxy URL (absolute via `PUBLIC_ORIGIN` — unfurlers get exactly what
-any stranger gets).
+`/register?next=<deep-link>`, and the deep link lands **on the object**:
+`/feed/<postId>`, `/local/<listingId>`, `/local/b/<beaconId>` (group pages
+land back on the share page where the join CTA lives in-app). Pages are
+`noindex`. OG tags: og:title/description from the content (author display
+name + excerpt), og:image = the first gated media / avatar proxy URL
+(absolute via `PUBLIC_ORIGIN` — unfurlers get exactly what any stranger
+gets, teaser or full).
 
 **GC (worker, queue `gc`, nightly):** prune tokens whose object is gone
 (dead uuid) or whose story expired — bookkeeping only; reads already 404

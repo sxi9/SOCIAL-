@@ -137,6 +137,25 @@ export function shareMediaDto(a: AttRow, token: string): ShareMedia {
   };
 }
 
+/** §1b teaser trim: the first 280 characters, on a word boundary when one is
+ * near, with an ellipsis — "the thing", not the whole thing. */
+export const SHARE_TEASER_CHARS = 280;
+export function teaserText(s: string): string {
+  // Code POINTS, not UTF-16 units: a cut inside an emoji's surrogate pair
+  // would ship a lone surrogate (renders as U+FFFD, trips UTF-8 encoders).
+  const cps = Array.from(s);
+  if (cps.length <= SHARE_TEASER_CHARS) return s;
+  const cut = cps.slice(0, SHARE_TEASER_CHARS);
+  const sp = cut.lastIndexOf(' ');
+  return `${(sp > SHARE_TEASER_CHARS - 40 ? cut.slice(0, sp) : cut).join('')}…`;
+}
+
+/** Teaser media: the first PHOTO only — video stays behind sign-in. */
+function teaserMedia(media: ShareMedia[]): ShareMedia[] {
+  const first = media.find((m) => m.kind === 'image');
+  return first ? [first] : [];
+}
+
 function locationLabel(loc: unknown): string | null {
   if (loc && typeof loc === 'object' && typeof (loc as { label?: unknown }).label === 'string') {
     return (loc as { label: string }).label;
@@ -175,7 +194,12 @@ export async function resolveSharePage(
   switch (t.objectType) {
     case 'post': {
       const [post] = await db.select().from(schema.posts).where(eq(schema.posts.id, t.objectId)).limit(1);
-      if (!post || post.audience !== 'public') return null;
+      if (!post) return null;
+      // §1b: a token on a NON-public post exists only because its author
+      // minted it (the mint route enforces; a post's audience never changes
+      // after creation, and delete revokes) — render by the sharer's choice.
+      const postPublic = post.audience === 'public';
+      const postPreview: 'teaser' | 'full' = postPublic ? 'full' : t.preview === 'teaser' ? 'teaser' : 'full';
       const author = await loadUser(post.authorId);
       if (!author || author.bannedAt !== null) return null;
       const atts = await db
@@ -185,7 +209,7 @@ export async function resolveSharePage(
       const order = (post.attachmentIds as string[]) ?? [];
       const sorted = [...atts].sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
       let poll: { question: string; options: string[]; counts: number[] } | null = null;
-      if (post.kind === 'poll') {
+      if (post.kind === 'poll' && postPreview === 'full') {
         const [p] = await db
           .select()
           .from(schema.postPolls)
@@ -205,14 +229,17 @@ export async function resolveSharePage(
           };
         }
       }
+      const postMedia = sorted.map((a) => shareMediaDto(a, token));
       return {
         type: 'post',
+        id: post.id,
+        preview: postPreview,
         author: authorChip(author, token),
         kind: post.kind as 'text' | 'poll' | 'game' | 'join_card',
-        body: post.body,
-        media: sorted.map((a) => shareMediaDto(a, token)),
+        body: postPreview === 'teaser' ? teaserText(post.body) : post.body,
+        media: postPreview === 'teaser' ? teaserMedia(postMedia) : postMedia,
         poll,
-        location_label: locationLabel(post.location),
+        location_label: postPreview === 'teaser' ? null : locationLabel(post.location),
         created_at: post.createdAt.toISOString(),
       };
     }
@@ -222,7 +249,11 @@ export async function resolveSharePage(
         .from(schema.beacons)
         .where(eq(schema.beacons.id, t.objectId))
         .limit(1);
-      if (!b || b.audience !== 'public') return null;
+      if (!b) return null;
+      // §1b: a non-public plan's token is the host's (mint-enforced; a
+      // beacon's audience is immutable and cancel revokes).
+      const beaconPublic = b.audience === 'public';
+      const beaconPreview: 'teaser' | 'full' = beaconPublic ? 'full' : t.preview === 'teaser' ? 'teaser' : 'full';
       const creator = await loadUser(b.creatorId);
       if (!creator || creator.bannedAt !== null) return null;
       const [joins] = (await db.execute(sql`
@@ -233,6 +264,9 @@ export async function resolveSharePage(
       const needs = Math.max(0, b.sparkThreshold - Number(joins?.n ?? 0));
       return {
         type: 'beacon',
+        id: b.id,
+        preview: beaconPreview,
+        area: b.area ?? null,
         creator: authorChip(creator, token),
         vibe: b.vibe as 'food' | 'chai' | 'walk' | 'game' | 'movie' | 'study' | 'sport' | 'chill' | 'custom',
         custom_vibe_emoji: b.customVibeEmoji,
@@ -242,7 +276,8 @@ export async function resolveSharePage(
         starts_at: b.startsAt.toISOString(),
         expires_at: b.expiresAt.toISOString(),
         needs,
-        location_label: locationLabel(b.location),
+        // A teaser shows the coarse area only — never the exact spot.
+        location_label: beaconPreview === 'teaser' ? null : locationLabel(b.location),
         created_at: b.createdAt.toISOString(),
       };
     }
@@ -252,7 +287,10 @@ export async function resolveSharePage(
         .from(schema.listings)
         .where(eq(schema.listings.id, t.objectId))
         .limit(1);
-      if (!l || !l.isPublic) return null;
+      if (!l) return null;
+      // §1b: an area-only listing's token is the author's (mint-enforced;
+      // narrowing is_public → false revokes in the edit transaction).
+      const listingPreview: 'teaser' | 'full' = l.isPublic ? 'full' : t.preview === 'teaser' ? 'teaser' : 'full';
       const author = await loadUser(l.authorId);
       if (!author || author.bannedAt !== null) return null;
       const atts = await db
@@ -260,17 +298,20 @@ export async function resolveSharePage(
         .from(schema.attachments)
         .where(eq(schema.attachments.listingId, l.id))
         .orderBy(asc(schema.attachments.createdAt));
+      const listingMedia = atts.map((a) => shareMediaDto(a, token));
       return {
         type: 'listing',
+        id: l.id,
+        preview: listingPreview,
         author: authorChip(author, token),
         kind: l.kind as 'gig' | 'ride' | 'room' | 'place_review',
         title: l.title,
-        body: l.body,
+        body: listingPreview === 'teaser' ? '' : l.body,
         price_text: l.priceText,
         area: l.area,
         status: liveListingStatus(l) as 'active' | 'closed' | 'expired',
-        media: atts.map((a) => shareMediaDto(a, token)),
-        location_label: locationLabel(l.location),
+        media: listingPreview === 'teaser' ? teaserMedia(listingMedia) : listingMedia,
+        location_label: listingPreview === 'teaser' ? null : locationLabel(l.location),
         created_at: l.createdAt.toISOString(),
       };
     }
@@ -301,6 +342,7 @@ export async function resolveSharePage(
       `)) as unknown as { kind: string; payload: unknown; username: string }[];
       return {
         type: 'story',
+        id: s.id,
         author: authorChip(author, token),
         caption: s.caption,
         media: shareMediaDto(att, token),
@@ -333,6 +375,7 @@ export async function resolveSharePage(
         // The CARD only — never messages (§1.68).
         return {
           type: 'group_card',
+          id: c.id,
           title: c.title ?? '',
           description: c.description,
           avatar_url: avatarUrl,
@@ -406,6 +449,7 @@ export async function resolveSharePage(
       const oldest = messages[0]?.seq ?? null;
       return {
         type: 'group_live',
+        id: c.id,
         title: c.title ?? '',
         description: c.description,
         avatar_url: avatarUrl,

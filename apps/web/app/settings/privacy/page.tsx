@@ -334,9 +334,10 @@ function ShareLinksSection() {
 
   async function copy(l: ShareLinkListItem): Promise<void> {
     const url = absoluteShareUrl(l);
-    if (await copyText(url)) toast('Public link copied — anyone can open it');
+    const what = l.preview === 'teaser' ? 'Preview link' : 'Link';
+    if (await copyText(url)) toast(`${what} copied — anyone with it can open it`);
     // Clipboard blocked: the same manual fallback the old copy button had.
-    else window.prompt('Copy this public link:', url);
+    else window.prompt('Copy this link:', url);
   }
 
   async function end(l: ShareLinkListItem): Promise<void> {

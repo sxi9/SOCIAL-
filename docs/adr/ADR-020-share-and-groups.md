@@ -38,6 +38,14 @@ same: how much can open up while every earlier promise stays literally true.
   same instant, before any revoke lands, because the read asks the object,
   not the token. Friends-only content never mints (route-refused), so a
   public URL to private content is unrepresentable, not just forbidden.
+  **Amended 2026-10-27 (AUDIT-PLAN decision 11, Slice D):** a non-public
+  post / plan / listing is mintable by its OWNER only, with a Teaser/Full
+  `preview` stored on the token (migration 0014); the page is trimmed
+  server-side for a teaser and the media proxy serves only the attachments
+  the page lists. The live re-check still kills the page when the author is
+  banned or the object is gone; narrowing a listing and deleting /
+  cancelling any object revoke route-side (post and plan audiences are
+  immutable after creation).
   All share media rides token-gated proxies (the invite-avatar pattern):
   `/api/media/:key` stays authed, there is no open media route to enumerate,
   and author chips carry no ids and no UserLite — a stranger gets exactly

@@ -358,9 +358,13 @@ export async function listingRoutes(fastify: FastifyInstance): Promise<void> {
             .update(listings)
             .set({ ...next, editedAt: new Date() })
             .where(eq(listings.id, l.id));
-          // v0.8b (§1.67): narrowing the audience (is_public → false) revokes
-          // the share token in the SAME transaction.
-          if (l.isPublic && !next.isPublic) {
+          // v0.8b (§1.67): changing is_public EITHER way revokes the share
+          // token in the SAME transaction. Narrowing: the public page must
+          // die. Widening (§1b, 2026-10-27): an owner-minted TEASER link on
+          // an area-only listing would otherwise silently become the FULL
+          // page the moment the listing goes public — "a link already sent
+          // never silently widens". The owner re-mints from the sheet.
+          if (l.isPublic !== next.isPublic) {
             await revokeShareTokensFor(tx, 'listing', l.id);
           }
           // Photos re-bind (§1.48; v1.0a #91 — every kind): new ids must be

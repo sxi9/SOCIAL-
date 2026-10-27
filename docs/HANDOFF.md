@@ -16,9 +16,16 @@ Updated 2026-10-27. A new session continues this project by reading
   `ShareSheet` on post/plan/listing/story/group (Copy · OS share · QR · Send
   to a chat · Stop sharing), `ChatPickerSheet` extracted from ForwardSheet,
   `GET /api/share-links/mine`, Settings → Privacy "Your share links",
-  `lib/overlays.ts` topmost-only Escape. Next: Slices D (share-page template,
-  object routes, non-public token path + Teaser/Full) and E (inline sign-in
-  sheet), then phases 2–7 per §1b. Open follow-up from review: the unfurl
+  `lib/overlays.ts` topmost-only Escape. Then Slice D (2026-10-28): non-public
+  post/plan/listing share by an OWNER-minted token with a Teaser/Full choice
+  (server-trimmed teaser, media proxy serves only what the page lists; the
+  ShareSheet asks before minting and reuses an open token), object routes
+  `/feed/[postId]`, `/local/[listingId]`, `/local/b/[beaconId]` (Local tab body
+  is `components/LocalTab`; deep-linked posts live in `state.feedExtra`),
+  `deepLink()` lands on the object, one gated CTA on teaser pages, `noindex` +
+  `app/robots.ts`; a listing's `is_public` change EITHER way now revokes its
+  token. Next: Slice E (inline sign-in sheet on share pages, the 3 v0.9 auth
+  minors), then phases 2–7 per §1b. Open follow-up from review: the unfurl
   worker charges the sender's hourly budget for our own share URLs (short-
   circuit origin == PUBLIC_ORIGIN in the send route).
 - `main` at `b396d09` (2026-10-27, morning). Shipped since the previous handoff, in

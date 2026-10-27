@@ -25,6 +25,7 @@ import { useOverlayEscape } from '@/lib/overlays';
 import {
   absoluteShareUrl,
   copyText,
+  listMyShareLinks,
   mintShareLink,
   revokeShareLink,
   SHARE_OBJECT_WORD,
@@ -40,9 +41,10 @@ interface ShareSheetProps {
   type: ShareObjectType;
   id: string;
   onClose: () => void;
-  /** Set when the object is NOT public: shows the Teaser / Full switch. The
-   * server refuses non-public mints until the §1b token path lands, so this
-   * is wired but unreachable today. */
+  /** Set when the object is NOT public (friends-only post, friends/area
+   * plan, area-only listing): the OWNER mints a token with a Teaser / Full
+   * choice stored on it (§1b, decision 11). The server answers 400
+   * not_public to anyone else. */
   nonPublic?: boolean;
   /** Above-the-caller stacking (modal plane is 40; the story viewer is 60). */
   zIndex?: number;
@@ -57,6 +59,13 @@ export default function ShareSheet({ type, id, onClose, nonPublic = false, zInde
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<'teaser' | 'full'>('teaser');
+  // nonPublic: is there already an open token for this object? Checked on
+  // open so the chooser is shown only when a choice can actually take effect
+  // (mint-or-return hands back an existing token whatever is picked).
+  const [checkedExisting, setCheckedExisting] = useState(!nonPublic);
+  // The choice the owner just made vs. the token that came back (mint-or-
+  // return keeps an existing token's choice) — shown, never silent.
+  const [mismatch, setMismatch] = useState<'teaser' | 'full' | null>(null);
   const mintedRef = useRef(false);
   const copyRef = useRef<HTMLButtonElement>(null);
   // One client_msg_id per target conversation for ONE picker session, so a
@@ -70,25 +79,67 @@ export default function ShareSheet({ type, id, onClose, nonPublic = false, zInde
     setCanShare(typeof navigator !== 'undefined' && typeof navigator.share === 'function');
   }, []);
 
+  // Mint: a PUBLIC object mints on open (no choice to make). A NON-public one
+  // waits for the Teaser / Full pick — the choice is stored on the token at
+  // mint time and an open token keeps it, so asking first is what makes "a
+  // link already sent never silently widens" true.
+  async function mint(choice?: 'teaser' | 'full'): Promise<void> {
+    try {
+      const got = await mintShareLink(type, id, choice);
+      setLink(got);
+      setMismatch(choice && got.preview !== choice ? choice : null);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'not_public') {
+        setError('Only the person who posted this can share it.');
+      } else if (err instanceof ApiError && err.status === 403) {
+        setError('Only the group’s admins can share it.');
+      } else if (err instanceof ApiError && err.status === 404) {
+        setError('This is not available to share.');
+      } else {
+        setError('Could not make a share link. Check your connection and try again.');
+      }
+    }
+  }
   useEffect(() => {
     if (mintedRef.current) return;
     mintedRef.current = true;
-    void (async () => {
-      try {
-        setLink(await mintShareLink(type, id));
-      } catch (err) {
-        if (err instanceof ApiError && err.code === 'not_public') {
-          setError('Only public things get a share link.');
-        } else if (err instanceof ApiError && err.status === 403) {
-          setError('Only the group’s admins can share it.');
-        } else if (err instanceof ApiError && err.status === 404) {
-          setError('This is not available to share.');
-        } else {
-          setError('Could not make a share link. Check your connection and try again.');
-        }
-      }
-    })();
-  }, [type, id]);
+    if (!nonPublic) {
+      void mint();
+      return;
+    }
+    // Non-public: reuse an open token if one exists (its stored choice
+    // stands — a link already sent never silently widens); otherwise ask.
+    // Fail CLOSED: if the check itself fails, do not show the chooser (a
+    // pick could then be silently overridden by an existing token).
+    void listMyShareLinks()
+      .then((mine) => {
+        const open = mine.find((l) => l.object.type === type && l.object.id === id);
+        if (open) setLink(open);
+        setCheckedExisting(true);
+      })
+      .catch(() => setError('Could not check for an existing link. Check your connection and try again.'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [type, id, nonPublic]);
+
+  /** Replace the open token with one of the other kind: revoke, then mint. */
+  async function replaceWith(choice: 'teaser' | 'full'): Promise<void> {
+    if (!link || busy) return;
+    const ok = await confirmDialog(
+      `Make a new ${choice === 'full' ? 'Full' : 'Teaser'} link? The current link stops working for everyone who has it.`,
+      { confirmLabel: 'Replace link', zIndex },
+    );
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await revokeShareLink(link.token);
+      setLink(null);
+      await mint(choice);
+    } catch {
+      toast('Could not replace the link');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   // Topmost-only Escape; the picker (and the confirm) take over while open.
   useOverlayEscape(onClose);
@@ -109,7 +160,13 @@ export default function ShareSheet({ type, id, onClose, nonPublic = false, zInde
     if (await copyText(url)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-      toast('Public link copied — anyone can open it');
+      toast(
+        !nonPublic
+          ? 'Public link copied — anyone can open it'
+          : link?.preview === 'teaser'
+            ? 'Preview link copied — anyone with it sees the teaser'
+            : `Link copied — anyone with it sees the whole ${word}`,
+      );
     } else {
       // Clipboard blocked: the link box above is select-all; say so.
       toast('Clipboard blocked — select the link above to copy it');
@@ -195,11 +252,58 @@ export default function ShareSheet({ type, id, onClose, nonPublic = false, zInde
             </button>
           </div>
           <p className={styles.blurb}>
-            Anyone with the link can see it — no account needed to look. Joining takes a minute.
+            {nonPublic
+              ? 'This isn’t public. A link shows people a preview and asks them to sign in for the rest — or the whole thing, your call.'
+              : 'Anyone with the link can see it — no account needed to look. Joining takes a minute.'}
           </p>
 
           {error ? (
             <p className="error-text">{error}</p>
+          ) : nonPublic && !checkedExisting ? (
+            <div className={styles.spinnerRow}>
+              <span className="spinner" /> Checking for a link…
+            </div>
+          ) : nonPublic && !link ? (
+            <>
+              <div className={styles.actions} role="radiogroup" aria-label="What the link shows">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={preview === 'teaser'}
+                  className={`btn${preview === 'teaser' ? ' btn-primary' : ''}`}
+                  onClick={() => setPreview('teaser')}
+                >
+                  Teaser
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={preview === 'full'}
+                  className={`btn${preview === 'full' ? ' btn-primary' : ''}`}
+                  onClick={() => setPreview('full')}
+                >
+                  Full
+                </button>
+              </div>
+              <p className="muted small" style={{ margin: '0 0 8px' }}>
+                {preview === 'teaser'
+                  ? 'Teaser: who posted it, the first lines and one photo. The rest needs an account.'
+                  : 'Full: everything, viewable without an account. Interacting still needs one.'}
+              </p>
+              <div className={styles.actions}>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={busy}
+                  onClick={() => {
+                    setBusy(true);
+                    void mint(preview).finally(() => setBusy(false));
+                  }}
+                >
+                  Make the link
+                </button>
+              </div>
+            </>
           ) : !link || !url ? (
             <div className={styles.spinnerRow}>
               <span className="spinner" /> Making your link…
@@ -207,26 +311,21 @@ export default function ShareSheet({ type, id, onClose, nonPublic = false, zInde
           ) : (
             <>
               {nonPublic ? (
-                <div className={styles.actions} role="radiogroup" aria-label="What the link shows">
+                <p className="muted small" style={{ margin: '0 0 8px' }}>
+                  {mismatch
+                    ? `You already had a ${link.preview === 'teaser' ? 'Teaser' : 'Full'} link for this, so it was kept — nobody who has it sees more than before. `
+                    : null}
+                  This link shows {link.preview === 'teaser' ? 'a preview' : 'everything'}.{' '}
                   <button
                     type="button"
-                    role="radio"
-                    aria-checked={preview === 'teaser'}
-                    className={`btn${preview === 'teaser' ? ' btn-primary' : ''}`}
-                    onClick={() => setPreview('teaser')}
+                    className="btn btn-ghost"
+                    style={{ padding: '2px 8px', fontSize: 'inherit' }}
+                    disabled={busy}
+                    onClick={() => void replaceWith(link.preview === 'teaser' ? 'full' : 'teaser')}
                   >
-                    Teaser
+                    Replace with a {link.preview === 'teaser' ? 'Full' : 'Teaser'} link
                   </button>
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={preview === 'full'}
-                    className={`btn${preview === 'full' ? ' btn-primary' : ''}`}
-                    onClick={() => setPreview('full')}
-                  >
-                    Full
-                  </button>
-                </div>
+                </p>
               ) : null}
               <div className={styles.linkBox}>
                 <span className={styles.linkText}>{url}</span>

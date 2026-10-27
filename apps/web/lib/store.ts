@@ -205,6 +205,11 @@ export interface AppState {
   /** v0.5a (§1.36) + v0.7 lanes (§1.49): one FINITE window per lane
    * (null posts = that lane not loaded yet). Both lanes stay hard-ended. */
   feed: Record<FeedLane, FeedLaneState>;
+  /** §1b deep link (/feed/<id>): a post opened by id that no loaded lane
+   * holds. Lives in the store (not a component snapshot) so reactions,
+   * votes, comments and delete flow into the open sheet exactly as they do
+   * for lane posts — replacePost / removePostLocal update it too. */
+  feedExtra: Map<string, Post>;
   /** v0.7 (§1.54): transient toasts (ToastHost renders them at the toast layer). */
   toasts: ToastItem[];
   /** v0.7 (§1.47): recent creator edits by beacon id — powers the brief
@@ -281,6 +286,7 @@ const state: AppState = {
   connections: null,
   stories: null,
   feed: { friends: emptyLane(), discover: emptyLane() },
+  feedExtra: new Map(),
   toasts: [],
   beaconEdits: new Map(),
   callInvite: null,
@@ -1114,6 +1120,7 @@ export function resetOnLogout(): void {
   state.connections = null;
   state.stories = null;
   state.feed = { friends: emptyLane(), discover: emptyLane() };
+  state.feedExtra = new Map();
   state.toasts = [];
   state.beaconEdits = new Map();
   state.callInvite = null;
@@ -1463,6 +1470,12 @@ export function replacePost(post: Post): void {
     next[lane] = { ...ls, posts: ls.posts.map((p) => (p.id === post.id ? post : p)) };
     changed = true;
   }
+  if (state.feedExtra.has(post.id)) {
+    const extra = new Map(state.feedExtra);
+    extra.set(post.id, post);
+    state.feedExtra = extra;
+    changed = true;
+  }
   if (changed) {
     state.feed = next;
     emit();
@@ -1479,10 +1492,32 @@ export function removePostLocal(postId: string): void {
     next[lane] = { ...ls, posts: ls.posts.filter((p) => p.id !== postId) };
     changed = true;
   }
+  if (state.feedExtra.has(postId)) {
+    const extra = new Map(state.feedExtra);
+    extra.delete(postId);
+    state.feedExtra = extra;
+    changed = true;
+  }
   if (changed) {
     state.feed = next;
     emit();
   }
+}
+
+/** §1b deep link: hold a post opened by id outside the lane windows. */
+export function setExtraPost(post: Post): void {
+  const extra = new Map(state.feedExtra);
+  extra.set(post.id, post);
+  state.feedExtra = extra;
+  emit();
+}
+
+export function clearExtraPost(postId: string): void {
+  if (!state.feedExtra.has(postId)) return;
+  const extra = new Map(state.feedExtra);
+  extra.delete(postId);
+  state.feedExtra = extra;
+  emit();
 }
 
 // ---------------------------------------------------------------------------

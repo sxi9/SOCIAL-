@@ -81,7 +81,12 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
     { preHandler: requireAuth, schema: { body: CreateShareLinkRequestSchema } },
     async (req) => {
       const { user } = authed(req);
-      const { type, id } = req.body;
+      const { type, id, preview: wanted } = req.body;
+      // §1b (decision 11): a PUBLIC object is fully viewable, no switch —
+      // preview is forced 'full' whatever the sharer sent. A NON-public
+      // post/plan/listing may be minted by its OWNER only, with the Teaser /
+      // Full choice stored on the token (default teaser).
+      let objectPublic = true;
 
       if (type === 'post') {
         const [post] = await db.select().from(schema.posts).where(eq(schema.posts.id, id)).limit(1);
@@ -100,20 +105,22 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
             (post.audience === 'public' || (await isFriendOf(user.id, post.authorId)));
           if (!visible) throw notFound('not_found');
         }
-        if (post.audience !== 'public') throw badRequest('not_public');
+        objectPublic = post.audience === 'public';
+        if (!objectPublic && !mine) throw badRequest('not_public');
       } else if (type === 'beacon') {
         const beacon = await loadBeacon(id);
         if (!beacon) throw notFound('not_found');
+        const mine = beacon.creatorId === user.id;
         const visible =
-          beacon.creatorId === user.id ||
-          (await isBeaconVisibleTo(beacon, user)) ||
-          (await hasJoin(beacon.id, user.id));
+          mine || (await isBeaconVisibleTo(beacon, user)) || (await hasJoin(beacon.id, user.id));
         if (!visible) throw notFound('not_found');
-        if (beacon.audience !== 'public') throw badRequest('not_public');
+        objectPublic = beacon.audience === 'public';
+        if (!objectPublic && !mine) throw badRequest('not_public');
       } else if (type === 'listing') {
         const [l] = await db.select().from(schema.listings).where(eq(schema.listings.id, id)).limit(1);
         if (!l) throw notFound('not_found');
-        if (l.authorId !== user.id) {
+        const mine = l.authorId === user.id;
+        if (!mine) {
           const [author] = await db
             .select({ bannedAt: schema.users.bannedAt })
             .from(schema.users)
@@ -123,7 +130,8 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
             throw notFound('not_found');
           }
         }
-        if (!l.isPublic) throw badRequest('not_public');
+        objectPublic = l.isPublic;
+        if (!objectPublic && !mine) throw badRequest('not_public');
       } else if (type === 'story') {
         // "Create share link" is the AUTHOR's act — 404 for everyone else.
         const [s] = await db.select().from(schema.stories).where(eq(schema.stories.id, id)).limit(1);
@@ -156,10 +164,10 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      // Every mintable object is public today, so the stored preview is
-      // 'full' whatever the sharer sent — the §1b non-public token path is
-      // what honours a Teaser choice (decision 11).
-      const row = await mintOrReturnToken(type, id, user.id, 'full');
+      // Stored on a FRESH mint only (an open token keeps its choice; switching
+      // is revoke + re-mint, so a link already sent never silently widens).
+      const preview: 'teaser' | 'full' = objectPublic ? 'full' : (wanted ?? 'teaser');
+      const row = await mintOrReturnToken(type, id, user.id, preview);
       return { share_link: shareLinkDto(row) };
     },
   );
@@ -231,10 +239,13 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
   );
 
   // §1b plumbing (2026-10-27) GET /api/share-links/mine — every OPEN token I
-  // minted, newest first, ≤ SHARE_LINKS_MINE_MAX, each with a human label
-  // and `live` (does the object still resolve publicly — narrowing an
-  // audience kills a page before any revoke). Labels are the OWNER's own
-  // objects, so nothing here is a new disclosure.
+  // minted (plus a group's token when I am one of its admins), newest first,
+  // ≤ SHARE_LINKS_MINE_MAX, each with a human label and `live`: for post /
+  // plan / listing the object still exists and its author is not banned
+  // (an open token on a non-public one is owner-minted, and narrowing /
+  // deleting revokes route-side); group public|invite_only; story not
+  // expired. Labels are the OWNER's own objects, so nothing here is a new
+  // disclosure.
   app.get('/api/share-links/mine', { preHandler: requireAuth }, async (req) => {
     const { user } = authed(req);
     // Mine = tokens I minted, PLUS a group's token when I am one of its current
@@ -328,22 +339,25 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
       let label = 'Shared';
       let live = false;
       switch (r.objectType) {
+        // §1b: an open token on a NON-public post/plan/listing is the owner's
+        // (mint-enforced; narrowing/deleting revokes), so publicness no longer
+        // decides liveness — existence + an unbanned author does.
         case 'post': {
           const p = posts.find((x) => x.id === r.objectId);
           label = excerpt(p?.body, 'Post');
-          live = p?.audience === 'public' && !bannedAuthors.has(p.authorId);
+          live = !!p && !bannedAuthors.has(p.authorId);
           break;
         }
         case 'beacon': {
           const b = beacons.find((x) => x.id === r.objectId);
           label = b ? `Plan · ${b.vibe === 'custom' ? (b.customVibeLabel ?? 'custom') : b.vibe}${b.note ? ` — ${excerpt(b.note, '')}` : ''}` : 'Plan';
-          live = b?.audience === 'public' && !bannedAuthors.has(b.creatorId);
+          live = !!b && !bannedAuthors.has(b.creatorId);
           break;
         }
         case 'listing': {
           const l = listings.find((x) => x.id === r.objectId);
           label = excerpt(l?.title, 'Listing');
-          live = l?.isPublic === true && !bannedAuthors.has(l.authorId);
+          live = !!l && !bannedAuthors.has(l.authorId);
           break;
         }
         case 'story': {
@@ -416,6 +430,15 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
         .where(eq(schema.attachments.id, req.params.attachmentId))
         .limit(1);
       if (!att) throw notFound('share_not_found');
+      // §1b: a TEASER page lists only its first photo — the proxy serves
+      // exactly what the page exposes, never everything the object owns.
+      const exposed =
+        page.type === 'post' || page.type === 'listing'
+          ? page.media.map((m) => m.attachment_id)
+          : page.type === 'story'
+            ? [page.media.attachment_id]
+            : null;
+      if (exposed && !exposed.includes(att.id)) throw notFound('share_not_found');
       let owns = false;
       if (row.objectType === 'post') owns = att.postId === row.objectId;
       else if (row.objectType === 'listing') owns = att.listingId === row.objectId;

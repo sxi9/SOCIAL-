@@ -5,6 +5,7 @@
 // no ids, no UserLite. All media URLs are token-gated proxy paths.
 import Link from 'next/link';
 import type { SharePage, ShareAuthorChip, ShareMedia } from '@socialchat/shared';
+import { LISTING_SAFETY_NOTE, LISTING_SAFETY_NOTE_KINDS } from '@socialchat/shared';
 import ShareReportLink from './ShareReportLink';
 import cm from './community.module.css';
 
@@ -75,11 +76,11 @@ function fmt(iso: string): string {
 function headMeta(page: SharePage): string {
   switch (page.type) {
     case 'post':
-      return 'shared post, logged out';
+      return page.preview === 'teaser' ? 'post preview, logged out' : 'shared post, logged out';
     case 'beacon':
-      return 'shared beacon, logged out';
+      return page.preview === 'teaser' ? 'plan preview, logged out' : 'shared plan, logged out';
     case 'listing':
-      return 'board listing, logged out';
+      return page.preview === 'teaser' ? 'listing preview, logged out' : 'board listing, logged out';
     case 'story':
       return 'shared story, logged out';
     default:
@@ -121,18 +122,31 @@ export default function SharePageView({
 }
 
 function deepLink(page: SharePage, path: string): string {
-  // The §1.67 ?next deep-link-back: land signups where the object lives.
+  // The §1.67 ?next deep-link-back, now ON the object (§1b, 2026-10-27):
+  // the object routes open the real tab with that thing's sheet up.
   switch (page.type) {
     case 'post':
-      return '/feed';
+      return `/feed/${page.id}`;
     case 'beacon':
+      return `/local/b/${page.id}`;
     case 'listing':
-      return '/local';
+      return `/local/${page.id}`;
     case 'story':
       return '/';
     default:
       return path; // group pages: back here, where the join CTA lives in-app
   }
+}
+
+/** §1b: the one gated CTA every teaser page ends with. */
+function TeaserGate({ next, word }: { next: string; word: string }) {
+  return (
+    <div className={cm.shareGate}>
+      <Link href={next} className="btn btn-primary">
+        Join to see the whole {word} — it&rsquo;s free
+      </Link>
+    </div>
+  );
 }
 
 function PageBody({ page, path }: { page: SharePage; path: string }) {
@@ -171,8 +185,12 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
               <span>📍 {page.location_label}</span>
             </div>
           ) : null}
+          {/* §1b teaser: ONE gated CTA replaces the React/Reply row and the
+              invite aside below — the template's contract, not three doors. */}
+          {page.preview === 'teaser' ? <TeaserGate next={next} word="post" /> : null}
           {/* proto 07: React / Reply read like the real post row — every tap
               still lands on the same /register?next= gate. */}
+          {page.preview !== 'teaser' ? (
           <div className={cm.shareActions}>
             <Link href={next} className={cm.shareAct}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -198,8 +216,10 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
             </Link>
             <span className={cm.shareActNote}>sign in to interact</span>
           </div>
+          ) : null}
           </article>
           {/* proto 07: the invite-framed join card under the post. */}
+          {page.preview !== 'teaser' ? (
           <aside className={cm.shareWorld}>
             <h2 className={cm.shareWorldTitle}>See the rest of {page.author.display_name}&rsquo;s world</h2>
             <p className={cm.shareWorldSub}>This link is your way in — joining takes a minute, and it&rsquo;s free.</p>
@@ -207,6 +227,7 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
               Join Bored Chat
             </Link>
           </aside>
+          ) : null}
         </>
       );
     case 'beacon': {
@@ -232,11 +253,19 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
                     : 'wrapped up'}
             </span>
             <span>starts {fmt(page.starts_at)}</span>
-            {page.location_label ? <span>📍 {page.location_label}</span> : null}
+            {page.location_label ? (
+              <span>📍 {page.location_label}</span>
+            ) : page.area ? (
+              <span>📍 around {page.area}</span>
+            ) : null}
           </div>
           <div className={cm.shareGate}>
             <Link href={next} className="btn btn-primary">
-              {live ? 'Join this plan — sign up free' : 'See what else is on — join free'}
+              {live
+                ? page.preview === 'teaser'
+                  ? 'Join to see where and who — sign up free'
+                  : 'Join this plan — sign up free'
+                : 'See what else is on — join free'}
             </Link>
           </div>
         </article>
@@ -257,9 +286,18 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
             {page.location_label ? <span>🗺 {page.location_label}</span> : null}
             <span>{page.status === 'active' ? 'still up' : page.status}</span>
           </div>
+          {/* FEATURES #45: the bulletin-board terms ride every gig/ride/room
+              card where the money talk happens — strangers included (§1b). */}
+          {(LISTING_SAFETY_NOTE_KINDS as readonly string[]).includes(page.kind) ? (
+            <p className={cm.shareMetaRow} role="note" style={{ margin: 0 }}>
+              {LISTING_SAFETY_NOTE}
+            </p>
+          ) : null}
           <div className={cm.shareGate}>
             <Link href={next} className="btn btn-primary">
-              Message the poster — join free
+              {page.preview === 'teaser'
+                ? 'Join to see the details and message the poster — free'
+                : 'Message the poster — join free'}
             </Link>
           </div>
         </article>

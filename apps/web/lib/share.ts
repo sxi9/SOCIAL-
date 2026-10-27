@@ -1,7 +1,8 @@
 // Public share links (v0.8b — API.md §1.67, FEATURES #79c, ADR-020).
 // Mint-or-return the object's ONE open token; revocation kills the page and
-// every gated media URL instantly. Friends-only content never gets a token —
-// the server refuses with 400 not_public. On the client the absolute URL is
+// every gated media URL instantly. A NON-public post/plan/listing is minted
+// by its owner only, with a Teaser/Full choice stored on the token (§1b,
+// decision 11); 400 not_public means "not the owner". On the client the absolute URL is
 // location.origin + url (the user is browsing via the instance's public
 // origin); SSR pages use publicOrigin() with the PUBLIC_ORIGIN env instead.
 //
@@ -27,8 +28,18 @@ export const SHARE_OBJECT_WORD: Record<ShareObjectType, string> = {
   group: 'group',
 };
 
-export async function mintShareLink(type: ShareObjectType, id: string): Promise<ShareLink> {
-  const res = await api.post<ShareLinkResponse>('/api/share-links', { type, id });
+/** Mint-or-return. `preview` is the sharer's Teaser/Full choice for a
+ * NON-public object (stored on a fresh mint; ignored for public objects). */
+export async function mintShareLink(
+  type: ShareObjectType,
+  id: string,
+  preview?: 'teaser' | 'full',
+): Promise<ShareLink> {
+  const res = await api.post<ShareLinkResponse>('/api/share-links', {
+    type,
+    id,
+    ...(preview ? { preview } : {}),
+  });
   return res.share_link;
 }
 

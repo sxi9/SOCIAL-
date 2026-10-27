@@ -108,6 +108,9 @@ export default function BoardView({
               ? 'That listing is gone.'
               : 'Could not open that listing.'
           );
+          // §1b object route: a failed deep link ends like the post and plan
+          // ones do — the URL goes back to the tab root.
+          onDeepLinkDone?.();
         }
       });
     return () => {

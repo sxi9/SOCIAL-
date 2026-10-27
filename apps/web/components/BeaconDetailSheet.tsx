@@ -276,13 +276,16 @@ export default function BeaconDetailSheet({
 
           {/* v0.8b §1.67: PUBLIC beacons get the one stable share link. The
               page shows the utility "needs N" number and never joiner faces. */}
-          {beacon.audience === 'public' && open ? (
+          {/* §1b: a public plan is shareable by anyone in; a friends/area
+              plan by its HOST only, as a token link (teaser by default). */}
+          {(beacon.audience === 'public' || beacon.my_state === 'creator') && open ? (
             <ShareButton
               type="beacon"
               id={beacon.id}
               className="btn"
               style={{ width: '100%', marginTop: 10 }}
               label="🔗 Share this plan"
+              nonPublic={beacon.audience !== 'public'}
             />
           ) : null}
 

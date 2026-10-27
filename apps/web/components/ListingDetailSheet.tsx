@@ -469,13 +469,16 @@ export default function ListingDetailSheet({
 
         {/* v0.8b §1.67: PUBLIC listings get the one stable share link —
             area-only listings never get a URL. */}
-        {listing.is_public && live ? (
+        {/* §1b: a public listing is shareable by anyone who sees it; an
+            area-only one by its AUTHOR only, as a token link (teaser). */}
+        {(listing.is_public || mine) && live ? (
           <ShareButton
             type="listing"
             id={listing.id}
             className="btn"
             style={{ width: '100%', margin: '8px 0' }}
             label="🔗 Share this listing"
+            nonPublic={!listing.is_public}
           />
         ) : null}
 

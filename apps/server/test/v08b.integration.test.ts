@@ -603,17 +603,112 @@ describe.runIf(infra)('v0.8b community pack', () => {
       expect(row!.revoked_at).not.toBeNull();
     });
 
-    it('friends-only content never gets a token', async () => {
+    it('a friends-only post: the AUTHOR mints a token (teaser by default), nobody else can', async () => {
+      // §1b (decision 11, 2026-10-27): non-public objects share by capability
+      // token with a sharer-side Teaser/Full choice; the page shows the thing,
+      // hides the people, gates the action.
       const author = await register(`b8pf${run}`);
+      const other = await register(`b8pg${run}`);
+      const longBody = `private-ish ${'word '.repeat(80)}END`;
       const created = await post(author, '/api/posts', {
         kind: 'text',
         audience: 'friends_of',
-        body: 'private-ish',
+        body: longBody,
       });
       const postId = (created.json() as { post: { id: string } }).post.id;
+
+      // A stranger (not friends-of) cannot even see it → 404-shaped.
+      const strangerMint = await post(other, '/api/share-links', { type: 'post', id: postId });
+      expect(strangerMint.statusCode).toBe(404);
+
+      // The author mints: default teaser, carried on the ShareLink.
       const mint = await post(author, '/api/share-links', { type: 'post', id: postId });
-      expect(mint.statusCode).toBe(400);
-      expect((mint.json() as { error: string }).error).toBe('not_public');
+      expect(mint.statusCode).toBe(200);
+      const link = (mint.json() as { share_link: { token: string; preview: string } }).share_link;
+      expect(link.preview).toBe('teaser');
+
+      // The public page is a TEASER: trimmed body, the object id for the
+      // deep link, no poll, and `preview` on the wire.
+      const page = await anon('GET', `/api/share/${link.token}/public`);
+      expect(page.statusCode).toBe(200);
+      const p = (page.json() as { page: SharePage }).page;
+      expect(p.type).toBe('post');
+      if (p.type !== 'post') return;
+      expect(p.id).toBe(postId);
+      expect(p.preview).toBe('teaser');
+      expect(p.body.length).toBeLessThan(longBody.length);
+      expect(p.body.endsWith('…')).toBe(true);
+      expect(page.body).not.toContain('END');
+
+      // Revoke + re-mint as Full: the whole body, preview 'full'.
+      expect((await del(author, `/api/share-links/${link.token}`)).statusCode).toBe(204);
+      const full = await post(author, '/api/share-links', { type: 'post', id: postId, preview: 'full' });
+      expect(full.statusCode).toBe(200);
+      const t2 = (full.json() as { share_link: { token: string; preview: string } }).share_link;
+      expect(t2.preview).toBe('full');
+      const fullPage = (await anon('GET', `/api/share/${t2.token}/public`)).json() as { page: SharePage };
+      expect(fullPage.page.type === 'post' && fullPage.page.preview).toBe('full');
+      expect(fullPage.page.type === 'post' && fullPage.page.body).toBe(longBody);
+
+      // A PUBLIC object ignores the choice — always 'full'.
+      const pub = await post(author, '/api/posts', { kind: 'text', audience: 'public', body: 'open' });
+      const pubId = (pub.json() as { post: { id: string } }).post.id;
+      const pubMint = await post(author, '/api/share-links', { type: 'post', id: pubId, preview: 'teaser' });
+      expect((pubMint.json() as { share_link: { preview: string } }).share_link.preview).toBe('full');
+
+      // A FRIEND can see the friends-only post but is not its owner → 400
+      // not_public (the §1b owner-only rule), distinct from the stranger's 404.
+      const friend = await register(`b8ph${run}`);
+      await connect(author, friend);
+      const friendMint = await post(friend, '/api/share-links', { type: 'post', id: postId });
+      expect(friendMint.statusCode).toBe(400);
+      expect((friendMint.json() as { error: string }).error).toBe('not_public');
+
+      // /mine: the owner's token on a non-public post is LIVE (existence +
+      // unbanned author decide, not publicness).
+      const mine = await get(author, '/api/share-links/mine');
+      const row = (mine.json() as { share_links: { token: string; live: boolean }[] }).share_links.find(
+        (l) => l.token === t2.token,
+      );
+      expect(row?.live).toBe(true);
+    });
+
+    it('a friends-audience plan: the HOST mints a teaser (coarse area, no exact spot); a friend cannot', async () => {
+      const host = await register(`b8pj${run}`);
+      const friend = await register(`b8pk${run}`);
+      await connect(host, friend);
+      const now = Date.now();
+      const created = await post(host, '/api/beacons', {
+        vibe: 'chai',
+        audience: 'friends',
+        note: 'chai at the usual place',
+        starts_at: new Date(now).toISOString(),
+        expires_at: new Date(now + 2 * 3600 * 1000).toISOString(),
+        location: { label: 'Exact Corner Cafe', lat: 12.97, lng: 77.59 },
+      });
+      expect(created.statusCode).toBe(201);
+      const beaconId = (created.json() as { beacon: { id: string } }).beacon.id;
+
+      // The friend sees the plan (friends audience) but may not mint it.
+      const friendMint = await post(friend, '/api/share-links', { type: 'beacon', id: beaconId });
+      expect(friendMint.statusCode).toBe(400);
+      expect((friendMint.json() as { error: string }).error).toBe('not_public');
+
+      const mint = await post(host, '/api/share-links', { type: 'beacon', id: beaconId });
+      expect(mint.statusCode).toBe(200);
+      const link = (mint.json() as { share_link: { token: string; preview: string } }).share_link;
+      expect(link.preview).toBe('teaser');
+      const page = await anon('GET', `/api/share/${link.token}/public`);
+      expect(page.statusCode).toBe(200);
+      const p = (page.json() as { page: SharePage }).page;
+      expect(p.type).toBe('beacon');
+      if (p.type !== 'beacon') return;
+      expect(p.id).toBe(beaconId);
+      expect(p.preview).toBe('teaser');
+      expect(p.location_label).toBeNull(); // the exact spot stays behind sign-in
+      expect(page.body).not.toContain('Exact Corner Cafe');
+      expect(p.note).toBe('chai at the usual place');
+      expect(typeof p.needs).toBe('number');
     });
 
     it('non-user share-page reports store reporter NULL + the resolved target', async () => {

@@ -53,14 +53,20 @@ function describe(page: SharePage): { title: string; description: string; image:
 export async function sharePageMetadata(token: string, path: string): Promise<Metadata> {
   const page = await fetchSharePage(token);
   const origin = await publicOrigin();
+  // §1b: token pages are never indexed — a capability URL is not a public
+  // page of record, and revoking one must not leave a search-engine copy.
+  const robots = { index: false, follow: false } as const;
   if (!page) {
-    return { title: 'Bored Chat', description: 'Chat for when the group chat is dead.' };
+    return { title: { absolute: 'Bored Chat' }, description: 'Chat for when the group chat is dead.', robots };
   }
   const d = describe(page);
   const image = d.image ? `${origin}${d.image}` : undefined;
   return {
-    title: d.title,
+    // absolute: the describe() strings already name Bored Chat — the root
+    // layout's "%s · Bored Chat" template would double it.
+    title: { absolute: d.title },
     description: d.description,
+    robots,
     openGraph: {
       title: d.title,
       description: d.description,

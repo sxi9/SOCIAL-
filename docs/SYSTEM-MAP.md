@@ -119,6 +119,10 @@ without local PG/Redis (convention in CLAUDE.md).
 App Router pages (`app/`): auth (`login`, `register`), shell tabs (`/` chats,
 `local`, `feed`, `plans`, `puzzle`, profile under `settings/*` +
 `u/[username]`), chat `c/[id]`, invites `join/[token]` (+ SSR OG metadata),
+object deep links `feed/[postId]`, `local/[listingId]`, `local/b/[beaconId]`
+(§1b, 2026-10-27 — the tab with that object's sheet open; the Local tab body
+is `components/LocalTab`), public share pages `p/[token]` / `s/[token]`
+(SSR, `noindex`), `robots.ts` (disallows `/p/`, `/s/`, `/join/`, `/api/`),
 share flow (`share/route.ts`, `share/claim/[id]`, `compose`), `connections`,
 admin suite `admin/*` (desktop-oriented). PWA: `public/manifest.json`
 (share_target), `public/sw.js` (push only — NEVER sends delivered receipts).

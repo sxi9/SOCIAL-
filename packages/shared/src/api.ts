@@ -3729,9 +3729,20 @@ export type ShareMessage = z.infer<typeof ShareMessageSchema>;
 // expiry / ban re-checked), token unrevoked — else 404 share_not_found,
 // byte-identical for every cause. Interaction is NOT here: any action on the
 // page routes to /register?next=<deep link> (the ?next gate).
+// §1b (2026-10-27, decision 11): every variant carries the object's `id` so a
+// sign-up from the page can land ON the object (deepLink → /feed/<id>,
+// /local/<id>, /local/b/<id>), and post/beacon/listing carry `preview`:
+// 'full' for every public object (always fully viewable, no switch) and the
+// sharer's Teaser/Full choice for a non-public one. A TEASER is trimmed
+// server-side — post: first 280 chars + first photo, no video/poll; plan:
+// host, vibe, when, area, note (no exact location); listing: kind, title,
+// price, first photo, area — "show the thing, hide the people, gate the
+// action". default('full') keeps pre-0014 payloads parsing clean.
 export const SharePageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('post'),
+    id: UuidSchema,
+    preview: z.enum(SHARE_PREVIEWS).default('full'),
     author: ShareAuthorChipSchema,
     kind: z.enum(POST_KINDS),
     body: z.string(),
@@ -3746,6 +3757,11 @@ export const SharePageSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('beacon'),
+    id: UuidSchema,
+    preview: z.enum(SHARE_PREVIEWS).default('full'),
+    // The creator's coarse area (citext), the "where-coarse" a teaser shows
+    // instead of the exact location label. null when the creator has none.
+    area: z.string().nullable().default(null),
     creator: ShareAuthorChipSchema,
     vibe: z.enum(BEACON_VIBE_VALUES),
     custom_vibe_emoji: z.string().nullable(),
@@ -3762,6 +3778,8 @@ export const SharePageSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('listing'),
+    id: UuidSchema,
+    preview: z.enum(SHARE_PREVIEWS).default('full'),
     author: ShareAuthorChipSchema,
     kind: z.enum(LISTING_KINDS),
     title: z.string(),
@@ -3775,6 +3793,7 @@ export const SharePageSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('story'),
+    id: UuidSchema,
     author: ShareAuthorChipSchema,
     caption: z.string(),
     media: ShareMediaSchema,
@@ -3793,6 +3812,7 @@ export const SharePageSchema = z.discriminatedUnion('type', [
   // visibility='invite_only': the CARD ONLY — never messages (§1.68).
   z.object({
     type: z.literal('group_card'),
+    id: UuidSchema,
     title: z.string(),
     description: z.string(),
     avatar_url: z.string().nullable(), // token-gated group-avatar proxy
@@ -3806,6 +3826,7 @@ export const SharePageSchema = z.discriminatedUnion('type', [
   // floored at public_since_seq ALWAYS (history is never retro-exposed).
   z.object({
     type: z.literal('group_live'),
+    id: UuidSchema,
     title: z.string(),
     description: z.string(),
     avatar_url: z.string().nullable(),

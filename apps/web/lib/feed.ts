@@ -88,6 +88,13 @@ export async function deletePost(postId: string): Promise<void> {
   store.removePostLocal(postId);
 }
 
+/** One post by id for the /feed/<id> landing (§1b deep-link back): returns
+ * it without touching lane windows. 404 = deleted / out of audience. */
+export async function getPost(postId: string): Promise<PostResponse['post']> {
+  const res = await api.get<PostResponse>(`/api/posts/${postId}`);
+  return res.post;
+}
+
 /** Single-post refetch — the reaction/comment/join-state reconcile read. */
 export async function refetchPost(postId: string): Promise<void> {
   try {
@@ -151,14 +158,14 @@ export async function votePostPoll(postId: string, optionIdx: number | null): Pr
     optionIdx === null
       ? await api.del<PostPollResponse>(`/api/posts/${postId}/poll/vote`)
       : await api.post<PostPollResponse>(`/api/posts/${postId}/poll/vote`, { option_idx: optionIdx });
-  // Patch the post in place wherever it is loaded.
-  for (const lane of ['friends', 'discover'] as const) {
-    const cur = store.state.feed[lane].posts?.find((p) => p.id === postId);
-    if (cur) {
-      store.replacePost({ ...cur, poll: res.poll });
-      break;
-    }
-  }
+  // Patch the post in place wherever it is loaded — a lane window, or the
+  // §1b deep-link slot (state.feedExtra) when no lane holds it. replacePost
+  // fans the patch into every copy, so one call on whichever is found does.
+  const cur =
+    store.state.feed.friends.posts?.find((p) => p.id === postId) ??
+    store.state.feed.discover.posts?.find((p) => p.id === postId) ??
+    store.state.feedExtra.get(postId);
+  if (cur) store.replacePost({ ...cur, poll: res.poll });
   return res.poll;
 }
 

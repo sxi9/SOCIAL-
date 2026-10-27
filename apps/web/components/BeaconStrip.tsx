@@ -4,10 +4,11 @@
 // not counters: creator + joiner avatar pile + "needs N more 🔥". Sparked
 // cards flip to "IT'S ON" and deep-link into the plan group. WS beacon.new /
 // beacon.updated patch live; sweep retires expired cards between frames.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Beacon } from '@socialchat/shared';
 import { ApiError } from '@/lib/api';
+import { toast } from '@/lib/toast';
 import {
   cancelBeacon,
   fmtCountdown,
@@ -26,9 +27,24 @@ import styles from './beacons.module.css';
 
 const PILE_MAX = 3;
 
-export default function BeaconStrip() {
+export default function BeaconStrip({
+  initialBeaconId = null,
+  onDeepLinkDone,
+}: {
+  /** /local/b/<id> (§1b deep-link back): open that plan's sheet once the
+   * strip has loaded. There is no GET /api/beacons/:id — a plan resolves
+   * from the strip's own store, so one I cannot see is simply "not
+   * available" (the §1.14 shape). */
+  initialBeaconId?: string | null;
+  onDeepLinkDone?: () => void;
+} = {}) {
   const state = useAppState();
   const now = useNow(30_000);
+  // Captured once: the sheet must survive the URL being stripped (the prop
+  // going null) while it is open.
+  const [deepId] = useState(initialBeaconId);
+  const [deepOpen, setDeepOpen] = useState(false);
+  const deepHandled = useRef(false);
 
   useEffect(() => {
     void refreshBeacons();
@@ -39,7 +55,41 @@ export default function BeaconStrip() {
     store.sweepBeacons();
   }, [now]);
 
-  if (!state.beaconsLoaded && state.beacons.size === 0) return null; // never a loading state
+  useEffect(() => {
+    if (!deepId || deepHandled.current) return;
+    if (state.beaconsLoaded) {
+      deepHandled.current = true;
+      if (state.beacons.has(deepId)) setDeepOpen(true);
+      else {
+        toast('That plan is not available.');
+        onDeepLinkDone?.();
+      }
+      return;
+    }
+    // refreshBeacons swallows failures (the strip never shows a loading
+    // state), so a deep link must not wait forever for beaconsLoaded.
+    const t = window.setTimeout(() => {
+      if (deepHandled.current) return;
+      deepHandled.current = true;
+      toast('Could not open that plan.');
+      onDeepLinkDone?.();
+    }, 8000);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deepId, state.beaconsLoaded]);
+
+  const deepBeacon = deepOpen && deepId ? (state.beacons.get(deepId) ?? null) : null;
+  const deepSheet = deepBeacon ? (
+    <BeaconDetailSheet
+      beacon={deepBeacon}
+      onClose={() => {
+        setDeepOpen(false);
+        onDeepLinkDone?.();
+      }}
+    />
+  ) : null;
+
+  if (!state.beaconsLoaded && state.beacons.size === 0) return deepSheet; // never a loading state
 
   const items = [...state.beacons.values()].sort((a, b) => {
     // My own live card sits first, then most-urgent-first (server order).
@@ -53,22 +103,28 @@ export default function BeaconStrip() {
     // Royal v2: the dashed "+ I'm bored" pill below is the create affordance,
     // so an empty strip only ever shows the quiet radar fact (never two CTAs).
     const radar = state.radarCount ?? 0;
-    if (radar === 0) return null;
+    if (radar === 0) return deepSheet;
     return (
-      <div className={`${styles.radarLine} ${styles.beaconVars}`}>
-        <span>
-          {radar} {radar === 1 ? 'plan' : 'plans'} live around you
-        </span>
-      </div>
+      <>
+        <div className={`${styles.radarLine} ${styles.beaconVars}`}>
+          <span>
+            {radar} {radar === 1 ? 'plan' : 'plans'} live around you
+          </span>
+        </div>
+        {deepSheet}
+      </>
     );
   }
 
   return (
-    <div className={`${styles.strip} ${styles.beaconVars}`} role="list" aria-label="Live beacons">
-      {items.map((b) => (
-        <BeaconCard key={b.id} beacon={b} now={now} />
-      ))}
-    </div>
+    <>
+      <div className={`${styles.strip} ${styles.beaconVars}`} role="list" aria-label="Live beacons">
+        {items.map((b) => (
+          <BeaconCard key={b.id} beacon={b} now={now} />
+        ))}
+      </div>
+      {deepSheet}
+    </>
   );
 }
 

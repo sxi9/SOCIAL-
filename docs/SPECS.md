@@ -118,8 +118,11 @@ reportable with author attached; everything expires with the story.
 an unauthenticated SSR page (like /join/<token>): content, author chip,
 brand, full OG/twitter tags so links unfurl. Viewing free; ANY interaction
 (react, comment, join, profile, more) -> signup/login gate with ?next deep
-link back to complete the action. Friends-only content NEVER gets a public
-URL. Stories: author-initiated "Create share link" only — revocable, expires
+link back to complete the action. ~~Friends-only content NEVER gets a public
+URL.~~ Superseded 2026-10-27 (AUDIT-PLAN decision 11, Slice D): non-public
+content is minted by its OWNER only, as a capability token carrying a
+Teaser/Full choice; the teaser is trimmed server-side and the deep link lands
+on the object. Stories: author-initiated "Create share link" only — revocable, expires
 with the story. Media served via share-token-gated endpoints (invite-avatar
 pattern): no open media routes, no enumeration, rate-limited. Pages
 reportable by non-users (feeds admin queue). PUBLIC_ORIGIN governs the URLs.

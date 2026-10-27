@@ -64,6 +64,8 @@ import { formatTime } from '@/lib/format';
 import { KIND_EMOJI, KIND_LABEL, listMine } from '@/lib/listings';
 import { isSelfDrunk } from '@/lib/mood';
 import { ShareButton } from './ShareSheet';
+import { getPost } from '@/lib/feed';
+import { toast } from '@/lib/toast';
 import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
@@ -84,8 +86,40 @@ const LONG_PRESS_MS = 420;
 const FEED_LAYOUT_KEY = 'feed.layout';
 type FeedLayout = 'grid' | 'list';
 
-export default function FeedView() {
+export default function FeedView({
+  initialPostId,
+  onDeepLinkDone,
+}: {
+  /** /feed/<id> (§1b deep-link back): open that post in the sheet, whichever
+   * lane holds it — fetched on its own, never injected into a lane window. */
+  initialPostId?: string | null;
+  onDeepLinkDone?: () => void;
+} = {}) {
   const state = useAppState();
+  // The deep-linked post lives in the STORE (state.feedExtra), never in a
+  // component snapshot: reactions, votes, comments and delete go through
+  // replacePost / removePostLocal and must show in the open sheet.
+  const [deepId, setDeepId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!initialPostId || state.authed !== true) return;
+    let cancelled = false;
+    void getPost(initialPostId)
+      .then((p) => {
+        if (cancelled) return;
+        store.setExtraPost(p);
+        setDeepId(p.id);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          toast('That post is not available.');
+          onDeepLinkDone?.();
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPostId, state.authed]);
   const [lane, setLane] = useState<FeedLane>('friends');
   const [loading, setLoading] = useState(false);
   const [moreBusy, setMoreBusy] = useState(false);
@@ -147,18 +181,49 @@ export default function FeedView() {
 
   // Escape closes the grid's post sheet (the ✕ and a backdrop tap do too).
   useEffect(() => {
-    if (openPostId === null) return;
+    if (openPostId === null && !deepId) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpenPostId(null);
+      if (e.key === 'Escape') closeSheet();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [openPostId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openPostId, deepId]);
 
   // The sheet renders the LIVE store post; a post that leaves the lane
-  // (deleted, lane switch) simply unmounts the sheet.
+  // (deleted, lane switch) simply unmounts the sheet. A deep-linked post
+  // reads from state.feedExtra (a lane copy wins when one holds it); once
+  // deleted it leaves feedExtra too, so the sheet closes like any other.
   const openedPost =
-    openPostId === null ? null : ((posts ?? []).find((p) => p.id === openPostId) ?? null);
+    openPostId === null
+      ? deepId
+        ? ((posts ?? []).find((p) => p.id === deepId) ?? state.feedExtra.get(deepId) ?? null)
+        : null
+      : ((posts ?? []).find((p) => p.id === openPostId) ?? null);
+  const closeSheet = () => {
+    setOpenPostId(null);
+    if (deepId) {
+      store.clearExtraPost(deepId);
+      setDeepId(null);
+      onDeepLinkDone?.();
+    }
+  };
+  // A deep-linked post deleted from inside its sheet leaves the store (lanes
+  // and feedExtra) and the sheet unmounts — finish the deep link's
+  // bookkeeping too, so the URL goes back to /feed.
+  useEffect(() => {
+    if (deepId && openPostId === null && openedPost === null) {
+      setDeepId(null);
+      onDeepLinkDone?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deepId, openPostId, openedPost]);
+  // Leaving the tab mid-deep-link: drop the extra copy.
+  useEffect(() => {
+    return () => {
+      if (deepId) store.clearExtraPost(deepId);
+    };
+  }, [deepId]);
 
   // Royal v2 (ref 09): the feed lands on the mosaic — the composer stays
   // collapsed until the header compose icon opens it, then gets focus.
@@ -354,7 +419,7 @@ export default function FeedView() {
               className={bz.sheetBackdrop}
               role="presentation"
               onClick={(e) => {
-                if (e.target === e.currentTarget) setOpenPostId(null);
+                if (e.target === e.currentTarget) closeSheet();
               }}
             >
               <div
@@ -369,7 +434,7 @@ export default function FeedView() {
                     type="button"
                     className={bz.sheetClose}
                     aria-label="Close"
-                    onClick={() => setOpenPostId(null)}
+                    onClick={closeSheet}
                   >
                     ×
                   </button>
@@ -973,12 +1038,16 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
         </span>
         {/* v0.8b §1.67: PUBLIC posts get the one stable share link (mint-or-
             return + copy). Friends-only content never gets a URL. */}
-        {post.audience === 'public' ? (
+        {/* §1b: public posts are shareable by anyone who can see them; a
+            friends-only post by its AUTHOR only, as a token link with the
+            Teaser/Full choice (the ShareSheet handles the switch). */}
+        {post.audience === 'public' || own ? (
           <ShareButton
             type="post"
             id={post.id}
             className="btn btn-ghost btn-icon"
             ariaLabel="Share this post"
+            nonPublic={post.audience !== 'public'}
           >
             <span aria-hidden>
               <IconLink />
