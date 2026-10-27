@@ -12,7 +12,7 @@ Updated 2026-10-27. A new session continues this project by reading
   reachable from chat settings; three adversarial review rounds), Slice B
   (migration 0014: `share_tokens.preview`, `users.dm_policy` — existing
   accounts backfilled to `everyone`, new default `connections` —,
-  `users.profile_visibility`). Committed, NOT yet deployed: Slice C — the one
+  `users.profile_visibility`). Then DEPLOYED as well (`1fe499c`, 23:45): Slice C — the one
   `ShareSheet` on post/plan/listing/story/group (Copy · OS share · QR · Send
   to a chat · Stop sharing), `ChatPickerSheet` extracted from ForwardSheet,
   `GET /api/share-links/mine`, Settings → Privacy "Your share links",
