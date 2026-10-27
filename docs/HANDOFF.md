@@ -34,7 +34,7 @@ Updated 2026-10-27. A new session continues this project by reading
   /api/conversations/:id/join`, the `group.join_request` frame + admin push,
   `pending_requests` on the DTO (admins of invite_only groups only),
   `lib/shareAuth.ts` `probeMe()` for every island on a public SSR page. Then
-  slice G (2026-10-28): the invite page's group card (`InvitePublic` +
+  slice G, DEPLOYED (`e1e89d2`, 2026-10-28 01:33): the invite page's group card (`InvitePublic` +
   `conversation_id` + `group`, `GET /api/invites/:token/group-avatar`), the
   invite sheet's link list with Revoke + QR. Next: the rest of §2.5's admin
   half (`conversation_bans` — needs migration 0015 —, admin delete-any-message,
