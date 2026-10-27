@@ -1,29 +1,73 @@
 # Session Handoff — continue from here
 
-Updated 2026-10-17 ~14:55 UTC. A new session continues this project by
-reading `CLAUDE.md` first (it auto-loads), then this file.
+Updated 2026-10-27. A new session continues this project by reading
+`CLAUDE.md` first (it auto-loads), then this file, then
+`docs/AUDIT-PLAN.md`.
 
 ## State at handoff
 
-- **v0.9 (auth pack) IS SHIPPED on `main`** — passkeys, QR cross-device
-  login, recovery codes, TOTP 2FA, admin Authentication settings
-  (FEATURES.md items 82-86; design: `docs/SPECS.md` §"v0.9 — Auth pack";
-  contract: `docs/API.md` §1.70-1.74, ADR-021, migration 0011).
-- Verification that PASSED before the ship commit: `pnpm -r build` clean
-  twice, full test suite on live Postgres/Redis, curl smoke, real passkey
-  register+login via Chromium's CDP virtual authenticator, real QR
-  cross-device login between two browser contexts, TOTP enable/login and
-  recovery-code flows walked with screenshots.
-- The `wip/v0.9` and `backup/*` branches are now historical only — ignore
+- `main` at `b396d09` (2026-10-27). Shipped since the last handoff, in
+  order: v0.9.1 auth hardening, v1.0a board & media pack (#91-#95), v1.1
+  Royal UI, Royal v2 wave A (complete round-2 reskin), and the 2026-10-18
+  batch — change password (84b), Settings → Appearance light/dark/system +
+  accents (95c), shared group theme/wallpaper (95b, migration 0013), sounds
+  (#103), in-app ConfirmSheet replacing `window.confirm`, delete
+  group/channel, missed-call card, XHR upload progress, server HEIC
+  conversion, SW stale-shell self-heal, admin grant/revoke + set password,
+  Tailscale Funnel as the stable public URL. The undo-send pill was REMOVED
+  by owner decision (FEATURES #96 struck; server undo route stays).
+- Migrations run `0000`…`0013`. **The next free number is 0014** (the
+  product audit's "migration 0013" references are stale).
+- The `wip/v0.9` and `backup/*` branches are historical only — ignore
   them (main supersedes).
 
-## FIRST TASK for the next session: 3 remaining audit minors
+## FIRST TASK for the next session: work the product audit plan
 
-v0.9.1 (on `main`) fixed the audit's MAJOR finding (TOTP verify/disable
-rate limit, with test + API.md §1.73 429 docs) plus two UI minors. Three
-audit MINORS remain unfixed — small, well-scoped, defense-in-depth. Fix
-them, hold the CLAUDE.md verification bar, ship as v0.9.2 (or fold into
-the next release):
+`docs/AUDIT-PLAN.md` (written 2026-10-27) is the sequenced plan derived
+from the 17-benchmark product audit `AUDIT-2026-10-18.md` (kept outside
+the repo in the owner's Downloads, 3,130 lines; every item was re-verified
+against `b396d09`). Read it before starting anything feature-shaped:
+
+- **§0** lists what the 2026-10-18 commits already closed and the
+  remainder of each — do not redo those.
+- **§1** lists ten decisions only the owner can make (age line 16+/18+,
+  contacts import, YouTube carve-out, `member_count` docs-vs-code, the
+  API.md §1.13 "no all-off switch" sentence, call-declined copy,
+  registration default, two bans to write down, OSM tiles, pull-to-refresh).
+  Ask before building anything that depends on one.
+- **§1b "Share everything"** is an owner requirement from 2026-10-27:
+  every object (profile = "text me / call me", call room, plan, listing,
+  group, post, story, chat media) gets a sendable link whose page shows a
+  teaser and gates message / call / join / more media behind sign-in,
+  landing back on that object. It names what exists today and which wave
+  builds each piece; decision 11 (how much a share page shows before
+  login) must be answered before the non-public token links are built.
+- **§2 Wave 0** is the list of docs and in-product copy that currently lie
+  — hours of string edits, do it first or alongside Wave 1.
+- **§3 Wave 1** is the P0 floor: legal/consent pages, account lifecycle
+  (delete, change email, sign-out-everywhere, export), a sign-out that
+  actually signs out, login that explains suspensions, report taxonomy + post/
+  comment/story/listing/group report kinds, mute end to end,
+  who-can-message + requests inbox, age gate, and the small P0 bugs.
+  Start here unless the owner says otherwise.
+- **§4–§9** are Waves 2–7 (chat/groups, feed/stories, notifications/
+  platform, theme/shell/settings, standard parity, differentiators), each
+  item with the file and line it lives at. **§10** collects every column
+  for migration 0014. **§11** is the week-by-week order.
+- Three audit suggestions lean on the removed undo pill (story delete,
+  comment delete, post undo window) — use `lib/confirm.ts` instead.
+
+Hold the CLAUDE.md verification bar per wave; shoot Playwright screenshots
+in the **light** scheme as well as dark (the audit's captures were all
+light, and that is the theme most phones show).
+
+## Still open from the v0.9 auth audit: 3 minors
+
+v0.9.1 fixed the auth audit's MAJOR finding (TOTP verify/disable rate
+limit) plus two UI minors. These three MINORS are still unfixed at
+`b396d09` (re-checked 2026-10-27) — small, defense-in-depth; fold them
+into AUDIT-PLAN Wave 6 "quiet security gaps" or ship them earlier as
+v0.9.2:
 
 1. **`auth/passkeys.ts` (~line 288)**: login counter update is an
    unconditional `SET counter = $new`; concurrent assertions can regress
@@ -38,19 +82,24 @@ the next release):
    the reset token first; wrap the notify in try/catch (best-effort, like
    the register invite-accept pattern).
 
-## After v0.9.1 — the agreed backlog (owner schedules, do not auto-start)
+## The agreed backlog (owner schedules, do not auto-start)
 
 LiveKit SFU for >8-person calls · listen-together · E2EE · native wrappers
 · make-it-yours kit · federation · a real SMTP mailer (turns on the stored
-OTP/email toggles in admin→Authentication).
+OTP/email toggles in admin→Authentication). These map to AUDIT-PLAN Wave 7.
 
 ## Owner's operational setup (context the new session needs)
 
-- Owner runs the app on a laptop via `./bored` (update/tunnel/status/
-  backup/export-import; autoupdate cron optional). Public exposure via
-  cloudflared quick tunnels; `PUBLIC_ORIGIN` in `.env` (auto-set by
-  `./bored tunnel`). Cross-network calls need a VPS or port-forwarding
-  (ADR-017). Admin is CLI-granted (`./bored admin <user>`).
+- Production runs on the owner's Ubuntu box (see `docs/CLAUDE-MEMORY.md`
+  for host, services and past incidents), driven by `./bored`
+  (update/tunnel/status/backup/export-import; autoupdate cron optional).
+  Stable public URL is Tailscale Funnel (bc6ad3d; Caddy `:80` catch-all);
+  cloudflared quick tunnels remain the fallback; `PUBLIC_ORIGIN` in `.env`.
+  Cross-network calls need a VPS or port-forwarding (ADR-017). Admin is
+  granted by CLI (`./bored admin <user>`) or, since a3af7b2, from the admin
+  Users tab; the CLI stays the root of trust.
+- `./bored backup` is DATABASE ONLY — media in the `minio_data` volume is
+  not included (AUDIT-PLAN Wave 1.9 asks to fix the message or the script).
 - Passkeys bind to the domain (WEBAUTHN_RP_ID, ADR-021) — on quick
   tunnels every run is a new domain, so tell the owner to enroll passkeys
   only on a stable domain.

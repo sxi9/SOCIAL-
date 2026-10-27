@@ -293,6 +293,27 @@ button); posts AND videos on share pages are viewable/PLAYABLE by non-users
 (share-token-gated streaming, rate-limited), with every interaction gating
 to signup + deep-link-back. Growth loop: viewer → login wall only at the
 moment of interaction, never at view time for public content.
+Owner emphasis (2026-10-27): "everything shareable" — the set widens to
+every object a member can point at: profile as a "text me / call me" link,
+a call room link ("video call / meet over", `/call/<token>`), any plan
+("join me"), any listing/room, any group, any post, story, chat media
+(OS share + send-to-chat). Each page shows a teaser (what + who) and gates
+message / call / join / further pics and video behind sign-in, then lands
+on that exact object. Non-public objects share by capability token (the
+existing revocable share-link machinery); after login the gated action
+re-checks audience, blocks and dm_policy and turns "outside the audience"
+into a request, never a 404. The full per-object matrix, what exists
+today, and the wave that builds each piece are in `docs/AUDIT-PLAN.md`
+§1b. Owner decision (2026-10-27, AUDIT-PLAN decision 11): public objects
+stay fully viewable (the 2026-10-17 line above stands); non-public objects
+shared by token show a TEASER by default with a sharer-side Teaser/Full
+switch at mint time (stored on the token, server-rendered); other people's
+identities (joiner faces, members, commenters, reactors, viewers) are never
+shown to a stranger; every action (message, call, join, react, reply, more
+pics, video on private objects) sits behind an INLINE sign-in sheet that
+re-renders the page in place. Operational counts ("3 people are here",
+"12 members", "a few spots left") are allowed on share pages. The
+per-object visible/gated table is in AUDIT-PLAN §1b.
 
 **Explicitly NOT building:** public numeric profile stats (follower/like
 counts) — banned by PSYCHOLOGY rule 3; the Instagram-style grid + share
@@ -308,3 +329,8 @@ link ship without numbers.
 - Group calls are mesh ≤8 until LiveKit SFU (ADR-014 seam); listen-together
   deferred; E2EE/native wrappers/federation/make-it-yours stay backlog until
   the owner schedules them.
+- Share pages (2026-10-27): "show the thing, hide the people, gate the
+  action". Public objects fully viewable; non-public objects by token with a
+  sharer-chosen Teaser/Full preview; strangers never see other members'
+  identities; every action behind an inline sign-in sheet. Per-object table
+  in `docs/AUDIT-PLAN.md` §1b.
