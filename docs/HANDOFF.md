@@ -41,8 +41,8 @@ Updated 2026-10-28. A new session continues this project by reading
   for the signed-in visitor, `GET /api/share/:token/landing` says
   visible/outside + the author, and `OutsideAudienceSheet` offers the one
   door — Ask the host (DM), Message the poster (`contact {share_token}`
-  opens the area gate), Connect with the author. Then phase 4 (slice I,
-  2026-10-28, web only): chat message menu ⎘ Copy · ⇪ Share… (text, or the
+  opens the area gate), Connect with the author. Then phase 4 slice I,
+  DEPLOYED (`e3a12f7`, 2026-10-28 02:38, web only): chat message menu ⎘ Copy · ⇪ Share… (text, or the
   media as a File through the Web Share API — `lib/osShare.ts`; Save/Copy
   fallback) · ⤓ Save · ⤻ Send to a chat, right-click opens it, long-press
   hums; story viewer ⇪ Share… for everyone + author `/u/` link; `/?story=
