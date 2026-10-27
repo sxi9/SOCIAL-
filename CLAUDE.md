@@ -20,6 +20,8 @@ for any AI agent or developer: read it first, then the doc it points you to.
 | Capacity numbers + scaling runbook | `docs/SCALING.md` |
 | Hands-on dev setup (hot reload, file map, ship-to-server) | `docs/DEVELOPING.md` |
 | Where production runs, how it is deployed, the box's quirks and past incidents | `docs/CLAUDE-MEMORY.md` (mirror of the owner's Claude memory) |
+| Where the last session stopped and what to do first | `docs/HANDOFF.md` |
+| What to build next, in order, with file:line pointers (from the 2026-10-18 product audit) | `docs/AUDIT-PLAN.md` (§0 already-done, §1 owner decisions, §1b share-everything, Waves 0–7) |
 
 ## Golden rules (violating these breaks the product)
 
@@ -53,8 +55,9 @@ for any AI agent or developer: read it first, then the doc it points you to.
    the same cookie authenticates the WS upgrade; logout/revocation closes
    live sockets (code 4401). Mutating routes require the
    `X-Requested-With: fetch` header (CSRF). No JWTs.
-9. **Migrations are append-only** (`0000`…`0012` so far). New schema = new
-   numbered file + matching `schema.ts` change. The `migrate` compose service
+9. **Migrations are append-only** (`0000`…`0013` so far; the next one is
+   `0014` — `docs/AUDIT-PLAN.md` §10 lists the columns queued for it). New
+   schema = new numbered file + matching `schema.ts` change. The `migrate` compose service
    runs them and creates the MinIO bucket.
 10. **Zero new dependencies by default.** Pin exact versions. New native/
     postinstall deps must be added to `pnpm.onlyBuiltDependencies` in the
@@ -116,5 +119,12 @@ enforcement, race conditions) with fix/recheck rounds. Hold that bar.
 queued (release commits in `git log`). Queued releases build from the full
 designs in `docs/SPECS.md`, which also records the owner's standing
 decisions (no private-chat monitor, no payments, no login-page user cards,
-invisible single waves, mesh-call cap). Backlog: LiveKit SFU, listen-
-together, E2EE, native wrappers, make-it-yours kit, federation.
+invisible single waves, mesh-call cap, no undo-send pill, share pages per
+AUDIT-PLAN decision 11). Backlog: LiveKit SFU, listen-together, E2EE,
+native wrappers, make-it-yours kit, federation.
+
+Since 2026-10-27 the sequenced work list is `docs/AUDIT-PLAN.md` (derived
+from a 17-benchmark product audit, every item re-verified against the
+tree). Start from its Wave 0/1 unless `docs/HANDOFF.md` says otherwise;
+ask the owner before building anything that hangs on one of its §1
+decisions.

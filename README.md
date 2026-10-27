@@ -223,7 +223,9 @@ topology). The build order and Phase 2–4 plans live in
 > **This cut line is historical** (the v0.1 MVP). Most of the "out" list has
 > since shipped — reactions, feed/posts, calls, blocking & moderation, the
 > admin panel, stories and more. [`docs/FEATURES.md`](docs/FEATURES.md) is
-> the always-current shipped-vs-planned list.
+> the always-current shipped-vs-planned list, and
+> [`docs/AUDIT-PLAN.md`](docs/AUDIT-PLAN.md) is the sequenced list of what
+> is being added or updated next (from the 2026-10-18 product audit).
 
 ---
 

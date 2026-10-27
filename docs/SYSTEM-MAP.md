@@ -17,7 +17,11 @@ packages/shared/                        THE CONTRACT (see below)
 apps/server/                            Fastify 5 api + BullMQ worker + ops CLI (one package, one image)
 apps/web/                               Next.js 15 App Router PWA
 docs/                                   ARCHITECTURE, API, SCHEMA.sql (founding DDL), PSYCHOLOGY,
-                                        FEATURES, SCALING, SYSTEM-MAP (this), adr/ADR-001..015
+                                        FEATURES, SPECS (designs + owner decisions), ROADMAP,
+                                        AUDIT-PLAN (sequenced work list, 2026-10-27), HANDOFF,
+                                        TROUBLESHOOTING, DEVELOPING, SCALING, CLAUDE-MEMORY,
+                                        DESIGN-HANDOFF, DESIGN-PROMPT-V2, SYSTEM-MAP (this),
+                                        adr/ADR-001..021
 ```
 
 ## packages/shared — the contract
