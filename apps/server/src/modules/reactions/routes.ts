@@ -23,17 +23,19 @@ import {
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { isBlockedPair } from '../../lib/blocks.js';
-import { activeParticipantUserIds } from '../../lib/dto.js';
+import { activeParticipantUserIds, ghostCtxFor, userLiteDto } from '../../lib/dto.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
-import { pseudoIdFor } from '../../lib/ghost.js';
+import { maskUserLite } from '../../lib/ghost.js';
 import { publishReactionUpdated } from '../../ws/events.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant } from '../conversations/routes.js';
 import type { ReactionUpdatedEvent } from '@socialchat/shared';
 
-/** v0.8b (§1.68): reaction.updated deltas carry user_id — inside a 👻 ghost
- * group that is an identity, so non-admin members (except the reactor on
- * their own frame) receive the PSEUDO-ID instead. */
+/** v0.8b (§1.68): reaction.updated deltas carry user_id AND the actor's
+ * UserLite face (recipients cannot always resolve it locally — channel
+ * members are never in conv.participants). Inside a 👻 ghost group both are
+ * identities, so non-admin members (except the reactor on their own frame)
+ * receive the PSEUDO-ID and the MASK face instead. */
 async function fanReactionUpdated(convId: string, d: ReactionUpdatedEvent['d']): Promise<void> {
   const [conv] = await db
     .select({ visibility: schema.conversations.visibility })
@@ -47,7 +49,11 @@ async function fanReactionUpdated(convId: string, d: ReactionUpdatedEvent['d']):
     SELECT user_id, role FROM conversation_participants
     WHERE conversation_id = ${convId} AND left_at IS NULL
   `)) as unknown as { user_id: string; role: string }[];
-  const masked = { ...d, user_id: pseudoIdFor(convId, d.user_id) };
+  // The mask of the ACTOR does not depend on who is looking, so one ctx
+  // (no viewer) serves every masked recipient.
+  const ctx = (await ghostCtxFor({ id: convId, visibility: 'ghost' }, null))!;
+  const maskedFace = maskUserLite(ctx, d.user_id);
+  const masked = { ...d, user_id: maskedFace.id, user: maskedFace };
   const realTo = rows
     .filter((r) => r.role === 'admin' || r.user_id === d.user_id)
     .map((r) => r.user_id);
@@ -96,14 +102,6 @@ async function requireUnfrozenForStamp(convId: string, userId: string): Promise<
   if (conv?.type !== 'dm') return;
   const peer = (await activeParticipantUserIds(convId)).find((id) => id !== userId);
   if (peer && (await isBlockedPair(userId, peer))) throw notFound();
-}
-
-async function emojiCount(convId: string, seq: number, emoji: string): Promise<number> {
-  const rows = (await db.execute(sql`
-    SELECT count(*)::int AS n FROM message_reactions
-    WHERE conversation_id = ${convId} AND seq = ${seq}::bigint AND emoji = ${emoji}
-  `)) as unknown as { n: number }[];
-  return rows[0]?.n ?? 0;
 }
 
 async function holdsReaction(
@@ -189,15 +187,15 @@ export async function reactionRoutes(fastify: FastifyInstance): Promise<void> {
         throw conflict('reaction_limit');
       }
 
-      // Effective add → one reaction.updated delta to all active participants.
-      const count = await emojiCount(convId, seq, emoji);
+      // Effective add → one reaction.updated delta to all active participants
+      // (a one-actor delta: recipients add this user's face to the chip).
       await fanReactionUpdated(convId, {
         conversation_id: convId,
         seq,
         kind,
         emoji,
-        count,
         user_id: user.id,
+        user: userLiteDto(user),
         removed: false,
       });
       return reply.status(204).send();
@@ -223,15 +221,15 @@ export async function reactionRoutes(fastify: FastifyInstance): Promise<void> {
       `)) as unknown as { kind: ReactionKind }[];
 
       if (deleted.length > 0) {
-        // Effective remove; count 0 removes the chip (or the stamp face).
-        const count = await emojiCount(convId, seq, emoji);
+        // Effective remove: recipients drop this user's face; an emptied chip
+        // (or the stamp face) disappears client-side.
         await fanReactionUpdated(convId, {
           conversation_id: convId,
           seq,
           kind: deleted[0]!.kind,
           emoji,
-          count,
           user_id: user.id,
+          user: userLiteDto(user),
           removed: true,
         });
       }

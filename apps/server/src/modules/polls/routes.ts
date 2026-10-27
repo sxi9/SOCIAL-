@@ -9,15 +9,22 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { CreatePollRequestSchema, VotePollRequestSchema, type Poll } from '@socialchat/shared';
+import {
+  CreatePollRequestSchema,
+  VotePollRequestSchema,
+  type Message,
+  type Poll,
+} from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { isBlockedPair } from '../../lib/blocks.js';
 import { activeParticipantUserIds, loadPollsFor, messageDtos } from '../../lib/dto.js';
 import { ApiError, badRequest, conflict, notFound } from '../../lib/errors.js';
+import { ghostMessageDtos } from '../../lib/ghost.js';
 import { publishToUsers } from '../../ws/events.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant } from '../conversations/routes.js';
+import { ghostViewOf } from '../messages/routes.js';
 import { fanOutNewMessage, insertMessage } from '../messages/service.js';
 
 const IdParams = z.object({ id: z.string().uuid() });
@@ -118,8 +125,14 @@ export async function pollRoutes(fastify: FastifyInstance): Promise<void> {
         throw new ApiError(403, 'channel_read_only');
       }
 
+      // §1.68: a poll IS a message — every DTO returned here (replay, race,
+      // fresh) is the creator's own copy with other ghost members masked
+      // (reactions[].reactors carry faces).
+      const ghost = conv.visibility === 'ghost' ? await ghostViewOf(convId, user.id, part.role) : null;
+      const own = (d: Message): Message => (ghost ? ghostMessageDtos([d], ghost)[0]! : d);
+
       const replay = await findPollMessageByClientMsgId(convId, user.id, req.body.client_msg_id);
-      if (replay) return reply.status(200).send({ message: replay });
+      if (replay) return reply.status(200).send({ message: own(replay) });
 
       const closesAt = req.body.closes_at ? new Date(req.body.closes_at) : null;
       let msg;
@@ -145,14 +158,14 @@ export async function pollRoutes(fastify: FastifyInstance): Promise<void> {
       } catch (err) {
         if ((err as { code?: string }).code === '23505') {
           const raced = await findPollMessageByClientMsgId(convId, user.id, req.body.client_msg_id);
-          if (raced) return reply.status(200).send({ message: raced });
+          if (raced) return reply.status(200).send({ message: own(raced) });
         }
         throw err;
       }
 
       await fanOutNewMessage(msg);
       const [dto] = await messageDtos([msg], user.id);
-      return reply.status(201).send({ message: dto });
+      return reply.status(201).send({ message: own(dto!) });
     },
   );
 

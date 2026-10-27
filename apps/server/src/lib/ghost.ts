@@ -164,6 +164,17 @@ export function ghostMessageDto(msg: Message, ctx: GhostCtx): Message {
   out.stamps = (out.stamps ?? []).map((u) =>
     u.id === ctx.viewerId ? u : maskUserLite(ctx, u.id),
   );
+  // Emoji chips carry reactor FACES (Audit P0 / PSYCHOLOGY rule 3) — inside a
+  // ghost group those are identities, masked exactly like stamps. This also
+  // keeps the DTO face id equal to the pseudo-id the reaction.updated frame
+  // carries (reactions/routes.ts fanReactionUpdated), so the client's
+  // remove/dedupe by id keeps working for non-admins.
+  out.reactions = (out.reactions ?? []).map((c) => ({
+    ...c,
+    reactors: (c.reactors ?? []).map((u) =>
+      u.id === ctx.viewerId ? u : maskUserLite(ctx, u.id),
+    ),
+  }));
   if (out.vibe) {
     out.vibe.replies = out.vibe.replies.map((r) => ({
       ...r,

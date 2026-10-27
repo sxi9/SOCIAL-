@@ -53,7 +53,7 @@ const m = schema.messages;
 /** v0.8b (§1.68): the viewer's GhostCtx for a conversation — null unless it
  * is a 👻 ghost group AND the viewer is a non-admin member (admins see real
  * identities; everyone else gets the mask transform applied to message DTOs). */
-async function ghostViewOf(
+export async function ghostViewOf(
   convId: string,
   viewerId: string,
   role: string | null,
@@ -127,10 +127,16 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       // v0.8b (§1.68): ghost groups — a mention is an identity assertion, so
       // @tokens stay inert plain text (never parsed, never a mute override).
       const isGhostConv = conv.visibility === 'ghost';
+      // §1.68: computed once — EVERY DTO this route returns (idempotent
+      // replay, the 23505 race, the fresh 201) is the sender's own copy with
+      // other members masked. Replays matter: reactions[].reactors carry
+      // faces, and a replay can race a reaction (audit review, 2026-10-27).
+      const ghost = isGhostConv ? await ghostViewOf(convId, user.id, part.role) : null;
+      const own = (d: Message): Message => (ghost ? ghostMessageDtos([d], ghost)[0]! : d);
 
       const body = req.body;
       const replay = await findByClientMsgId(convId, user.id, body.client_msg_id);
-      if (replay) return reply.status(200).send({ message: replay });
+      if (replay) return reply.status(200).send({ message: own(replay) });
 
       let text = body.body?.trim() ? body.body : null;
       let attachmentIds = body.attachment_ids ?? [];
@@ -342,7 +348,7 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       } catch (err) {
         if ((err as { code?: string }).code === '23505') {
           const raced = await findByClientMsgId(convId, user.id, body.client_msg_id);
-          if (raced) return reply.status(200).send({ message: raced });
+          if (raced) return reply.status(200).send({ message: own(raced) });
         }
         throw err;
       }
@@ -382,9 +388,8 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       // Viewer-scoped response (reactions.mine / poll.my_vote / vibe.my_reply_seq).
       const [dto] = await messageDtos([msg], user.id);
       // §1.68: the sender's own copy in a ghost group — own identity real,
-      // every OTHER member (reply context, stamps) masked.
-      const ghost = isGhostConv ? await ghostViewOf(convId, user.id, part.role) : null;
-      return reply.status(201).send({ message: ghost ? ghostMessageDtos([dto!], ghost)[0] : dto });
+      // every OTHER member (reply context, stamps, reactors) masked.
+      return reply.status(201).send({ message: own(dto!) });
     },
   );
 
@@ -661,14 +666,26 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       // ALL-OR-NOTHING target validation, byte-identical 404 for every failure
       // mode: unknown id, non-membership, channel I cannot post to, frozen DM.
       const targets = req.body.target_conversation_ids;
+      // §1.68: a per-target ghost ctx, kept from validation — every DTO
+      // pushed for a ghost target (replay, 23505 race, fresh) is the
+      // forwarder's own copy with that group's other members masked.
+      const ghostByTarget = new Map<string, GhostCtx | null>();
       for (const t of targets) {
         try {
-          await requireSendContext(t, user.id, { denialShape: '404' });
+          const { conv: tc, part: tp } = await requireSendContext(t, user.id, { denialShape: '404' });
+          ghostByTarget.set(
+            t,
+            tc.visibility === 'ghost' ? await ghostViewOf(t, user.id, tp.role) : null,
+          );
         } catch (err) {
           if (err instanceof ApiError) throw notFound('not_found');
           throw err;
         }
       }
+      const ownIn = (t: string, d: Message): Message => {
+        const g = ghostByTarget.get(t);
+        return g ? ghostMessageDtos([d], g)[0]! : d;
+      };
 
       // forwarded_from: preserved verbatim on a forward-of-forward, else a
       // snapshot of the original author at forward time (not a UserLite — no
@@ -718,7 +735,7 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       for (const targetId of targets) {
         const replay = await findByClientMsgId(targetId, user.id, req.body.client_msg_id);
         if (replay) {
-          out.push(replay);
+          out.push(ownIn(targetId, replay));
           continue;
         }
         let msg: MsgRow;
@@ -747,7 +764,7 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
             // the remainder without duplicating (§1.31).
             const raced = await findByClientMsgId(targetId, user.id, req.body.client_msg_id);
             if (raced) {
-              out.push(raced);
+              out.push(ownIn(targetId, raced));
               continue;
             }
           }
@@ -756,7 +773,7 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
         createdAny = true;
         await fanOutNewMessage(msg);
         const [dto] = await messageDtos([msg], user.id);
-        out.push(dto!);
+        out.push(ownIn(targetId, dto!));
       }
       return reply.status(createdAny ? 201 : 200).send({ messages: out });
     },

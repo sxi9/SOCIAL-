@@ -20,7 +20,11 @@ import type {
   VibeCheckAggregate,
   VibeReplyRef,
 } from '@socialchat/shared';
-import { REPLY_EXCERPT_MAX_CHARS, VIBE_REPLIES_PREVIEW_MAX } from '@socialchat/shared';
+import {
+  MESSAGE_REACTORS_PREVIEW_MAX,
+  REPLY_EXCERPT_MAX_CHARS,
+  VIBE_REPLIES_PREVIEW_MAX,
+} from '@socialchat/shared';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { blockedSetOf, blockPairsAmong } from './blocks.js';
@@ -477,9 +481,11 @@ export async function loadAttachmentsFor(messageIds: string[]): Promise<Map<stri
   return map;
 }
 
-// v0.2 (API.md §1.12): batch reaction aggregates — one chip per emoji, count,
-// `mine` from the viewer's perspective, ordered by first reaction
-// (min created_at) so chips never reshuffle as counts change.
+// v0.2 (API.md §1.12): batch reaction aggregates — one chip per emoji from
+// the viewer's perspective, ordered by first reaction (min created_at per
+// emoji) so chips never reshuffle. Audit P0 / PSYCHOLOGY rule 3: each chip
+// ships the first MESSAGE_REACTORS_PREVIEW_MAX reactors as FACES (the
+// loadStampsFor join) plus has_more — never a count.
 export async function loadReactionsFor(
   keys: { conversationId: string; seq: number }[],
   viewerId?: string,
@@ -490,28 +496,68 @@ export async function loadReactionsFor(
     keys.map((k) => sql`(${k.conversationId}::uuid, ${k.seq}::bigint)`),
     sql`, `,
   );
-  const mineExpr = viewerId ? sql`bool_or(user_id = ${viewerId}::uuid)` : sql`false`;
   // v0.4 (§1.19): aggregates are EMOJI chips only — stamp rows ride
   // Message.stamps as faces (loadStampsFor), never a counted chip.
-  const rows = (await db.execute(sql`
-    SELECT conversation_id, seq, emoji, count(*)::int AS count, ${mineExpr} AS mine
-    FROM message_reactions
-    WHERE (conversation_id, seq) IN (${tuples}) AND kind = 'emoji'
-    GROUP BY conversation_id, seq, emoji
-    ORDER BY min(created_at) ASC, emoji ASC
+  //
+  // Bounded in SQL, not in JS: a window caps each (message, emoji) at
+  // cap + 1 rows — the extra row only proves has_more — and `mine` is a
+  // window bool_or so the viewer's own row counts even when it sits past
+  // the cap. Without this a 256-member group would ship up to members × 8
+  // joined rows per message to throw most of them away (the old GROUP BY
+  // was ≤ 8 rows per message; this stays ≤ 8 × (cap + 1)). Chips keep
+  // first-reaction order via min(created_at); faces keep created_at order.
+  // The OVER clause rides inside the viewer branch: a bare `false OVER (…)`
+  // is not SQL.
+  const mineExpr = viewerId
+    ? sql`bool_or(user_id = ${viewerId}::uuid) OVER (PARTITION BY conversation_id, seq, emoji)`
+    : sql`false`;
+  const capped = (await db.execute(sql`
+    SELECT conversation_id, seq, emoji, user_id, rn, mine
+    FROM (
+      SELECT conversation_id, seq, emoji, user_id, created_at,
+             row_number() OVER (
+               PARTITION BY conversation_id, seq, emoji ORDER BY created_at ASC, user_id ASC
+             ) AS rn,
+             ${mineExpr} AS mine,
+             min(created_at) OVER (PARTITION BY conversation_id, seq, emoji) AS first_at
+      FROM message_reactions
+      WHERE (conversation_id, seq) IN (${tuples}) AND kind = 'emoji'
+    ) r
+    WHERE rn <= ${MESSAGE_REACTORS_PREVIEW_MAX + 1}
+    ORDER BY first_at ASC, emoji ASC, rn ASC
   `)) as unknown as {
     conversation_id: string;
     seq: string | number;
     emoji: string;
-    count: number;
+    user_id: string;
+    rn: string | number;
     mine: boolean;
   }[];
-  for (const r of rows) {
+  if (capped.length === 0) return map;
+  // One bounded users read for every face we will actually ship (the rn ==
+  // cap + 1 sentinel rows are excluded — they never render).
+  const faceIds = [...new Set(capped.filter((r) => Number(r.rn) <= MESSAGE_REACTORS_PREVIEW_MAX).map((r) => r.user_id))];
+  const users = faceIds.length
+    ? await db.select().from(schema.users).where(inArray(schema.users.id, faceIds))
+    : [];
+  const byUser = new Map(users.map((u) => [u.id, u]));
+  // Rows arrive chip-grouped (first_at, emoji) then face-ordered (rn), so Map
+  // insertion order == first-reaction order == the old GROUP BY ordering.
+  const chips = new Map<string, Map<string, ReactionAggregate>>();
+  for (const r of capped) {
     const key = `${r.conversation_id}:${Number(r.seq)}`;
-    const list = map.get(key) ?? [];
-    list.push({ emoji: r.emoji, count: Number(r.count), mine: Boolean(r.mine) });
-    map.set(key, list);
+    const byEmoji = chips.get(key) ?? new Map<string, ReactionAggregate>();
+    const chip =
+      byEmoji.get(r.emoji) ?? { emoji: r.emoji, reactors: [], has_more: false, mine: Boolean(r.mine) };
+    if (Number(r.rn) > MESSAGE_REACTORS_PREVIEW_MAX) chip.has_more = true;
+    else {
+      const u = byUser.get(r.user_id);
+      if (u) chip.reactors.push(userLiteDto(u));
+    }
+    byEmoji.set(r.emoji, chip);
+    chips.set(key, byEmoji);
   }
+  for (const [key, byEmoji] of chips) map.set(key, [...byEmoji.values()]);
   return map;
 }
 

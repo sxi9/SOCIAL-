@@ -1,7 +1,7 @@
 // In-memory app state, fed by REST sync + WS events. Watermarks are monotonic
 // maxima and messages apply idempotently by (conversation_id, seq), so events
 // may arrive duplicated or out of order without harm (API.md §2.5).
-import { TOAST_MAX_VISIBLE } from '@socialchat/shared';
+import { MESSAGE_REACTORS_PREVIEW_MAX, TOAST_MAX_VISIBLE } from '@socialchat/shared';
 import type {
   AnonMessage,
   AnonThread,
@@ -531,31 +531,63 @@ interface ReactionDelta {
   conversation_id: string;
   seq: number;
   emoji: string;
-  count: number;
   user_id: string;
   removed: boolean;
+  /** The actor's face, shipped on the frame (masked inside ghost groups) —
+   * channel members are NOT in conv.participants, so a local lookup alone
+   * cannot resolve every reactor. Optional only for the local optimistic
+   * path, which resolves state.me. */
+  user?: UserLite;
 }
 
+/** One-actor delta (§2.3): add/remove the reactor's FACE on the chip — the
+ * patchStamps pattern (Audit P0 / PSYCHOLOGY rule 3: faces, never a count).
+ * An emptied chip drops; a chip at the preview cap flips has_more instead of
+ * growing. Duplicate frames are no-ops. Reconnect truth is the DTO aggregate. */
 function patchReactions(msg: Message, d: ReactionDelta, isMe: boolean): Message {
   const reactions = [...msg.reactions];
   const i = reactions.findIndex((r) => r.emoji === d.emoji);
-  if (d.count <= 0) {
-    if (i !== -1) reactions.splice(i, 1);
-  } else if (i === -1) {
+  if (d.removed) {
+    if (i === -1) return msg;
+    const chip = reactions[i];
+    const reactors = (chip.reactors ?? []).filter((u) => u.id !== d.user_id);
+    const mine = isMe ? false : chip.mine;
+    // Drop only when nothing can be hiding: a has_more chip may hold people
+    // whose faces this client never had (a legacy IDB row normalized to
+    // {reactors: [], has_more: true}, or a reactor past the cap) — dropping it
+    // would hide live reactions until the next refetch. The "+" ghost that a
+    // withdrawn unresolved reactor can leave is the cheaper staleness and the
+    // next DTO clears it.
+    if (reactors.length === 0 && !chip.has_more) reactions.splice(i, 1);
+    else reactions[i] = { ...chip, reactors, mine };
+    return { ...msg, reactions };
+  }
+  const user = d.user ?? userLiteFor(d.conversation_id, d.user_id);
+  if (i === -1) {
     // Chips are ordered by first reaction (min created_at per emoji), so a
-    // brand-new chip appends — matching the server's DTO ordering.
-    reactions.push({ emoji: d.emoji, count: d.count, mine: isMe ? !d.removed : false });
+    // brand-new chip appends — matching the server's DTO ordering. A face we
+    // cannot resolve locally still shows as "someone" via has_more.
+    reactions.push({ emoji: d.emoji, reactors: user ? [user] : [], has_more: !user, mine: isMe });
+    return { ...msg, reactions };
+  }
+  const chip = reactions[i];
+  const current = chip.reactors ?? [];
+  const mine = isMe ? true : chip.mine;
+  if (current.some((u) => u.id === d.user_id)) {
+    reactions[i] = { ...chip, mine }; // duplicate frame: keep first-reaction order
+  } else if (user && (isMe || current.length < MESSAGE_REACTORS_PREVIEW_MAX)) {
+    // My own face is ALWAYS added (even one past the cap): the optimistic
+    // path and its rollback then stay a clean add/remove of exactly my face,
+    // and a failed add can never leave a phantom has_more behind. Only
+    // other people's frames flip has_more at the cap.
+    reactions[i] = { ...chip, reactors: [...current, user], mine };
   } else {
-    reactions[i] = {
-      ...reactions[i],
-      count: d.count,
-      mine: isMe ? !d.removed : reactions[i].mine,
-    };
+    reactions[i] = { ...chip, has_more: true, mine };
   }
   return { ...msg, reactions };
 }
 
-/** reaction.updated frame: `count` is the NEW authoritative total; 0 drops the chip. */
+/** reaction.updated frame: add/remove one face; the DTO is reconnect truth. */
 export function applyReactionUpdated(d: ReactionDelta): void {
   const isMe = state.me?.id === d.user_id;
   const changed = patchMessageAt(d.conversation_id, d.seq, (msg) => patchReactions(msg, d, isMe));
@@ -573,21 +605,18 @@ export function applyReactionUpdated(d: ReactionDelta): void {
   }
 }
 
-/** Optimistic local toggle (lib/reactions.ts); the WS frame confirms totals. */
+/** Optimistic local toggle (lib/reactions.ts): my own face on/off, through the
+ * same delta patch the WS frame uses — so the confirming frame is a no-op. */
 export function applyReactionLocal(conversationId: string, seq: number, emoji: string, add: boolean): void {
-  const changed = patchMessageAt(conversationId, seq, (msg) => {
-    const reactions = [...msg.reactions];
-    const i = reactions.findIndex((r) => r.emoji === emoji);
-    if (add) {
-      if (i === -1) reactions.push({ emoji, count: 1, mine: true });
-      else if (!reactions[i].mine) reactions[i] = { ...reactions[i], count: reactions[i].count + 1, mine: true };
-    } else if (i !== -1 && reactions[i].mine) {
-      const next = reactions[i].count - 1;
-      if (next <= 0) reactions.splice(i, 1);
-      else reactions[i] = { ...reactions[i], count: next, mine: false };
-    }
-    return { ...msg, reactions };
-  });
+  const me = state.me;
+  if (!me) return;
+  const changed = patchMessageAt(conversationId, seq, (msg) =>
+    patchReactions(
+      msg,
+      { conversation_id: conversationId, seq, emoji, user_id: me.id, removed: !add },
+      true,
+    ),
+  );
   if (changed) emit();
 }
 
@@ -626,8 +655,11 @@ export function applyStampUpdated(d: {
   seq: number;
   user_id: string;
   removed: boolean;
+  user?: UserLite;
 }): void {
-  const user = userLiteFor(d.conversation_id, d.user_id);
+  // The frame now carries the stamper's face (masked in ghost groups), so
+  // channel members — absent from conv.participants — resolve too.
+  const user = d.user ?? userLiteFor(d.conversation_id, d.user_id);
   const patch = (msg: Message): Message => patchStamps(msg, d.user_id, user, d.removed);
   const changed = patchMessageAt(d.conversation_id, d.seq, patch);
   if (changed) {

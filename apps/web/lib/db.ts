@@ -138,6 +138,40 @@ export async function dropConversation(conversationId: string): Promise<void> {
 }
 
 /** Newest `limit` stored messages for a conversation, ascending by seq. */
+/**
+ * Rows persisted before the reaction-faces change hold chips shaped
+ * {emoji, count, mine} with no reactors/has_more. Nothing re-parses the IDB
+ * path with Zod (rows go straight into the store), so normalize at the read
+ * boundary instead of bumping DB_VERSION and wiping everyone's offline window:
+ * a legacy chip becomes an "others reacted" chip (no faces, has_more) until
+ * the next viewer-scoped fetch replaces the DTO with real reactors.
+ */
+type ReactionChip = Message['reactions'][number];
+/** A chip as it may sit in IDB: the current shape, or the pre-faces
+ * {emoji, count, mine} one — hence every field past emoji is unknown here. */
+interface StoredChip {
+  emoji: string;
+  reactors?: unknown;
+  has_more?: unknown;
+  count?: unknown;
+  mine?: unknown;
+}
+
+function normalizeStoredMessage(raw: unknown): Message {
+  const msg = raw as Omit<Message, 'reactions'> & { reactions?: StoredChip[] };
+  if (!Array.isArray(msg.reactions)) return { ...msg, reactions: [] } as Message;
+  let touched = false;
+  const reactions: ReactionChip[] = msg.reactions.map((c) => {
+    if (Array.isArray(c.reactors) && typeof c.has_more === 'boolean') {
+      return c as unknown as ReactionChip;
+    }
+    touched = true;
+    const count = typeof c.count === 'number' ? c.count : 0;
+    return { emoji: c.emoji, reactors: [], has_more: count > 0, mine: c.mine === true };
+  });
+  return (touched ? { ...msg, reactions } : msg) as Message;
+}
+
 export async function getMessagesTail(conversationId: string, limit: number): Promise<Message[]> {
   const db = await openDb();
   const tx = db.transaction('messages', 'readonly');
@@ -148,7 +182,7 @@ export async function getMessagesTail(conversationId: string, limit: number): Pr
     cursorReq.onsuccess = () => {
       const cursor = cursorReq.result;
       if (cursor && out.length < limit) {
-        out.push(cursor.value as Message);
+        out.push(normalizeStoredMessage(cursor.value));
         cursor.continue();
       } else {
         resolve();

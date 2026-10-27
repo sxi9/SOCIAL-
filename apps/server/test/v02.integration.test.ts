@@ -389,21 +389,38 @@ describe.runIf(infra)('v0.2 invites & reactions', () => {
       return msg!.reactions;
     };
 
-    // b reacts; re-add is an idempotent 204 (no double count).
-    expect((await react(b, fire)).statusCode).toBe(204);
-    expect((await react(b, fire)).statusCode).toBe(204);
-    expect(await reactionsSeenBy(b)).toEqual([{ emoji: fire, count: 1, mine: true }]);
-    // `mine` is viewer-dependent: a sees the same chip, not held.
-    expect(await reactionsSeenBy(a)).toEqual([{ emoji: fire, count: 1, mine: false }]);
+    // Chips carry FACES (reactor ids in first-reaction order), never a count.
+    const faces = (chips: Message['reactions']) =>
+      chips.map((c) => ({
+        emoji: c.emoji,
+        ids: c.reactors.map((u) => u.id),
+        has_more: c.has_more,
+        mine: c.mine,
+      }));
 
-    // a piles on → count 2, mine true for both.
+    // b reacts; re-add is an idempotent 204 (no duplicate face).
+    expect((await react(b, fire)).statusCode).toBe(204);
+    expect((await react(b, fire)).statusCode).toBe(204);
+    expect(faces(await reactionsSeenBy(b))).toEqual([
+      { emoji: fire, ids: [b.userId], has_more: false, mine: true },
+    ]);
+    // `mine` is viewer-dependent: a sees the same face, not held.
+    expect(faces(await reactionsSeenBy(a))).toEqual([
+      { emoji: fire, ids: [b.userId], has_more: false, mine: false },
+    ]);
+
+    // a piles on → two faces in first-reaction order, mine true for a.
     expect((await react(a, fire)).statusCode).toBe(204);
-    expect(await reactionsSeenBy(a)).toEqual([{ emoji: fire, count: 2, mine: true }]);
+    expect(faces(await reactionsSeenBy(a))).toEqual([
+      { emoji: fire, ids: [b.userId, a.userId], has_more: false, mine: true },
+    ]);
 
     // b removes; removing again stays an idempotent 204.
     expect((await unreact(b, fire)).statusCode).toBe(204);
     expect((await unreact(b, fire)).statusCode).toBe(204);
-    expect(await reactionsSeenBy(b)).toEqual([{ emoji: fire, count: 1, mine: false }]);
+    expect(faces(await reactionsSeenBy(b))).toEqual([
+      { emoji: fire, ids: [a.userId], has_more: false, mine: false },
+    ]);
 
     // Distinct-emoji cap: b holds 8, the 9th distinct → 409 reaction_limit,
     // but re-adding a held emoji at the cap stays 204.

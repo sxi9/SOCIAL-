@@ -381,6 +381,73 @@ describe.runIf(infra)('v0.8b community pack', () => {
       expect(adminConv.body).toContain(m1.userId);
     });
 
+    it('reaction faces wear the mask for non-admins (reactors ride the stamps rule)', async () => {
+      // Emoji chips ship reactor FACES (Audit P0 / PSYCHOLOGY rule 3) — inside a
+      // ghost group those are identities, so ghostMessageDto masks them exactly
+      // like stamps. m2 reacts; m1 (non-admin) must see a masked face only.
+      const sent = await sendMessage(m1, convId, 'react to me');
+      const r = await post(m2, `/api/conversations/${convId}/messages/${sent.seq}/reactions`, {
+        emoji: '👍',
+      });
+      expect(r.statusCode).toBe(204);
+
+      const msgs = await get(m1, `/api/conversations/${convId}/messages?before_seq=999999&limit=10`);
+      expect(msgs.statusCode).toBe(200);
+      const msg = (msgs.json() as { messages: Message[] }).messages.find((m) => m.seq === sent.seq)!;
+      expect(msg.reactions).toHaveLength(1);
+      expect(msg.reactions[0]!.has_more).toBe(false);
+      const face = msg.reactions[0]!.reactors[0]!;
+      expect(face.id).not.toBe(m2.userId);
+      expect(face.id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(face.username).toBe('');
+      expect(face.mask_emoji).not.toBeNull();
+      expect(msgs.body).not.toContain(m2.userId);
+      expect(msgs.body).not.toContain(m2.username);
+
+      // The reactor's OWN face stays real to them (viewer identity is never
+      // masked), with mine = true; the admin sees everyone real (ADR-020).
+      const own = await get(m2, `/api/conversations/${convId}/messages?before_seq=999999&limit=10`);
+      const ownMsg = (own.json() as { messages: Message[] }).messages.find((m) => m.seq === sent.seq)!;
+      expect(ownMsg.reactions[0]!.mine).toBe(true);
+      expect(ownMsg.reactions[0]!.reactors[0]!.id).toBe(m2.userId);
+      const adminMsgs = await get(admin, `/api/conversations/${convId}/messages?before_seq=999999&limit=10`);
+      const adminMsg = (adminMsgs.json() as { messages: Message[] }).messages.find((m) => m.seq === sent.seq)!;
+      expect(adminMsg.reactions[0]!.reactors[0]!.id).toBe(m2.userId);
+      expect(adminMsg.reactions[0]!.reactors[0]!.mask_emoji).toBeNull();
+    });
+
+    it('an idempotent send replay masks reactor faces too (the 200 path, not just the 201)', async () => {
+      // The replay DTO is rebuilt from the row at replay time, so a reaction
+      // that landed between the original send and the retry rides it — it
+      // must wear the mask exactly like the fresh 201 (audit review, 2026-10-27).
+      const cid = crypto.randomUUID();
+      const first = await post(m1, `/api/conversations/${convId}/messages`, {
+        client_msg_id: cid,
+        type: 'text',
+        body: 'retry me',
+      });
+      expect(first.statusCode).toBe(201);
+      const seq = (first.json() as { message: Message }).message.seq;
+      const r = await post(m2, `/api/conversations/${convId}/messages/${seq}/reactions`, { emoji: '🔥' });
+      expect(r.statusCode).toBe(204);
+
+      const replay = await post(m1, `/api/conversations/${convId}/messages`, {
+        client_msg_id: cid,
+        type: 'text',
+        body: 'retry me',
+      });
+      expect(replay.statusCode).toBe(200);
+      const msg = (replay.json() as { message: Message }).message;
+      expect(msg.seq).toBe(seq);
+      expect(msg.reactions).toHaveLength(1);
+      const face = msg.reactions[0]!.reactors[0]!;
+      expect(face.id).not.toBe(m2.userId);
+      expect(face.username).toBe('');
+      expect(face.mask_emoji).not.toBeNull();
+      expect(replay.body).not.toContain(m2.userId);
+      expect(replay.body).not.toContain(m2.username);
+    });
+
     it('ghost is a one-way door and masks are re-pickable (unique per group)', async () => {
       const back = await patch(admin, `/api/conversations/${convId}/visibility`, {
         visibility: 'private',

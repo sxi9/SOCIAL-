@@ -193,11 +193,14 @@ describe.runIf(infra)('v0.2 audited edge cases', () => {
     `)) as unknown as { n: number }[];
     expect(rows[0]?.n).toBe(REACTIONS_PER_USER_PER_MESSAGE_MAX);
 
-    // So does the viewer-scoped DTO: 8 chips, each count 1, all mine.
+    // So does the viewer-scoped DTO: 8 chips, each wearing b's one face, all mine.
     const list = await listMessages(b, convId);
     const msg = (list.json() as { messages: Message[] }).messages.find((x) => x.seq === seq);
     expect(msg!.reactions).toHaveLength(REACTIONS_PER_USER_PER_MESSAGE_MAX);
-    for (const chip of msg!.reactions) expect(chip).toMatchObject({ count: 1, mine: true });
+    for (const chip of msg!.reactions) {
+      expect(chip).toMatchObject({ has_more: false, mine: true });
+      expect(chip.reactors.map((u) => u.id)).toEqual([b.userId]);
+    }
 
     // Idempotency survives the cap: re-adding a HELD emoji stays 204, and a
     // fresh distinct one still answers 409.

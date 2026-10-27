@@ -39,8 +39,10 @@ Attachment = { id, kind: 'image'|'video'|'file', mime, size_bytes,
 LinkPreview = { url, site_name: string|null, title: string|null,
   description: string|null, image_url: string|null }   // image_url is OUR origin, never hotlinked
 
-ReactionAggregate = { emoji: string(≤16), count: number, mine: boolean }  // v0.2 §1.12; one chip
-  // per emoji, ordered by first reaction (min created_at) so chips never reshuffle
+ReactionAggregate = { emoji: string(≤16), reactors: UserLite[], has_more: boolean, mine: boolean }
+  // v0.2 §1.12; one chip per emoji, ordered by first reaction (min created_at) so chips never
+  // reshuffle. reactors = the first MESSAGE_REACTORS_PREVIEW_MAX by first-reaction order as
+  // named FACES, has_more the rest — there is deliberately NO count (PSYCHOLOGY rule 3)
 
 Message = { id, conversation_id, seq, sender_id: string|null,  // null = system
   type: 'text'|'image'|'video'|'file'|'system', body: string|null,
@@ -750,8 +752,11 @@ not a credential). Defaults: `expires_at = now()+7d` (`INVITE_TTL_S`),
 | `POST /api/conversations/:id/messages/:seq/reactions` | `{emoji}` — 1..16 chars (`REACTION_EMOJI_MAX_LEN`; Zod counts UTF-16 units, the DB CHECK codepoints — Zod is binding) | `204` — **idempotent**: re-adding an emoji you already hold is `204`, no event. Must be an active participant; `:seq` must be a visible message (within your `join_seq` floor) else `404 not_found`. A 9th **distinct** emoji by the same user on the same message → `409 reaction_limit` (`REACTIONS_PER_USER_PER_MESSAGE_MAX=8`). |
 | `DELETE /api/conversations/:id/messages/:seq/reactions/:emoji` | `:emoji` URL-encoded | `204` — **idempotent**: deleting a reaction you don't hold is `204`, no event. |
 
-Aggregates ride message DTOs as `reactions: [{emoji, count, mine}]` (ordered by
-first reaction per emoji). Each **effective** add/remove fans out one
+Aggregates ride message DTOs as `reactions: [{emoji, reactors, has_more, mine}]`
+(ordered by first reaction per emoji; `reactors` = the first
+`MESSAGE_REACTORS_PREVIEW_MAX` reactors as named **faces**, `has_more` the rest —
+never a count, PSYCHOLOGY rule 3 / the PostReactionAggregate rule). Each
+**effective** add/remove fans out one
 `reaction.updated` WS frame (§2.3) through the Redis `events` channel — a
 deliberate delta, not a `msg.updated` re-ship. Clients reconcile on reconnect
 from DTO aggregates (sync/history refetch), never by replaying frames.
@@ -2976,7 +2981,7 @@ close `1008`.
 | `conv.new` | `{conversation: Conversation}` | you were added / created it on another device |
 | `conv.updated` | `{conversation: Conversation}` | title, membership, group-avatar flip |
 | `user.updated` | `{user: UserPublic}` | profile/avatar change of any conversation peer — fires when the avatar transcode lands (`avatar.version` bumped → swap the image). v0.8a (§1.57/§1.58): also fired on mood set/clear/expiry/swing-rotation and `name_style` changes; the `mood` field is stamped **per recipient** at the gateway under the §1.57 visibility+blocks resolution (§2.11), so one envelope never ships one viewer's view to another. Zod defaults (`mood: null`, `name_style: 'none'`) keep pre-v0.8 frames parsing clean. |
-| `reaction.updated` | `{conversation_id, seq, kind, emoji, count, user_id, removed}` | v0.2 (§1.12): one frame per effective reaction add/remove, to all active participants. `count` is the NEW total for that `(message, emoji)`; `count: 0` removes the chip; `mine` is derived client-side (`user_id === me`). Reconnect truth is the DTO aggregate, not frame replay. v0.4 (§1.19): `kind` (`'emoji'`\|`'stamp'`, default `'emoji'` so v0.2 frames parse clean); stamp frames carry the `:stamp:` sentinel as `emoji`, recipients resolve the stamper's avatar from participants they hold, and reconnect truth is `Message.stamps`. |
+| `reaction.updated` | `{conversation_id, seq, kind, emoji, user_id, user: UserLite, removed}` | v0.2 (§1.12): one frame per effective reaction add/remove, to all active participants — a **one-actor delta** carrying the actor's `user` face (channel members are never in `Conversation.participants`, so recipients cannot resolve every reactor locally); recipients add/remove that face on the chip. Inside a 👻 ghost group non-admins get the pseudo `user_id` and the MASK as `user` (§1.68). A chip drops only when it has no faces AND `has_more` is false. No count rides the wire (PSYCHOLOGY rule 3). `mine` is derived client-side (`user_id === me`). Reconnect truth is the DTO aggregate (`reactors` + `has_more`), not frame replay. v0.4 (§1.19): `kind` (`'emoji'`\|`'stamp'`, default `'emoji'` so v0.2 frames parse clean); stamp frames carry the `:stamp:` sentinel as `emoji`, recipients resolve the stamper's avatar from participants they hold, and reconnect truth is `Message.stamps`. |
 | `preview.ready` | `{url_hash, status: 'ok'\|'failed', preview?: LinkPreview}` | to the user who requested the unfurl (composer card) |
 | `beacon.new` | `{beacon: Beacon}` | v0.3 (§1.15): **only to sockets of users in the beacon's audience** (minus blocks) — never to anyone who cannot join (PSYCHOLOGY rule 2). The DTO is viewer-specific: the gateway stamps `my_state`/`conversation_id` per recipient (§2.11). |
 | `beacon.updated` | `{beacon: Beacon, reping: boolean, edited: boolean, changed: string[]}` | v0.3: joins/leaves/spark/expiry/cancel, to the audience. On spark, non-joiners receive `conversation_id: null` (their card retires; spark details reach joiners + creator only). `reping: true` marks the single "needs 1 more" re-notification (§1.15). v0.7 (§1.47): `edited: true` marks a creator edit and `changed` names the edited fields (⊆ `BEACON_EDITABLE_FIELDS`) so cards can flash the right chips — the DTO carries the full new state either way; Zod defaults (`false`, `[]`) keep pre-v0.7 frames parsing clean. |

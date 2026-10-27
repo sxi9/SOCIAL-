@@ -1825,23 +1825,41 @@ function MessageRow({
             )}
           </div>
         ) : null}
+        {/* Audit P0 / PSYCHOLOGY rule 3: emoji chips carry reactor FACES (the
+            §1.19 stamp treatment), never a number. has_more = people past the
+            preview cap. */}
         {message.reactions.length > 0 ? (
           <div className={styles.reactionChips}>
-            {message.reactions.map((r) => (
-              <button
-                key={r.emoji}
-                type="button"
-                className={`${styles.reactionChip}${r.mine ? ` ${styles.reactionMine}` : ''}`}
-                aria-label={`${r.emoji} ${r.count}${r.mine ? ' — you reacted, tap to remove' : ', tap to react'}`}
-                onClick={() => toggle(r.emoji, r.mine)}
-              >
-                <span aria-hidden>{r.emoji}</span>
-                {/* Keyed by count so every change remounts → pop animation. */}
-                <span key={r.count} className={styles.reactionCount}>
-                  {r.count}
-                </span>
-              </button>
-            ))}
+            {message.reactions.map((r) => {
+              // `?? []` is belt-and-braces for a legacy {emoji,count,mine}
+              // chip that slipped past db.ts normalization — never throw in
+              // render over a shape difference.
+              const reactors = r.reactors ?? [];
+              const names = reactors.map((u) => nameFor(u.id, u.display_name));
+              const who = names.length
+                ? `${names.join(', ')}${r.has_more ? ' and others' : ''}`
+                : 'someone';
+              return (
+                <button
+                  key={r.emoji}
+                  type="button"
+                  className={`${styles.reactionChip}${r.mine ? ` ${styles.reactionMine}` : ''}`}
+                  aria-label={`${r.emoji} by ${who}${r.mine ? ' — you reacted, tap to remove' : ', tap to react'}`}
+                  title={who}
+                  onClick={() => toggle(r.emoji, r.mine)}
+                >
+                  <span aria-hidden>{r.emoji}</span>
+                  <span className={styles.reactionFaces} aria-hidden>
+                    {reactors.map((u) => (
+                      <span key={u.id} className={styles.reactionFace}>
+                        <Avatar avatar={u.avatar} name={nameFor(u.id, u.display_name)} size={16} />
+                      </span>
+                    ))}
+                    {r.has_more ? <span className={styles.reactionMore}>+</span> : null}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         ) : null}
       </div>

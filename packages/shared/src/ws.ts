@@ -139,16 +139,18 @@ export type UserUpdatedEvent = z.infer<typeof UserUpdatedEventSchema>;
 // v0.2 (API.md §1.12/§2.3): one frame per reaction add/remove, fanned out to
 // all active participants via the Redis `events` channel — deliberately NOT a
 // full msg.updated (a reaction flurry must not re-ship message DTOs with
-// attachments). `count` is the NEW total for (conversation_id, seq, emoji);
-// count 0 removes the chip. `mine` is derived client-side (user_id === me).
+// attachments). The frame is a one-actor delta: `user_id` + `removed`; the
+// recipient resolves the reactor's FACE from the participants it already
+// holds and adds/removes it on the chip (no count ever rides the wire —
+// PSYCHOLOGY rule 3). `mine` is derived client-side (user_id === me).
 // Deltas are safe to apply out of order per actor because the server emits one
 // frame per successful idempotent write; a reconnect re-reads aggregates from
 // message DTOs (reactions[]) instead of replaying frames.
 // v0.4 (§1.19) adds `kind` (default 'emoji' keeps v0.2 frames parsing clean).
-// For kind='stamp' frames, emoji carries the STAMP_REACTION_KEY sentinel and
-// count is the NEW stamp total; recipients resolve the stamper's avatar from
-// user_id against the participants they already hold (Message.stamps is the
-// reconnect truth, exactly like reactions[] for emoji).
+// For kind='stamp' frames, emoji carries the STAMP_REACTION_KEY sentinel;
+// recipients resolve the stamper's avatar from user_id against the
+// participants they already hold (Message.stamps is the reconnect truth,
+// exactly like reactions[].reactors for emoji).
 export const ReactionUpdatedEventSchema = z.object({
   t: z.literal('reaction.updated'),
   d: z.object({
@@ -156,8 +158,16 @@ export const ReactionUpdatedEventSchema = z.object({
     seq: z.number().int().positive(),
     kind: ReactionKindSchema.default('emoji'),
     emoji: ReactionEmojiSchema,
-    count: z.number().int().nonnegative(),
     user_id: UuidSchema,
+    // The actor's face rides the frame: channel members are never in
+    // Conversation.participants, so recipients cannot resolve every reactor
+    // locally. Inside a ghost group non-admins get the MASK here (and the
+    // pseudo-id above) — the same identity the DTO's reactors[] carries.
+    // optional() on the WIRE only (the v0.4 `kind` default convention): the
+    // server always sends it, but a web bundle paired with a not-yet-
+    // restarted api must not drop every frame during the deploy window —
+    // the store falls back to its participants lookup when it is absent.
+    user: UserLiteSchema.optional(),
     removed: z.boolean(),
   }),
 });

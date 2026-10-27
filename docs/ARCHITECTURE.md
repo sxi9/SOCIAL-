@@ -362,7 +362,8 @@ reactions PK `(conversation_id, seq, user_id, emoji)` serves the per-message
 `GROUP BY emoji` aggregate as a PK-prefix scan. Writes are REST
 (idempotent POST/DELETE, 204), fan-out is one small `reaction.updated` delta
 frame via the `events` channel — deliberately not a `msg.updated` DTO re-ship.
-Message DTOs carry `reactions: [{emoji, count, mine}]`; reconnects reconcile
+Message DTOs carry `reactions: [{emoji, reactors: UserLite[], has_more, mine}]`
+(named faces, never a count — PSYCHOLOGY rule 3); reconnects reconcile
 from DTOs, never frame replay, so the §2.8 sync story is untouched.
 
 Shared constants added (v0.2): `INVITE_TTL_S=604800`, `INVITE_MAX_USES=50`,

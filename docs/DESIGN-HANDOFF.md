@@ -323,7 +323,7 @@ Secondary "Bored" palette (scoped class `.beaconVars` in beacons.module.css — 
 
 ### 6. Cards, chips, badges, avatars
 - `.card`: `var(--panel)` + 1px border + `var(--radius)` + 20px padding. `.auth-card` adds max-width 380px + shadow.
-- `.chip`: pill, `var(--accent-soft)` bg, padding 4px 10px, 13px. Reaction chip: `var(--panel-2)` + border pill; own reaction = `accent-soft` bg + accent border; count pops via remount animation.
+- `.chip`: pill, `var(--accent-soft)` bg, padding 4px 10px, 13px. Reaction chip: `var(--panel-2)` + border pill; own reaction = `accent-soft` bg + accent border; carries a 16px face pile of the first `MESSAGE_REACTORS_PREVIEW_MAX` reactors plus a "+" when `has_more` — faces, never a count (PSYCHOLOGY rule 3), like stamps below; each face pops in on mount.
 - `.badge` (unread): min 20px pill, `var(--accent-strong)` bg, white 12px/600.
 - `.avatar`: circle, `accent-soft` bg + accent initial, 600 weight; `.presence-dot` 10px circle, `--ok` when online, 2px panel ring. Reaction "stamps" = piled avatar faces (−6px overlap, 2px `var(--bg)` ring) — faces, never counters (PSYCHOLOGY rule).
 - Ticks: muted → `var(--accent)` when read.

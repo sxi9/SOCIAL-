@@ -574,11 +574,18 @@ export type ReactionKind = z.infer<typeof ReactionKindSchema>;
 
 // One aggregate chip per emoji on a message, from the viewer's perspective.
 // Server orders by first-reaction time (min created_at per emoji) so chips
-// never reshuffle as counts change. EMOJI reactions only — stamp reactions
-// ride Message.stamps (the renderer needs faces, not a count).
+// never reshuffle as reactors come and go. EMOJI reactions only — stamp
+// reactions ride Message.stamps. Audit P0 / PSYCHOLOGY rule 3: named FACES,
+// never a numeric total — reactors = first MESSAGE_REACTORS_PREVIEW_MAX by
+// first-reaction order; has_more carries the rest. No count field.
 export const ReactionAggregateSchema = z.object({
   emoji: ReactionEmojiSchema,
-  count: z.number().int().positive(),
+  // default([]) / default(false) keep pre-faces payloads parsing clean
+  // wherever a parse DOES run (fixtures, sync); the IndexedDB path never
+  // parses, so apps/web/lib/db.ts normalizes legacy {emoji,count,mine}
+  // rows at the read boundary instead.
+  reactors: z.array(UserLiteSchema).default([]),
+  has_more: z.boolean().default(false),
   mine: z.boolean(),
 });
 export type ReactionAggregate = z.infer<typeof ReactionAggregateSchema>;

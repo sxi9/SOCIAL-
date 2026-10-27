@@ -730,6 +730,10 @@ export const REACTIONS_PER_USER_PER_COMMENT_MAX = 8;
 // Reactor FACES inlined per (emoji, kind) chip on a comment; has_more carries
 // the rest. NEVER a numeric total (PSYCHOLOGY design rule 3).
 export const COMMENT_REACTORS_PREVIEW_MAX = 6;
+// Audit P0 (PSYCHOLOGY rule 3): message emoji chips ship FACES too — the
+// first N reactors by first-reaction order; has_more carries the rest. There
+// is deliberately no count on the wire (the PostReactionAggregate rule).
+export const MESSAGE_REACTORS_PREVIEW_MAX = 6;
 
 // ---- Locations (v0.7 — API.md §1.52) ----
 // {label ≤ 80, lat?, lng?} — lat/lng are OPTIONAL, both-or-neither, and only

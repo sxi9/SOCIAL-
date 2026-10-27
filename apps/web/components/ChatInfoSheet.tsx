@@ -532,6 +532,17 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
           />
         ) : null}
 
+        {/* Audit P0 (groups): the invite link used to live ONLY in ChatView's
+            empty-chat block (conv.last_seq === 0), so a private group with any
+            history had no invite surface at all — and the add-people error
+            copy ("share an invite link instead") pointed at nothing. Admins
+            only, matching the server-side group mint (§1.11). */}
+        {plainGroup && groupAdmin ? (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            <InviteButton className="btn" label="Invite link" conversationId={conv.id} />
+          </div>
+        ) : null}
+
         {isChannel ? (
           <>
             <div className={sheetStyles.sheetLabel}>📣 Channel</div>

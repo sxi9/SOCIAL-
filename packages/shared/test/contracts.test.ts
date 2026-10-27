@@ -217,11 +217,29 @@ describe('reactions contract', () => {
     ).toBe(false);
   });
 
-  it('ServerEventSchema parses reaction.updated', () => {
+  it('ServerEventSchema parses reaction.updated (faces, never a count)', () => {
+    // The one-actor delta carries the actor's face; no count rides the wire.
+    const face = {
+      id: UUID,
+      username: 'a',
+      display_name: 'A',
+      avatar: { status: 'none', version: 0, static_url: null, animated_url: null },
+      mood: null,
+      name_style: 'none',
+      mask_emoji: null,
+    };
     const parsed = ServerEventSchema.safeParse({
       t: 'reaction.updated',
-      d: { conversation_id: UUID, seq: 7, emoji: '🔥', count: 0, user_id: UUID, removed: true },
+      d: { conversation_id: UUID, seq: 7, emoji: '🔥', user_id: UUID, user: face, removed: true },
     });
     expect(parsed.success).toBe(true);
+    // `user` is optional ON THE WIRE (deploy-window tolerance, the v0.4 `kind`
+    // default convention): a frame from a not-yet-restarted api still parses
+    // and the client falls back to its participants lookup.
+    const legacy = ServerEventSchema.safeParse({
+      t: 'reaction.updated',
+      d: { conversation_id: UUID, seq: 7, emoji: '🔥', user_id: UUID, removed: true },
+    });
+    expect(legacy.success).toBe(true);
   });
 });
