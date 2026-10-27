@@ -1,6 +1,6 @@
 # Session Handoff — continue from here
 
-Updated 2026-10-27. A new session continues this project by reading
+Updated 2026-10-28. A new session continues this project by reading
 `CLAUDE.md` first (it auto-loads), then this file, then
 `docs/AUDIT-PLAN.md`.
 
@@ -36,8 +36,8 @@ Updated 2026-10-27. A new session continues this project by reading
   `lib/shareAuth.ts` `probeMe()` for every island on a public SSR page. Then
   slice G, DEPLOYED (`e1e89d2`, 2026-10-28 01:33): the invite page's group card (`InvitePublic` +
   `conversation_id` + `group`, `GET /api/invites/:token/group-avatar`), the
-  invite sheet's link list with Revoke + QR. Then phase 3 (slice H,
-  2026-10-28): the deep link carries `?s=<token>`; when the object read 404s
+  invite sheet's link list with Revoke + QR. Then phase 3 slice H, DEPLOYED
+  (`026106b`, 2026-10-28 01:56): the deep link carries `?s=<token>`; when the object read 404s
   for the signed-in visitor, `GET /api/share/:token/landing` says
   visible/outside + the author, and `OutsideAudienceSheet` offers the one
   door — Ask the host (DM), Message the poster (`contact {share_token}`
@@ -48,7 +48,7 @@ Updated 2026-10-27. A new session continues this project by reading
   Requests inbox, chat media). Open follow-up from review: the unfurl
   worker charges the sender's hourly budget for our own share URLs (short-
   circuit origin == PUBLIC_ORIGIN in the send route).
-- `main` at `b396d09` (2026-10-27, morning). Shipped since the previous handoff, in
+- `main` was at `b396d09` on the morning of 2026-10-27 (everything above landed after it; the box runs the newest deployed SHA named above). Shipped before that, in
   order: v0.9.1 auth hardening, v1.0a board & media pack (#91-#95), v1.1
   Royal UI, Royal v2 wave A (complete round-2 reskin), and the 2026-10-18
   batch — change password (84b), Settings → Appearance light/dark/system +
