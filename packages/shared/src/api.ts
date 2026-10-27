@@ -1281,7 +1281,10 @@ export const UserSettingsSchema = z.object({
   // payloads parsing clean. ----
   // Who may open a DM / start a call with me. Stored here; enforced at DM
   // and call creation once the profile-share phase lands (404-shaped like
-  // blocks; a stranger's message lands in Requests).
+  // blocks; a stranger's message lands in Requests). The Zod fallback is the
+  // NEW-account default and is never authoritative: a pre-0014 account's DB
+  // row is 'everyone' (the 0014 backfill, owner decision 2026-10-27) and the
+  // client refetches settings before showing any picker.
   dm_policy: z.enum(DM_POLICIES).default('connections'),
   // How much of my profile a logged-out share link may show (§1b): 'public'
   // = the full teaser; 'connections' | 'private' = avatar + name only.

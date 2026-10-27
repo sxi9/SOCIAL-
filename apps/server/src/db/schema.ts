@@ -133,7 +133,8 @@ export const users = pgTable(
     // dm_policy: who may open a DM / start a call with me — stored here,
     // ENFORCED at DM/call creation in the profile-share phase (404-shaped
     // like blocks; a stranger's message lands in Requests). DEFAULT
-    // 'connections' per §1.7.
+    // 'connections' for NEW accounts per §1.7; 0014 backfilled every
+    // pre-existing account to 'everyone' (owner decision, 2026-10-27).
     dmPolicy: text('dm_policy').notNull().default('connections'),
     // profile_visibility: how much of my profile a logged-out share link may
     // show — 'public' = the full teaser (never counts), 'connections' |

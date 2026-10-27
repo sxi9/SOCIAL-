@@ -1108,6 +1108,8 @@ export const ANON_OPTIN_DEFAULT = 'connections' as const;
 // accepted §1.28 connections literally. Stored now; ENFORCED at DM/call
 // creation in the profile-share phase (404-shaped like blocks, a stranger's
 // message lands in Requests). Match/roulette DMs are exempt by design.
+// DEFAULT applies to NEW accounts; migration 0014 backfilled pre-existing
+// accounts to 'everyone' so nothing closes on them silently (owner, 2026-10-27).
 export const DM_POLICIES = ['everyone', 'connections', 'nobody'] as const;
 export const DM_POLICY_DEFAULT = 'connections' as const;
 // How much of my profile a logged-out share link may show: 'public' = the
