@@ -16,7 +16,8 @@ Updated 2026-10-27. A new session continues this project by reading
   `ShareSheet` on post/plan/listing/story/group (Copy · OS share · QR · Send
   to a chat · Stop sharing), `ChatPickerSheet` extracted from ForwardSheet,
   `GET /api/share-links/mine`, Settings → Privacy "Your share links",
-  `lib/overlays.ts` topmost-only Escape. Then Slice D (2026-10-28): non-public
+  `lib/overlays.ts` topmost-only Escape. Then DEPLOYED too (`a924600`,
+  2026-10-28 00:29) Slice D: non-public
   post/plan/listing share by an OWNER-minted token with a Teaser/Full choice
   (server-trimmed teaser, media proxy serves only what the page lists; the
   ShareSheet asks before minting and reuses an open token), object routes
