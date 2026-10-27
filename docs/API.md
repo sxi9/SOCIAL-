@@ -608,7 +608,8 @@ temporary password, revokes all sessions). **v0.9 (§1.70–§1.73) adds user-fa
 minting paths** — passkey login, QR cross-device login, recovery-code reset, and TOTP
 gating of password/passkey logins (`POST /api/auth/login` then answers the §1.73
 LoginOutcome: `{user}` or `{totp_required, totp_token}`); register additionally returns
-the §1.72 `recovery_codes` once. The CLI reset remains the operator path.
+the §1.72 `recovery_codes` once. The CLI reset remains an operator path; the admin
+Users tab's `POST /api/admin/users/:id/password` (§1.41) is its web counterpart.
 
 ### 1.2 Users & profiles
 
@@ -1644,14 +1645,14 @@ excludes message bodies for the same reason (see below; ADR-013).
 | `GET /api/admin/logs?offset=&limit=` | — | `200 {entries: AdminLogEntry[], next_offset}` — the **log ring**: pino `warn`+`error` entries from api and worker, plus every admin action (`level: 'admin'`, always written), LPUSHed to a capped Redis list (`LPUSH` + `LTRIM`, `LOG_RING_MAX` = 1000). Newest first, offset-paged (a ring has no stable cursors); `next_offset: null` = whole ring read. Telemetry, not product data: it lives in Redis on purpose (ADR-013). |
 | `GET /api/admin/settings` | — | `200 {settings: InstanceSettings}` |
 | `PATCH /api/admin/settings` | `{invites_enabled?, release_notes?}` (v0.8a §1.61 adds `release_notes` — curation of the what's-new list; migrations remain the normal writer) | `200 {settings}`. `invites_enabled: false` → `POST /api/invites` and `POST /api/invites/:token/accept` answer `403 invites_disabled` (no `use_count` claim); register-with-token degrades to `invite: null` (§1.1); `GET /:token/public` still renders (the join page explains on accept). Ring-logged. |
-| `GET /api/admin/users/:id/export` | — | `200 {export: AdminUserExport}` — JSON of the user's **own rows**: the users row (profile + settings columns), sessions **metadata**, listings, posts, reviews received. Secrets stripped (`password_hash`, session `token_hash`, push keys). **NOT their messages**: a member's conversations contain their counterparties' words, and bulk operator access to those is exactly what this product promises not to build — the export is operator tooling (backups, disputes, deletion requests), not a wiretap (ADR-013 documents the line; a user-initiated takeout of their own message history is future user-facing scope, not an admin surface). |
+| `GET /api/admin/users/:id/export` | — | `200 {export: AdminUserExport}` — JSON of the user's **own rows**: the users row (profile + settings columns), sessions **metadata**, listings, posts, reviews received. Secrets stripped (`password_hash`, session `token_hash`, push keys). **NOT their messages**: a member's conversations contain their counterparties' words, and bulk operator access to those is exactly what this product promises not to build — the export is operator tooling (backups, disputes, and manual deletion requests — self-serve/admin account **deletion** is 📋 Wave 1.2, no delete route exists yet), not a wiretap (ADR-013 documents the line; a user-initiated takeout of their own message history is future user-facing scope, not an admin surface). |
 
 **Sessions & IP capture.** `sessions.ip` + `sessions.user_agent` (columns
 since v0.1) are captured at login and register; registration additionally
 stamps `users.registration_ip`. **Retention:** the nightly GC job (queue `gc`)
 nulls `users.registration_ip` and `sessions.ip` older than
 `IP_RETENTION_DAYS` (90, counted from the row's `created_at`) — the window is
-documented in the instance's privacy note (FEATURES #54). The admin UI shows
+documented in the instance's privacy note (FEATURES #54 — the user-facing `/privacy` page itself is 📋 Wave 1.1). The admin UI shows
 whatever has not yet aged out, never more.
 
 **Suspension semantics, spelled out:** suspend/ban take effect immediately —
@@ -2625,8 +2626,9 @@ utility number) and **no joiner faces or identities**; location renders the
 LABEL only (lat/lng never ship to strangers); poll options+counts render
 read-only (§1.50's counts-on-options rule). Viewing is free; **ANY
 interaction** (react, comment, join, wave, profile, "see more") routes to
-`/register?next=<deep-link>` — after signup/login the client completes the
-deep link back to the object in-app. OG tags: og:title/description from the
+`/register?next=<deep-link>` — after signup/login the client lands on the relevant
+tab (true per-object deep-link back is 📋 Wave 4.2/6; `SharePageView.deepLink()`
+returns tab roots today, not object routes). OG tags: og:title/description from the
 content (author display name + excerpt), og:image = the first gated media /
 avatar proxy URL (absolute via `PUBLIC_ORIGIN` — unfurlers get exactly what
 any stranger gets).
@@ -2856,7 +2858,7 @@ loose at the schema (the §1.1 invite_token doctrine).
 **§1.1 changes:** `POST /api/auth/register` response gains
 `recovery_codes: string[]` (the once-only reveal). The §1.1 note "Password
 reset is CLI-only" is superseded: recovery codes are the user-facing path;
-the CLI reset remains the operator's.
+the CLI reset and the admin `POST /api/admin/users/:id/password` (§1.41) remain the operator paths.
 
 | Method & path | Request | Response |
 |---|---|---|
@@ -3075,7 +3077,7 @@ Push job per (user, conversation, message), enqueued only when the user has no l
 send time. At execution the worker **skips** when any of:
 - Redis presence shows the user online now;
 - fresh DB read: `last_read_seq >= message.seq` (read on another device);
-- `muted_until > now()`;
+- `muted_until > now()` (📋 **no writer until Wave 1.6** — `conversation_participants.muted_until` is read by this guard but never set today, so this branch is currently unreachable);
 - a per-`(user_id, conversation_id)` debounce key (5 s) exists — bursts collapse to one push.
 
 **v0.5a mention override (§1.33):** when `metadata.mentions` names the target

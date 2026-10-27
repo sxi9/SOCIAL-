@@ -12,13 +12,13 @@ Status: ✅ shipped · 🔨 building · 📋 planned
 6. Photo / video / file messages — thumbnails, blurhash, private auth-checked storage
 7. PWA share target (share from any app into a chat, logged-out stash included)
 8. Link preview cards (worker-side, SSRF-guarded, re-hosted images, per-user budget)
-9. Web push (read-elsewhere suppression, muting, per-chat collapse)
+9. Web push (read-elsewhere suppression, per-chat collapse) — per-chat muting 📋 Wave 1.6 (`muted_until` column exists, no writers yet)
 10. GIF invite links — /join/<token> shows the inviter's animated avatar, OG unfurl, lands joiners in a DM
 11. Reactions (picker, chips, live fan-out)
 12. Animated login/register
 13. Two-pane desktop layout
 14. Emoji picker, invite-CTA empty states
-15. Public profile pages (/u/username)
+15. Profile pages (/u/username) — member-only today; logged-out public share 📋 Wave 6
 16. Session/device management; revocation closes live sockets
 17. Hardening: argon2id, rate limits, CSRF header, CSP, magic-byte sniffing
 18. One-command deploy (compose, 8 services, auto-HTTPS), ops CLI, CI (incl. image builds), ADRs
@@ -58,14 +58,14 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 
 39. Work together / hire me — gig posts, portfolios, project team-ups → project group chats
 40. Ride offers (route, time, seats)
-41. Room & space sharing (price, photos, dates) and "looking for" posts
-42. Place reviews with area tags (feed beacon venue suggestions)
+41. Room & space sharing (price, photos, dates) — "looking for" posts 📋 (no such listing kind yet; kinds are gig/ride/room/place_review)
+42. Place reviews with area tags (`place_review` kind) — feed/beacon venue suggestions 📋 (not wired)
 43. Plan beacons join the board as one card kind; a filterable "Local" tab
 44. Trust layer: person reviews after transactions (shipped v0.5b — API §1.40, ADR-012); account-age/mutual-friend signals remain 📋
 45. No in-app payments — the app connects people, money settles outside; bulletin-board terms shown plainly
 46. Stories (24h) with view lists; broadcast channels; feed (posts/likes/comments)
 47. Rich profiles: 3-GIF strip, interest tags, work/skills portfolio
-48. Connections graph; replies/threads, edit/delete, forwarding, pins, @mentions, group admins
+48. Connections graph; replies/threads, edit/delete, forwarding, pins, @mentions — group-admin UI 📋 (no surface yet)
 
 ## ✅ v0.6 — Calls + discovery (shipped)
 
@@ -81,7 +81,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 
 ## ✅ v0.7 — Interactivity pack (shipped)
 
-60. Clickable beacon joiners → "Who's in" sheet; every avatar anywhere → profile with Connect/Message
+60. Clickable beacon joiners → "Who's in" sheet; most avatars → profile with Connect/Message (six surfaces still unlinked 📋 Wave 6 #60)
 61. Edit live beacons (vibe/note/time/threshold, joiners see a change note) + edit board listings; custom vibe chips (emoji + word, recents remembered)
 62. "Start with whoever's here" — early spark below threshold (creator button)
 63. Joiner notifications: sparked / edited / starting soon / cancelled (joiners only)
@@ -114,10 +114,10 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 78. People-you-may-know suggestions (mutuals/area/groups) + post-signup "find your people" (never on the login page)
 78a. Anonymous wave nudges: "Someone in the pool waved at you 👀" push/in-app — no identity revealed (no-rejection rule holds); sent only when the visible pool is large enough to keep the waver anonymous, batched per opt-in hour, user-toggleable
 78b. Discovery filters: filter Bored Together cards by area, shared interests (profile tags) and what-for vibe (opt-in gains optional vibe chips); filters only ever narrow by what people chose to share — no age/gender fields exist to filter on
-79a. Canvas stories: author opt-in collaborative mode — viewers add doodle strokes, draggable emoji stamps and text bubbles as attributed overlay layers (small username chip on each, every overlay tappable -> highlight -> contributor profile), live-updating for all viewers, contributor strip on the story; author controls (open/approve-first/off, remove any addition, ban from my canvases), per-user caps, blocks respected, overlays reportable with author attached; layers stored as vectors, never burned into the image
+79a. Canvas stories: author opt-in collaborative mode — viewers add doodle strokes, tap-to-place emoji stamps (fixed scale, not draggable) and text bubbles as attributed overlay layers (small username chip on each, every overlay tappable -> highlight -> contributor profile), live-updating for all viewers, contributor strip on the story; author controls (open/approve-first/off, remove any addition, ban from my canvases), per-user caps, blocks respected, overlays reportable with author attached; layers stored as vectors, never burned into the image
 79. GIF/video chat backgrounds (per-user per-chat, dimmed, paused off-screen, poster for reduced-motion)
 79c. Public share pages: public posts/beacons/listings get SSR share pages (content + author chip + OG unfurl) viewable without an account; any interaction gates to signup with deep-link-back; stories only via explicit author-created revocable links (die with the story); media via share-token-gated URLs, rate-limited, reportable by non-users
-79d. Group visibility modes: 🔒 private (default, unchanged) · 🎟️ invite-only (share page shows card only — never messages; join by link or request+approval) · 🌍 public (readable by anyone on a share page, interaction gated to signup; admin-confirmed switch, member banner, ONLY post-switch messages public, moderated/reportable) · 👻 ghost (unlisted everywhere, direct-invite only, members wear pseudonym+emoji masks — anonymous to each other, never to the server; group admins see identities, reports carry them)
+79d. Group visibility modes: 🔒 private (default, unchanged) · 🎟️ invite-only (share page shows card only — never messages; join by link or request+approval) · 🌍 public (readable by anyone on a share page, interaction gated to signup; admin-confirmed switch, member banner, ONLY post-switch messages public, moderated; reportable 📋 — conversation is not yet in the takedown enum) · 👻 ghost (unlisted everywhere, direct-invite only, members wear pseudonym+emoji masks — anonymous to each other, never to the server; group admins see identities, reports carry them)
 80. Discoverability: first-run tour, "✨ Things you can do" feature directory with Try-it buttons, "new since last visit" update cards
 81. Admin: public-content moderation tab (public posts/beacons/listings, remove with reason, logged); support inbox (in-app Help & feedback → categorized tickets → admin replies land as a Support conversation); report-context viewer (reported message + surrounding context, reporter-consented)
 
@@ -143,7 +143,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 
 ## 📋 v1.0b — Stories pack
 
-97. Multiple active stories per author; per-story viewer list (named faces, no count headline)
+97. ✅ (shipped) Multiple active stories per author; per-story viewer list (named faces, no count headline) — `GET /api/stories` tray + author-only `/views`
 98. Story audiences: public / connections / exclusive close-friends list / hide-from — server-enforced
 99. Story voice reactions (≤15 s audio → story-reply DM) + quick emoji reactions
 100. Story live comments (author opt-in): realtime thread all eligible viewers see and join; author moderates; die with the story
@@ -153,7 +153,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 102. Call history: global Calls tab + per-chat log (in/out/missed, duration), callback from missed row
 103. ✅ Ringtone + text notification sounds — shipped early (2026-10-18): Web-Audio-synthesized tones (no audio files), ringtone choice + ringback + text tone + vibrate in Settings → Notifications & sounds, per-chat override in chat settings, mute parity; device-local prefs (`apps/web/lib/sounds.ts`)
 104. Mid-call audio↔video switch (consent prompt on upgrade)
-105. 1:1 video layouts: draggable PiP + two-half split, tap-to-swap focus
+105. ✅ (shipped) 1:1 video layouts: draggable PiP + two-half split, tap-to-swap focus (`CallOverlay.tsx`)
 
 ## 📋 v1.0d — Profile, search & sharing
 
@@ -162,7 +162,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 108. Global search bar: people, public/invite-only groups, board listings, my own messages
 109. "Spotted" pins: photo + place on the local board, "interested 👀" named-faces reactions, beacon-style expiry
 78c. ✅ (shipped v1.0, with the quick-wins round) Find-people page (/people): suggestion grid with narrowing filters (mutuals/groups/area/shared public interests), refresh, honest empty state; strips link to it ("See more")
-110. Share everywhere: OG/Twitter-card unfurls for other social media, standalone profile share link, non-users can view posts and PLAY videos on share pages — login only gates interaction (never viewing public content)
+110. Share everywhere: OG/Twitter-card unfurls for other social media, standalone profile share link, non-users can view posts and PLAY videos on share pages — login only gates interaction (never viewing public content). ✅ video playback on public share pages already works; the rest is the §1b share-everything build (Waves 4.2/6).
 
 ## ✅ v1.1 — "Royal" UI redesign (shipped on branch; from the owner's design drop)
 
