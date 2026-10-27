@@ -7,6 +7,8 @@ import Link from 'next/link';
 import type { SharePage, ShareAuthorChip, ShareMedia } from '@socialchat/shared';
 import { LISTING_SAFETY_NOTE, LISTING_SAFETY_NOTE_KINDS } from '@socialchat/shared';
 import GateCta from './GateCta';
+import GroupJoinCta from './GroupJoinCta';
+import ShareHeaderPill from './ShareHeaderPill';
 import ShareReportLink from './ShareReportLink';
 import cm from './community.module.css';
 
@@ -107,9 +109,7 @@ export default function SharePageView({
           bored.
         </Link>
         <span className={cm.shareHeadMeta}>{headMeta(page)}</span>
-        <Link href={`/login?next=${encodeURIComponent(path)}`} className={`btn btn-primary ${cm.shareJoin}`}>
-          Sign in
-        </Link>
+        <ShareHeaderPill path={path} className={`btn btn-primary ${cm.shareJoin}`} />
       </header>
 
       <PageBody page={page} path={path} />
@@ -406,11 +406,14 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
           <p className="muted small" style={{ margin: 0 }}>
             Invite-only: messages stay between members. Ask to join and an admin decides.
           </p>
-          <div className={cm.shareGate}>
-            <GateCta next={deep} fallback={next} word={word} className="btn btn-primary">
-              Ask to join — sign up free
-            </GateCta>
-          </div>
+          {/* Phase 2: signed-in visitors ask / withdraw / open right here. */}
+          <GroupJoinCta
+            conversationId={page.id}
+            kind="invite_only"
+            next={deep}
+            fallback={next}
+            signedOutLabel="Ask to join — sign up free"
+          />
         </article>
       );
     case 'group_live':
@@ -460,11 +463,13 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
               ))
             )}
           </div>
-          <div className={cm.shareGate}>
-            <GateCta next={deep} fallback={next} word={word} className="btn btn-primary">
-              Reply in the group — join free
-            </GateCta>
-          </div>
+          <GroupJoinCta
+            conversationId={page.id}
+            kind="public"
+            next={deep}
+            fallback={next}
+            signedOutLabel="Reply in the group — join free"
+          />
         </article>
       );
   }

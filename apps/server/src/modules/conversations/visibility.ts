@@ -20,7 +20,8 @@ import {
   UpdateGroupVisibilityRequestSchema,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
-import { assignMasksTx } from '../../lib/ghost.js';
+import { filterBlockedFrom } from '../../lib/blocks.js';
+import { assignMasksTx, groupAdminIdsOf } from '../../lib/ghost.js';
 import {
   activeParticipantUserIds,
   loadConversationDto,
@@ -30,6 +31,8 @@ import {
 } from '../../lib/dto.js';
 import { badRequest, conflict, forbidden, notFound, rateLimited } from '../../lib/errors.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
+import { enqueueSocialPush } from '../../queues.js';
+import { publishToUsers } from '../../ws/events.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import {
   deleteCallMembers,
@@ -48,6 +51,60 @@ const gjr = schema.groupJoinRequests;
 
 const IdParams = z.object({ id: z.string().uuid() });
 const IdUserParams = z.object({ id: z.string().uuid(), userId: z.string().uuid() });
+
+type ConvRow = typeof schema.conversations.$inferSelect;
+type UserRow = typeof schema.users.$inferSelect;
+
+/** Phase 2 (§1.68): tell the group's ADMINS the queue changed — a request
+ * parked (removed:false → frame + one social push each) or gone
+ * (withdrawn / approved / denied → frame only). EVERY admin gets the frame,
+ * the acting one included: the queue and `pending_requests` are not
+ * block-clamped (the §1.14 group-coexistence rule — the join route runs no
+ * block check either), so the live count must move for everyone who holds
+ * it. Blocks bite at the NOTIFICATION edge only: no push across a block. */
+async function fanJoinRequest(
+  conv: ConvRow,
+  requester: UserRow,
+  createdAt: Date,
+  removed: boolean,
+): Promise<void> {
+  const allAdmins = [...(await groupAdminIdsOf(conv.id))];
+  if (allAdmins.length === 0) return;
+  await publishToUsers(allAdmins, {
+    t: 'group.join_request',
+    d: {
+      conversation_id: conv.id,
+      request: { user: userLiteDto(requester), created_at: createdAt.toISOString() },
+      removed,
+    },
+  });
+  if (removed) return;
+  const admins = await filterBlockedFrom(requester.id, allAdmins);
+  for (const adminId of admins) {
+    await enqueueSocialPush({
+      kind: 'social',
+      user_id: adminId,
+      dedupe_key: `joinreq:${conv.id}:${requester.id}`,
+      title: conv.title ?? 'Your group',
+      body: `${requester.username} asked to join`,
+      url: `/c/${conv.id}`,
+    });
+  }
+}
+
+/** The §1.68 "unlisted means unlisted" lookup shared by the join routes. */
+async function loadJoinableGroup(id: string): Promise<ConvRow> {
+  const [conv] = await db.select().from(convs).where(eq(convs.id, id)).limit(1);
+  if (
+    !conv ||
+    conv.type !== 'group' ||
+    conv.visibility === 'private' ||
+    conv.visibility === 'ghost'
+  ) {
+    throw notFound('not_found');
+  }
+  return conv;
+}
 
 const VISIBILITY_COPY: Record<string, string> = {
   private: 'this group is private again',
@@ -182,15 +239,7 @@ export async function groupVisibilityRoutes(fastify: FastifyInstance): Promise<v
       const rate = await fixedWindow(`groupjoin:${user.id}`, GROUP_JOIN_RATE_PER_HOUR, 3600);
       if (!rate.allowed) throw rateLimited(rate.retryAfterS);
 
-      const [conv] = await db.select().from(convs).where(eq(convs.id, req.params.id)).limit(1);
-      if (
-        !conv ||
-        conv.type !== 'group' ||
-        conv.visibility === 'private' ||
-        conv.visibility === 'ghost'
-      ) {
-        throw notFound('not_found'); // unlisted means unlisted
-      }
+      const conv = await loadJoinableGroup(req.params.id); // unlisted means unlisted
 
       // Already a member → the join is idempotent.
       const mine = await getParticipant(conv.id, user.id);
@@ -200,12 +249,17 @@ export async function groupVisibilityRoutes(fastify: FastifyInstance): Promise<v
       }
 
       if (conv.visibility === 'invite_only') {
-        // Park a request — idempotent re-request answers 202 too.
-        await db.execute(sql`
+        // Park a request — idempotent re-request answers 202 too, but only
+        // the FIRST parks a row and tells the admins (phase 2).
+        const inserted = (await db.execute(sql`
           INSERT INTO group_join_requests (conversation_id, user_id)
           VALUES (${conv.id}, ${user.id})
           ON CONFLICT DO NOTHING
-        `);
+          RETURNING created_at
+        `)) as unknown as { created_at: string | Date }[];
+        if (inserted.length > 0) {
+          await fanJoinRequest(conv, user, new Date(inserted[0]!.created_at), false);
+        }
         return reply.status(202).send({ status: 'requested' });
       }
 
@@ -218,6 +272,43 @@ export async function groupVisibilityRoutes(fastify: FastifyInstance): Promise<v
       await publishConversationToUsers(conv.id, active, 'conv.updated');
       const dto = await loadConversationDto(conv.id, await viewCtxFor(user));
       return reply.status(200).send({ status: 'joined', conversation: dto });
+    },
+  );
+
+  // Phase 2 (§1.68) GET /api/conversations/:id/join — my own standing with
+  // a public|invite_only group; the same 404 as the POST for anything else.
+  app.get(
+    '/api/conversations/:id/join',
+    { preHandler: requireAuth, schema: { params: IdParams } },
+    async (req) => {
+      const { user } = authed(req);
+      const conv = await loadJoinableGroup(req.params.id);
+      const mine = await getParticipant(conv.id, user.id);
+      if (mine && mine.leftAt === null) return { state: 'member' };
+      const [row] = await db
+        .select({ userId: gjr.userId })
+        .from(gjr)
+        .where(and(eq(gjr.conversationId, conv.id), eq(gjr.userId, user.id)))
+        .limit(1);
+      return { state: row ? 'requested' : 'none' };
+    },
+  );
+
+  // Phase 2 (§1.68) DELETE /api/conversations/:id/join — withdraw my own
+  // request. Idempotent 204; the admins' queue shrinks (frame, no push).
+  app.delete(
+    '/api/conversations/:id/join',
+    { preHandler: requireAuth, schema: { params: IdParams } },
+    async (req, reply) => {
+      const { user } = authed(req);
+      const conv = await loadJoinableGroup(req.params.id);
+      const gone = (await db.execute(sql`
+        DELETE FROM group_join_requests
+        WHERE conversation_id = ${conv.id} AND user_id = ${user.id}
+        RETURNING created_at
+      `)) as unknown as { created_at: string | Date }[];
+      if (gone.length > 0) await fanJoinRequest(conv, user, new Date(gone[0]!.created_at), true);
+      return reply.status(204).send();
     },
   );
 
@@ -260,13 +351,21 @@ export async function groupVisibilityRoutes(fastify: FastifyInstance): Promise<v
       const active = await activeParticipantUserIds(conv.id);
       if (active.length + 1 > MAX_GROUP_PARTICIPANTS) throw badRequest('group_too_large');
 
+      const [joiner] = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.id, req.params.userId))
+        .limit(1);
+      if (!joiner) throw notFound('not_found');
+      let requestedAt = new Date();
       const msgRow = await db.transaction(async (tx) => {
         const deleted = (await tx.execute(sql`
           DELETE FROM group_join_requests
           WHERE conversation_id = ${conv.id} AND user_id = ${req.params.userId}
-          RETURNING user_id
-        `)) as unknown as { user_id: string }[];
+          RETURNING user_id, created_at
+        `)) as unknown as { user_id: string; created_at: string | Date }[];
         if (deleted.length === 0) throw notFound('not_found');
+        requestedAt = new Date(deleted[0]!.created_at);
         const locked = (await tx.execute(sql`
           SELECT last_seq FROM conversations WHERE id = ${conv.id} FOR UPDATE
         `)) as unknown as { last_seq: number | string }[];
@@ -289,6 +388,7 @@ export async function groupVisibilityRoutes(fastify: FastifyInstance): Promise<v
         return insertSystemMessageTx(tx, conv.id, 'participant_added', 'joined the group');
       });
       await fanOutNewMessage(msgRow);
+      await fanJoinRequest(conv, joiner, requestedAt, true); // the queue shrank
       await publishConversationToUsers(conv.id, [req.params.userId], 'conv.new');
       await publishConversationToUsers(conv.id, active, 'conv.updated');
       const dto = await loadConversationDto(conv.id, await viewCtxFor(user));
@@ -305,10 +405,21 @@ export async function groupVisibilityRoutes(fastify: FastifyInstance): Promise<v
       const { user } = authed(req);
       const part = await requireActiveParticipant(req.params.id, user.id);
       if (part.role !== 'admin') throw forbidden('forbidden');
-      await db.execute(sql`
+      const gone = (await db.execute(sql`
         DELETE FROM group_join_requests
         WHERE conversation_id = ${req.params.id} AND user_id = ${req.params.userId}
-      `);
+        RETURNING created_at
+      `)) as unknown as { created_at: string | Date }[];
+      if (gone.length > 0) {
+        // Silent to the requester; the OTHER admins' queue still shrinks.
+        const [conv] = await db.select().from(convs).where(eq(convs.id, req.params.id)).limit(1);
+        const [denied] = await db
+          .select()
+          .from(schema.users)
+          .where(eq(schema.users.id, req.params.userId))
+          .limit(1);
+        if (conv && denied) await fanJoinRequest(conv, denied, new Date(gone[0]!.created_at), true);
+      }
       return reply.status(204).send();
     },
   );

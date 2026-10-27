@@ -358,6 +358,9 @@ export function conversationDto(
   view?: ViewCtx | null,
   pins: ConversationPin[] = [],
   ghost?: GhostCtx | null,
+  // Phase 2 (§1.68): the join queue size — callers pass it ONLY for an admin
+  // viewer of an invite_only group (loadPendingJoinCounts); null otherwise.
+  pendingRequests: number | null = null,
 ): Conversation {
   const meta = convMetadata(c);
   // v0.8b (§1.68): a 👻 ghost conversation is ALWAYS serialized through a
@@ -430,8 +433,28 @@ export function conversationDto(
       const mine = g.masks.get(g.viewerId);
       return mine ? { name: mine.name, emoji: mine.emoji } : null;
     })(),
+    pending_requests: pendingRequests,
     created_at: iso(c.createdAt),
   };
+}
+
+/** Phase 2 (§1.68): open join requests per invite_only group, batched. */
+export async function loadPendingJoinCounts(convIds: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (convIds.length === 0) return out;
+  const rows = (await db.execute(sql`
+    SELECT conversation_id, count(*)::int AS n FROM group_join_requests
+    WHERE conversation_id IN (${sql.join(convIds.map((id) => sql`${id}::uuid`), sql`, `)})
+    GROUP BY conversation_id
+  `)) as unknown as { conversation_id: string; n: number }[];
+  for (const r of rows) out.set(r.conversation_id, Number(r.n));
+  return out;
+}
+
+/** True when `role` runs an invite_only group's queue — the one viewer that
+ * receives `pending_requests`. */
+export function seesJoinQueue(c: ConvRow, role: string | null | undefined): boolean {
+  return c.type === 'group' && c.visibility === 'invite_only' && role === 'admin';
 }
 
 /** v0.8b (§1.68): the GhostCtx for one viewer of one conversation — null for
@@ -937,7 +960,10 @@ export async function loadConversationDto(
   const pins = await loadPinsFor([convId]);
   const mine = (parts.get(convId) ?? []).find(({ u }) => u.id === view?.viewerId);
   const ghost = await ghostCtxFor(c, view?.viewerId, mine ? mine.p.role : null);
-  return conversationDto(c, parts.get(convId) ?? [], view, pins.get(convId) ?? [], ghost);
+  const pending = seesJoinQueue(c, mine?.p.role)
+    ? ((await loadPendingJoinCounts([convId])).get(convId) ?? 0)
+    : null;
+  return conversationDto(c, parts.get(convId) ?? [], view, pins.get(convId) ?? [], ghost, pending);
 }
 
 /**
@@ -1006,6 +1032,13 @@ export async function publishConversationToUsers(
   }
 
   const pairs = await blockPairsAmong([...new Set([...participantIds, ...uniqueRecipients])]);
+  // Phase 2 (§1.68): admins of an invite_only group carry the queue size —
+  // their serialization differs from the members', so it joins the signature.
+  const roleById = new Map(parts.map(({ p, u }) => [u.id, p.role]));
+  const pendingCount =
+    c.type === 'group' && c.visibility === 'invite_only'
+      ? ((await loadPendingJoinCounts([convId])).get(convId) ?? 0)
+      : null;
   // v0.8a (§1.57): participants with a LIVE 'connections'-visibility mood
   // need one accepted-connection lookup, batched like the dm_partners one —
   // the per-recipient mood stamp below resolves against it.
@@ -1035,7 +1068,7 @@ export async function publishConversationToUsers(
   // Group recipients whose clamped serialization is bit-identical: the DTO
   // varies only in last_read_seq visibility and last_seen_at visibility per
   // participant, so those bits ARE the signature.
-  const groups = new Map<string, { ctx: ViewCtx; userIds: string[] }>();
+  const groups = new Map<string, { ctx: ViewCtx; userIds: string[]; pending: number | null }>();
   for (const r of uniqueRecipients) {
     const rr = userById.get(r)?.readReceipts ?? true;
     const blockedIds = new Set(participantIds.filter((pid) => pairs.has(`${r}:${pid}`)));
@@ -1067,17 +1100,23 @@ export async function publishConversationToUsers(
       const mine = parts.find(({ u }) => u.id === r);
       if (mine && mine.p.role === 'member') sig += `#${r}`;
     }
+    const seesQueue = pendingCount !== null && seesJoinQueue(c, roleById.get(r));
+    if (seesQueue) sig += '@';
     const g = groups.get(sig);
     if (g) g.userIds.push(r);
     else {
       groups.set(sig, {
         ctx: { viewerId: r, viewerReadReceipts: rr, dmPartnerIds, blockedIds, connectionIds },
         userIds: [r],
+        pending: seesQueue ? pendingCount : null,
       });
     }
   }
-  for (const { ctx, userIds } of groups.values()) {
-    await publishToUsers(userIds, { t, d: { conversation: conversationDto(c, parts, ctx, pins) } });
+  for (const { ctx, userIds, pending } of groups.values()) {
+    await publishToUsers(userIds, {
+      t,
+      d: { conversation: conversationDto(c, parts, ctx, pins, null, pending) },
+    });
   }
 }
 
@@ -1217,6 +1256,9 @@ export async function loadListItems(
 
   const partsByConv = await loadActiveParticipantsWithUsers(convIds);
   const pinsByConv = await loadPinsFor(convIds);
+  const pendingByConv = await loadPendingJoinCounts(
+    convs.filter((c) => seesJoinQueue(c, myPartByConv.get(c.id)?.role)).map((c) => c.id),
+  );
 
   const cp = schema.conversationParticipants;
   const lastRows = await db.execute(sql`
@@ -1247,7 +1289,14 @@ export async function loadListItems(
       lastMessage = ghostMessageDto(lastMessage, ghost);
     }
     items.push({
-      ...conversationDto(c, partsByConv.get(c.id) ?? [], ctx, pinsByConv.get(c.id) ?? [], ghost),
+      ...conversationDto(
+        c,
+        partsByConv.get(c.id) ?? [],
+        ctx,
+        pinsByConv.get(c.id) ?? [],
+        ghost,
+        seesJoinQueue(c, mine.role) ? (pendingByConv.get(c.id) ?? 0) : null,
+      ),
       unread_count: Math.max(0, c.lastSeq - mine.lastReadSeq),
       last_message: lastMessage,
     });

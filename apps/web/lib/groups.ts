@@ -8,6 +8,7 @@ import {
   type ConversationListItem,
   type GroupJoinRequestsResponse,
   type GroupJoinResponse,
+  type GroupJoinState,
   type UpdateGroupVisibilityRequest,
 } from '@socialchat/shared';
 import { api } from './api';
@@ -36,6 +37,16 @@ export async function joinGroup(conversationId: string): Promise<GroupJoinRespon
   const res = await api.post<GroupJoinResponse>(`/api/conversations/${conversationId}/join`);
   if (res.status === 'joined') store.upsertConversation(res.conversation);
   return res;
+}
+
+/** Phase 2: my own standing with a public|invite_only group (404 otherwise). */
+export function getJoinState(conversationId: string): Promise<GroupJoinState> {
+  return api.get<GroupJoinState>(`/api/conversations/${conversationId}/join`);
+}
+
+/** Phase 2: withdraw my pending request (idempotent 204). */
+export async function withdrawJoinRequest(conversationId: string): Promise<void> {
+  await api.del(`/api/conversations/${conversationId}/join`);
 }
 
 export async function listJoinRequests(conversationId: string): Promise<GroupJoinRequestsResponse> {

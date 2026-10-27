@@ -22,6 +22,7 @@ import {
   ConnectionSchema,
   ConversationPrefsSchema,
   ConversationSchema,
+  GroupJoinRequestRowSchema,
   PostSchema,
   StorySchema,
   IsoDateTimeSchema,
@@ -127,6 +128,21 @@ export const ConvUpdatedEventSchema = z.object({
   }),
 });
 export type ConvUpdatedEvent = z.infer<typeof ConvUpdatedEventSchema>;
+
+// Share-everything phase 2 (§1.68): the admins of an invite_only group hear
+// about their queue — a request parked (removed:false) or gone (withdrawn,
+// approved or denied; removed:true). ADMINS ONLY; the requester is never
+// told about a deny (the no-rejection-surface rule) and learns of an
+// approve by the ordinary conv.new.
+export const GroupJoinRequestEventSchema = z.object({
+  t: z.literal('group.join_request'),
+  d: z.object({
+    conversation_id: UuidSchema,
+    request: GroupJoinRequestRowSchema,
+    removed: z.boolean().default(false),
+  }),
+});
+export type GroupJoinRequestEvent = z.infer<typeof GroupJoinRequestEventSchema>;
 
 export const UserUpdatedEventSchema = z.object({
   t: z.literal('user.updated'),
@@ -601,6 +617,7 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
   PresenceEventSchema,
   ConvNewEventSchema,
   ConvUpdatedEventSchema,
+  GroupJoinRequestEventSchema,
   UserUpdatedEventSchema,
   ReactionUpdatedEventSchema,
   PreviewReadyEventSchema,

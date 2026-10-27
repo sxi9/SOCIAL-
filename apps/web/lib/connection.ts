@@ -253,6 +253,9 @@ function handleFrame(raw: string): void {
       }
       break;
     }
+    case 'group.join_request':
+      store.applyJoinRequest(ev.d.conversation_id, ev.d.removed);
+      break;
     case 'user.updated':
       store.applyUserUpdated(ev.d.user);
       break;

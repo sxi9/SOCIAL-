@@ -403,6 +403,18 @@ export function markCaughtUp(conversationId: string): void {
   emit();
 }
 
+/** Phase 2 (§1.68): a `group.join_request` frame — the admin's queue grew or
+ * shrank. Only an admin of an invite_only group ever holds a number here. */
+export function applyJoinRequest(conversationId: string, removed: boolean): void {
+  const item = state.conversations.get(conversationId);
+  if (!item || item.pending_requests === null) return;
+  state.conversations.set(conversationId, {
+    ...item,
+    pending_requests: Math.max(0, item.pending_requests + (removed ? -1 : 1)),
+  });
+  emit();
+}
+
 /** Drop a conversation locally (own removal/leave — §2.8: gone from sync). */
 export function removeConversation(conversationId: string): void {
   const existed = state.conversations.delete(conversationId);

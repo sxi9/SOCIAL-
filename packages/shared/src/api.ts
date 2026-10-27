@@ -776,6 +776,10 @@ export const ConversationSchema = z.object({
     })
     .nullable()
     .default(null),
+  // Share-everything phase 2 (§1.68): how many people are waiting to join —
+  // a number ONLY an admin of an invite_only group ever receives (the queue
+  // they run); null for everyone else and for every other conversation.
+  pending_requests: z.number().int().nonnegative().nullable().default(null),
   created_at: IsoDateTimeSchema,
 });
 export type Conversation = z.infer<typeof ConversationSchema>;
@@ -3880,6 +3884,14 @@ export const GroupJoinRequestsResponseSchema = z.object({
   requests: z.array(GroupJoinRequestRowSchema), // oldest first — a queue
 });
 export type GroupJoinRequestsResponse = z.infer<typeof GroupJoinRequestsResponseSchema>;
+
+// GET /api/conversations/:id/join — the viewer's own standing with a
+// public|invite_only group (member / requested / none); private/ghost and
+// unknown ids answer the same 404 as the POST. DELETE withdraws a request.
+export const GroupJoinStateSchema = z.object({
+  state: z.enum(['member', 'requested', 'none']),
+});
+export type GroupJoinState = z.infer<typeof GroupJoinStateSchema>;
 
 // PUT /api/conversations/:id/mask — MY mask in a ghost group (members pick;
 // join/switch auto-assigns from the GHOST_MASK_* pools first). Unique per

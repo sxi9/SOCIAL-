@@ -28,8 +28,14 @@ Updated 2026-10-27. A new session continues this project by reading
   token. Then Slice E, DEPLOYED (`23146bf`, 2026-10-28 00:51): the inline sign-in sheet on every share-page
   CTA (`GateCta` → `InlineSignInSheet`: password, passkey, QR, create account,
   TOTP; lands on the object; `/register?next=` href kept for no-JS), the three
-  v0.9 auth minors, and the login page's suspended/banned copy. Next: phases
-  2–7 per §1b (group join loop first). Open follow-up from review: the unfurl
+  v0.9 auth minors, and the login page's suspended/banned copy. Then phase 2
+  slice F (2026-10-28): the group join loop's share-page half — `GroupJoinCta`
+  (join / ask / requested+withdraw / open), `GET`+`DELETE
+  /api/conversations/:id/join`, the `group.join_request` frame + admin push,
+  `pending_requests` on the DTO (admins of invite_only groups only),
+  `lib/shareAuth.ts` `probeMe()` for every island on a public SSR page. Next:
+  the invite page's group card (`InvitePublic` + `conversation_id`), invite
+  list/revoke + QR, then phases 3–7 per §1b. Open follow-up from review: the unfurl
   worker charges the sender's hourly budget for our own share URLs (short-
   circuit origin == PUBLIC_ORIGIN in the send route).
 - `main` at `b396d09` (2026-10-27, morning). Shipped since the previous handoff, in

@@ -91,7 +91,9 @@ export default function GroupSettingsSection({
     return () => {
       cancelled = true;
     };
-  }, [admin, conv.visibility, conv.id]);
+    // Phase 2: `pending_requests` moves with the group.join_request frame, so
+    // the queue re-reads itself whenever it changes.
+  }, [admin, conv.visibility, conv.id, conv.pending_requests]);
 
   async function applyVisibility(v: GroupVisibility, confirm = false): Promise<void> {
     if (busy) return;
@@ -212,7 +214,9 @@ export default function GroupSettingsSection({
 
       {admin && conv.visibility === 'invite_only' ? (
         <>
-          <div className={bz.sheetLabel}>Join requests</div>
+          <div className={bz.sheetLabel}>
+            Join requests{conv.pending_requests ? ` · ${conv.pending_requests} waiting` : ''}
+          </div>
           {requests === null ? (
             <p className="muted small">Looking…</p>
           ) : requests.length === 0 ? (
