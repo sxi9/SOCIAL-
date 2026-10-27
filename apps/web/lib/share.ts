@@ -14,6 +14,7 @@ import type {
   ShareLink,
   ShareLinkListItem,
   ShareLinkResponse,
+  ShareLanding,
   ShareObjectType,
 } from '@socialchat/shared';
 import { api, ApiError } from './api';
@@ -41,6 +42,12 @@ export async function mintShareLink(
     ...(preview ? { preview } : {}),
   });
   return res.share_link;
+}
+
+/** Phase 3: what a LIVE token says to a signed-in visitor — visible, or
+ * outside the audience plus who to ask. 404 = nothing to ask about. */
+export async function getShareLanding(token: string): Promise<ShareLanding> {
+  return api.get<ShareLanding>(`/api/share/${encodeURIComponent(token)}/landing`);
 }
 
 export async function revokeShareLink(token: string): Promise<void> {

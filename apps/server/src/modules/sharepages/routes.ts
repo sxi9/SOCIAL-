@@ -21,12 +21,15 @@ import {
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { isBlockedPair } from '../../lib/blocks.js';
+import { userLiteDto } from '../../lib/dto.js';
 import { isFriendOf } from '../../lib/friends.js';
 import { badRequest, forbidden, notFound, rateLimited } from '../../lib/errors.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
 import { getObjectStream } from '../../s3.js';
 import { authed, requireAuth } from '../auth/guard.js';
-import { hasJoin, isBeaconVisibleTo, loadBeacon } from '../beacons/service.js';
+import { hasBlockedJoiner, hasJoin, isBeaconVisibleTo, loadBeacon } from '../beacons/service.js';
+import { loadPost } from '../feed/service.js';
+import { hasListingContact, isListingLive, loadListingWithAuthor } from '../listings/service.js';
 import {
   loadOpenTokenByToken,
   mintOrReturnToken,
@@ -376,6 +379,69 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
     });
     return { share_links };
   });
+
+  // Phase 3 (§1b) GET /api/share/:token/landing — AUTHED: the one place a
+  // signed-in visitor learns "outside the audience" (never "gone" vs
+  // "outside" without a live token — the §1.14 shape holds everywhere
+  // else). Blocked / banned pairs, revoked tokens and gone objects answer
+  // the same 404 share_not_found as the public read.
+  app.get(
+    '/api/share/:token/landing',
+    { preHandler: requireAuth, schema: { params: TokenParams } },
+    async (req) => {
+      const { user } = authed(req);
+      const row = await loadLiveToken(req.params.token);
+      const gone = () => notFound('share_not_found');
+      const authorLite = async (authorId: string) => {
+        const [u] = await db.select().from(schema.users).where(eq(schema.users.id, authorId)).limit(1);
+        if (!u || u.bannedAt !== null) throw gone();
+        if (await isBlockedPair(user.id, u.id)) throw gone();
+        return userLiteDto(u);
+      };
+      switch (row.objectType) {
+        case 'post': {
+          const p = await loadPost(row.objectId);
+          if (!p) throw gone();
+          const author = await authorLite(p.authorId);
+          const visible =
+            p.authorId === user.id || p.audience === 'public' || (await isFriendOf(user.id, p.authorId));
+          return { state: visible ? 'visible' : 'outside', object_type: 'post', object_id: p.id, author };
+        }
+        case 'beacon': {
+          const b = await loadBeacon(row.objectId);
+          if (!b) throw gone();
+          const author = await authorLite(b.creatorId);
+          const visible = (await isBeaconVisibleTo(b, user)) || (await hasJoin(b.id, user.id));
+          if (!visible) {
+            // "Outside" only when a door EXISTS: a friends-audience plan opens
+            // once host and visitor are friends-of. An area-only plan, a
+            // sparked/closed one, or a pile holding someone blocked w.r.t.
+            // the visitor can never open — nothing to ask, the §1.14 404.
+            if (b.audience !== 'friends') throw gone();
+            if (b.status !== 'open' || b.expiresAt.getTime() <= Date.now()) throw gone();
+            if (await hasBlockedJoiner(b.id, user.id)) throw gone();
+          }
+          return { state: visible ? 'visible' : 'outside', object_type: 'beacon', object_id: b.id, author };
+        }
+        case 'listing': {
+          const found = await loadListingWithAuthor(row.objectId);
+          if (!found) throw gone();
+          const { l } = found;
+          const author = await authorLite(l.authorId);
+          const areaOk =
+            l.isPublic || (user.area !== null && l.area.toLowerCase() === user.area.toLowerCase());
+          const visible =
+            l.authorId === user.id ||
+            (await hasListingContact(l.id, user.id)) ||
+            (isListingLive(l) && areaOk);
+          if (!visible && !isListingLive(l)) throw gone();
+          return { state: visible ? 'visible' : 'outside', object_type: 'listing', object_id: l.id, author };
+        }
+        default:
+          throw gone(); // stories and groups have their own doors
+      }
+    },
+  );
 
   // §1.67 GET /api/share/:token/public — UNAUTHENTICATED. Live checks every
   // read; 404 share_not_found byte-identical for every cause.

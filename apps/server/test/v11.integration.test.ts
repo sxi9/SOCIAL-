@@ -50,7 +50,7 @@ describe.runIf(infra)('share-everything phase 2: group join loop (§1.68)', () =
   function get(me: Session, url: string) {
     return app.inject({ method: 'GET', url, cookies: { sid: me.sid } });
   }
-  function mutate(method: 'POST' | 'PATCH' | 'DELETE', me: Session, url: string, payload?: unknown) {
+  function mutate(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', me: Session, url: string, payload?: unknown) {
     return app.inject({
       method,
       url,
@@ -62,6 +62,7 @@ describe.runIf(infra)('share-everything phase 2: group join loop (§1.68)', () =
   const post = (me: Session, url: string, payload: unknown = {}) => mutate('POST', me, url, payload);
   const patch = (me: Session, url: string, payload: unknown = {}) => mutate('PATCH', me, url, payload);
   const del = (me: Session, url: string) => mutate('DELETE', me, url);
+  const put = (me: Session, url: string, payload: unknown = {}) => mutate('PUT', me, url, payload);
 
   async function createGroup(admin: Session, members: Session[], visibility: 'public' | 'invite_only') {
     const res = await post(admin, '/api/conversations', {
@@ -231,6 +232,101 @@ describe.runIf(infra)('share-everything phase 2: group join loop (§1.68)', () =
       expect(goneBody.status).toBe('revoked');
       expect(goneBody.group).toBeNull();
       expect(goneBody.conversation_id).toBeNull();
+    });
+  });
+
+  describe('outside the audience → a request (phase 3, slice H)', () => {
+    async function setArea(me: Session, area: string): Promise<void> {
+      expect((await patch(me, '/api/users/me', { area })).statusCode).toBe(200);
+    }
+    function landing(me: Session, token: string) {
+      return get(me, `/api/share/${token}/landing`);
+    }
+    async function mint(me: Session, type: string, id: string): Promise<string> {
+      const res = await post(me, '/api/share-links', { type, id });
+      expect(res.statusCode).toBe(200);
+      return (res.json() as { share_link: { token: string } }).share_link.token;
+    }
+
+    it('friends-only post: a stranger with the token reads outside + the author; a friend reads visible', async () => {
+      const author = await register(`p3pa${run}`);
+      const stranger = await register(`p3ps${run}`);
+      const friend = await register(`p3pf${run}`);
+      const created = await post(author, '/api/posts', { kind: 'text', audience: 'friends_of', body: 'inner circle' });
+      expect(created.statusCode).toBe(201);
+      const postId = (created.json() as { post: { id: string } }).post.id;
+      const token = await mint(author, 'post', postId);
+      // The object read keeps its §1.14 404 for the stranger.
+      expect((await get(stranger, `/api/posts/${postId}`)).statusCode).toBe(404);
+      const out = await landing(stranger, token);
+      expect(out.statusCode).toBe(200);
+      const body = out.json() as { state: string; object_type: string; object_id: string; author: { id: string } };
+      expect(body.state).toBe('outside');
+      expect(body.object_type).toBe('post');
+      expect(body.object_id).toBe(postId);
+      expect(body.author.id).toBe(author.userId);
+      // A connection accepted → friends-of → visible.
+      const req = await post(friend, `/api/users/${author.userId}/connect`);
+      expect(req.statusCode).toBe(201);
+      const connId = (req.json() as { connection: { id: string } }).connection.id;
+      expect((await post(author, `/api/connections/${connId}/accept`)).statusCode).toBe(200);
+      expect((await landing(friend, token)).json()).toMatchObject({ state: 'visible' });
+      expect((await get(friend, `/api/posts/${postId}`)).statusCode).toBe(200);
+      // A revoked token answers the public read's 404, byte-identical to unknown.
+      expect((await del(author, `/api/share-links/${token}`)).statusCode).toBe(204);
+      const dead = await landing(stranger, token);
+      const unknown = await landing(stranger, 'x'.repeat(43));
+      expect(dead.statusCode).toBe(404);
+      expect(dead.body).toBe(unknown.body);
+    });
+
+    it('area-only listing: a foreign-area visitor reads outside; contact through the token opens the DM and the read', async () => {
+      const author = await register(`p3la${run}`);
+      const faraway = await register(`p3lf${run}`);
+      await setArea(author, `koramangala-${run}`);
+      await setArea(faraway, `elsewhere-${run}`);
+      const created = await post(author, '/api/listings', {
+        kind: 'gig',
+        title: `band practice ${run}`,
+        details: { direction: 'seeking', tags: ['music'] },
+      });
+      expect(created.statusCode).toBe(201);
+      const listingId = (created.json() as { listing: { id: string; is_public: boolean } }).listing.id;
+      const token = await mint(author, 'listing', listingId);
+      expect((await get(faraway, `/api/listings/${listingId}`)).statusCode).toBe(404);
+      expect((await landing(faraway, token)).json()).toMatchObject({ state: 'outside', object_type: 'listing' });
+      // Without the token the area gate holds…
+      expect((await post(faraway, `/api/listings/${listingId}/contact`, {})).statusCode).toBe(404);
+      // …with it the contact lands, and the contact row grants the read.
+      const contact = await post(faraway, `/api/listings/${listingId}/contact`, { share_token: token });
+      expect(contact.statusCode).toBe(201);
+      expect((await get(faraway, `/api/listings/${listingId}`)).statusCode).toBe(200);
+      expect((await landing(faraway, token)).json()).toMatchObject({ state: 'visible' });
+    });
+
+    it('friends-audience plan: a stranger reads outside + the host; blocked pairs get the 404', async () => {
+      const host = await register(`p3bh${run}`);
+      const stranger = await register(`p3bs${run}`);
+      const blocked = await register(`p3bb${run}`);
+      const now = Date.now();
+      const created = await post(host, '/api/beacons', {
+        vibe: 'chai',
+        audience: 'friends',
+        note: 'usual place',
+        starts_at: new Date(now).toISOString(),
+        expires_at: new Date(now + 2 * 3600 * 1000).toISOString(),
+      });
+      expect(created.statusCode).toBe(201);
+      const beaconId = (created.json() as { beacon: { id: string } }).beacon.id;
+      const token = await mint(host, 'beacon', beaconId);
+      const out = (await landing(stranger, token)).json() as { state: string; author: { id: string } };
+      expect(out.state).toBe('outside');
+      expect(out.author.id).toBe(host.userId);
+      expect([200, 204]).toContain((await put(host, `/api/users/${blocked.userId}/block`)).statusCode);
+      const hidden = await landing(blocked, token);
+      const unknown = await landing(blocked, 'x'.repeat(43));
+      expect(hidden.statusCode).toBe(404);
+      expect(hidden.body).toBe(unknown.body);
     });
   });
 

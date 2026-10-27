@@ -23,6 +23,7 @@ import {
   UpdateListingRequestSchema,
   type ListingRef,
   type RideDetails,
+  ContactListingRequestSchema,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
@@ -39,7 +40,7 @@ import { badRequest, conflict, forbidden, gone, notFound, rateLimited } from '..
 import { fixedWindow } from '../../lib/ratelimit.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { deniedGroupAddTargets } from '../conversations/routes.js';
-import { revokeShareTokensFor } from '../sharepages/service.js';
+import { loadOpenTokenByToken, revokeShareTokensFor } from '../sharepages/service.js';
 import { fanOutNewMessage, insertMessage } from '../messages/service.js';
 import {
   derivedListingStatus,
@@ -437,7 +438,9 @@ export async function listingRoutes(fastify: FastifyInstance): Promise<void> {
   // §1.40 review gate) lands in the SAME transaction as the message.
   app.post(
     '/api/listings/:id/contact',
-    { preHandler: requireAuth, schema: { params: IdParams } },
+    // The body is optional AND may be absent entirely (older callers send
+    // none): Fastify hands an absent body to the validator as null.
+    { preHandler: requireAuth, schema: { params: IdParams, body: ContactListingRequestSchema.nullable().optional() } },
     async (req, reply) => {
       const { user } = authed(req);
       const rate = await fixedWindow(
@@ -472,11 +475,19 @@ export async function listingRoutes(fastify: FastifyInstance): Promise<void> {
         return reply.status(200).send({ conversation_id: existing[0]!.conversation_id });
       }
 
-      if (derivedListingStatus(l) !== 'active') throw gone('listing_closed');
-      // First contact needs the card visible (same-area or public).
-      const areaOk =
+      // First contact needs the card visible (same-area or public) — or,
+      // phase 3 (§1b), a LIVE share token for THIS listing: the author sent
+      // the link, so the door it opens is exactly this one. Checked BEFORE
+      // the closed gate: an invisible listing is 404 whatever its state
+      // (§1.38 — a 410 would confirm it exists).
+      let areaOk =
         l.isPublic || (user.area !== null && l.area.toLowerCase() === user.area.toLowerCase());
+      if (!areaOk && req.body?.share_token) {
+        const t = await loadOpenTokenByToken(req.body.share_token);
+        if (t && t.objectType === 'listing' && t.objectId === l.id) areaOk = true;
+      }
       if (!areaOk) throw notFound('listing_not_found');
+      if (derivedListingStatus(l) !== 'active') throw gone('listing_closed');
 
       // §1.4 DM create-or-dedupe via dm_key.
       const dmKey = [user.id, l.authorId].sort().join(':');

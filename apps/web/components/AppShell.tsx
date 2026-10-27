@@ -24,7 +24,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (state.authed === false) {
-      router.replace(`/login?next=${encodeURIComponent(pathname || '/')}`);
+      // Phase 3: the query string rides along (`?s=<share token>` on the
+      // object routes), so a sign-in round-trip keeps the share landing.
+      router.replace(`/login?next=${encodeURIComponent((pathname || '/') + window.location.search)}`);
     }
   }, [state.authed, pathname, router]);
 

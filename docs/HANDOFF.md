@@ -36,9 +36,16 @@ Updated 2026-10-27. A new session continues this project by reading
   `lib/shareAuth.ts` `probeMe()` for every island on a public SSR page. Then
   slice G, DEPLOYED (`e1e89d2`, 2026-10-28 01:33): the invite page's group card (`InvitePublic` +
   `conversation_id` + `group`, `GET /api/invites/:token/group-avatar`), the
-  invite sheet's link list with Revoke + QR. Next: the rest of §2.5's admin
-  half (`conversation_bans` — needs migration 0015 —, admin delete-any-message,
-  transfer ownership, sender names in group push), then phases 3–7 per §1b. Open follow-up from review: the unfurl
+  invite sheet's link list with Revoke + QR. Then phase 3 (slice H,
+  2026-10-28): the deep link carries `?s=<token>`; when the object read 404s
+  for the signed-in visitor, `GET /api/share/:token/landing` says
+  visible/outside + the author, and `OutsideAudienceSheet` offers the one
+  door — Ask the host (DM), Message the poster (`contact {share_token}`
+  opens the area gate), Connect with the author. Next: §2.5's admin half
+  (`conversation_bans` — needs migration 0015 —, admin delete-any-message,
+  transfer ownership, sender names in group push), then phases 4–7 per §1b
+  (posts/stories share polish, call links, profile + dm_policy enforcement +
+  Requests inbox, chat media). Open follow-up from review: the unfurl
   worker charges the sender's hourly budget for our own share URLs (short-
   circuit origin == PUBLIC_ORIGIN in the send route).
 - `main` at `b396d09` (2026-10-27, morning). Shipped since the previous handoff, in

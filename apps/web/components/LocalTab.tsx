@@ -17,9 +17,12 @@ import dsc from '@/components/discovery.module.css';
 export default function LocalTab({
   initialListingId = null,
   initialBeaconId = null,
+  shareToken = null,
 }: {
   initialListingId?: string | null;
   initialBeaconId?: string | null;
+  /** Phase 3: the share token a deep link arrived with (`?s=`). */
+  shareToken?: string | null;
 }) {
   const state = useAppState();
   const area = state.me?.area ?? null;
@@ -47,14 +50,14 @@ export default function LocalTab({
         </span>
       </header>
       <KudosBanner />
-      <BeaconStrip initialBeaconId={initialBeaconId} onDeepLinkDone={done} />
+      <BeaconStrip initialBeaconId={initialBeaconId} shareToken={shareToken} onDeepLinkDone={done} />
       {/* Royal v2 (ref 10): the dashed "+ I'm bored" pill sits right under
           the live beacon card — still one tap from bored to beacon. */}
       <BoredButton />
       {/* v0.6 Bored Together (§1.44/§1.45): opt-in discovery + roulette — a
           moment, not a setting; strangers only, never your friends. */}
       <DiscoverySection />
-      <BoardView initialListingId={initialListingId} onDeepLinkDone={done} />
+      <BoardView initialListingId={initialListingId} shareToken={shareToken} onDeepLinkDone={done} />
     </div>
   );
 }

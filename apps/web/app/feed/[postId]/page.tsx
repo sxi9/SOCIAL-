@@ -7,12 +7,15 @@
 // a route change would unmount this page and remount the whole tab (lanes,
 // layout, board) just to close a sheet. The auth gate keeps the full path
 // on its round-trip because it is a path, not a query string.
-import { useParams, usePathname } from 'next/navigation';
+import { Suspense } from 'react';
+import { useParams, usePathname, useSearchParams } from 'next/navigation';
 import FeedView from '@/components/FeedView';
 import TabPage from '@/components/TabPage';
 
-export default function FeedPostPage() {
+function FeedPost() {
   const params = useParams<{ postId: string }>();
+  // Phase 3: the share token the visitor arrived with (`?s=`).
+  const shareToken = useSearchParams().get('s');
   // Next keeps THIS route's tree on the history entry after the native
   // replaceState, so a later Back can remount this page with the old param
   // while the URL says /feed. The deep link is live only while the pathname
@@ -20,11 +23,20 @@ export default function FeedPostPage() {
   const pathname = usePathname();
   const initial = pathname === `/feed/${params.postId}` ? params.postId : null;
   return (
+    <FeedView
+      initialPostId={initial}
+      shareToken={shareToken}
+      onDeepLinkDone={() => window.history.replaceState(null, '', '/feed')}
+    />
+  );
+}
+
+export default function FeedPostPage() {
+  return (
     <TabPage active="feed">
-      <FeedView
-        initialPostId={initial}
-        onDeepLinkDone={() => window.history.replaceState(null, '', '/feed')}
-      />
+      <Suspense fallback={null}>
+        <FeedPost />
+      </Suspense>
     </TabPage>
   );
 }

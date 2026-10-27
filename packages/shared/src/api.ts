@@ -3,6 +3,7 @@
 import { z } from 'zod';
 import {
   AREA_MAX_CHARS,
+  SHARE_TOKEN_REGEX,
   AUDIO_WAVEFORM_BUCKETS,
   AUDIO_WAVEFORM_PEAK_MAX,
   BEACON_NOTE_MAX_CHARS,
@@ -2615,7 +2616,15 @@ export type ListListingsResponse = z.infer<typeof ListListingsResponseSchema>;
 // §1.39 Message-the-author & gig team-up.
 // ---------------------------------------------------------------------------
 
-// POST /api/listings/:id/contact — no body. Creates/dedupes the DM (the §1.4
+// POST /api/listings/:id/contact — body optional. Phase 3 (§1b): a LIVE
+// share token for THIS listing lets a first contact through the same-area
+// gate (the sharer sent the link; the contact row then grants the read).
+export const ContactListingRequestSchema = z.object({
+  share_token: z.string().regex(SHARE_TOKEN_REGEX).optional(),
+});
+export type ContactListingRequest = z.infer<typeof ContactListingRequestSchema>;
+
+// POST /api/listings/:id/contact — creates/dedupes the DM (the §1.4
 // dm_key path verbatim) and drops ONE 'listing_contact' system message with
 // metadata.listing_ref; records the (listing, me) contact row that gates
 // §1.40 reviews and feeds the team-up pick pool. Idempotent per listing.
@@ -3863,6 +3872,21 @@ export type SharePage = z.infer<typeof SharePageSchema>;
 
 export const SharePageResponseSchema = z.object({ page: SharePageSchema });
 export type SharePageResponse = z.infer<typeof SharePageResponseSchema>;
+
+// Phase 3 (2026-10-28, §1b): GET /api/share/:token/landing — AUTHED. The
+// object route a share link lands on keeps its §1.14 404 (unknown ≡ outside
+// the audience ≡ blocked); only a LIVE token the viewer arrived with says
+// this much more: can I see it, and if not, who shared it so I can ask. The
+// author is a UserLite (an id — the request routes need one); a blocked or
+// banned pair, a revoked token or a gone object are the same 404
+// share_not_found as the public read. Post / plan / listing only.
+export const ShareLandingSchema = z.object({
+  state: z.enum(['visible', 'outside']),
+  object_type: z.enum(['post', 'beacon', 'listing']),
+  object_id: UuidSchema,
+  author: UserLiteSchema.nullable(),
+});
+export type ShareLanding = z.infer<typeof ShareLandingSchema>;
 
 // ---------------------------------------------------------------------------
 // Group visibility modes (v0.8b — API.md §1.68, FEATURES #79d, ADR-020)

@@ -6,9 +6,11 @@
 // Plan beacons share this tab client-side (FEATURES #43) via the strip above;
 // the 🔥 Plans chip just points back at it — beacons keep their own API.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Listing, ListingKind } from '@socialchat/shared';
+import type { Listing, ListingKind, ShareLanding } from '@socialchat/shared';
 import { AREA_MAX_CHARS, LISTING_KINDS, LISTING_SEARCH_MAX_CHARS } from '@socialchat/shared';
 import { ApiError } from '@/lib/api';
+import { getShareLanding } from '@/lib/share';
+import OutsideAudienceSheet from './OutsideAudienceSheet';
 import {
   expiryLine,
   getListing,
@@ -29,13 +31,17 @@ type Filter = 'all' | 'plans' | 'mine' | ListingKind;
 
 export default function BoardView({
   initialListingId,
+  shareToken = null,
   onDeepLinkDone,
 }: {
   /** /local?l=<id> deep link (chat context pills) — opens the detail sheet. */
   initialListingId?: string | null;
+  /** Phase 3: the share token the deep link arrived with. */
+  shareToken?: string | null;
   onDeepLinkDone?: () => void;
 }) {
   const state = useAppState();
+  const [outside, setOutside] = useState<ShareLanding | null>(null);
   const now = useNow(60_000);
   const [filter, setFilter] = useState<Filter>('all');
   const [areaFilter, setAreaFilter] = useState<string | null>(null); // null = mine (server default)
@@ -101,7 +107,21 @@ export default function BoardView({
       .then((listing) => {
         if (!cancelled) setSelected(listing);
       })
-      .catch((err) => {
+      .catch(async (err) => {
+        if (cancelled) return;
+        // Phase 3: with a live token a 404 may be "outside the area".
+        if (shareToken && err instanceof ApiError && err.status === 404) {
+          try {
+            const landing = await getShareLanding(shareToken);
+            if (cancelled) return;
+            if (landing.state === 'outside') {
+              setOutside(landing);
+              return;
+            }
+          } catch {
+            /* nothing to ask about */
+          }
+        }
         if (!cancelled) {
           setError(
             err instanceof ApiError && err.status === 404
@@ -319,6 +339,16 @@ export default function BoardView({
           onCreated={(listing) => {
             // Straight back onto the board — the new card sits on top.
             setListings((prev) => (prev === null ? [listing] : [listing, ...prev]));
+          }}
+        />
+      ) : null}
+      {outside && shareToken ? (
+        <OutsideAudienceSheet
+          landing={outside}
+          token={shareToken}
+          onClose={() => {
+            setOutside(null);
+            onDeepLinkDone?.();
           }}
         />
       ) : null}

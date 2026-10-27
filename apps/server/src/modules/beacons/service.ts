@@ -72,7 +72,7 @@ export async function hasJoin(beaconId: string, userId: string): Promise<boolean
  * server must never place a blocked pair into the same brand-new plan group,
  * so a beacon whose pile already holds a blocked counterpart is unjoinable —
  * and therefore invisible (visibility ⇔ joinability, PSYCHOLOGY rule 2). */
-async function hasBlockedJoiner(beaconId: string, meId: string): Promise<boolean> {
+export async function hasBlockedJoiner(beaconId: string, meId: string): Promise<boolean> {
   const rows = (await db.execute(sql`
     SELECT 1 AS one FROM beacon_joins j
     JOIN blocks bl ON (bl.blocker_id = ${meId} AND bl.blocked_id = j.user_id)

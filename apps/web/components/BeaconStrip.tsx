@@ -6,8 +6,10 @@
 // beacon.updated patch live; sweep retires expired cards between frames.
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { Beacon } from '@socialchat/shared';
+import type { Beacon, ShareLanding } from '@socialchat/shared';
 import { ApiError } from '@/lib/api';
+import { getShareLanding } from '@/lib/share';
+import OutsideAudienceSheet from './OutsideAudienceSheet';
 import { toast } from '@/lib/toast';
 import {
   cancelBeacon,
@@ -29,8 +31,11 @@ const PILE_MAX = 3;
 
 export default function BeaconStrip({
   initialBeaconId = null,
+  shareToken = null,
   onDeepLinkDone,
 }: {
+  /** Phase 3: the share token the deep link arrived with. */
+  shareToken?: string | null;
   /** /local/b/<id> (§1b deep-link back): open that plan's sheet once the
    * strip has loaded. There is no GET /api/beacons/:id — a plan resolves
    * from the strip's own store, so one I cannot see is simply "not
@@ -44,6 +49,7 @@ export default function BeaconStrip({
   // going null) while it is open.
   const [deepId] = useState(initialBeaconId);
   const [deepOpen, setDeepOpen] = useState(false);
+  const [outside, setOutside] = useState<ShareLanding | null>(null);
   const deepHandled = useRef(false);
 
   useEffect(() => {
@@ -60,7 +66,21 @@ export default function BeaconStrip({
     if (state.beaconsLoaded) {
       deepHandled.current = true;
       if (state.beacons.has(deepId)) setDeepOpen(true);
-      else {
+      else if (shareToken) {
+        // Phase 3: not in my strip — with a live token, maybe "outside".
+        void getShareLanding(shareToken)
+          .then((landing) => {
+            if (landing.state === 'outside') setOutside(landing);
+            else {
+              toast('That plan is not available.');
+              onDeepLinkDone?.();
+            }
+          })
+          .catch(() => {
+            toast('That plan is not available.');
+            onDeepLinkDone?.();
+          });
+      } else {
         toast('That plan is not available.');
         onDeepLinkDone?.();
       }
@@ -84,6 +104,15 @@ export default function BeaconStrip({
       beacon={deepBeacon}
       onClose={() => {
         setDeepOpen(false);
+        onDeepLinkDone?.();
+      }}
+    />
+  ) : outside && shareToken ? (
+    <OutsideAudienceSheet
+      landing={outside}
+      token={shareToken}
+      onClose={() => {
+        setOutside(null);
         onDeepLinkDone?.();
       }}
     />

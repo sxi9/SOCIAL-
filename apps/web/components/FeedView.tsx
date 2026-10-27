@@ -20,6 +20,7 @@ import type {
   FeedLane,
   JoinCardSummary,
   Listing,
+  ShareLanding,
   Location,
   Post,
   PostAudience,
@@ -65,6 +66,8 @@ import { KIND_EMOJI, KIND_LABEL, listMine } from '@/lib/listings';
 import { isSelfDrunk } from '@/lib/mood';
 import { ShareButton } from './ShareSheet';
 import { getPost } from '@/lib/feed';
+import { getShareLanding } from '@/lib/share';
+import OutsideAudienceSheet from './OutsideAudienceSheet';
 import { toast } from '@/lib/toast';
 import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
@@ -88,14 +91,19 @@ type FeedLayout = 'grid' | 'list';
 
 export default function FeedView({
   initialPostId,
+  shareToken = null,
   onDeepLinkDone,
 }: {
   /** /feed/<id> (§1b deep-link back): open that post in the sheet, whichever
    * lane holds it — fetched on its own, never injected into a lane window. */
   initialPostId?: string | null;
+  /** Phase 3: the share token the deep link arrived with — a 404 then asks
+   * the landing endpoint whether this is "outside the audience". */
+  shareToken?: string | null;
   onDeepLinkDone?: () => void;
 } = {}) {
   const state = useAppState();
+  const [outside, setOutside] = useState<ShareLanding | null>(null);
   // The deep-linked post lives in the STORE (state.feedExtra), never in a
   // component snapshot: reactions, votes, comments and delete go through
   // replacePost / removePostLocal and must show in the open sheet.
@@ -109,7 +117,21 @@ export default function FeedView({
         store.setExtraPost(p);
         setDeepId(p.id);
       })
-      .catch(() => {
+      .catch(async () => {
+        if (cancelled) return;
+        // Phase 3: with a live token this may be "outside the audience".
+        if (shareToken) {
+          try {
+            const landing = await getShareLanding(shareToken);
+            if (cancelled) return;
+            if (landing.state === 'outside') {
+              setOutside(landing);
+              return;
+            }
+          } catch {
+            /* nothing to ask about */
+          }
+        }
         if (!cancelled) {
           toast('That post is not available.');
           onDeepLinkDone?.();
@@ -410,6 +432,25 @@ export default function FeedView({
             ) : null}
           </>
         )}
+        {outside && shareToken ? (
+          <OutsideAudienceSheet
+            landing={outside}
+            token={shareToken}
+            onClose={() => {
+              setOutside(null);
+              onDeepLinkDone?.();
+            }}
+            onVisible={() => {
+              // The door opened right away: read the post and open its sheet.
+              void getPost(outside.object_id)
+                .then((p) => {
+                  store.setExtraPost(p);
+                  setDeepId(p.id);
+                })
+                .catch(() => toast('That post is not available.'));
+            }}
+          />
+        ) : null}
         {openedPost ? (
           // Grid tile → the FULL existing post card in a bottom sheet: the
           // beacons sheet pattern, portaled to body, unmounted when closed.
@@ -1368,7 +1409,7 @@ function JoinCardView({ post, meId }: { post: Post; meId: string }) {
     setBusy(true);
     setError(null);
     try {
-      const res = await api.post<{ conversation_id: string }>(`/api/listings/${id}/contact`);
+      const res = await api.post<{ conversation_id: string }>(`/api/listings/${id}/contact`, {});
       if (!store.state.conversations.has(res.conversation_id)) {
         try {
           const conv = await api.get<{ conversation: Conversation }>(

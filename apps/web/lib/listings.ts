@@ -90,8 +90,12 @@ export async function deleteListing(id: string): Promise<void> {
 }
 
 /** "Message me" — the board's only CTA (§1.39). Idempotent per listing. */
-export async function contactListing(id: string): Promise<string> {
-  const res = await api.post<ContactListingResponse>(`/api/listings/${id}/contact`);
+export async function contactListing(id: string, shareToken?: string): Promise<string> {
+  // Phase 3: a live share token for this listing opens the same-area gate.
+  const res = await api.post<ContactListingResponse>(
+    `/api/listings/${id}/contact`,
+    shareToken ? { share_token: shareToken } : {},
+  );
   return res.conversation_id;
 }
 

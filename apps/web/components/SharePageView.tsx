@@ -112,7 +112,7 @@ export default function SharePageView({
         <ShareHeaderPill path={path} className={`btn btn-primary ${cm.shareJoin}`} />
       </header>
 
-      <PageBody page={page} path={path} />
+      <PageBody page={page} path={path} token={token} />
 
       <p className={cm.shareFootnote}>
         Shared from a self-hosted Bored Chat. Viewing is free; joining takes a minute.{' '}
@@ -122,16 +122,20 @@ export default function SharePageView({
   );
 }
 
-function deepLink(page: SharePage, path: string): string {
+function deepLink(page: SharePage, path: string, token: string): string {
+  // Phase 3: the token rides along (`?s=`) so the object route can ask
+  // GET /api/share/:token/landing when its own read 404s — outside the
+  // audience becomes a request instead of "not available".
+  const s = `?s=${encodeURIComponent(token)}`;
   // The §1.67 ?next deep-link-back, now ON the object (§1b, 2026-10-27):
   // the object routes open the real tab with that thing's sheet up.
   switch (page.type) {
     case 'post':
-      return `/feed/${page.id}`;
+      return `/feed/${page.id}${s}`;
     case 'beacon':
-      return `/local/b/${page.id}`;
+      return `/local/b/${page.id}${s}`;
     case 'listing':
-      return `/local/${page.id}`;
+      return `/local/${page.id}${s}`;
     case 'story':
       return '/';
     default:
@@ -160,10 +164,10 @@ const GATE_WORD: Record<SharePage['type'], string> = {
   group_live: 'group',
 };
 
-function PageBody({ page, path }: { page: SharePage; path: string }) {
+function PageBody({ page, path, token }: { page: SharePage; path: string; token: string }) {
   // Slice E: a click opens the inline sign-in sheet and lands on `deep`;
   // the href keeps the `/register?next=` form for crawlers and no-JS.
-  const deep = deepLink(page, path);
+  const deep = deepLink(page, path, token);
   const next = gate(deep);
   const word = GATE_WORD[page.type];
   switch (page.type) {
