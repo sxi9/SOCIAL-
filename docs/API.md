@@ -66,8 +66,12 @@ ConversationListItem = Conversation & { unread_count: number,   // last_seq - my
 // token-gated proxy /api/invites/:token/avatar — NEVER /api/media/:key — and
 // are null unless status='valid' and the inviter's avatar is 'ready'.
 InvitePublic = { status: 'valid'|'expired'|'exhausted'|'revoked',
-  kind: 'dm'|'group', group_title: string|null,   // non-null iff kind='group'
-  inviter: { username, display_name, avatar: Avatar }, expires_at }
+  kind: 'dm'|'group'|'channel', group_title: string|null,   // non-null for group AND channel
+  inviter: { username, display_name, avatar: Avatar }, expires_at,
+  // phase 2 (2026-10-28): both null unless status='valid'; group only for
+  // kind='group' and never a ghost group (§1.11 row for the rules)
+  conversation_id: uuid|null,
+  group: { description, avatar_url: string|null, member_count } | null }
 
 InvitePrivate = { id, token, url,   // url is the app-origin PATH /join/<token>
   kind: 'dm'|'group', conversation_id: string|null,  // null = DM-with-inviter
@@ -723,8 +727,9 @@ not a credential). Defaults: `expires_at = now()+7d` (`INVITE_TTL_S`),
 | `POST /api/invites` | `{conversation_id?}` — omitted = DM-with-inviter invite; set = group invite (minter must be an **admin** of that group, matching §1.4 participant adds) | `201 {invite: InvitePrivate}`. `400 invite_bad_scope` (a DM conversation_id), `403 forbidden` (group, not admin), `404 not_found` (unknown/not-a-participant conversation), `409 invite_limit` (more than 20 simultaneously **open** — i.e. `valid` — invites (`INVITE_OPEN_MAX`, shared constant); revoke one or let one lapse first). Rate **30/hour/user** (`INVITE_CREATE_RATE_PER_HOUR`). |
 | `GET /api/invites` | — | `200 {invites: InvitePrivate[]}` — mine, `created_at DESC`, capped at 100 (no cursor in v0.2). Includes revoked/expired rows so the list explains dead links. |
 | `DELETE /api/invites/:id` | — | `204` — revoke (sets `revoked_at`; idempotent re-revoke is also `204`). `404 not_found` if not mine. Existing joins are NOT undone. |
-| `GET /api/invites/:token/public` | **UNAUTHENTICATED** | `200 {invite: InvitePublic}` for any existing token, whatever its status (the join page renders expired/revoked states by name); avatar URLs are null unless `valid`. `404 invite_not_found` for unknown tokens. Rate **60/hour/IP** (`INVITE_PUBLIC_RATE_PER_HOUR_PER_IP`). |
+| `GET /api/invites/:token/public` | **UNAUTHENTICATED** | `200 {invite: InvitePublic}` for any existing token, whatever its status (the join page renders expired/revoked states by name); avatar URLs are null unless `valid`. **Phase 2 (2026-10-28):** `+ conversation_id` (null for DM invites) and `+ group: {description, avatar_url, member_count} \| null` — the join-decision card the §1.67 `group_card` page shows, for kind `group` only (channels never expose membership, §1.35; ghost groups keep the title alone); **both null unless the invite is `valid`** (a revoked link is a dead capability, ADR-007 — only `group_title` and the inviter survive, as before), `avatar_url` null unless the group's avatar is ready. `404 invite_not_found` for unknown tokens. Rate **60/hour/IP** (`INVITE_PUBLIC_RATE_PER_HOUR_PER_IP`). |
 | `GET /api/invites/:token/avatar?v=static\|animated` | **UNAUTHENTICATED**; `v` default `static` (OG unfurlers get the universally supported JPEG); extra `ver` cache-buster param accepted and ignored | Streaming proxy of the inviter's current avatar from MinIO. **Valid-token-gated**: any non-`valid` status, or inviter avatar not `ready` → `404` (revocation instantly kills the proxy). `v=animated` falls back to static when no animated rendition exists. `Cache-Control: private, max-age=300` (`INVITE_AVATAR_CACHE_TTL_S` — short: the avatar can change version while the token lives). Rate **120/hour/IP** (`INVITE_AVATAR_RATE_PER_HOUR_PER_IP`). |
+| `GET /api/invites/:token/group-avatar?v=static\|animated` | **UNAUTHENTICATED** (phase 2) | The scoped GROUP's avatar, gated and cached exactly like the inviter proxy above: `valid` token only, group kind only (never ghost), `404` unless the group's avatar is `ready`; same `Cache-Control` and the same per-IP bucket (`INVITE_AVATAR_RATE_PER_HOUR_PER_IP`). |
 | `POST /api/invites/:token/accept` | — (**authed**; the already-logged-in join path) | `200 {conversation_id}`. `404 invite_not_found`; `410 invite_expired \| invite_exhausted \| invite_revoked`; `400 invite_own` (your own invite); `400 group_too_large` (group at the 256 cap). |
 
 **Accept semantics (both paths — `accept` and register-with-token):**

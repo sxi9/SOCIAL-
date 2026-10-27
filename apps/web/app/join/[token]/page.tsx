@@ -71,9 +71,9 @@ export async function generateMetadata({ params }: JoinPageProps): Promise<Metad
   // (?v=static&ver=…) and are null unless the invite is valid AND the avatar
   // is ready — so prefixing the public origin is all the unfurler needs.
   const origin = await publicOrigin();
-  const image = invite.inviter.avatar.static_url
-    ? `${origin}${invite.inviter.avatar.static_url}`
-    : undefined;
+  // Phase 2: a group invite unfurls with the GROUP's face when it has one.
+  const face = invite.group?.avatar_url ?? invite.inviter.avatar.static_url;
+  const image = face ? `${origin}${face}` : undefined;
   return {
     title,
     description,

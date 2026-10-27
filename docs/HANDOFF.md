@@ -29,13 +29,16 @@ Updated 2026-10-27. A new session continues this project by reading
   CTA (`GateCta` → `InlineSignInSheet`: password, passkey, QR, create account,
   TOTP; lands on the object; `/register?next=` href kept for no-JS), the three
   v0.9 auth minors, and the login page's suspended/banned copy. Then phase 2
-  slice F (2026-10-28): the group join loop's share-page half — `GroupJoinCta`
+  slice F, DEPLOYED (`8b63919`, 2026-10-28 01:14): the group join loop's share-page half — `GroupJoinCta`
   (join / ask / requested+withdraw / open), `GET`+`DELETE
   /api/conversations/:id/join`, the `group.join_request` frame + admin push,
   `pending_requests` on the DTO (admins of invite_only groups only),
-  `lib/shareAuth.ts` `probeMe()` for every island on a public SSR page. Next:
-  the invite page's group card (`InvitePublic` + `conversation_id`), invite
-  list/revoke + QR, then phases 3–7 per §1b. Open follow-up from review: the unfurl
+  `lib/shareAuth.ts` `probeMe()` for every island on a public SSR page. Then
+  slice G (2026-10-28): the invite page's group card (`InvitePublic` +
+  `conversation_id` + `group`, `GET /api/invites/:token/group-avatar`), the
+  invite sheet's link list with Revoke + QR. Next: the rest of §2.5's admin
+  half (`conversation_bans` — needs migration 0015 —, admin delete-any-message,
+  transfer ownership, sender names in group push), then phases 3–7 per §1b. Open follow-up from review: the unfurl
   worker charges the sender's hourly budget for our own share URLs (short-
   circuit origin == PUBLIC_ORIGIN in the send route).
 - `main` at `b396d09` (2026-10-27, morning). Shipped since the previous handoff, in

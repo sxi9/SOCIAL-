@@ -13,7 +13,7 @@ Status: ✅ shipped · 🔨 building · 📋 planned
 7. PWA share target (share from any app into a chat, logged-out stash included)
 8. Link preview cards (worker-side, SSRF-guarded, re-hosted images, per-user budget)
 9. Web push (read-elsewhere suppression, per-chat collapse) — per-chat muting 📋 Wave 1.6 (`muted_until` column exists, no writers yet)
-10. GIF invite links — /join/<token> shows the inviter's animated avatar, OG unfurl, lands joiners in a DM
+10. GIF invite links — /join/<token> shows the inviter's animated avatar, OG unfurl, lands joiners in a DM. ✅ 2026-10-28 (phase 2 slice G): a group invite's page carries the group card (face, description, size; the unfurl uses the group's face), and the in-app invite sheet lists your links for that scope with Revoke and a QR
 11. Reactions (picker, chips, live fan-out)
 12. Animated login/register
 13. Two-pane desktop layout

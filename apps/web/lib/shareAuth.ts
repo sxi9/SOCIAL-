@@ -6,14 +6,26 @@
 import type { MeResponse, UserPrivate } from '@socialchat/shared';
 import { api } from './api';
 
-let memo: Promise<UserPrivate | null> | null = null;
+let memo: { key: string; p: Promise<UserPrivate | null> } | null = null;
 
+/** One probe per page — keyed on the URL, so a client-side navigation back
+ * here (the /login?next=… round-trip) asks again instead of trusting a
+ * memo taken before the sign-in. */
 export function probeMe(): Promise<UserPrivate | null> {
-  if (!memo) {
-    memo = api
-      .get<MeResponse>('/api/users/me')
-      .then((res) => res.user)
-      .catch(() => null);
+  const key = `${window.location.pathname}${window.location.search}`;
+  if (!memo || memo.key !== key) {
+    memo = {
+      key,
+      p: api
+        .get<MeResponse>('/api/users/me')
+        .then((res) => res.user)
+        .catch(() => null),
+    };
   }
-  return memo;
+  return memo.p;
+}
+
+/** Forget the memo — call after anything that changes who is signed in. */
+export function resetMeProbe(): void {
+  memo = null;
 }

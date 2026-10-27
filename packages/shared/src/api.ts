@@ -1158,12 +1158,31 @@ export const InviteInviterSchema = z.object({
 });
 export type InviteInviter = z.infer<typeof InviteInviterSchema>;
 
+// Phase 2 (2026-10-28, AUDIT-PLAN §2.5): the group card on the invite page —
+// the same join-decision utility the §1.67 group_card share page shows
+// (ADR-020: size never ranks, compares or rewards). Emitted for kind
+// 'group' only (channels never expose membership — §1.35; ghost groups are
+// unlisted everywhere, so their invite keeps the title alone). avatar_url is
+// the token-gated proxy GET /api/invites/:token/group-avatar — null unless
+// the group's avatar is ready. The whole card (and conversation_id) is null
+// unless the invite is VALID — a revoked link is a dead capability (ADR-007).
+export const InviteGroupCardSchema = z.object({
+  description: z.string(),
+  avatar_url: z.string().nullable(),
+  member_count: z.number().int().positive(),
+});
+export type InviteGroupCard = z.infer<typeof InviteGroupCardSchema>;
+
 export const InvitePublicSchema = z.object({
   status: InviteStatusSchema,
   kind: InviteKindSchema,
-  group_title: z.string().nullable(), // non-null iff kind === 'group'
+  group_title: z.string().nullable(), // non-null for group AND channel kinds
   inviter: InviteInviterSchema,
   expires_at: IsoDateTimeSchema,
+  // Phase 2: the scoped conversation (null for DM invites and for any
+  // non-valid invite) — the id a group_card share page carries too.
+  conversation_id: UuidSchema.nullable().default(null),
+  group: InviteGroupCardSchema.nullable().default(null),
 });
 export type InvitePublic = z.infer<typeof InvitePublicSchema>;
 

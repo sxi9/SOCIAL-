@@ -23,6 +23,7 @@ import {
   OG_BANNER_AVATAR_PX,
   OG_BANNER_HEIGHT_PX,
   OG_BANNER_WIDTH_PX,
+  type InvitePublic,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
@@ -293,14 +294,38 @@ export async function inviteRoutes(fastify: FastifyInstance): Promise<void> {
 
       let groupTitle: string | null = null;
       let convType: string | null = null;
+      let group: InvitePublic['group'] = null;
       if (invite.conversationId) {
         const [conv] = await db
-          .select({ title: schema.conversations.title, type: schema.conversations.type })
+          .select()
           .from(schema.conversations)
           .where(eq(schema.conversations.id, invite.conversationId))
           .limit(1);
         groupTitle = conv?.title ?? null;
         convType = conv?.type ?? null;
+        // Phase 2: the group card — groups only (channels never expose
+        // membership, §1.35; ghost groups are unlisted everywhere), and ONLY
+        // while the invite is valid: a revoked link is a dead capability
+        // (ADR-007), not a standing read on the group's size and blurb.
+        if (
+          conv &&
+          conv.type === 'group' &&
+          conv.visibility !== 'ghost' &&
+          inviteStatus(invite) === 'valid'
+        ) {
+          const [members] = (await db.execute(sql`
+            SELECT count(*)::int AS n FROM conversation_participants
+            WHERE conversation_id = ${conv.id} AND left_at IS NULL
+          `)) as unknown as { n: number }[];
+          const servable = conv.avatarStatus === 'ready' && conv.avatarStaticKey !== null;
+          group = {
+            description: conv.description,
+            avatar_url: servable
+              ? `/api/invites/${invite.token}/group-avatar?v=static&ver=${conv.avatarVersion}`
+              : null,
+            member_count: Math.max(1, Number(members?.n ?? 1)),
+          };
+        }
       }
       return {
         invite: invitePublicDto(
@@ -308,6 +333,7 @@ export async function inviteRoutes(fastify: FastifyInstance): Promise<void> {
           inviter,
           groupTitle,
           inviteKindOf(invite.conversationId, convType),
+          group,
         ),
       };
     },
@@ -354,6 +380,54 @@ export async function inviteRoutes(fastify: FastifyInstance): Promise<void> {
       }
       // Short private TTL: avatar_version can move while the token lives
       // (ARCHITECTURE §9).
+      reply.header('cache-control', `private, max-age=${INVITE_AVATAR_CACHE_TTL_S}`);
+      reply.header('x-content-type-options', 'nosniff');
+      reply.header('accept-ranges', 'bytes');
+      if (obj.contentLength !== undefined) reply.header('content-length', String(obj.contentLength));
+      if (obj.contentRange) {
+        reply.status(206);
+        reply.header('content-range', obj.contentRange);
+      }
+      reply.header('content-type', obj.contentType ?? 'application/octet-stream');
+      return reply.send(obj.body);
+    },
+  );
+
+  // Phase 2 (§2.5) GET /api/invites/:token/group-avatar?v=static|animated —
+  // UNAUTHENTICATED streaming proxy of the scoped GROUP's avatar, gated and
+  // cached exactly like the inviter's: valid token only, 404 unless the
+  // group's avatar is ready, never a MinIO key; same per-IP bucket.
+  app.get(
+    '/api/invites/:token/group-avatar',
+    { schema: { params: TokenParams, querystring: InviteAvatarQuerySchema } },
+    async (req, reply) => {
+      const rate = await fixedWindow(
+        `inviteav:${req.ip}`,
+        INVITE_AVATAR_RATE_PER_HOUR_PER_IP,
+        3600,
+      );
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+
+      const invite = await loadInviteOr404(req.params.token);
+      if (inviteStatus(invite) !== 'valid' || !invite.conversationId) throw notFound();
+      const [conv] = await db
+        .select()
+        .from(schema.conversations)
+        .where(eq(schema.conversations.id, invite.conversationId))
+        .limit(1);
+      if (!conv || conv.type !== 'group' || conv.visibility === 'ghost' || conv.avatarStatus !== 'ready') {
+        throw notFound();
+      }
+      const key =
+        req.query.v === 'animated' ? (conv.avatarAnimatedKey ?? conv.avatarStaticKey) : conv.avatarStaticKey;
+      if (!key) throw notFound();
+
+      let obj;
+      try {
+        obj = await getObjectStream(key, req.headers.range);
+      } catch {
+        throw notFound();
+      }
       reply.header('cache-control', `private, max-age=${INVITE_AVATAR_CACHE_TTL_S}`);
       reply.header('x-content-type-options', 'nosniff');
       reply.header('accept-ranges', 'bytes');

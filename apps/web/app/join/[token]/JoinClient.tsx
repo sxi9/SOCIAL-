@@ -12,8 +12,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import type { AcceptInviteResponse, InvitePublic, MeResponse } from '@socialchat/shared';
+import type { AcceptInviteResponse, InvitePublic } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { probeMe } from '@/lib/shareAuth';
 import Mascot from '@/components/Mascot';
 import styles from './join.module.css';
 
@@ -62,20 +63,18 @@ export default function JoinClient({ token, invite }: JoinClientProps) {
 
   useEffect(() => {
     let cancelled = false;
-    void api
-      .get<MeResponse>('/api/users/me')
-      .then((res) => {
-        if (cancelled) return;
-        setAuthedAs(res.user.display_name);
+    // Phase 2: the one per-page probe every public SSR island shares.
+    void probeMe().then((me) => {
+      if (cancelled) return;
+      if (me) {
+        setAuthedAs(me.display_name);
         // "Sign in" from this page round-trips through /login?next=/join/<t>?then=accept:
         // when the visitor lands back here signed in, accept without another tap.
         const wantsAccept = new URLSearchParams(window.location.search).get('then') === 'accept';
         if (wantsAccept && invite?.status === 'valid') void accept();
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setProbed(true);
-      });
+      }
+      setProbed(true);
+    });
     return () => {
       cancelled = true;
     };
@@ -144,6 +143,27 @@ export default function JoinClient({ token, invite }: JoinClientProps) {
           <p className={styles.handle}>@{invite.inviter.username} · on Bored Chat</p>
           {invite.kind === 'group' && invite.group_title ? (
             <p className={styles.groupLine}>invited you to &ldquo;{invite.group_title}&rdquo;</p>
+          ) : null}
+          {/* Phase 2 (§2.5): the group card — face, blurb and size, the same
+              join-decision utility the group share page shows. */}
+          {invite.kind === 'group' && invite.group ? (
+            <div className={styles.groupCard}>
+              {invite.group.avatar_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img className={styles.groupAvatar} src={invite.group.avatar_url} alt="" width={44} height={44} />
+              ) : (
+                <span className={styles.groupAvatarFallback} aria-hidden>
+                  {invite.group_title?.trim()[0]?.toUpperCase() ?? '#'}
+                </span>
+              )}
+              <span className={styles.groupCardText}>
+                <strong>{invite.group_title}</strong>
+                <span>
+                  {invite.group.member_count} {invite.group.member_count === 1 ? 'member' : 'members'}
+                </span>
+                {invite.group.description ? <p>{invite.group.description}</p> : null}
+              </span>
+            </div>
           ) : null}
           {acceptError ? <p className="error-text">{acceptError}</p> : null}
           {!probed ? (

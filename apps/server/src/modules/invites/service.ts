@@ -84,6 +84,8 @@ export function invitePublicDto(
   inviter: UserRow,
   groupTitle: string | null,
   kind?: InviteKind,
+  // Phase 2: the group card (routes.ts builds it for kind 'group', non-ghost).
+  group: InvitePublic['group'] = null,
 ): InvitePublic {
   const status = inviteStatus(row);
   const servable =
@@ -109,6 +111,9 @@ export function invitePublicDto(
       },
     },
     expires_at: row.expiresAt.toISOString(),
+    // Phase 2: both only while valid — a dead link names nothing joinable.
+    conversation_id: status === 'valid' ? row.conversationId : null,
+    group: status === 'valid' ? group : null,
   };
 }
 

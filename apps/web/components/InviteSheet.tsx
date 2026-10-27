@@ -7,11 +7,17 @@
 // the button after 20 opens. InvitePrivate.url is the app-origin PATH
 // /join/<token>, so the full link is window.location.origin + url. Copy always
 // works; navigator.share rides along where the platform has a share sheet.
+// Phase 2 (2026-10-28, AUDIT-PLAN §2.5): a QR for the link, and "Your open
+// links" — every link I hold for this scope, with Revoke (DELETE
+// /api/invites/:id); dead links stay listed so the list explains them.
 import { useEffect, useRef, useState } from 'react';
 import type { CreateInviteResponse, InvitePrivate, ListInvitesResponse } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
+import { confirmDialog } from '@/lib/confirm';
+import { useOverlayEscape } from '@/lib/overlays';
 import { toast } from '@/lib/toast';
 import Portal from './Portal';
+import QrCode from './QrCode';
 import styles from './invite.module.css';
 
 const SHARE_TEXT = 'Join me on Bored Chat 👋';
@@ -22,16 +28,69 @@ interface InviteSheetProps {
   conversationId?: string;
 }
 
+function whenShort(iso: string): string {
+  return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function rowNote(inv: InvitePrivate): string {
+  switch (inv.status) {
+    case 'valid':
+      return `${inv.use_count}/${inv.max_uses} joined · lasts until ${whenShort(inv.expires_at)}`;
+    case 'expired':
+      return `expired ${whenShort(inv.expires_at)} · ${inv.use_count} joined`;
+    case 'exhausted':
+      return `all ${inv.max_uses} joins used`;
+    default:
+      return `revoked${inv.revoked_at ? ` ${whenShort(inv.revoked_at)}` : ''} · ${inv.use_count} joined`;
+  }
+}
+
 export default function InviteSheet({ onClose, conversationId }: InviteSheetProps) {
   const [invite, setInvite] = useState<InvitePrivate | null>(null);
+  const [mine, setMine] = useState<InvitePrivate[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [canShare, setCanShare] = useState(false);
+  const [qrOpen, setQrOpen] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [minting, setMinting] = useState(false);
   const mintedRef = useRef(false);
+  const mintingRef = useRef(false);
+  const scope = conversationId ?? null;
 
   useEffect(() => {
     setCanShare(typeof navigator !== 'undefined' && typeof navigator.share === 'function');
   }, []);
+
+  async function mint(): Promise<void> {
+    if (mintingRef.current) return; // one mint at a time (the 20-open cap is real)
+    mintingRef.current = true;
+    setMinting(true);
+    setError(null);
+    try {
+      const res = await api.post<CreateInviteResponse>(
+        '/api/invites',
+        conversationId ? { conversation_id: conversationId } : {},
+      );
+      setInvite(res.invite);
+      setMine((prev) => [res.invite, ...prev.filter((i) => i.id !== res.invite.id)]);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 429) {
+        setError('Easy there — you minted a lot of links this hour. Try again in a bit.');
+      } else if (err instanceof ApiError && err.status === 403) {
+        setError('Only group admins can mint invite links for a group.');
+      } else if (err instanceof ApiError && err.status === 409 && err.code === 'invite_limit') {
+        setError(
+          'You already have 20 open invite links — the most one account can hold. Revoke one or let an old link lapse, then try again.',
+        );
+      } else {
+        setError('Could not create an invite link. Check your connection and try again.');
+      }
+    } finally {
+      mintingRef.current = false;
+      setMinting(false);
+    }
+  }
 
   useEffect(() => {
     if (mintedRef.current) return;
@@ -41,9 +100,9 @@ export default function InviteSheet({ onClose, conversationId }: InviteSheetProp
       // GET /api/invites is created_at DESC, so the first match is newest.
       try {
         const list = await api.get<ListInvitesResponse>('/api/invites');
-        const open = list.invites.find(
-          (inv) => inv.status === 'valid' && inv.conversation_id === (conversationId ?? null),
-        );
+        const here = list.invites.filter((inv) => inv.conversation_id === scope);
+        setMine(here);
+        const open = here.find((inv) => inv.status === 'valid');
         if (open) {
           setInvite(open);
           return;
@@ -51,35 +110,12 @@ export default function InviteSheet({ onClose, conversationId }: InviteSheetProp
       } catch {
         /* list unavailable — fall through and try minting */
       }
-      try {
-        const res = await api.post<CreateInviteResponse>(
-          '/api/invites',
-          conversationId ? { conversation_id: conversationId } : {},
-        );
-        setInvite(res.invite);
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 429) {
-          setError('Easy there — you minted a lot of links this hour. Try again in a bit.');
-        } else if (err instanceof ApiError && err.status === 403) {
-          setError('Only group admins can mint invite links for a group.');
-        } else if (err instanceof ApiError && err.status === 409 && err.code === 'invite_limit') {
-          setError(
-            'You already have 20 open invite links — the most one account can hold. Revoke one or let an old link lapse, then try again.',
-          );
-        } else {
-          setError('Could not create an invite link. Check your connection and try again.');
-        }
-      }
+      await mint();
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  useOverlayEscape(onClose);
 
   const url = invite ? `${window.location.origin}${invite.url}` : null;
 
@@ -98,6 +134,32 @@ export default function InviteSheet({ onClose, conversationId }: InviteSheetProp
   function share(): void {
     if (!url) return;
     void navigator.share({ title: 'Bored Chat', text: SHARE_TEXT, url }).catch(() => undefined);
+  }
+
+  async function revoke(inv: InvitePrivate): Promise<void> {
+    if (busyId) return;
+    const ok = await confirmDialog(
+      'Revoke this invite link? Anyone who has it can no longer join with it. People who already joined stay.',
+      { confirmLabel: 'Revoke link' },
+    );
+    if (!ok) return;
+    setBusyId(inv.id);
+    try {
+      await api.del(`/api/invites/${inv.id}`);
+      const now = new Date().toISOString();
+      const dead: InvitePrivate = { ...inv, status: 'revoked', revoked_at: inv.revoked_at ?? now };
+      const rest = mine.map((i) => (i.id === inv.id ? dead : i));
+      setMine(rest);
+      if (invite?.id === inv.id) {
+        // The next open link (newest first) takes over; none → "Make a new link".
+        setInvite(rest.find((i) => i.status === 'valid') ?? null);
+        setQrOpen(false);
+      }
+      toast('Invite link revoked');
+    } catch {
+      toast('Could not revoke that link');
+    }
+    setBusyId(null);
   }
 
   return (
@@ -127,11 +189,22 @@ export default function InviteSheet({ onClose, conversationId }: InviteSheetProp
         </p>
 
         {error ? (
-          <p className="error-text">{error}</p>
+          <>
+            <p className="error-text">{error}</p>
+            <button type="button" className="btn" onClick={() => void mint()}>
+              Try again
+            </button>
+          </>
         ) : !invite || !url ? (
-          <div className={styles.spinnerRow}>
-            <span className="spinner" /> Minting your link…
-          </div>
+          !minting && mine.length > 0 && !mine.some((i) => i.status === 'valid') ? (
+            <button type="button" className="btn btn-primary" onClick={() => void mint()}>
+              Make a new link
+            </button>
+          ) : (
+            <div className={styles.spinnerRow}>
+              <span className="spinner" /> Minting your link…
+            </div>
+          )
         ) : (
           <>
             <div className={styles.linkBox}>
@@ -146,9 +219,36 @@ export default function InviteSheet({ onClose, conversationId }: InviteSheetProp
                   Share…
                 </button>
               ) : null}
+              <button type="button" className="btn" aria-pressed={qrOpen} onClick={() => setQrOpen((v) => !v)}>
+                QR
+              </button>
             </div>
+            {qrOpen ? (
+              <div className={styles.linkBox} style={{ justifyContent: 'center', marginTop: 10 }}>
+                <QrCode text={url} label="QR code for this invite link" size={176} />
+              </div>
+            ) : null}
           </>
         )}
+
+        {mine.length > 0 ? (
+          <>
+            <div className={styles.listLabel}>Your links {conversationId ? 'for this group' : ''}</div>
+            {mine.map((inv) => (
+              <div key={inv.id} className={`${styles.row} ${inv.status === 'valid' ? '' : styles.rowDead}`}>
+                <span className={styles.rowText}>
+                  <strong>{inv.status === 'valid' ? (inv.id === invite?.id ? 'This link' : 'Open link') : inv.status}</strong>
+                  <span>{rowNote(inv)}</span>
+                </span>
+                {inv.status === 'valid' ? (
+                  <button type="button" className="btn" disabled={busyId !== null} onClick={() => void revoke(inv)}>
+                    {busyId === inv.id ? 'Revoking…' : 'Revoke'}
+                  </button>
+                ) : null}
+              </div>
+            ))}
+          </>
+        ) : null}
       </div>
     </div>
     </Portal>

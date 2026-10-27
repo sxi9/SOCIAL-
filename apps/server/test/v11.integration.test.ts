@@ -172,6 +172,68 @@ describe.runIf(infra)('share-everything phase 2: group join loop (§1.68)', () =
     });
   });
 
+  describe('invite page group card (slice G)', () => {
+    it('a group invite names the group, its size and description; the avatar proxy is valid-gated', async () => {
+      const admin = await register(`p2inv${run}`);
+      const seed = await register(`p2invm${run}`);
+      const convId = await createGroup(admin, [seed], 'invite_only');
+      const desc = await patch(admin, `/api/conversations/${convId}/visibility`, {
+        visibility: 'invite_only',
+        description: 'tuesday chai people',
+      });
+      expect(desc.statusCode).toBe(200);
+      const mint = await post(admin, '/api/invites', { conversation_id: convId });
+      expect(mint.statusCode).toBe(201);
+      const invite = (mint.json() as { invite: { id: string; token: string } }).invite;
+
+      const pub = await app.inject({
+        method: 'GET',
+        url: `/api/invites/${invite.token}/public`,
+        headers: { 'x-forwarded-for': nextIp() },
+      });
+      expect(pub.statusCode).toBe(200);
+      const body = (pub.json() as { invite: Record<string, unknown> }).invite;
+      expect(body.conversation_id).toBe(convId);
+      expect(body.group).toEqual({
+        description: 'tuesday chai people',
+        avatar_url: null, // no group avatar set
+        member_count: 2,
+      });
+      // No avatar → the proxy 404s like the inviter's.
+      const av = await app.inject({
+        method: 'GET',
+        url: `/api/invites/${invite.token}/group-avatar`,
+        headers: { 'x-forwarded-for': nextIp() },
+      });
+      expect(av.statusCode).toBe(404);
+
+      // A DM invite carries no card.
+      const dm = await post(admin, '/api/invites', {});
+      expect(dm.statusCode).toBe(201);
+      const dmTok = (dm.json() as { invite: { token: string } }).invite.token;
+      const dmPub = await app.inject({
+        method: 'GET',
+        url: `/api/invites/${dmTok}/public`,
+        headers: { 'x-forwarded-for': nextIp() },
+      });
+      const dmBody = (dmPub.json() as { invite: Record<string, unknown> }).invite;
+      expect(dmBody.conversation_id).toBeNull();
+      expect(dmBody.group).toBeNull();
+
+      // Revoked: a dead link is a dead capability — no card, no id.
+      expect((await del(admin, `/api/invites/${invite.id}`)).statusCode).toBe(204);
+      const gone = await app.inject({
+        method: 'GET',
+        url: `/api/invites/${invite.token}/public`,
+        headers: { 'x-forwarded-for': nextIp() },
+      });
+      const goneBody = (gone.json() as { invite: Record<string, unknown> }).invite;
+      expect(goneBody.status).toBe('revoked');
+      expect(goneBody.group).toBeNull();
+      expect(goneBody.conversation_id).toBeNull();
+    });
+  });
+
   describe('public and unlisted groups', () => {
     it('public: join lands at once; the state reads member', async () => {
       const admin = await register(`p2pub${run}`);

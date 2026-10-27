@@ -21,6 +21,10 @@
 .sheet {
   width: 100%;
   max-width: 440px;
+  /* Phase 2: the sheet grew a list + a QR — it scrolls inside (CLAUDE.md
+     bottom-sheet rule), never past the viewport. */
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 20px 20px 0 0;
@@ -134,4 +138,42 @@
   .sheet {
     animation: none;
   }
+}
+
+/* Phase 2 (§2.5): "Your open links" under the current one. */
+.listLabel {
+  margin: 16px 0 6px;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.rowText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rowText span {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowDead {
+  opacity: 0.6;
 }
