@@ -25,7 +25,7 @@ Updated 2026-10-27. A new session continues this project by reading
   is `components/LocalTab`; deep-linked posts live in `state.feedExtra`),
   `deepLink()` lands on the object, one gated CTA on teaser pages, `noindex` +
   `app/robots.ts`; a listing's `is_public` change EITHER way now revokes its
-  token. Then Slice E (2026-10-28): the inline sign-in sheet on every share-page
+  token. Then Slice E, DEPLOYED (`23146bf`, 2026-10-28 00:51): the inline sign-in sheet on every share-page
   CTA (`GateCta` → `InlineSignInSheet`: password, passkey, QR, create account,
   TOTP; lands on the object; `/register?next=` href kept for no-JS), the three
   v0.9 auth minors, and the login page's suspended/banned copy. Next: phases
