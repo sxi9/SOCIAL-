@@ -12,6 +12,7 @@ import type {
   BeaconAudience,
   GroupAddPolicy,
   SettingsResponse,
+  ShareLinkListItem,
   ShowLastSeen,
   UpdateSettingsRequest,
   UserSettings,
@@ -20,6 +21,14 @@ import { api } from '@/lib/api';
 import { setSettings as storeSettings } from '@/lib/store';
 import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
+import { confirmDialog } from '@/lib/confirm';
+import {
+  absoluteShareUrl,
+  copyText,
+  listMyShareLinks,
+  revokeShareLink,
+  SHARE_OBJECT_WORD,
+} from '@/lib/share';
 import AppShell from '@/components/AppShell';
 import sm from '@/components/settings.module.css';
 
@@ -138,6 +147,9 @@ function PrivacySettings() {
               onChange={(v) => void patch({ group_add_policy: v as GroupAddPolicy })}
             />
           </div>
+
+          <h2>Your share links</h2>
+          <ShareLinksSection />
 
           <h2>Beacons</h2>
           <div className="card">
@@ -294,6 +306,105 @@ function ToggleRow({
       >
         {value ? 'On' : 'Off'}
       </button>
+    </div>
+  );
+}
+
+/** §1b (2026-10-27): every open share link I minted — the one place to see
+ * what is out there and end it. `live:false` = the object stopped being
+ * public, so the page already 404s; ending it just tidies the list. */
+function ShareLinksSection() {
+  const [links, setLinks] = useState<ShareLinkListItem[] | null>(null);
+  const [error, setError] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listMyShareLinks()
+      .then((l) => {
+        if (!cancelled) setLinks(l);
+      })
+      .catch(() => {
+        if (!cancelled) setError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function copy(l: ShareLinkListItem): Promise<void> {
+    const url = absoluteShareUrl(l);
+    if (await copyText(url)) toast('Public link copied — anyone can open it');
+    // Clipboard blocked: the same manual fallback the old copy button had.
+    else window.prompt('Copy this public link:', url);
+  }
+
+  async function end(l: ShareLinkListItem): Promise<void> {
+    if (busy) return;
+    const ok = await confirmDialog(
+      `Stop sharing “${l.label}”? The link stops working for everyone who has it.`,
+      { confirmLabel: 'Stop sharing', danger: true },
+    );
+    if (!ok) return;
+    setBusy(l.token);
+    try {
+      await revokeShareLink(l.token);
+      setLinks((prev) => (prev ? prev.filter((x) => x.token !== l.token) : prev));
+      toast('Share link revoked — the page is gone');
+    } catch {
+      toast('Could not revoke the link');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="card">
+      {error ? (
+        <p className="error-text">Could not load your share links.</p>
+      ) : links === null ? (
+        <p className="muted small" style={{ margin: 0 }}>
+          Loading…
+        </p>
+      ) : links.length === 0 ? (
+        <p className="muted small" style={{ margin: 0 }}>
+          Nothing shared by link yet. Every public post, plan, listing, story and group has a
+          Share button — links you make show up here.
+        </p>
+      ) : (
+        links.map((l) => (
+          <div
+            key={l.token}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0' }}
+          >
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <strong style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {l.label}
+              </strong>
+              <span className="muted small">
+                {/* The product word ("plan", never "beacon"); the server label
+                    already names plans, stories and groups, so only the two
+                    bare kinds get it. */}
+                {l.object.type === 'post' || l.object.type === 'listing'
+                  ? SHARE_OBJECT_WORD[l.object.type].replace(/^./, (c) => c.toUpperCase())
+                  : ''}
+                {l.live ? '' : `${l.object.type === 'post' || l.object.type === 'listing' ? ' · ' : ''}no longer public — link is dead`}
+              </span>
+            </span>
+            <button type="button" className="btn" onClick={() => void copy(l)}>
+              Copy
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={busy === l.token}
+              onClick={() => void end(l)}
+            >
+              Stop
+            </button>
+          </div>
+        ))
+      )}
     </div>
   );
 }

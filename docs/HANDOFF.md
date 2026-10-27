@@ -6,7 +6,22 @@ Updated 2026-10-27. A new session continues this project by reading
 
 ## State at handoff
 
-- `main` at `b396d09` (2026-10-27). Shipped since the last handoff, in
+- **2026-10-27, later the same day:** the share-everything build (AUDIT-PLAN
+  §1b) started. Shipped and DEPLOYED to the box (`7c66d1e`): Wave 0 part 1
+  docs, Slice A (reaction chips show faces never counts; group invite link
+  reachable from chat settings; three adversarial review rounds), Slice B
+  (migration 0014: `share_tokens.preview`, `users.dm_policy` — existing
+  accounts backfilled to `everyone`, new default `connections` —,
+  `users.profile_visibility`). Committed, NOT yet deployed: Slice C — the one
+  `ShareSheet` on post/plan/listing/story/group (Copy · OS share · QR · Send
+  to a chat · Stop sharing), `ChatPickerSheet` extracted from ForwardSheet,
+  `GET /api/share-links/mine`, Settings → Privacy "Your share links",
+  `lib/overlays.ts` topmost-only Escape. Next: Slices D (share-page template,
+  object routes, non-public token path + Teaser/Full) and E (inline sign-in
+  sheet), then phases 2–7 per §1b. Open follow-up from review: the unfurl
+  worker charges the sender's hourly budget for our own share URLs (short-
+  circuit origin == PUBLIC_ORIGIN in the send route).
+- `main` at `b396d09` (2026-10-27, morning). Shipped since the previous handoff, in
   order: v0.9.1 auth hardening, v1.0a board & media pack (#91-#95), v1.1
   Royal UI, Royal v2 wave A (complete round-2 reskin), and the 2026-10-18
   batch — change password (84b), Settings → Appearance light/dark/system +

@@ -3671,6 +3671,21 @@ export type ShareLink = z.infer<typeof ShareLinkSchema>;
 export const ShareLinkResponseSchema = z.object({ share_link: ShareLinkSchema });
 export type ShareLinkResponse = z.infer<typeof ShareLinkResponseSchema>;
 
+// GET /api/share-links/mine (§1b plumbing, 2026-10-27): every OPEN token I
+// minted, newest first, with a human label and whether the page still
+// resolves (an object that stopped being public 404s live even before a
+// revoke — `live:false` tells the owner the link is already dead).
+export const ShareLinkListItemSchema = ShareLinkSchema.extend({
+  label: z.string(),
+  live: z.boolean(),
+});
+export type ShareLinkListItem = z.infer<typeof ShareLinkListItemSchema>;
+
+export const ListShareLinksResponseSchema = z.object({
+  share_links: z.array(ShareLinkListItemSchema),
+});
+export type ListShareLinksResponse = z.infer<typeof ListShareLinksResponseSchema>;
+
 // The author chip on a share page: NO id, NO UserLite — username +
 // display_name + the token-gated avatar path (/api/share/:token/avatar/
 // <user_id>?v=static), null while not 'ready'. Unauthenticated viewers get

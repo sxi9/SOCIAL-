@@ -63,7 +63,7 @@ import {
 import { formatTime } from '@/lib/format';
 import { KIND_EMOJI, KIND_LABEL, listMine } from '@/lib/listings';
 import { isSelfDrunk } from '@/lib/mood';
-import { copyShareLink } from '@/lib/share';
+import { ShareButton } from './ShareSheet';
 import * as store from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
@@ -974,16 +974,16 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
         {/* v0.8b §1.67: PUBLIC posts get the one stable share link (mint-or-
             return + copy). Friends-only content never gets a URL. */}
         {post.audience === 'public' ? (
-          <button
-            type="button"
+          <ShareButton
+            type="post"
+            id={post.id}
             className="btn btn-ghost btn-icon"
-            aria-label="Copy a public link to this post"
-            onClick={() => void copyShareLink('post', post.id)}
+            ariaLabel="Share this post"
           >
             <span aria-hidden>
               <IconLink />
             </span>
-          </button>
+          </ShareButton>
         ) : null}
         {own ? (
           <span className={bz.cardRel}>

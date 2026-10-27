@@ -6,9 +6,9 @@
 // auto-advance at all — every step is a tap. Own stories get the viewers sheet:
 // faces ordered by username, NO timestamps (the table stores none).
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ShareLink, Story, StoryAuthorGroup, StoryCanvasMode, UserLite } from '@socialchat/shared';
+import type { Story, StoryAuthorGroup, StoryCanvasMode, UserLite } from '@socialchat/shared';
 import { deleteStory, expiresLabel, setCanvasMode, storyViewers, viewStory } from '@/lib/stories';
-import { absoluteShareUrl, copyShareLink, revokeShareLink } from '@/lib/share';
+import ShareSheet from './ShareSheet';
 import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
 import { useReducedMotion } from '@/lib/useReducedMotion';
@@ -36,6 +36,11 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
   const [progress, setProgress] = useState(0); // 0..1 for the current story
   const [authorDone, setAuthorDone] = useState(false); // timer hit the end — wait for a tap
   const [viewersOpen, setViewersOpen] = useState(false);
+  // §1b ShareSheet opened from the viewer: owned HERE (not inside a
+  // ShareButton) so the timer, the video and the arrow keys know a sheet is
+  // up — otherwise the story advances underneath and the sheet keeps the
+  // previous story's link (Slice C review, 2026-10-27).
+  const [shareOpen, setShareOpen] = useState(false);
   // v0.8b §1.66: canvas-tool / chip interaction pauses the auto-advance.
   const [canvasBusy, setCanvasBusy] = useState(false);
   const [gone, setGone] = useState<Set<string>>(new Set()); // deleted own stories
@@ -70,7 +75,7 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
     setAuthorDone(false);
   }, [gi, si, story?.id]);
   useEffect(() => {
-    if (!story || isVideo || reducedMotion || paused || viewersOpen || authorDone || canvasBusy) return;
+    if (!story || isVideo || reducedMotion || paused || viewersOpen || shareOpen || authorDone || canvasBusy) return;
     const timer = setInterval(() => {
       elapsedRef.current += 100;
       setProgress(Math.min(1, elapsedRef.current / IMAGE_MS));
@@ -81,15 +86,15 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
     }, 100);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gi, si, story?.id, isVideo, reducedMotion, paused, viewersOpen, authorDone, canvasBusy]);
+  }, [gi, si, story?.id, isVideo, reducedMotion, paused, viewersOpen, shareOpen, authorDone, canvasBusy]);
 
-  // Pause/resume the video element with the hold gesture.
+  // Pause/resume the video element with the hold gesture (and under any sheet).
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    if (paused || viewersOpen || canvasBusy) v.pause();
+    if (paused || viewersOpen || shareOpen || canvasBusy) v.pause();
     else void v.play().catch(() => undefined);
-  }, [paused, viewersOpen, canvasBusy, story?.id]);
+  }, [paused, viewersOpen, shareOpen, canvasBusy, story?.id]);
 
   const advanceAuto = useCallback(() => {
     // Timer end: next story of the SAME author, else stop and ask for a tap.
@@ -130,20 +135,26 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
     }
   }, [si, gi, groups]);
 
-  // Keyboard: arrows step, Space pauses, Escape closes.
+  // Keyboard: arrows step, Space pauses, Escape closes — all of it yields
+  // while a sheet is up (its own Escape is handled topmost-only by
+  // lib/overlays before this bubble listener ever sees it), and Space never
+  // steals a keystroke from a text field (the chat picker's search box).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (viewersOpen || shareOpen) return;
+      const t = e.target as HTMLElement | null;
+      const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
       if (e.key === 'Escape') onClose();
       else if (e.key === 'ArrowRight') tapNext();
       else if (e.key === 'ArrowLeft') tapPrev();
-      else if (e.key === ' ') {
+      else if (e.key === ' ' && !typing) {
         e.preventDefault();
         setPaused((p) => !p);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, tapNext, tapPrev]);
+  }, [onClose, tapNext, tapPrev, viewersOpen, shareOpen]);
 
   // Hold-to-pause vs tap: a short press steps, a long press pauses.
   const zoneDown = (zone: 'left' | 'right') => {
@@ -296,8 +307,11 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
                 overlays (they were invited); it stops NEW ones. */}
             <CanvasModeButton story={story} />
             {/* v0.8b §1.67: author-initiated "Create share link" ONLY —
-                revocable, dies with the story. */}
-            <StoryShareButton storyId={story.id} />
+                revocable, dies with the story. The §1b ShareSheet; state
+                lives on the viewer so the story holds still underneath. */}
+            <button type="button" className={st.viewerBtn} onClick={() => setShareOpen(true)}>
+              🔗 Share link
+            </button>
             <button type="button" className={st.viewerBtn} onClick={() => void removeOwn()}>
               🗑 Delete
             </button>
@@ -305,6 +319,14 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
         ) : null}
       </div>
       {viewersOpen ? <StoryViewersSheet storyId={story.id} onClose={() => setViewersOpen(false)} /> : null}
+      {/* keyed by story so a step to another story remounts (fresh mint).
+          zIndex 61 clears the viewer's own z 60 backdrop (picker 62, confirm
+          63) while staying UNDER the call planes — 69 pill, 70 incoming ring,
+          72 match moment (globals.css ladder) — so a call can still be
+          answered over an open share sheet. */}
+      {shareOpen ? (
+        <ShareSheet key={story.id} type="story" id={story.id} zIndex={61} onClose={() => setShareOpen(false)} />
+      ) : null}
     </div>
   );
 }
@@ -350,51 +372,6 @@ function CanvasModeButton({ story }: { story: Story }) {
       }}
     >
       {LABEL[story.canvas_mode]}
-    </button>
-  );
-}
-
-/** v0.8b §1.67: author-only share link — mint-or-return + copy, revocable.
- * The page (and its gated media) dies with the story, or on revoke. */
-function StoryShareButton({ storyId }: { storyId: string }) {
-  const [link, setLink] = useState<ShareLink | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function mint(): Promise<void> {
-    if (busy) return;
-    setBusy(true);
-    const got = await copyShareLink('story', storyId);
-    if (got) setLink(got);
-    setBusy(false);
-  }
-
-  async function revoke(): Promise<void> {
-    if (!link || busy) return;
-    setBusy(true);
-    try {
-      await revokeShareLink(link.token);
-      setLink(null);
-      toast('Share link revoked — the page is gone');
-    } catch {
-      toast('Could not revoke the link');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return link ? (
-    <button type="button" className={st.viewerBtn} disabled={busy} onClick={() => void revoke()}>
-      🔗 Revoke link
-    </button>
-  ) : (
-    <button
-      type="button"
-      className={st.viewerBtn}
-      disabled={busy}
-      title={link ? absoluteShareUrl(link) : undefined}
-      onClick={() => void mint()}
-    >
-      🔗 Share link
     </button>
   );
 }

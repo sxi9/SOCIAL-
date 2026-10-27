@@ -198,7 +198,8 @@ Base dir: `/home/user/SOCIAL-/apps/web/components/` (styles live in sibling `*.m
 | `ConnectionRequestsSheet.tsx` | Pending connection requests; accept pings the requester, decline silently deletes. |
 | `DoodleSheet.tsx` | Full-screen doodle canvas (4 colors, eraser, undo) → sends as a PNG image message (`metadata.doodle`). |
 | `DrunkConfirmSheet.tsx` | Client-side "you sure?" interposed while drunk mode is live, before cold/new DMs and any public write. |
-| `ForwardSheet.tsx` | Forward a message to up to N conversations (multi-pick, all-or-nothing); original author rides `metadata.forwarded_from`. |
+| `ForwardSheet.tsx` | Forward a message to up to N conversations (multi-pick, all-or-nothing); original author rides `metadata.forwarded_from`. The picker itself is `ChatPickerSheet.tsx` (shared with ShareSheet's "Send to a chat"). |
+| `ShareSheet.tsx` | The one share sheet (§1b, 2026-10-27) on post / plan / listing / story / group: mints-or-returns the object's token, then Copy link · Share… (OS sheet) · QR · Send to a chat · Stop sharing (ConfirmSheet). Portaled; `zIndex` prop clears callers above the modal plane (story viewer passes 61 → picker 62, confirm 63; never the 69–72 call planes); Escape is topmost-only via `lib/overlays`. `ShareButton` is the drop-in opener. |
 | `ImageEditSheet.tsx` | Edit-before-upload: crop (drag + corner handles), rotate 90°, aspect presets; pure canvas; static images only. |
 | `InviteSheet.tsx` | Invite link: reuses the newest open invite or mints one; copy + native share. |
 | `ListingCreateSheet.tsx` | Post to the local board: kind picker → per-kind form; prices are display text only; room photos via the normal upload pipeline. |

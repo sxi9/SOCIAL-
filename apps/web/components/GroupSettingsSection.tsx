@@ -27,7 +27,7 @@ import {
   setMask,
   updateGroupVisibility,
 } from '@/lib/groups';
-import { copyShareLink } from '@/lib/share';
+import { ShareButton } from './ShareSheet';
 import { toast } from '@/lib/toast';
 import Avatar from './Avatar';
 import Portal from './Portal';
@@ -201,14 +201,13 @@ export default function GroupSettingsSection({
       ) : null}
 
       {admin && (conv.visibility === 'public' || conv.visibility === 'invite_only') ? (
-        <button
-          type="button"
+        <ShareButton
+          type="group"
+          id={conv.id}
           className="btn"
           style={{ width: '100%', marginBottom: 10 }}
-          onClick={() => void copyShareLink('group', conv.id)}
-        >
-          🔗 Copy the group&rsquo;s public link
-        </button>
+          label="🔗 Share the group"
+        />
       ) : null}
 
       {admin && conv.visibility === 'invite_only' ? (

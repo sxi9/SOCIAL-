@@ -18,7 +18,7 @@ import {
   expiryLine,
   KIND_LABEL,
 } from '@/lib/listings';
-import { copyShareLink } from '@/lib/share';
+import { ShareButton } from './ShareSheet';
 import { upsertConversation } from '@/lib/store';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
@@ -470,14 +470,13 @@ export default function ListingDetailSheet({
         {/* v0.8b §1.67: PUBLIC listings get the one stable share link —
             area-only listings never get a URL. */}
         {listing.is_public && live ? (
-          <button
-            type="button"
+          <ShareButton
+            type="listing"
+            id={listing.id}
             className="btn"
             style={{ width: '100%', margin: '8px 0' }}
-            onClick={() => void copyShareLink('listing', listing.id)}
-          >
-            Copy a public link
-          </button>
+            label="🔗 Share this listing"
+          />
         ) : null}
 
         <div className={st.ctaCol}>

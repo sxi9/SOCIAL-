@@ -4,12 +4,13 @@
 // byte-identical 404 share_not_found for every failure cause. No open media
 // routes exist — /api/media/:key stays authed; everything here is gated by
 // the token AND a live ownership + publicness re-check.
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
   CreateShareLinkRequestSchema,
+  SHARE_LINKS_MINE_MAX,
   SHARE_MEDIA_CACHE_TTL_S,
   SHARE_MEDIA_RATE_PER_HOUR_PER_IP,
   SHARE_PUBLIC_RATE_PER_HOUR_PER_IP,
@@ -228,6 +229,139 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(204).send();
     },
   );
+
+  // §1b plumbing (2026-10-27) GET /api/share-links/mine — every OPEN token I
+  // minted, newest first, ≤ SHARE_LINKS_MINE_MAX, each with a human label
+  // and `live` (does the object still resolve publicly — narrowing an
+  // audience kills a page before any revoke). Labels are the OWNER's own
+  // objects, so nothing here is a new disclosure.
+  app.get('/api/share-links/mine', { preHandler: requireAuth }, async (req) => {
+    const { user } = authed(req);
+    // Mine = tokens I minted, PLUS a group's token when I am one of its current
+    // admins: mint-or-return hands every admin the same per-object token
+    // (service.ts), and every admin may revoke it (DELETE above), so each must
+    // be able to SEE it — not only whoever happened to mint first.
+    const adminOf = (await db.execute(sql`
+      SELECT conversation_id FROM conversation_participants
+      WHERE user_id = ${user.id} AND role = 'admin' AND left_at IS NULL
+    `)) as unknown as { conversation_id: string }[];
+    const adminGroupIds = adminOf.map((r) => r.conversation_id);
+    const rows = await db
+      .select()
+      .from(schema.shareTokens)
+      .where(
+        and(
+          isNull(schema.shareTokens.revokedAt),
+          adminGroupIds.length
+            ? sql`(${schema.shareTokens.createdBy} = ${user.id}::uuid OR (${schema.shareTokens.objectType} = 'group' AND ${schema.shareTokens.objectId} IN (${sql.join(adminGroupIds.map((g) => sql`${g}::uuid`), sql`, `)})))`
+            : eq(schema.shareTokens.createdBy, user.id),
+        ),
+      )
+      .orderBy(desc(schema.shareTokens.createdAt))
+      .limit(SHARE_LINKS_MINE_MAX);
+    const idsOf = (t: string) => rows.filter((r) => r.objectType === t).map((r) => r.objectId);
+    const [posts, beacons, listings, stories, groups] = await Promise.all([
+      idsOf('post').length
+        ? db
+            .select({ id: schema.posts.id, body: schema.posts.body, audience: schema.posts.audience, authorId: schema.posts.authorId })
+            .from(schema.posts)
+            .where(inArray(schema.posts.id, idsOf('post')))
+        : [],
+      idsOf('beacon').length
+        ? db
+            .select({
+              id: schema.beacons.id,
+              vibe: schema.beacons.vibe,
+              customVibeLabel: schema.beacons.customVibeLabel,
+              note: schema.beacons.note,
+              audience: schema.beacons.audience,
+              creatorId: schema.beacons.creatorId,
+            })
+            .from(schema.beacons)
+            .where(inArray(schema.beacons.id, idsOf('beacon')))
+        : [],
+      idsOf('listing').length
+        ? db
+            .select({ id: schema.listings.id, title: schema.listings.title, isPublic: schema.listings.isPublic, authorId: schema.listings.authorId })
+            .from(schema.listings)
+            .where(inArray(schema.listings.id, idsOf('listing')))
+        : [],
+      idsOf('story').length
+        ? db
+            .select({ id: schema.stories.id, caption: schema.stories.caption, expiresAt: schema.stories.expiresAt })
+            .from(schema.stories)
+            .where(inArray(schema.stories.id, idsOf('story')))
+        : [],
+      idsOf('group').length
+        ? db
+            .select({ id: schema.conversations.id, title: schema.conversations.title, visibility: schema.conversations.visibility })
+            .from(schema.conversations)
+            .where(inArray(schema.conversations.id, idsOf('group')))
+        : [],
+    ]);
+    // `live` mirrors what the public read re-checks: the object's own
+    // publicness/expiry AND its author not banned — anyone who can SEE a
+    // public post/beacon/listing may mint its token, so the minter is not
+    // always the author, and a ban never revokes tokens.
+    const authorIds = [
+      ...new Set([
+        ...posts.map((p) => p.authorId),
+        ...beacons.map((b) => b.creatorId),
+        ...listings.map((l) => l.authorId),
+      ]),
+    ];
+    const bannedAuthors = new Set(
+      (authorIds.length
+        ? await db
+            .select({ id: schema.users.id })
+            .from(schema.users)
+            .where(and(inArray(schema.users.id, authorIds), sql`${schema.users.bannedAt} IS NOT NULL`))
+        : []
+      ).map((u) => u.id),
+    );
+    const excerpt = (s: string | null | undefined, fallback: string) => {
+      const t = (s ?? '').trim().replace(/\s+/g, ' ');
+      return t ? (t.length > 60 ? `${t.slice(0, 57)}…` : t) : fallback;
+    };
+    const now = Date.now();
+    const share_links = rows.map((r) => {
+      let label = 'Shared';
+      let live = false;
+      switch (r.objectType) {
+        case 'post': {
+          const p = posts.find((x) => x.id === r.objectId);
+          label = excerpt(p?.body, 'Post');
+          live = p?.audience === 'public' && !bannedAuthors.has(p.authorId);
+          break;
+        }
+        case 'beacon': {
+          const b = beacons.find((x) => x.id === r.objectId);
+          label = b ? `Plan · ${b.vibe === 'custom' ? (b.customVibeLabel ?? 'custom') : b.vibe}${b.note ? ` — ${excerpt(b.note, '')}` : ''}` : 'Plan';
+          live = b?.audience === 'public' && !bannedAuthors.has(b.creatorId);
+          break;
+        }
+        case 'listing': {
+          const l = listings.find((x) => x.id === r.objectId);
+          label = excerpt(l?.title, 'Listing');
+          live = l?.isPublic === true && !bannedAuthors.has(l.authorId);
+          break;
+        }
+        case 'story': {
+          const s = stories.find((x) => x.id === r.objectId);
+          label = `Story${s?.caption ? ` — ${excerpt(s.caption, '')}` : ''}`;
+          live = !!s && s.expiresAt.getTime() > now;
+          break;
+        }
+        default: {
+          const g = groups.find((x) => x.id === r.objectId);
+          label = `Group · ${excerpt(g?.title, 'group')}`;
+          live = g?.visibility === 'public' || g?.visibility === 'invite_only';
+        }
+      }
+      return { ...shareLinkDto(r), label, live };
+    });
+    return { share_links };
+  });
 
   // §1.67 GET /api/share/:token/public — UNAUTHENTICATED. Live checks every
   // read; 404 share_not_found byte-identical for every cause.

@@ -10,6 +10,10 @@ export interface ConfirmOptions {
   cancelLabel?: string;
   /** Red confirm button. Defaults to a guess from the wording (delete/remove/ban/block…). */
   danger?: boolean;
+  /** Stack above a caller that sits higher than the modal plane (40) — the
+   * story viewer is 60, so a confirm asked from inside it passes 61 (the
+   * sheet applies +2). Never reach the call planes (69–72, globals.css). */
+  zIndex?: number;
 }
 
 export interface PendingConfirm {
@@ -17,6 +21,7 @@ export interface PendingConfirm {
   confirmLabel: string;
   cancelLabel: string;
   danger: boolean;
+  zIndex?: number;
   resolve: (ok: boolean) => void;
 }
 
@@ -52,6 +57,7 @@ export function confirmDialog(text: string, opts: ConfirmOptions = {}): Promise<
       confirmLabel: opts.confirmLabel ?? 'Yes',
       cancelLabel: opts.cancelLabel ?? 'Cancel',
       danger: opts.danger ?? DANGER_RE.test(text),
+      zIndex: opts.zIndex,
       resolve: (ok) => {
         if (pending === ask) pending = null;
         emit();

@@ -1124,6 +1124,8 @@ export const PROFILE_VISIBILITY_DEFAULT = 'public' as const;
 // server decides what to render.
 export const SHARE_PREVIEWS = ['teaser', 'full'] as const;
 export const SHARE_PREVIEW_DEFAULT = 'full' as const;
+// GET /api/share-links/mine page size — every open token, newest first.
+export const SHARE_LINKS_MINE_MAX = 100;
 // Text only at first — no attachments, no media, by design (ADR-019).
 export const ANON_BODY_MAX_CHARS = 500;
 export const ANON_RIDDLE_MAX_CHARS = 200;

@@ -551,6 +551,36 @@ describe.runIf(infra)('v0.8b community pack', () => {
       expect(card.body).not.toContain('POST-SWITCH'); // the card never carries messages
     });
 
+    it('GET /api/share-links/mine lists my open links with a label and live flag; revoke removes', async () => {
+      // §1b plumbing (2026-10-27). Mint-or-return gives the group's one open
+      // token (the invite_only card link from the previous test).
+      const mint = await post(admin, '/api/share-links', { type: 'group', id: convId });
+      expect(mint.statusCode).toBe(200);
+      const link = (mint.json() as { share_link: { token: string; preview: string } }).share_link;
+      expect(link.preview).toBe('full');
+
+      const mine = await get(admin, '/api/share-links/mine');
+      expect(mine.statusCode).toBe(200);
+      const list = (mine.json() as { share_links: { token: string; label: string; live: boolean; object: { type: string } }[] }).share_links;
+      const row = list.find((l) => l.token === link.token);
+      expect(row).toBeDefined();
+      expect(row!.object.type).toBe('group');
+      expect(row!.label.startsWith('Group · ')).toBe(true);
+      expect(row!.live).toBe(true); // invite_only still serves the card
+      expect((row as unknown as { preview: string }).preview).toBe('full'); // ListItem extends ShareLink
+      expect(list[0]!.token).toBe(link.token); // newest first
+
+      // Another member's list never shows an admin-minted link they did not mint.
+      const theirs = await get(member, '/api/share-links/mine');
+      expect(theirs.statusCode).toBe(200);
+      expect((theirs.json() as { share_links: { token: string }[] }).share_links.some((l) => l.token === link.token)).toBe(false);
+
+      const gone = await del(admin, `/api/share-links/${link.token}`);
+      expect(gone.statusCode).toBe(204);
+      const after = await get(admin, '/api/share-links/mine');
+      expect((after.json() as { share_links: { token: string }[] }).share_links.some((l) => l.token === link.token)).toBe(false);
+    });
+
     it('a post share token dies with the post', async () => {
       const author = await register(`b8ps${run}`);
       const created = await post(author, '/api/posts', {

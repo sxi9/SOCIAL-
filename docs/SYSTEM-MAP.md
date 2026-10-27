@@ -138,7 +138,7 @@ first-paint script in app/layout.tsx) · feature libs
 
 Components (`components/`): chat (`ChatView`, `Composer`, `AttachmentView`,
 `AudioBubble`, `Ticks`, `TypingIndicator`, `PinnedBar`, `SeenBySheet`,
-`ForwardSheet`, `ReactionPicker`, `EffectOverlay`, `DoodleSheet`,
+`ForwardSheet`/`ChatPickerSheet`, `ShareSheet`, `ReactionPicker`, `EffectOverlay`, `DoodleSheet`,
 `ScheduleSheet`/`ScheduledDrawer`, `GameTttView`/`TttChallengeSheet`,
 `VibeCheck*`, `PollView`, `PreviewCard`, `ChatInfoSheet`) · beacons/local
 (`BeaconStrip`, `BeaconCreateSheet`, `PlanHeader`, `AfterglowCard`,

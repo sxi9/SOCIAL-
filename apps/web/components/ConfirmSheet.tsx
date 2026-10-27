@@ -4,26 +4,23 @@
 // window.confirm() (owner report, 2026-10-18: the browser box says
 // "<host> says" and looks like a system alert on phones). Same bottom-sheet
 // shell as the other sheets; Cancel is focused so Enter never destroys.
-import { useEffect } from 'react';
+// Escape is topmost-only (lib/overlays) so a confirm asked from inside a
+// stacked sheet does not close that sheet too; `zIndex` lifts it above a
+// caller higher than the modal plane (the story viewer).
 import { usePendingConfirm } from '@/lib/confirm';
+import { useOverlayEscape } from '@/lib/overlays';
 import Portal from './Portal';
 import sheet from './beacons.module.css';
 
 export default function ConfirmSheet() {
   const ask = usePendingConfirm();
-  useEffect(() => {
-    if (!ask) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') ask.resolve(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [ask]);
+  useOverlayEscape(() => ask?.resolve(false), ask !== null);
   if (!ask) return null;
   return (
     <Portal>
       <div
         className={sheet.sheetBackdrop}
+        style={ask.zIndex !== undefined ? { zIndex: ask.zIndex + 2 } : undefined}
         role="presentation"
         onClick={(e) => {
           if (e.target === e.currentTarget) ask.resolve(false);
