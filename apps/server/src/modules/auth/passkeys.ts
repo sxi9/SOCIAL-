@@ -285,10 +285,22 @@ export async function passkeyRoutes(fastify: FastifyInstance): Promise<void> {
         );
         throw fail();
       }
-      await db
+      // v0.9.2 (auth-audit minor 1): the row read above is stale by now, so
+      // the write is conditional — two concurrent assertions can never leave
+      // the stored counter LOWER than the highest one proven. A row that
+      // moved past us means a newer assertion already landed: refuse this
+      // one like any other regression.
+      const [advanced] = await db
         .update(schema.passkeyCredentials)
         .set({ counter: newCounter, lastUsedAt: new Date() })
-        .where(eq(schema.passkeyCredentials.id, cred.id));
+        .where(
+          sql`${schema.passkeyCredentials.id} = ${cred.id} AND ${schema.passkeyCredentials.counter} <= ${newCounter}`,
+        )
+        .returning({ id: schema.passkeyCredentials.id });
+      if (!advanced) {
+        req.log.warn({ credentialId, got: newCounter }, 'passkey: counter raced a newer assertion');
+        throw fail();
+      }
 
       const [user] = await db
         .select()

@@ -6,6 +6,7 @@
 import Link from 'next/link';
 import type { SharePage, ShareAuthorChip, ShareMedia } from '@socialchat/shared';
 import { LISTING_SAFETY_NOTE, LISTING_SAFETY_NOTE_KINDS } from '@socialchat/shared';
+import GateCta from './GateCta';
 import ShareReportLink from './ShareReportLink';
 import cm from './community.module.css';
 
@@ -139,18 +140,32 @@ function deepLink(page: SharePage, path: string): string {
 }
 
 /** §1b: the one gated CTA every teaser page ends with. */
-function TeaserGate({ next, word }: { next: string; word: string }) {
+function TeaserGate({ deep, next, word }: { deep: string; next: string; word: string }) {
   return (
     <div className={cm.shareGate}>
-      <Link href={next} className="btn btn-primary">
+      <GateCta next={deep} fallback={next} word={word} className="btn btn-primary">
         Join to see the whole {word} — it&rsquo;s free
-      </Link>
+      </GateCta>
     </div>
   );
 }
 
+/** The object word for the sheet title and the teaser line. */
+const GATE_WORD: Record<SharePage['type'], string> = {
+  post: 'post',
+  beacon: 'plan',
+  listing: 'listing',
+  story: 'story',
+  group_card: 'group',
+  group_live: 'group',
+};
+
 function PageBody({ page, path }: { page: SharePage; path: string }) {
-  const next = gate(deepLink(page, path));
+  // Slice E: a click opens the inline sign-in sheet and lands on `deep`;
+  // the href keeps the `/register?next=` form for crawlers and no-JS.
+  const deep = deepLink(page, path);
+  const next = gate(deep);
+  const word = GATE_WORD[page.type];
   switch (page.type) {
     case 'post':
       return (
@@ -187,12 +202,12 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
           ) : null}
           {/* §1b teaser: ONE gated CTA replaces the React/Reply row and the
               invite aside below — the template's contract, not three doors. */}
-          {page.preview === 'teaser' ? <TeaserGate next={next} word="post" /> : null}
+          {page.preview === 'teaser' ? <TeaserGate deep={deep} next={next} word="post" /> : null}
           {/* proto 07: React / Reply read like the real post row — every tap
               still lands on the same /register?next= gate. */}
           {page.preview !== 'teaser' ? (
           <div className={cm.shareActions}>
-            <Link href={next} className={cm.shareAct}>
+            <GateCta next={deep} fallback={next} word={word} className={cm.shareAct}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
                 <path
                   d="M12 19.5 C7.2 15.9 4.3 13 4.3 9.9 a4.1 4.1 0 0 1 7.1 -2.8 L12 7.8 l0.6 -0.7 a4.1 4.1 0 0 1 7.1 2.8 c0 3.1 -2.9 6 -7.7 9.6 Z"
@@ -202,8 +217,8 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
                 />
               </svg>
               React
-            </Link>
-            <Link href={next} className={cm.shareAct}>
+            </GateCta>
+            <GateCta next={deep} fallback={next} word={word} className={cm.shareAct}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
                 <path
                   d="M12 4.5 c4.9 0 8.2 2.8 8.2 6.5 c0 3.7 -3.3 6.5 -8.2 6.5 c-0.9 0 -1.8 -0.1 -2.6 -0.3 L5.5 19 l1 -3.2 c-1.7 -1.2 -2.7 -3 -2.7 -4.8 C3.8 7.3 7.1 4.5 12 4.5 Z"
@@ -213,7 +228,7 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
                 />
               </svg>
               Reply
-            </Link>
+            </GateCta>
             <span className={cm.shareActNote}>sign in to interact</span>
           </div>
           ) : null}
@@ -223,9 +238,9 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
           <aside className={cm.shareWorld}>
             <h2 className={cm.shareWorldTitle}>See the rest of {page.author.display_name}&rsquo;s world</h2>
             <p className={cm.shareWorldSub}>This link is your way in — joining takes a minute, and it&rsquo;s free.</p>
-            <Link href={next} className={`btn btn-primary ${cm.shareWorldCta}`}>
+            <GateCta next={deep} fallback={next} word={word} className={`btn btn-primary ${cm.shareWorldCta}`}>
               Join Bored Chat
-            </Link>
+            </GateCta>
           </aside>
           ) : null}
         </>
@@ -260,13 +275,13 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
             ) : null}
           </div>
           <div className={cm.shareGate}>
-            <Link href={next} className="btn btn-primary">
+            <GateCta next={deep} fallback={next} word={word} className="btn btn-primary">
               {live
                 ? page.preview === 'teaser'
                   ? 'Join to see where and who — sign up free'
                   : 'Join this plan — sign up free'
                 : 'See what else is on — join free'}
-            </Link>
+            </GateCta>
           </div>
         </article>
       );
@@ -294,11 +309,11 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
             </p>
           ) : null}
           <div className={cm.shareGate}>
-            <Link href={next} className="btn btn-primary">
+            <GateCta next={deep} fallback={next} word={word} className="btn btn-primary">
               {page.preview === 'teaser'
                 ? 'Join to see the details and message the poster — free'
                 : 'Message the poster — join free'}
-            </Link>
+            </GateCta>
           </div>
         </article>
       );
@@ -362,9 +377,9 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
             </p>
           ) : null}
           <div className={cm.shareGate}>
-            <Link href={next} className="btn btn-primary">
+            <GateCta next={deep} fallback={next} word={word} className="btn btn-primary">
               Draw back — join free
-            </Link>
+            </GateCta>
           </div>
         </article>
       );
@@ -392,9 +407,9 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
             Invite-only: messages stay between members. Ask to join and an admin decides.
           </p>
           <div className={cm.shareGate}>
-            <Link href={next} className="btn btn-primary">
+            <GateCta next={deep} fallback={next} word={word} className="btn btn-primary">
               Ask to join — sign up free
-            </Link>
+            </GateCta>
           </div>
         </article>
       );
@@ -446,9 +461,9 @@ function PageBody({ page, path }: { page: SharePage; path: string }) {
             )}
           </div>
           <div className={cm.shareGate}>
-            <Link href={next} className="btn btn-primary">
+            <GateCta next={deep} fallback={next} word={word} className="btn btn-primary">
               Reply in the group — join free
-            </Link>
+            </GateCta>
           </div>
         </article>
       );

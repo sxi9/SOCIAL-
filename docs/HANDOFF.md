@@ -25,8 +25,11 @@ Updated 2026-10-27. A new session continues this project by reading
   is `components/LocalTab`; deep-linked posts live in `state.feedExtra`),
   `deepLink()` lands on the object, one gated CTA on teaser pages, `noindex` +
   `app/robots.ts`; a listing's `is_public` change EITHER way now revokes its
-  token. Next: Slice E (inline sign-in sheet on share pages, the 3 v0.9 auth
-  minors), then phases 2–7 per §1b. Open follow-up from review: the unfurl
+  token. Then Slice E (2026-10-28): the inline sign-in sheet on every share-page
+  CTA (`GateCta` → `InlineSignInSheet`: password, passkey, QR, create account,
+  TOTP; lands on the object; `/register?next=` href kept for no-JS), the three
+  v0.9 auth minors, and the login page's suspended/banned copy. Next: phases
+  2–7 per §1b (group join loop first). Open follow-up from review: the unfurl
   worker charges the sender's hourly budget for our own share URLs (short-
   circuit origin == PUBLIC_ORIGIN in the send route).
 - `main` at `b396d09` (2026-10-27, morning). Shipped since the previous handoff, in
@@ -88,26 +91,12 @@ Hold the CLAUDE.md verification bar per wave; shoot Playwright screenshots
 in the **light** scheme as well as dark (the audit's captures were all
 light, and that is the theme most phones show).
 
-## Still open from the v0.9 auth audit: 3 minors
+## v0.9 auth audit: closed
 
-v0.9.1 fixed the auth audit's MAJOR finding (TOTP verify/disable rate
-limit) plus two UI minors. These three MINORS are still unfixed at
-`b396d09` (re-checked 2026-10-27) — small, defense-in-depth; fold them
-into AUDIT-PLAN Wave 6 "quiet security gaps" or ship them earlier as
-v0.9.2:
-
-1. **`auth/passkeys.ts` (~line 288)**: login counter update is an
-   unconditional `SET counter = $new`; concurrent assertions can regress
-   it. Make it conditional: `SET counter = GREATEST(counter, $new) WHERE
-   ... AND counter = $read` (or `AND counter <= $new`).
-2. **`auth/recovery.ts` (~line 135)**: `POST /api/auth/recover` timing
-   side-channel on account existence (unknown user skips the consume
-   UPDATE). Run an equal-cost dummy consume for unknown users.
-3. **`auth/recovery.ts` (~line 146)**: recovery consumes the code +
-   revokes all sessions BEFORE the support-message insert and reset-token
-   mint; a throw there burns the code and locks the user out. Mint/store
-   the reset token first; wrap the notify in try/catch (best-effort, like
-   the register invite-accept pattern).
+The audit's MAJOR (TOTP rate limit) went in v0.9.1; its three MINORS shipped
+2026-10-28 with Slice E (`passkeys.ts` conditional counter write, `recovery.ts`
+equal-cost dummy consume + reset token minted before revoke/notify, notify
+best-effort). Nothing from that audit is open.
 
 ## The agreed backlog (owner schedules, do not auto-start)
 

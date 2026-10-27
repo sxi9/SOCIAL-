@@ -172,27 +172,45 @@ export async function recoveryRoutes(fastify: FastifyInstance): Promise<void> {
         or(eq(schema.users.username, username_or_email), eq(schema.users.email, username_or_email)),
       )
       .limit(1);
-    if (!user || !(await consumeRecoveryCode(user.id, code))) {
+    // v0.9.2 (auth-audit minor 2): an unknown user runs the SAME hash +
+    // UPDATE against a user id that owns no codes, so the answer costs the
+    // same whether or not the account exists (no timing oracle).
+    const consumed = await consumeRecoveryCode(user?.id ?? newId(), code);
+    if (!user || !consumed) {
       throw new ApiError(401, 'bad_recovery');
     }
 
-    // Revoke ALL sessions (rows deleted, sockets 4401) — the common case for
-    // recovery is "credentials compromised", not "forgot".
-    await revokeAllSessions(user.id);
-
-    // §1.69 Support-conversation notify + its ordinary push.
-    await sendSupportMessage(
-      user.id,
-      "A recovery code was just used on your account. If this wasn't you, your other codes may be compromised — regenerate them after you're back in.",
-      null,
-    );
-
-    req.log.warn({ userId: user.id, username: user.username }, 'auth: recovery code consumed');
-
-    // NO session yet: recovery forces a new password first (one-shot Redis
-    // reset_token, RESET_TOKEN_TTL_S).
+    // v0.9.2 (auth-audit minor 3): the code is spent — hand over the reset
+    // token BEFORE anything that can throw, or a hiccup below would burn the
+    // code and lock the person out. NO session yet: recovery forces a new
+    // password first (one-shot Redis reset_token, RESET_TOKEN_TTL_S).
     const token = randomBytes(32).toString('base64url');
     await redis.set(resetTokenKey(token), user.id, 'EX', RESET_TOKEN_TTL_S);
+
+    // Revoke ALL sessions (rows deleted, sockets 4401) — the common case for
+    // recovery is "credentials compromised", not "forgot". Best effort here
+    // too (the token above must reach the client); reset-password revokes
+    // again before minting, so a blip here never lets an old session live
+    // past the reset.
+    try {
+      await revokeAllSessions(user.id);
+    } catch (err) {
+      req.log.error({ err, userId: user.id }, 'auth: recovery session revoke failed, reset token already issued');
+    }
+
+    // §1.69 Support-conversation notify + its ordinary push — best effort,
+    // like the register invite-accept: the recovery stands without it.
+    try {
+      await sendSupportMessage(
+        user.id,
+        "A recovery code was just used on your account. If this wasn't you, your other codes may be compromised — regenerate them after you're back in.",
+        null,
+      );
+    } catch (err) {
+      req.log.error({ err, userId: user.id }, 'auth: recovery notify failed, reset token already issued');
+    }
+
+    req.log.warn({ userId: user.id, username: user.username }, 'auth: recovery code consumed');
     return { reset_token: token };
   });
 
@@ -215,6 +233,10 @@ export async function recoveryRoutes(fastify: FastifyInstance): Promise<void> {
         .where(eq(schema.users.id, userId))
         .returning();
       if (!user) throw new ApiError(401, 'bad_reset_token');
+      // v0.9.2: the recover step's revoke is best-effort, so the reset is
+      // the guaranteed cut — every pre-reset session dies before the fresh
+      // one is minted.
+      await revokeAllSessions(user.id);
       // §1.1 account-state posture, defensive (their recovery already ran).
       if (user.bannedAt !== null) throw new ApiError(403, 'account_banned');
       if (user.suspendedAt !== null) throw new ApiError(403, 'account_suspended');

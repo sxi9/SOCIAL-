@@ -34,6 +34,7 @@ import {
   passkeysSupported,
 } from '@/lib/webauthn';
 import AuthScene, { EyeIcon, SceneFooter, SceneMascot, useAuthFx } from '@/components/AuthScene';
+import { accountStateMessage } from '@/components/InlineSignInSheet';
 import Mascot, { caretPoint, type MascotHandle, type MascotState } from '@/components/Mascot';
 import QrCode from '@/components/QrCode';
 import authStyles from '@/components/auth.module.css';
@@ -150,7 +151,8 @@ function LoginForm() {
       } else if (err instanceof ApiError && err.status === 429) {
         setError('Too many attempts — try again in a minute.');
       } else {
-        setError('Could not sign in. Check your connection and try again.');
+        // AUDIT-PLAN 1.3: the account-state 403s tell the truth.
+        setError(accountStateMessage(err) ?? 'Could not sign in. Check your connection and try again.');
       }
       pulse('shake', 900);
       setBusy(false);

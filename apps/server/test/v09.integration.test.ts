@@ -1037,6 +1037,40 @@ describe.runIf(infra)('v0.9 auth pack', () => {
       expect(bogus.body).toBe(res.body); // byte-identical
     });
 
+    it('concurrent assertions never regress the stored counter (v0.9.2 minor 1)', async () => {
+      const a = await loginOptions(me.username);
+      const b = await loginOptions(me.username);
+      const [lo, hi] = await Promise.all([
+        post(null, '/api/auth/passkey-login', {
+          challenge_ref: a.challenge_ref,
+          response: authenticationResponse(cred, a.options.challenge, 20),
+        }),
+        post(null, '/api/auth/passkey-login', {
+          challenge_ref: b.challenge_ref,
+          response: authenticationResponse(cred, b.options.challenge, 21),
+        }),
+      ]);
+      // Whichever order they landed in, the higher proof wins the row and
+      // the stored counter equals the maximum — never the lower write.
+      // (An invariant check: in-process injects usually land in call order,
+      // so the guard's own branch — the lower write arriving second — is
+      // exercised only when the scheduler flips them. The conditional UPDATE
+      // is what makes the invariant hold in EVERY ordering.)
+      expect(hi.statusCode).toBe(200);
+      expect([200, 401]).toContain(lo.statusCode);
+      const rows = (await db.execute(sqlTag`
+        SELECT counter FROM passkey_credentials WHERE credential_id = ${cred.credId.toString('base64url')}
+      `)) as unknown as { counter: string | number }[];
+      expect(Number(rows[0]!.counter)).toBe(21);
+      // And a stale proof after that is refused without moving it.
+      const c = await loginOptions(me.username);
+      const stale = await post(null, '/api/auth/passkey-login', {
+        challenge_ref: c.challenge_ref,
+        response: authenticationResponse(cred, c.options.challenge, 20),
+      });
+      expect(stale.statusCode).toBe(401);
+    });
+
     it('TOTP-armed accounts gate passkey logins too (LoginOutcome)', async () => {
       // Arm TOTP for the passkey user.
       const setup = await post(me, '/api/auth/totp/setup');
@@ -1051,7 +1085,7 @@ describe.runIf(infra)('v0.9 auth pack', () => {
       const { challenge_ref, options } = await loginOptions(me.username);
       const res = await post(null, '/api/auth/passkey-login', {
         challenge_ref,
-        response: authenticationResponse(cred, options.challenge, 20),
+        response: authenticationResponse(cred, options.challenge, 30), // > 21 (race test above)
       });
       expect(res.statusCode).toBe(200);
       const outcome = res.json() as { totp_required?: boolean; totp_token?: string };
