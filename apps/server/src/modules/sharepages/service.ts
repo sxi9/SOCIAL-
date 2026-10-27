@@ -45,15 +45,20 @@ export function shareLinkDto(row: ShareTokenRow): ShareLink {
     token: row.token,
     url: shareUrlPath(row.objectType, row.token),
     object: { type: row.objectType as ShareLink['object']['type'], id: row.objectId },
+    preview: row.preview as ShareLink['preview'],
     created_at: row.createdAt.toISOString(),
   };
 }
 
-/** Mint-or-return the object's ONE open token (§1.67). */
+/** Mint-or-return the object's ONE open token (§1.67). `preview` (migration
+ * 0014, decision 11) is stored on a FRESH mint only — an existing open token
+ * keeps the choice it was minted with (switching it is a revoke + re-mint,
+ * so a link already sent never silently widens). */
 export async function mintOrReturnToken(
   type: string,
   objectId: string,
   createdBy: string,
+  preview: 'teaser' | 'full' = 'full',
 ): Promise<ShareTokenRow> {
   const [open] = await db
     .select()
@@ -64,7 +69,7 @@ export async function mintOrReturnToken(
   try {
     const [row] = await db
       .insert(stt)
-      .values({ id: newId(), objectType: type, objectId, token: newShareToken(), createdBy })
+      .values({ id: newId(), objectType: type, objectId, token: newShareToken(), createdBy, preview })
       .returning();
     return row!;
   } catch (err) {

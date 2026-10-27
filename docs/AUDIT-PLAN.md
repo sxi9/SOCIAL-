@@ -31,7 +31,7 @@ Status words used below: **DONE** (shipped since the audit, do not redo),
 Audit claims that were wrong even at the time (don't chase them):
 - `DELETE /api/push/subscriptions` **exists** (`push/routes.ts:51-67`). The real bug is that `logout()` never calls `disablePush()`.
 - The admin half of group join requests (list / approve / deny in `GroupSettingsSection.tsx`, `lib/groups.ts`) shipped on 2026-10-17. Only the requester half (`joinGroup()` has zero callers; share page sends signed-in users to `/login?next=`) is missing.
-- Migration numbering: the audit says "migration 0013" for `dm_policy` / `pinned_at` etc. `0013_shared_appearance.sql` now exists — **next free number is 0014**.
+- Migration numbering: the audit says "migration 0013" for `dm_policy` / `pinned_at` etc. `0013_shared_appearance.sql` now exists — **next free number is 0015** (`0014_share_plumbing.sql`, 2026-10-27, holds only the §1b plumbing: `share_tokens.preview`, `users.dm_policy`, `users.profile_visibility`; the Wave 1/2 columns below go in 0015).
 - `FeedView.tsx` line references ≥515 have drifted by about +12.
 
 Audit suggestions that now **conflict with the owner's 2026-10-18 decision** (undo pill removed, SPECS.md standing decision) — substitute `confirmDialog()` in every case:
@@ -143,11 +143,11 @@ Everything here is "a user hits it in the first hour" or "operator liability". O
 ### 1.1 Legal and consent surface (1 day)
 - `/terms`, `/privacy`, `/guidelines` pages rendered from operator-editable markdown in `InstanceSettingsSchema` (`packages/shared/src/api.ts:2906-2910`, currently `invites_enabled`, `release_notes`, `auth` only), with a shipped default that states: email, IPs for 90 days, messages and media stored in plaintext; no admin route reads chats but chats are not E2EE and the operator holds the database; what a report forwards; no ads, no contact sync.
 - `operator_contact` field in instance settings (used by the 403 screen, About block, appeals).
-- Consent sentence + age checkbox in `RegisterRequestSchema` (`api.ts:783-795`) and `register/page.tsx`; store `terms_accepted_at` / `age_attested_at` (migration **0014**).
+- Consent sentence + age checkbox in `RegisterRequestSchema` (`api.ts:783-795`) and `register/page.tsx`; store `terms_accepted_at` / `age_attested_at` (migration **0015**).
 - "Hosted by <operator>" and three lines of what the app is on auth pages; About block in `settings/help`.
 - `noindex` meta on `/s/[token]` share pages + `public/robots.txt`.
 
-### 1.2 Account lifecycle (2 days, migration 0014)
+### 1.2 Account lifecycle (2 days, migration 0015)
 - `DELETE /api/users/me` — password re-proof, `scheduled_deletion_at` with 7–14-day grace, cancel-on-login, then tombstone + cascade (profile, posts, listings, beacons, stories, media refcounts, sessions, push). Admin "delete user" action beside suspend/ban. Optional reason survey.
 - `PATCH /api/users/me/email` — re-proof, nulls `email_verified_at`, verify link when SMTP ever lands. `UpdateMeRequestSchema` (`api.ts:855-865`) has no email today; `settings/account/page.tsx:225-227` renders it as an unlabelled grey line.
 - `POST /api/auth/logout-all` reusing `revokeOtherSessions()` (`auth/service.ts:113`, helper exists since 06dfc91) + a "Sign out all other devices" button on the Devices page.
@@ -165,11 +165,11 @@ Everything here is "a user hits it in the first hour" or "operator liability". O
 
 ### 1.4 A sign-out that signs out (1 day)
 - `logout()` (`connection.ts:117-127`) clears `messages`, `conv_meta`, `outbox`, `seen_fx` stores (`db.ts:33-46` — add a clear-all), calls `disablePush()` (route exists), and goes through `confirmDialog` mentioning unsent queued messages.
-- Nullable `session_id` on `push_subscriptions` (migration 0014) so remote session revoke kills that browser's push.
+- Nullable `session_id` on `push_subscriptions` (migration 0015) so remote session revoke kills that browser's push.
 - `sw.js:165` stop showing notifications when the device has no session.
 
 ### 1.5 Reporting that can be triaged (1 day)
-- `reason` enum on reports (`spam, harassment, hate, nudity, self_harm, scam, impersonation, underage, off_platform, ip, other`), required pick in `ReportSheet.tsx:37`, column on `reports` (0014).
+- `reason` enum on reports (`spam, harassment, hate, nudity, self_harm, scam, impersonation, underage, off_platform, ip, other`), required pick in `ReportSheet.tsx:37`, column on `reports` (0015).
 - Add `post`, `comment`, `story`, `listing`, `group` to `ReportKindSchema` (`api.ts:1288-1295`), `reports/routes.ts`, `ReportSheet.tsx:22-26`, `reports.target_listing_id` etc.; `ADMIN_CONTENT_TYPES` (`constants.ts:1240`) gains comment/story/message/overlay so takedown acts on a reported id.
 - "Also block @user" checkbox; `GET /api/reports/mine` (received → reviewed) shown under Settings → Privacy; admin queue lanes by reason; `legal` in `SUPPORT_CATEGORIES`; a formal `warn` outcome delivered via `sendSupportMessage` (so FEATURES #54 stops lying); report-to-suspend shortcut in the queue.
 - Null `reports.reporter_ip` in `jobs/gc.ts` retention sweep (schema comment at `schema.ts:971` promises it).
@@ -180,7 +180,7 @@ Everything here is "a user hits it in the first hour" or "operator liability". O
 - Mute row (8 h / 1 week / Always / Unmute) at the top of `ChatInfoSheet`; same action from the chat-row long-press sheet (Wave 2.4); muted-bell glyph + greyed badge in `ConversationListView`; test beside `test/v05.integration.test.ts`; API.md §1.4; then correct FEATURES #9 and SYSTEM-MAP.
 
 ### 1.7 Who can message me + requests inbox (2 days, migration 0014)
-- `users.dm_policy` (`everyone | connections | nobody`, default `connections` for new accounts) enforced at `POST /api/conversations {type:'dm'}` (`conversations/routes.ts:153-164`, checks blocks only) and call creation, 404-shaped like blocks; match and roulette DMs exempt.
+- `users.dm_policy` (`everyone | connections | nobody`; **landed in 0014 with DEFAULT `connections`, which backfills every EXISTING account too, not only new ones** — on an instance with 0 connections that means every stranger DM goes to Requests the moment this is enforced, the `anon_messages` precedent; decide the backfill for existing accounts before enforcement ships) enforced at `POST /api/conversations {type:'dm'}` (`conversations/routes.ts:153-164`, checks blocks only) and call creation, 404-shaped like blocks; match and roulette DMs exempt.
 - `conversation_participants.accepted_at` so a stranger's first DM parks in a Requests row pinned atop the chat list with Accept / Delete / Block / Report; no receipts, ring or typing before acceptance; stranger banner inside the chat.
 - `PickerRow`s on Privacy for dm_policy, who-can-send-requests, discoverable-by-search, appear-in-suggestions.
 
@@ -210,7 +210,7 @@ Everything here is "a user hits it in the first hour" or "operator liability". O
 - Group snippet "Arjun: …" prefix (`format.ts:90`, `ConversationListView.tsx:203`); typing moves into the header subline (`ChatView.tsx:835` row shifts layout); `ListingReviewNudge` moves inside the scroll (`ChatView.tsx:827`); `.meta` ≥11.5 px.
 
 ### 2.2 Long-press menu completion (1 day)
-- Copy (no clipboard call in `ChatView.tsx` today), Delete for me (`message_hides(conversation_id, seq, user_id)` 0014, filtered in list + sync), Share via `navigator.share`, Select mode later.
+- Copy (no clipboard call in `ChatView.tsx` today), Delete for me (`message_hides(conversation_id, seq, user_id)` 0015, filtered in list + sync), Share via `navigator.share`, Select mode later.
 - `onContextMenu` + pointer-event long-press (`ChatView.tsx:1441` is `onTouchStart` only) with a 10 ms vibrate on commit.
 - Replace the last `window.alert` (`ChatView.tsx:448`) with an inline "10/10 pinned" in the pinned bar; `confirmDialog` on Sign out; "Delete for me / for everyone" sheet.
 - "Delete / clear a DM" as a per-user hide of the conversation row using the same table; silent DM leave.
@@ -223,7 +223,7 @@ Everything here is "a user hits it in the first hour" or "operator liability". O
 - Read-only description row for ordinary members (`GroupSettingsSection.tsx:189-199` admin textarea only); "N members · created by X" on the hero (decision 4).
 - Drafts per conversation in `lib/db.ts` with a "Draft:" label on the row; Enter = newline on coarse pointers (`Composer.tsx:883-886`); auto-grow textarea; linkify bare domains/emails.
 
-### 2.4 Chat-list management (1 day, migration 0014)
+### 2.4 Chat-list management (1 day, migration 0015)
 - `pinned_at` / `archived_at` on participants; `PATCH /api/conversations/:id/participant`.
 - Inline filter field replacing `<Link href="/people">` at `ConversationListView.tsx:81-84`; long-press / right-click row sheet (Mute · Pin · Mark unread · Archive); swipe actions; pinned section; All / Unread / Groups chips; `hash(user_id) % 6` avatar tints (`Avatar.tsx`, `globals.css:608`); animate the unread badge once instead of `pulseGlow … infinite` (`list.module.css:169`); single-row chip for a lone "Your story" ring (`StoriesStrip.tsx:38`).
 
@@ -322,9 +322,9 @@ Everything here is "a user hits it in the first hour" or "operator liability". O
 
 ---
 
-## 10. Migration 0014 — everything above that needs a column, in one file
+## 10. Migrations 0014 / 0015 — everything above that needs a column
 
-`users.terms_accepted_at`, `users.age_attested_at`, `users.scheduled_deletion_at` / `deleted_at`, `users.dm_policy`, `users.profile_visibility`, `users.appear_offline`, `users.discoverable`; `push_subscriptions.session_id` (nullable); `reports.reason` enum, `reports.target_listing_id` / `target_post_id` / `target_comment_id` / `target_story_id` / `target_conversation_id`; `conversation_participants.pinned_at`, `archived_at`, `accepted_at`; `message_hides(conversation_id, seq, user_id)`; `conversation_bans`; `posts.edited_at`; `post_comments.parent_id`; `saved_posts`; `discovery_passes`; `activity`; `beacons.max_joiners`, `beacons.title`, `beacons.guest_list`; `instance_settings` keys (`registration_mode`, `operator_contact`, legal markdown). Split into 0014/0015 by wave if preferred, but never reuse 0013.
+`users.terms_accepted_at`, `users.age_attested_at`, `users.scheduled_deletion_at` / `deleted_at`, `users.dm_policy`, `users.profile_visibility`, `users.appear_offline`, `users.discoverable`; `push_subscriptions.session_id` (nullable); `reports.reason` enum, `reports.target_listing_id` / `target_post_id` / `target_comment_id` / `target_story_id` / `target_conversation_id`; `conversation_participants.pinned_at`, `archived_at`, `accepted_at`; `message_hides(conversation_id, seq, user_id)`; `conversation_bans`; `posts.edited_at`; `post_comments.parent_id`; `saved_posts`; `discovery_passes`; `activity`; `beacons.max_joiners`, `beacons.title`, `beacons.guest_list`; `instance_settings` keys (`registration_mode`, `operator_contact`, legal markdown). Split into 0014/0015 by wave if preferred, but never reuse 0013. **Split taken (2026-10-27):** `0014_share_plumbing.sql` carries only `share_tokens.preview`, `users.dm_policy`, `users.profile_visibility` (the §1b build); everything else above goes in `0015` with Wave 1.
 
 ---
 
@@ -334,7 +334,7 @@ Everything here is "a user hits it in the first hour" or "operator liability". O
 |---|---|---|
 | 1 | Wave 0 docs/copy + Wave 1.1–1.4 (legal, account lifecycle, login truth, real sign-out) | Operator liability and the four things every benchmark has |
 | 2 | Wave 1.5–1.9 (report taxonomy, mute, who-can-message + requests, age gate, small P0 bugs) | Safety control layer before any new public surface |
-| 3 | Wave 2 (chat rendering, long-press, server halves, chat-list, join loop) | Mostly client, no new tables beyond 0014 |
+| 3 | Wave 2 (chat rendering, long-press, server halves, chat-list, join loop) | Mostly client, no new tables beyond 0015 |
 | 4 | Wave 3 (feed safety + plumbing, stories bugs, story viewer) | Feed is 22/68 and stories 14/42, the weakest areas |
 | 5 | Wave 4 (notifications, SW, object routes, error pages, ops honesty) | Makes push and deploys trustworthy before more users |
 | 6–7 | Wave 5 (theme/tokens, shell, sheets, settings, desktop) | Re-shoot light screens only once the palette is designed |

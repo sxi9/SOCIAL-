@@ -110,6 +110,9 @@ import {
   // ---- v0.8b (API.md §1.62–§1.69, ADR-019 / ADR-020) ----
   ANON_BODY_MAX_CHARS,
   ANON_OPTIN_VALUES,
+  DM_POLICIES,
+  PROFILE_VISIBILITIES,
+  SHARE_PREVIEWS,
   ANON_RIDDLE_MAX_CHARS,
   ANON_TIMER_PRESETS_S,
   ADMIN_CONTENT_TYPES,
@@ -1274,6 +1277,15 @@ export const UserSettingsSchema = z.object({
   // "someone in the pool waved" line during a live opt-in. Never any identity
   // either way; off kills the push AND the in-app frame.
   wave_nudges: z.boolean().default(true),
+  // ---- migration 0014 (AUDIT-PLAN §1b / Wave 1.7). Defaults keep pre-0014
+  // payloads parsing clean. ----
+  // Who may open a DM / start a call with me. Stored here; enforced at DM
+  // and call creation once the profile-share phase lands (404-shaped like
+  // blocks; a stranger's message lands in Requests).
+  dm_policy: z.enum(DM_POLICIES).default('connections'),
+  // How much of my profile a logged-out share link may show (§1b): 'public'
+  // = the full teaser; 'connections' | 'private' = avatar + name only.
+  profile_visibility: z.enum(PROFILE_VISIBILITIES).default('public'),
 });
 export type UserSettings = z.infer<typeof UserSettingsSchema>;
 
@@ -3629,9 +3641,14 @@ export const ShareObjectTypeSchema = z.enum(SHARE_OBJECT_TYPES);
 export type ShareObjectType = z.infer<typeof ShareObjectTypeSchema>;
 
 // POST /api/share-links — mint-or-return the object's ONE open token.
+// preview (migration 0014, decision 11): the sharer's Teaser/Full choice for
+// a NON-public object; ignored for public objects (always fully viewable).
+// Today every mintable object is public, so it is stored as 'full' — the
+// non-public token path (§1b) is what reads it.
 export const CreateShareLinkRequestSchema = z.object({
   type: ShareObjectTypeSchema,
   id: UuidSchema,
+  preview: z.enum(SHARE_PREVIEWS).optional(),
 });
 export type CreateShareLinkRequest = z.infer<typeof CreateShareLinkRequestSchema>;
 
@@ -3642,6 +3659,8 @@ export const ShareLinkSchema = z.object({
   token: z.string(),
   url: z.string(),
   object: z.object({ type: ShareObjectTypeSchema, id: UuidSchema }),
+  // default('full') keeps pre-0014 payloads parsing clean.
+  preview: z.enum(SHARE_PREVIEWS).default('full'),
   created_at: IsoDateTimeSchema,
 });
 export type ShareLink = z.infer<typeof ShareLinkSchema>;

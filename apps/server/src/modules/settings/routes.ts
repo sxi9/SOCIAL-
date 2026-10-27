@@ -37,6 +37,10 @@ export function settingsDto(u: UserRow): UserSettings {
     anon_messages: u.anonMessages as UserSettings['anon_messages'],
     // v0.8b (§1.63): may the worker send me the batched anonymous wave nudge.
     wave_nudges: u.waveNudges,
+    // Migration 0014 (§1b / Wave 1.7): stored now, enforced at their surfaces
+    // (DM/call creation; the logged-out profile teaser) in later phases.
+    dm_policy: u.dmPolicy as UserSettings['dm_policy'],
+    profile_visibility: u.profileVisibility as UserSettings['profile_visibility'],
   };
 }
 
@@ -76,6 +80,10 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
       // state rewrites (the §1.13 doctrine).
       if (b.anon_messages !== undefined) patch.anonMessages = b.anon_messages;
       if (b.wave_nudges !== undefined) patch.waveNudges = b.wave_nudges;
+      // Migration 0014: both enforced at their surfaces, never stored-state
+      // rewrites (the §1.13 doctrine).
+      if (b.dm_policy !== undefined) patch.dmPolicy = b.dm_policy;
+      if (b.profile_visibility !== undefined) patch.profileVisibility = b.profile_visibility;
       const [updated] = await db
         .update(schema.users)
         .set(patch)

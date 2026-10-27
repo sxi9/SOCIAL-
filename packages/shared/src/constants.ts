@@ -1102,6 +1102,26 @@ export const RELEASE_NOTE_ITEMS_MAX = 12;
 // (literally connections, NOT friends-of — the §1.57 mood rule).
 export const ANON_OPTIN_VALUES = ['nobody', 'connections', 'everyone'] as const;
 export const ANON_OPTIN_DEFAULT = 'connections' as const;
+
+// ---- Share-everything plumbing (migration 0014 — AUDIT-PLAN §1b, decision 11) ----
+// Who may open a DM / start a call with me (Wave 1.7). 'connections' =
+// accepted §1.28 connections literally. Stored now; ENFORCED at DM/call
+// creation in the profile-share phase (404-shaped like blocks, a stranger's
+// message lands in Requests). Match/roulette DMs are exempt by design.
+export const DM_POLICIES = ['everyone', 'connections', 'nobody'] as const;
+export const DM_POLICY_DEFAULT = 'connections' as const;
+// How much of my profile a logged-out share link may show: 'public' = the
+// full teaser (avatar, name, one bio line, interests, joined-month — never
+// counts); 'connections' | 'private' reduce it to avatar + name. Same value
+// set as the activity_* toggles.
+export const PROFILE_VISIBILITIES = ['public', 'connections', 'private'] as const;
+export const PROFILE_VISIBILITY_DEFAULT = 'public' as const;
+// A share token's preview mode (decision 11): public objects are always
+// fully viewable (no switch); a NON-public object shared by token shows a
+// TEASER unless the sharer chose Full at mint time. Stored on the token; the
+// server decides what to render.
+export const SHARE_PREVIEWS = ['teaser', 'full'] as const;
+export const SHARE_PREVIEW_DEFAULT = 'full' as const;
 // Text only at first — no attachments, no media, by design (ADR-019).
 export const ANON_BODY_MAX_CHARS = 500;
 export const ANON_RIDDLE_MAX_CHARS = 200;

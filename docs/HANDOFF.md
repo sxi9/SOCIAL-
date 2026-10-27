@@ -16,8 +16,11 @@ Updated 2026-10-27. A new session continues this project by reading
   conversion, SW stale-shell self-heal, admin grant/revoke + set password,
   Tailscale Funnel as the stable public URL. The undo-send pill was REMOVED
   by owner decision (FEATURES #96 struck; server undo route stays).
-- Migrations run `0000`…`0013`. **The next free number is 0014** (the
-  product audit's "migration 0013" references are stale).
+- Migrations run `0000`…`0014`. **The next free number is 0015.** `0014`
+  (2026-10-27) holds the share-everything plumbing only — `share_tokens.preview`,
+  `users.dm_policy`, `users.profile_visibility`; the Wave 1 legal/account/report
+  columns AUDIT-PLAN §10 lists go in `0015` when that wave starts (§10 allows
+  the split). The product audit's "migration 0013" references are stale.
 - The `wip/v0.9` and `backup/*` branches are historical only — ignore
   them (main supersedes).
 
@@ -52,8 +55,9 @@ against `b396d09`). Read it before starting anything feature-shaped:
   Start here unless the owner says otherwise.
 - **§4–§9** are Waves 2–7 (chat/groups, feed/stories, notifications/
   platform, theme/shell/settings, standard parity, differentiators), each
-  item with the file and line it lives at. **§10** collects every column
-  for migration 0014. **§11** is the week-by-week order.
+  item with the file and line it lives at. **§10** collects the Wave 1
+  columns for migration 0015 (0014 already holds the §1b share plumbing).
+  **§11** is the week-by-week order.
 - Three audit suggestions lean on the removed undo pill (story delete,
   comment delete, post undo window) — use `lib/confirm.ts` instead.
 

@@ -490,6 +490,9 @@ ReleaseNote = { version: string(≤20), date: 'YYYY-MM-DD', title: string(≤80)
 //  UserSettings += { anon_messages: 'nobody'|'connections'|'everyone',
 //                      // §1.62, default 'connections'
 //                    wave_nudges: boolean }  // §1.63, default true
+//  UserSettings += { dm_policy: 'everyone'|'connections'|'nobody',   // migration 0014, default 'connections'
+//                    profile_visibility: 'public'|'connections'|'private' }  // migration 0014, default 'public'
+//                      // both STORED now, enforced in the share-everything phases (§1.13 table)
 //  Conversation += { visibility: 'private'|'invite_only'|'public'|'ghost',
 //                      // §1.68, groups only, default 'private'
 //                    description: string(≤300),          // §1.68
@@ -552,6 +555,7 @@ StoryOverlay = { id, story_id, author: UserLite, kind: 'stroke'|'emoji'|'text',
 // §1.67 — a minted share link. url is the app-origin PATH (/p/<token>;
 // /s/<token> for stories); PUBLIC_ORIGIN prefixes it everywhere absolute.
 ShareLink = { token, url, object: {type: 'post'|'beacon'|'listing'|'story'|'group', id},
+  preview: 'teaser'|'full',   // migration 0014, decision 11 — set at mint, 'full' for every public object
   created_at }
 
 // §1.67 — the unauthenticated page read (GET /api/share/:token/public).
@@ -791,6 +795,8 @@ setting: `PATCH /api/users/me {area}` (`≤ 64` chars, `null` clears). It is
 | `activity_beacons` / `activity_posts` / `activity_listings` / `activity_games` (v0.8a, default `connections`) | Per-group visibility of my §1.59 activity strip, enforced at strip serialization and ALWAYS intersected with the underlying object's own audience (§1.59 table) — the toggle narrows, never widens. |
 | `anon_messages` (v0.8b, default `connections`) | Who may open a §1.62 anonymous thread to me (`nobody` / `connections` = accepted §1.28 connections literally / `everyone`). Enforced INVISIBLY at `POST /api/anon/threads`: an opt-out, an unmet `connections` and a §1.14 block all answer the same `404 anon_unavailable` — the setting is never confirmable from outside. |
 | `wave_nudges` (v0.8b, default `true`) | May the worker send me the §1.63 batched anonymous wave nudge during a live discovery opt-in. Off suppresses both the push and the in-app `discovery.nudge` frame; nothing else changes (waves still park silently). |
+| `dm_policy` (migration 0014, default `connections`) | Who may open a DM / start a call with me (`everyone` / `connections` = accepted §1.28 connections literally / `nobody`). **Stored now, enforced in the profile-share phase** (AUDIT-PLAN §1b / Wave 1.7): `POST /api/conversations {type:'dm'}` and call creation will refuse 404-shaped like blocks, and a stranger's first message lands in Requests. Match and roulette DMs are exempt. **Migration 0014 backfills every existing account to `connections`** (not only new ones): on an instance with no connections that routes every stranger DM to Requests once enforced — the `anon_messages` precedent — so the backfill for existing accounts is an owner decision to make before enforcement ships. |
+| `profile_visibility` (migration 0014, default `public`) | How much of my profile a **logged-out** share link may show (§1b): `public` = the full teaser (avatar, name, one bio line, interests, joined-month — never counts, never faces); `connections` / `private` reduce it to avatar + name. Enforced by the share-page renderer once the profile object type lands. |
 
 ### 1.14 Blocks & reports (v0.3 — ADR-009)
 
@@ -2617,7 +2623,7 @@ token outlives nothing: every public read re-checks the object LIVE.
 
 | Method & path | Request | Response |
 |---|---|---|
-| `POST /api/share-links` | `{type: 'post'\|'beacon'\|'listing'\|'story'\|'group', id}` | `200 {share_link: ShareLink}` — mint-or-return the object's ONE open token. Authorization: post/beacon/listing → the object is PUBLIC (`audience:'public'` / `is_public`) AND visible to me → else `400 not_public` (invisible object → `404 not_found`, §1.14 shape); story → **author only** (`404` otherwise — "Create share link" is the author's act); group → owner/admin of a `public`\|`invite_only` group (`400 not_public` for private/ghost). |
+| `POST /api/share-links` | `{type: 'post'\|'beacon'\|'listing'\|'story'\|'group', id, preview?: 'teaser'\|'full'}` | `200 {share_link: ShareLink}` — mint-or-return the object's ONE open token. `preview` (migration 0014, decision 11) is the sharer's Teaser/Full choice for a NON-public object, stored on a fresh mint only (an open token keeps the choice it was minted with — switching is revoke + re-mint, so a link already sent never silently widens); every mintable object is public today, so it is stored as `full` and the §1b non-public token path is what honours it. Authorization: post/beacon/listing → the object is PUBLIC (`audience:'public'` / `is_public`) AND visible to me → else `400 not_public` (invisible object → `404 not_found`, §1.14 shape); story → **author only** (`404` otherwise — "Create share link" is the author's act); group → owner/admin of a `public`\|`invite_only` group (`400 not_public` for private/ghost). |
 | `DELETE /api/share-links/:token` | — | `204` — revoke (idempotent): object author, or the group's owner/admins, or a §1.41 admin. The page and every gated media URL die instantly. Deleting the object, narrowing its audience, cancelling the beacon, or a group leaving `public`/`invite_only` revokes route-side in the same transaction. |
 | `GET /api/share/:token/public` | **UNAUTHENTICATED** | `200 {page: SharePage}` \| `404 share_not_found` — byte-identical for unknown, revoked, deleted, no-longer-public, expired-story, banned-author (no enumeration, no oracle). Live checks every read. Rate `SHARE_PUBLIC_RATE_PER_HOUR_PER_IP` (120). |
 | `GET /api/share/:token/media/:attachmentId?v=` | **UNAUTHENTICATED** | Streaming proxy (the §1.11 invite-avatar pattern) — serves the attachment **iff** the valid token's object owns it: post attachments, listing photos, the story attachment, or a public-group message attachment with `seq > public_since_seq`. Anything else `404`. `Cache-Control: private, max-age=300` (`SHARE_MEDIA_CACHE_TTL_S`). Rate `SHARE_MEDIA_RATE_PER_HOUR_PER_IP` (240). **No open media routes exist** — `/api/media/:key` stays authed. |

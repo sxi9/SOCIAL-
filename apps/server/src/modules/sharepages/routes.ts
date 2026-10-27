@@ -155,7 +155,10 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
         }
       }
 
-      const row = await mintOrReturnToken(type, id, user.id);
+      // Every mintable object is public today, so the stored preview is
+      // 'full' whatever the sharer sent — the §1b non-public token path is
+      // what honours a Teaser choice (decision 11).
+      const row = await mintOrReturnToken(type, id, user.id, 'full');
       return { share_link: shareLinkDto(row) };
     },
   );

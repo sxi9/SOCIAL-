@@ -129,6 +129,16 @@ export const users = pgTable(
     // batched anonymous wave nudge during a live discovery opt-in. Off kills
     // both the push and the in-app discovery.nudge frame.
     waveNudges: boolean('wave_nudges').notNull().default(true),
+    // Share-everything plumbing (migration 0014, AUDIT-PLAN §1b / Wave 1.7).
+    // dm_policy: who may open a DM / start a call with me — stored here,
+    // ENFORCED at DM/call creation in the profile-share phase (404-shaped
+    // like blocks; a stranger's message lands in Requests). DEFAULT
+    // 'connections' per §1.7.
+    dmPolicy: text('dm_policy').notNull().default('connections'),
+    // profile_visibility: how much of my profile a logged-out share link may
+    // show — 'public' = the full teaser (never counts), 'connections' |
+    // 'private' = avatar + name only. Same value set as the activity_* toggles.
+    profileVisibility: text('profile_visibility').notNull().default('public'),
     // v0.9 TOTP (migration 0011, API.md §1.73, ADR-021): the RFC 6238 shared
     // secret, AES-256-GCM-encrypted at rest with a SESSION_SECRET-derived key
     // (HKDF-SHA256, info 'totp:'; stored as v1:<iv>:<ct>:<tag> base64url
@@ -218,6 +228,15 @@ export const users = pgTable(
     anonMessagesCheck: check(
       'users_anon_messages_check',
       sql`${t.anonMessages} IN ('nobody','connections','everyone')`,
+    ),
+    // ---- share-everything plumbing (migration 0014) ----
+    dmPolicyCheck: check(
+      'users_dm_policy_check',
+      sql`${t.dmPolicy} IN ('everyone','connections','nobody')`,
+    ),
+    profileVisibilityCheck: check(
+      'users_profile_visibility_check',
+      sql`${t.profileVisibility} IN ('public','connections','private')`,
     ),
     // ---- v0.9 (migration 0011) ----
     totpShapeCheck: check(
@@ -2185,6 +2204,11 @@ export const shareTokens = pgTable(
     objectId: uuid('object_id').notNull(),
     token: text('token').notNull(),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    // Migration 0014 (decision 11): the sharer's Teaser/Full choice for a
+    // NON-public object, chosen at mint time; the server decides what to
+    // render from it. Public objects are always fully viewable, so every
+    // pre-0014 token (public by construction) backfills 'full'.
+    preview: text('preview').notNull().default('full'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     revokedAt: timestamptz('revoked_at'),
   },
@@ -2193,6 +2217,7 @@ export const shareTokens = pgTable(
       'share_tokens_object_type_check',
       sql`${t.objectType} IN ('post','beacon','listing','story','group')`,
     ),
+    previewCheck: check('share_tokens_preview_check', sql`${t.preview} IN ('teaser','full')`),
     tokenUnique: uniqueIndex('share_tokens_token_unique').on(t.token),
     objectUnique: uniqueIndex('share_tokens_object_unique')
       .on(t.objectType, t.objectId)
