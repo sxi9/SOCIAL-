@@ -456,6 +456,10 @@
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
+  /* Phase 4: Copy · Share · Save joined the list — it scrolls inside before
+     it can run off a small screen. */
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
   z-index: 31;
   display: flex;
   /* v0.5a: the menu grew (reply/forward/pin/edit/delete) — stack it. */

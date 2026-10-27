@@ -137,7 +137,8 @@ function deepLink(page: SharePage, path: string, token: string): string {
     case 'listing':
       return `/local/${page.id}${s}`;
     case 'story':
-      return '/';
+      // Phase 4 (§3.3): the Chats tab with that author's stories open.
+      return `/?story=${encodeURIComponent(page.author.username)}`;
     default:
       return path; // group pages: back here, where the join CTA lives in-app
   }

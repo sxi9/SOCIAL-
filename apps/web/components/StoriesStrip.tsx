@@ -3,7 +3,8 @@
 // Story tray (v0.5a — API.md §1.34): avatar rings at the top of the chat list.
 // Unviewed authors glow first, then all-viewed — each bucket by USERNAME, never
 // recency: a finite tray, not a feed. Expired cards drop locally between GETs.
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { StoryAuthorGroup, StoryCanvasMode, UploadResponse, UserLite } from '@socialchat/shared';
 import { STORY_CANVAS_MODES, STORY_CAPTION_MAX_CHARS } from '@socialchat/shared';
 import { api, ApiError } from '@/lib/api';
@@ -11,6 +12,7 @@ import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
 import ImageEditSheet from './ImageEditSheet';
 import { createStory, refreshStories } from '@/lib/stories';
 import * as store from '@/lib/store';
+import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
 import Avatar from './Avatar';
@@ -21,6 +23,7 @@ import st from './social.module.css';
 
 export default function StoriesStrip() {
   const state = useAppState();
+  const router = useRouter();
   const now = useNow(60_000);
   const [composerOpen, setComposerOpen] = useState(false);
   const [viewer, setViewer] = useState<{ groups: StoryAuthorGroup[]; start: number } | null>(null);
@@ -57,6 +60,26 @@ export default function StoriesStrip() {
     ];
     const start = all.findIndex((g) => g.author.id === startAuthorId);
     if (start !== -1) setViewer({ groups: all, start });
+  };
+
+  // Phase 4 (§3.3): `/?story=<username>` — the story share page's deep link
+  // back (and the OS-shared link) opens that author's stories once the tray
+  // has loaded; an author with nothing live for me reads as "none right now"
+  // (the audience-filtered list is the §1.14 shape).
+  const openByUsername = (username: string): void => {
+    const all: StoryAuthorGroup[] = [
+      ...(mine.length > 0 ? [{ author: meLite, stories: mine }] : []),
+      ...groups,
+    ];
+    const start = all.findIndex((g) => g.author.username === username);
+    if (start !== -1) {
+      setViewer({ groups: all, start });
+      return;
+    }
+    // Stories are friends-of scoped: someone who followed a story link in
+    // from outside lands on the author's door instead (Connect lives there).
+    toast(`No stories from @${username} for you right now — here is their profile.`);
+    router.replace(`/u/${encodeURIComponent(username)}`);
   };
 
   // Nothing to show and nothing to post against? The strip still offers "Your
@@ -117,6 +140,9 @@ export default function StoriesStrip() {
           );
         })}
       </div>
+      <Suspense fallback={null}>
+        <StoryDeepLink loaded={state.stories !== null} onOpen={openByUsername} />
+      </Suspense>
       {composerOpen ? <StoryComposerSheet onClose={() => setComposerOpen(false)} /> : null}
       {viewer ? (
         <StoryViewer
@@ -309,4 +335,20 @@ export function StoryComposerSheet({ onClose }: { onClose: () => void }) {
       </div>
     </div>
   );
+}
+
+/** Reads `?story=<username>` once the tray is loaded, opens the viewer and
+ * strips the query (native history API — the tab must not remount). */
+function StoryDeepLink({ loaded, onOpen }: { loaded: boolean; onOpen: (username: string) => void }) {
+  const params = useSearchParams();
+  const wanted = params.get('story');
+  const handled = useRef<string | null>(null);
+  useEffect(() => {
+    if (!wanted || !loaded || handled.current === wanted) return;
+    handled.current = wanted;
+    onOpen(wanted);
+    window.history.replaceState(null, '', window.location.pathname);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wanted, loaded]);
+  return null;
 }

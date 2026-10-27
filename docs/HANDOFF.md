@@ -41,7 +41,12 @@ Updated 2026-10-28. A new session continues this project by reading
   for the signed-in visitor, `GET /api/share/:token/landing` says
   visible/outside + the author, and `OutsideAudienceSheet` offers the one
   door — Ask the host (DM), Message the poster (`contact {share_token}`
-  opens the area gate), Connect with the author. Next: §2.5's admin half
+  opens the area gate), Connect with the author. Then phase 4 (slice I,
+  2026-10-28, web only): chat message menu ⎘ Copy · ⇪ Share… (text, or the
+  media as a File through the Web Share API — `lib/osShare.ts`; Save/Copy
+  fallback) · ⤓ Save · ⤻ Send to a chat, right-click opens it, long-press
+  hums; story viewer ⇪ Share… for everyone + author `/u/` link; `/?story=
+  <username>` deep link read by `StoriesStrip`. Next: §2.5's admin half
   (`conversation_bans` — needs migration 0015 —, admin delete-any-message,
   transfer ownership, sender names in group push), then phases 4–7 per §1b
   (posts/stories share polish, call links, profile + dm_policy enforcement +

@@ -52,7 +52,9 @@ import { KIND_EMOJI } from '@/lib/listings';
 import { isGhost, isPubliclyReadable, isSupportConversation } from '@/lib/groups';
 import { bubbleEffectFor, isColdContact, isSelfDrunk } from '@/lib/mood';
 import { displayNameFor, loadPrefs, themeClassName, wallpaperClassName } from '@/lib/prefs';
+import { canOsShare, saveAttachment, shareAttachment, shareText } from '@/lib/osShare';
 import { toggleReaction, toggleStamp } from '@/lib/reactions';
+import { copyText } from '@/lib/share';
 import { pendingFor, refreshScheduled } from '@/lib/scheduled';
 import * as store from '@/lib/store';
 import { toast } from '@/lib/toast';
@@ -1400,9 +1402,57 @@ function MessageRow({
 
   // Touch: long-press the bubble opens the quick-react row (desktop gets the
   // hover button instead — chat.module.css hides it on hover-less devices).
+  // Phase 4 (§2.2): the commit hums for 10 ms where the device can, and a
+  // right-click opens the same menu on a mouse.
   const startPress = () => {
     cancelPress();
-    pressTimer.current = setTimeout(() => setPicker(true), LONG_PRESS_MS);
+    pressTimer.current = setTimeout(() => {
+      setPicker(true);
+      try {
+        navigator.vibrate?.(10);
+      } catch {
+        /* no haptics */
+      }
+    }, LONG_PRESS_MS);
+  };
+  const onContextMenu = (e: { preventDefault: () => void; target: EventTarget | null }) => {
+    // The browser keeps its own menu on inputs (the inline editor), links,
+    // media and a live text selection — only a right-click on the bubble
+    // itself opens ours.
+    const el = e.target instanceof Element ? e.target : null;
+    if (el?.closest('textarea, input, a, img, video, audio, [contenteditable]')) return;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().length > 0) return;
+    e.preventDefault();
+    setPicker(true);
+  };
+
+  // Phase 4 (§1b "even the chat"): the message itself leaves the app — its
+  // text, or the photo / video / voice note / file as a FILE — through the
+  // OS share sheet; Save keeps the media; Copy takes the text.
+  const shareableMedia = message.attachments.find((a) => a.status === 'ready') ?? null;
+  const canShareOut = canOsShare() && (message.body !== null || shareableMedia !== null);
+  const shareOut = async (): Promise<void> => {
+    const outcome = shareableMedia
+      ? await shareAttachment(shareableMedia, message.body)
+      : await shareText(message.body ?? '');
+    if (outcome === 'unsupported') {
+      if (shareableMedia) {
+        saveAttachment(shareableMedia);
+        toast('Saved — this browser cannot share files; share the saved copy');
+      } else if (message.body && (await copyText(message.body))) {
+        toast('Copied — this browser cannot share text');
+      }
+    } else if (outcome === 'failed') {
+      if (shareableMedia) {
+        // The OS sheet would not take it (a long download outlived the tap,
+        // or a share already in flight) — the saved copy still gets there.
+        saveAttachment(shareableMedia);
+        toast('Could not share directly — saved it instead');
+      } else {
+        setRowError('Could not share that.');
+      }
+    }
   };
 
   const sealed = isCapsule && capsuleOpen !== true;
@@ -1442,6 +1492,7 @@ function MessageRow({
       onTouchEnd={cancelPress}
       onTouchMove={cancelPress}
       onTouchCancel={cancelPress}
+      onContextMenu={onContextMenu}
       // §1.58: the tipsy bubble settles ≤2° crooked — a tap straightens it.
       onClick={moodFx === 'wobble' && !straightened ? () => setStraightened(true) : undefined}
     >
@@ -1710,6 +1761,45 @@ function MessageRow({
                     ↩ Reply
                   </button>
                 ) : null}
+                {message.body ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setPicker(false);
+                      void copyText(message.body ?? '').then((ok) => {
+                        if (ok) toast('Copied');
+                        else setRowError('Could not copy — select the text instead.');
+                      });
+                    }}
+                  >
+                    ⎘ Copy
+                  </button>
+                ) : null}
+                {canShareOut ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setPicker(false);
+                      void shareOut();
+                    }}
+                  >
+                    ⇪ Share…
+                  </button>
+                ) : null}
+                {shareableMedia ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setPicker(false);
+                      saveAttachment(shareableMedia);
+                    }}
+                  >
+                    ⤓ Save
+                  </button>
+                ) : null}
                 {canForward ? (
                   <button
                     type="button"
@@ -1719,7 +1809,7 @@ function MessageRow({
                       onForward(message);
                     }}
                   >
-                    ⤻ Forward
+                    ⤻ Send to a chat
                   </button>
                 ) : null}
                 {onPinToggle ? (

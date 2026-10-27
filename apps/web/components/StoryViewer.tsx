@@ -6,7 +6,9 @@
 // auto-advance at all — every step is a tap. Own stories get the viewers sheet:
 // faces ordered by username, NO timestamps (the table stores none).
 import { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import type { Story, StoryAuthorGroup, StoryCanvasMode, UserLite } from '@socialchat/shared';
+import { canOsShare, saveAttachment, shareAttachment } from '@/lib/osShare';
 import { deleteStory, expiresLabel, setCanvasMode, storyViewers, viewStory } from '@/lib/stories';
 import ShareSheet from './ShareSheet';
 import { toast } from '@/lib/toast';
@@ -58,6 +60,25 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
         snapshot)
     : undefined;
   const isMine = group ? group.author.id === meId : false;
+
+  // Phase 4: OS share of the story's own media (the share-page LINK stays
+  // author-minted, §1.67); falls back to Save on platforms without file share.
+  const shareOut = async (): Promise<void> => {
+    if (!story) return;
+    const wasPaused = paused;
+    setPaused(true);
+    const outcome = canOsShare()
+      ? await shareAttachment(story.attachment, story.caption || null)
+      : 'unsupported';
+    if (outcome === 'unsupported') {
+      saveAttachment(story.attachment);
+      toast('Saved — this browser cannot share files; share the saved copy');
+    } else if (outcome === 'failed') {
+      saveAttachment(story.attachment);
+      toast('Could not share directly — saved it instead');
+    }
+    setPaused(wasPaused);
+  };
   const isVideo = story?.attachment.kind === 'video';
 
   // Record the view when a story lands on screen (idempotent; never own).
@@ -205,11 +226,18 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
           ))}
         </div>
         <div className={st.viewerHead}>
-          <Avatar avatar={group.author.avatar} name={group.author.display_name} size={34} />
-          <span className={st.viewerHeadName}>
-            {isMine ? 'Your story' : group.author.display_name}
-            <span className={st.viewerExpiry}>{expiresLabel(story)} · hold to pause</span>
-          </span>
+          {/* Phase 4 (§3.3): the face and the name are the author's door. */}
+          <Link
+            href={`/u/${encodeURIComponent(group.author.username)}`}
+            onClick={onClose}
+            style={{ display: 'contents', color: 'inherit', textDecoration: 'none' }}
+          >
+            <Avatar avatar={group.author.avatar} name={group.author.display_name} size={34} />
+            <span className={st.viewerHeadName}>
+              {isMine ? 'Your story' : group.author.display_name}
+              <span className={st.viewerExpiry}>{expiresLabel(story)} · hold to pause</span>
+            </span>
+          </Link>
           <button type="button" className={st.viewerClose} aria-label="Close stories" onClick={onClose}>
             ×
           </button>
@@ -312,11 +340,23 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
             <button type="button" className={st.viewerBtn} onClick={() => setShareOpen(true)}>
               🔗 Share link
             </button>
+            <button type="button" className={st.viewerBtn} onClick={() => void shareOut()}>
+              ⇪ Share…
+            </button>
             <button type="button" className={st.viewerBtn} onClick={() => void removeOwn()}>
               🗑 Delete
             </button>
           </div>
-        ) : null}
+        ) : (
+          // Phase 4 (§3.3): the viewer's own footer — the story leaves the app
+          // as the picture/clip itself (OS share), or is saved where the
+          // platform cannot share files. Nothing here names other viewers.
+          <div className={st.viewerFooter}>
+            <button type="button" className={st.viewerBtn} onClick={() => void shareOut()}>
+              ⇪ Share…
+            </button>
+          </div>
+        )}
       </div>
       {viewersOpen ? <StoryViewersSheet storyId={story.id} onClose={() => setViewersOpen(false)} /> : null}
       {/* keyed by story so a step to another story remounts (fresh mint).
