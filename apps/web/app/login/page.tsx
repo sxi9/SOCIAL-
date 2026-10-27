@@ -35,6 +35,7 @@ import {
 } from '@/lib/webauthn';
 import AuthScene, { EyeIcon, SceneFooter, SceneMascot, useAuthFx } from '@/components/AuthScene';
 import { accountStateMessage } from '@/components/InlineSignInSheet';
+import { resetMeProbe } from '@/lib/shareAuth';
 import Mascot, { caretPoint, type MascotHandle, type MascotState } from '@/components/Mascot';
 import QrCode from '@/components/QrCode';
 import authStyles from '@/components/auth.module.css';
@@ -96,6 +97,7 @@ function LoginForm() {
       finishedRef.current = true;
       setMe(user);
       onAuthenticated();
+      resetMeProbe(); // the public pages' probe must not remember "nobody"
       const dest = safeNext(search.get('next'));
       if (moment === 'peek-then-celebrate' && !fx.reducedMotion) {
         // The passkey moment: the blob peeks approvingly, then joins the party.
