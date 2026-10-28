@@ -1268,7 +1268,11 @@ export const OVERLAY_RATE_PER_HOUR = 60;
 // gets a token.
 // 'profile' (phase 6, migration 0017): the OWNER's "text me / call me"
 // card — id = their own user id; what it shows follows profile_visibility.
-export const SHARE_OBJECT_TYPES = ['post', 'beacon', 'listing', 'story', 'group', 'profile'] as const;
+// 'call' (phase 5, migration 0019): a LIVE group call's room link — minted
+// by a member, dies with the call, joining adds the visitor to the group.
+export const SHARE_OBJECT_TYPES = ['post', 'beacon', 'listing', 'story', 'group', 'profile', 'call'] as const;
+// Phase 5: POST /api/calls/links/:token/join per user per hour.
+export const CALL_LINK_JOIN_RATE_PER_HOUR = 20;
 // UNAUTHENTICATED profile hero (GET /api/users/:username/public): the bio
 // line is the first PROFILE_HERO_BIO_CHARS code points of the bio.
 export const PROFILE_HERO_BIO_CHARS = 140;

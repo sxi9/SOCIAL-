@@ -176,7 +176,7 @@ function PublicProfile({ username }: { username: string }) {
     }
   }
 
-  async function message(door?: 'msg' | 'call'): Promise<void> {
+  async function message(door?: 'msg' | 'call', ringKind: 'audio' | 'video' = 'audio'): Promise<void> {
     if (!shown || actionBusy) return;
     setActionBusy(true);
     setActionError(null);
@@ -191,8 +191,9 @@ function PublicProfile({ username }: { username: string }) {
         // navigation — the App Router discards a replace that is still
         // pending when a push follows it), so Back returns to the plain
         // profile instead of re-opening the chat.
-        if (door === 'call') toast('Use the call button at the top of the chat to ring them');
-        router.replace(`/c/${res.conversation.id}`);
+        // Phase 5: the personal call link — the chat page asks "Call X?" and
+        // rings on the tap (a user gesture is what getUserMedia wants anyway).
+        router.replace(door === 'call' ? `/c/${res.conversation.id}?ring=${ringKind}` : `/c/${res.conversation.id}`);
         return;
       }
       router.push(`/c/${res.conversation.id}`);
@@ -211,19 +212,20 @@ function PublicProfile({ username }: { username: string }) {
   // open the DM exactly once (a StrictMode double-run must not send twice).
   const doorRef = useRef(false);
   const door = search.get('call') ? 'call' : search.get('msg') ? 'msg' : null;
+  const ringKind: 'audio' | 'video' = search.get('call') === 'video' ? 'video' : 'audio';
   useEffect(() => {
     if (!door || !shown || isMe || doorRef.current) return;
     doorRef.current = true;
     // Consumed once per tab: a restored /u/<u>?msg=1 (bfcache, a reopened
     // tab) must not mint again — it just shows the profile.
-    const key = `door:${username}`;
+    const key = `door:${username}:${door === 'call' ? ringKind : 'msg'}`;
     try {
       if (sessionStorage.getItem(key)) return;
       sessionStorage.setItem(key, '1');
     } catch {
       /* storage blocked: fall through, the ref still guards this mount */
     }
-    void message(door);
+    void message(door, ringKind);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [door, shown?.id, isMe]);
 

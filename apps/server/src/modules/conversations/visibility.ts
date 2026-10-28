@@ -485,7 +485,7 @@ export async function groupVisibilityRoutes(fastify: FastifyInstance): Promise<v
 
 /** The §1.4 join upsert (floor = last_seq) + the join system message, in one
  * transaction; the message fans AFTER commit via the caller. */
-async function joinGroupTx(convId: string, userId: string): Promise<void> {
+export async function joinGroupTx(convId: string, userId: string): Promise<void> {
   const msg = await db.transaction(async (tx) => {
     const locked = (await tx.execute(sql`
       SELECT last_seq FROM conversations WHERE id = ${convId} FOR UPDATE

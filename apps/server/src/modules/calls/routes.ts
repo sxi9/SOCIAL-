@@ -7,9 +7,13 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
+  CALL_LINK_JOIN_RATE_PER_HOUR,
   CALL_RING_TIMEOUT_S,
   CALL_SELFTEST_RATE_PER_HOUR,
+  CreateCallLinkRequestSchema,
   CreateCallRequestSchema,
+  MAX_GROUP_PARTICIPANTS,
+  SHARE_TOKEN_REGEX,
   EndCallRequestSchema,
   TurnCredentialsQuerySchema,
 } from '@socialchat/shared';
@@ -26,7 +30,12 @@ import { config } from '../../config.js';
 import { enqueueCallRingTimeout } from '../../queues.js';
 import { redis } from '../../redis.js';
 import { authed, requireAuth } from '../auth/guard.js';
-import { requireActiveParticipant } from '../conversations/routes.js';
+import { getParticipant, requireActiveParticipant } from '../conversations/routes.js';
+import { joinGroupTx } from '../conversations/visibility.js';
+import { isBannedFrom } from '../../lib/bans.js';
+import { publishConversationToUsers } from '../../lib/dto.js';
+import { loadOpenTokenByToken, mintOrReturnToken, shareLinkDto } from '../sharepages/service.js';
+import { forbidden } from '../../lib/errors.js';
 import {
   addCallMember,
   callDto,
@@ -41,8 +50,7 @@ import {
   removeCallMember,
   runMissedCall,
   stopCallRing,
-  type CallRow,
-} from './service.js';
+  type CallRow, roomLinkStanding } from './service.js';
 
 const IdParams = z.object({ id: z.string().uuid() });
 // §1.42: 20/hour/user, the CONVERSATION_CREATE_RATE_PER_HOUR-style window.
@@ -80,6 +88,76 @@ async function requireCallConversationAccess(convId: string, userId: string): Pr
 
 export async function callRoutes(fastify: FastifyInstance): Promise<void> {
   const app = fastify.withTypeProvider<ZodTypeProvider>();
+
+  // Phase 5 (AUDIT-PLAN §1b, migration 0019) POST /api/calls/links — the room
+  // link of a LIVE group call I am in: mint-or-return the call's ONE open
+  // share token (type 'call'; the same token POST /api/share-links mints).
+  // DM calls take no third person → 400 not_public. Dies with the call.
+  app.post(
+    '/api/calls/links',
+    { preHandler: requireAuth, schema: { body: CreateCallLinkRequestSchema } },
+    async (req) => {
+      const { user } = authed(req);
+      const call = await loadCall(req.body.call_id);
+      if (!call || !isLiveStatus(call.status)) throw notFound('not_found');
+      if (!(await isCallMember(call.id, user.id))) throw notFound('not_found');
+      const standing = await roomLinkStanding(call, user.id);
+      if (standing === 'not_member') throw notFound('not_found');
+      if (standing === 'not_group') throw badRequest('not_public');
+      if (standing === 'admin_required') throw forbidden();
+      const row = await mintOrReturnToken('call', call.id, user.id, 'full');
+      // The mint and the last hang-up can race: a token for an ended call
+      // would otherwise live forever (deleteCallMembers already ran).
+      const fresh = await loadCall(call.id);
+      if (!fresh || !isLiveStatus(fresh.status)) {
+        await deleteCallMembers(call.id);
+        throw notFound('not_found');
+      }
+      return { share_link: shareLinkDto(row) };
+    },
+  );
+
+  // Phase 5 POST /api/calls/links/:token/join — AUTHED: join the GROUP
+  // through the room link (the token is the invite), then the client lands
+  // on /c/<conversation_id>?call=<call_id> and the ordinary §1.42 join runs
+  // (mesh cap → 409 call_full there). 404 share_not_found for an unknown /
+  // revoked token, an ended call, a ghost group, a banned joiner or a
+  // blocked pair with the inviter — one shape. Already a member → straight
+  // through. Rate CALL_LINK_JOIN_RATE_PER_HOUR.
+  app.post(
+    '/api/calls/links/:token/join',
+    { preHandler: requireAuth, schema: { params: z.object({ token: z.string().min(1).max(256) }) } },
+    async (req) => {
+      const { user } = authed(req);
+      const rate = await fixedWindow(`calllinkjoin:${user.id}`, CALL_LINK_JOIN_RATE_PER_HOUR, 3600);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+      if (!SHARE_TOKEN_REGEX.test(req.params.token)) throw notFound('share_not_found');
+      const tok = await loadOpenTokenByToken(req.params.token);
+      if (!tok || tok.objectType !== 'call') throw notFound('share_not_found');
+      const call = await loadCall(tok.objectId);
+      if (!call || !isLiveStatus(call.status) || !call.isGroup) throw notFound('share_not_found');
+      const [conv] = await db.select().from(convs).where(eq(convs.id, call.conversationId)).limit(1);
+      if (!conv || conv.type !== 'group' || conv.visibility === 'ghost') throw notFound('share_not_found');
+      // The inviter must still stand where they stood at mint: alive,
+      // unbanned, in the group (and its admin for a private group) — the
+      // public page already 404s on the first two; the door must agree.
+      if (!tok.createdBy) throw notFound('share_not_found');
+      const [inviter] = await db.select({ bannedAt: schema.users.bannedAt, deletedAt: schema.users.deletedAt }).from(schema.users).where(eq(schema.users.id, tok.createdBy)).limit(1);
+      if (!inviter || inviter.bannedAt !== null || inviter.deletedAt !== null) throw notFound('share_not_found');
+      if ((await roomLinkStanding(call, tok.createdBy)) !== 'ok') throw notFound('share_not_found');
+      if (await isBlockedPair(user.id, tok.createdBy)) throw notFound('share_not_found');
+      const mine = await getParticipant(conv.id, user.id);
+      if (!mine || mine.leftAt !== null) {
+        if (await isBannedFrom(conv.id, user.id)) throw notFound('share_not_found');
+        const active = await activeParticipantUserIds(conv.id);
+        if (active.length + 1 > MAX_GROUP_PARTICIPANTS) throw badRequest('group_too_large');
+        await joinGroupTx(conv.id, user.id);
+        await publishConversationToUsers(conv.id, [user.id], 'conv.new');
+        await publishConversationToUsers(conv.id, active, 'conv.updated');
+      }
+      return { conversation_id: conv.id, call_id: call.id, kind: call.kind as 'audio' | 'video' };
+    },
+  );
 
   // §1.42 POST /api/conversations/:id/calls — start ringing. The row insert
   // claims the one-live-call-per-conversation slot atomically (calls_live_idx,

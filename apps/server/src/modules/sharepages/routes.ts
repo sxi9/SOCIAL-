@@ -28,6 +28,7 @@ import { fixedWindow } from '../../lib/ratelimit.js';
 import { getObjectStream } from '../../s3.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { hasBlockedJoiner, hasJoin, isBeaconVisibleTo, loadBeacon } from '../beacons/service.js';
+import { isCallMember, roomLinkStanding } from '../calls/service.js';
 import { loadPost } from '../feed/service.js';
 import { hasListingContact, isListingLive, loadListingWithAuthor } from '../listings/service.js';
 import {
@@ -141,6 +142,17 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
         if (!s || s.authorId !== user.id || s.expiresAt.getTime() <= Date.now()) {
           throw notFound('not_found');
         }
+      } else if (type === 'call') {
+        // Phase 5: a member of a LIVE group call mints its room link. DM
+        // calls take no third person (400 not_public); ghost groups have no
+        // calls at all. Always 'full' — the page shows what it shows.
+        const [call] = await db.select().from(schema.calls).where(eq(schema.calls.id, id)).limit(1);
+        if (!call || (call.status !== 'ringing' && call.status !== 'ongoing')) throw notFound('not_found');
+        if (!(await isCallMember(call.id, user.id))) throw notFound('not_found');
+        const standing = await roomLinkStanding(call, user.id);
+        if (standing === 'not_member') throw notFound('not_found');
+        if (standing === 'not_group') throw badRequest('not_public');
+        if (standing === 'admin_required') throw forbidden();
       } else if (type === 'profile') {
         // Phase 6: MY card only — `id` must be my own user id (anyone else's
         // is the §1.14 404; their /u/ address is shareable without a token).
@@ -226,6 +238,24 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
             .where(eq(schema.stories.id, row.objectId))
             .limit(1);
           allowed = s?.authorId === user.id;
+        } else if (row.objectType === 'call') {
+          // Phase 5: the group's admins may kill a member's room link.
+          const [call] = await db.select({ conversationId: schema.calls.conversationId }).from(schema.calls).where(eq(schema.calls.id, row.objectId)).limit(1);
+          if (call) {
+            const [part] = await db
+              .select()
+              .from(schema.conversationParticipants)
+              .where(
+                and(
+                  eq(schema.conversationParticipants.conversationId, call.conversationId),
+                  eq(schema.conversationParticipants.userId, user.id),
+                ),
+              )
+              .limit(1);
+            allowed = part?.role === 'admin' && part.leftAt === null;
+          }
+        } else if (row.objectType === 'profile') {
+          allowed = row.objectId === user.id;
         } else {
           const [part] = await db
             .select()
@@ -279,7 +309,7 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
       .orderBy(desc(schema.shareTokens.createdAt))
       .limit(SHARE_LINKS_MINE_MAX);
     const idsOf = (t: string) => rows.filter((r) => r.objectType === t).map((r) => r.objectId);
-    const [posts, beacons, listings, stories, groups, owners] = await Promise.all([
+    const [posts, beacons, listings, stories, groups, owners, callRows] = await Promise.all([
       idsOf('post').length
         ? db
             .select({ id: schema.posts.id, body: schema.posts.body, audience: schema.posts.audience, authorId: schema.posts.authorId })
@@ -322,6 +352,12 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
             .select({ id: schema.users.id, username: schema.users.username, bannedAt: schema.users.bannedAt })
             .from(schema.users)
             .where(inArray(schema.users.id, idsOf('profile')))
+        : [],
+      idsOf('call').length
+        ? db
+            .select({ id: schema.calls.id, status: schema.calls.status, kind: schema.calls.kind, conversationId: schema.calls.conversationId })
+            .from(schema.calls)
+            .where(inArray(schema.calls.id, idsOf('call')))
         : [],
     ]);
     // `live` mirrors what the public read re-checks: the object's own
@@ -384,6 +420,12 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
           const o = owners.find((x) => x.id === r.objectId);
           label = `Profile · @${o?.username ?? '?'}`;
           live = !!o && o.bannedAt === null;
+          break;
+        }
+        case 'call': {
+          const k = callRows.find((x) => x.id === r.objectId);
+          label = `${k?.kind === 'video' ? 'Video' : 'Voice'} call`;
+          live = !!k && (k.status === 'ringing' || k.status === 'ongoing');
           break;
         }
         default: {
@@ -693,6 +735,8 @@ async function objectAuthorId(row: ShareTokenRow): Promise<string | null> {
     }
     case 'profile':
       return row.objectId; // the card IS its owner
+    case 'call':
+      return row.createdBy; // the inviter's chip
     default:
       return null;
   }

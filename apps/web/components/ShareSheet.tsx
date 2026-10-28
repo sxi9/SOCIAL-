@@ -272,7 +272,9 @@ export default function ShareSheet({ type, id, onClose, nonPublic = false, zInde
             </button>
           </div>
           <p className={styles.blurb}>
-            {type === 'profile'
+            {type === 'call'
+              ? 'Anyone with the link sees who invited them and how many are in. Joining needs an account and adds them to the group. The link dies when the call ends.'
+              : type === 'profile'
               ? fixedUrl
                 ? 'Anyone with the link sees their name and picture — and what their profile setting allows. Messaging needs an account.'
                 : 'Anyone with the link sees what your profile visibility allows (Settings → Privacy). Message and Call ask them to sign in first.'

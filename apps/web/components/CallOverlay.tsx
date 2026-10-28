@@ -42,6 +42,7 @@ import {
 } from '@/lib/webrtc';
 import Avatar from './Avatar';
 import Portal from './Portal';
+import { ShareButton } from './ShareSheet';
 import styles from './calls.module.css';
 
 export default function CallOverlay() {
@@ -626,6 +627,16 @@ function CallScreen() {
             </button>
           </>
         ) : null}
+        {ui.is_group && ui.phase !== 'ringing' ? (
+          // Phase 5 (§1b): the room link — anyone with it can join the group
+          // and the call (ShareSheet mints POST /api/share-links {type:'call'}).
+          <ShareButton type="call" id={ui.call_id} className={styles.ctl} ariaLabel="Invite by link" zIndex={71}>
+            <span className={styles.ctlOrb} aria-hidden>
+              <LinkIcon />
+            </span>
+            {ui.kind === 'audio' ? <span className={styles.ctlLabel}>Invite</span> : null}
+          </ShareButton>
+        ) : null}
         <button
           type="button"
           className={styles.ctl}
@@ -639,6 +650,15 @@ function CallScreen() {
         </button>
       </div>
     </div>
+  );
+}
+
+function LinkIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1.5 1.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1.5-1.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
   );
 }
 

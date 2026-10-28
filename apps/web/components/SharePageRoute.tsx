@@ -56,6 +56,12 @@ function describe(page: SharePage): { title: string; description: string; image:
       };
     case 'profile':
       return profileDescribe(page);
+    case 'call':
+      return {
+        title: `${page.inviter.display_name} invites you to a ${page.kind === 'video' ? 'video' : 'voice'} call`,
+        description: `${page.title} · ${page.member_count} ${page.member_count === 1 ? 'person is' : 'people are'} in. Join from Bored Chat.`,
+        image: page.inviter.avatar_url,
+      };
   }
 }
 

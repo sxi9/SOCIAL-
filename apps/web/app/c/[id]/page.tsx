@@ -5,7 +5,9 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import ChatView from '@/components/ChatView';
 import TwoPane from '@/components/TwoPane';
 import { useAppState } from '@/lib/useStore';
-import { joinCall } from '@/lib/webrtc';
+import { joinCall, startCall } from '@/lib/webrtc';
+import { confirmDialog } from '@/lib/confirm';
+import { conversationTitle } from '@/lib/format';
 
 /**
  * v0.7.1 ring push (API.md §2.9, FEATURES #88): the notification's Answer
@@ -46,6 +48,34 @@ function CallAutoAccept({ conversationId }: { conversationId: string }) {
   return null;
 }
 
+/**
+ * Phase 5 (§1b): the personal call link — /u/<username>?call=audio|video
+ * lands here as /c/<id>?ring=<kind>. The param is stripped at once, then ONE
+ * confirm ("Call X?") whose tap is the user gesture that starts the call —
+ * nothing rings by itself off a URL (and a refresh never re-asks).
+ */
+function RingIntent({ conversationId }: { conversationId: string }) {
+  const state = useAppState();
+  const search = useSearchParams();
+  const router = useRouter();
+  const asked = useRef(false);
+  const ring = search.get('ring');
+  const conv = state.conversations.get(conversationId);
+  useEffect(() => {
+    if (!ring || asked.current || !conv || state.conn !== 'online') return;
+    asked.current = true;
+    const kind: 'audio' | 'video' = ring === 'video' ? 'video' : 'audio';
+    router.replace(`/c/${conversationId}`);
+    if (state.callUi && state.callUi.phase !== 'ended') return;
+    void confirmDialog(`${kind === 'video' ? 'Video call' : 'Call'} ${conversationTitle(conv, state.me?.id)}?`, {
+      confirmLabel: kind === 'video' ? 'Video call' : 'Call',
+    }).then((ok) => {
+      if (ok) void startCall(conversationId, kind);
+    });
+  }, [ring, conv, state.conn, state.callUi, state.me?.id, conversationId, router]);
+  return null;
+}
+
 export default function ChatPage() {
   const params = useParams<{ id: string }>();
   return (
@@ -55,6 +85,7 @@ export default function ChatPage() {
       {/* useSearchParams needs a Suspense boundary in the App Router. */}
       <Suspense fallback={null}>
         <CallAutoAccept conversationId={params.id} />
+        <RingIntent conversationId={params.id} />
       </Suspense>
     </TwoPane>
   );

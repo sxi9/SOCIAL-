@@ -17,14 +17,17 @@ function joinedLabel(ym: string): string {
   return d.toLocaleDateString('en', { month: 'short', year: 'numeric', timeZone: 'UTC' });
 }
 
-export function profileDoorNext(username: string, door: 'msg' | 'call'): string {
-  return `/u/${encodeURIComponent(username)}?${door}=1`;
+export function profileDoorNext(username: string, door: 'msg' | 'audio' | 'video'): string {
+  // Phase 5: ?call=audio|video is the personal call link — the signed-in
+  // profile page opens the DM and offers the call of that kind.
+  return door === 'msg' ? `/u/${encodeURIComponent(username)}?msg=1` : `/u/${encodeURIComponent(username)}?call=${door}`;
 }
 
 export default function ProfileHeroCard({ hero }: { hero: ProfileHero }) {
   const initial = hero.display_name.trim() ? hero.display_name.trim()[0]!.toUpperCase() : '?';
   const msgNext = profileDoorNext(hero.username, 'msg');
-  const callNext = profileDoorNext(hero.username, 'call');
+  const callNext = profileDoorNext(hero.username, 'audio');
+  const videoNext = profileDoorNext(hero.username, 'video');
   return (
     <div className={cm.shareCard}>
       <div className={cm.shareProfileHero}>
@@ -69,6 +72,16 @@ export default function ProfileHeroCard({ hero }: { hero: ProfileHero }) {
                 className="btn"
               >
                 Call
+              </GateCta>
+            ) : null}
+            {hero.doors.call ? (
+              <GateCta
+                next={videoNext}
+                fallback={`/register?next=${encodeURIComponent(videoNext)}`}
+                word="video call"
+                className="btn"
+              >
+                Video call
               </GateCta>
             ) : null}
           </div>

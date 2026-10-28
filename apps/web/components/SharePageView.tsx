@@ -9,6 +9,7 @@ import { LISTING_SAFETY_NOTE, LISTING_SAFETY_NOTE_KINDS } from '@socialchat/shar
 import GateCta from './GateCta';
 import GroupJoinCta from './GroupJoinCta';
 import ProfileHeroCard from './ProfileHeroCard';
+import CallJoinCta from './CallJoinCta';
 import ShareHeaderPill from './ShareHeaderPill';
 import ShareReportLink from './ShareReportLink';
 import cm from './community.module.css';
@@ -89,6 +90,8 @@ function headMeta(page: SharePage): string {
       return 'shared story, logged out';
     case 'profile':
       return 'profile, logged out';
+    case 'call':
+      return 'call room, logged out';
     default:
       return 'shared group, logged out';
   }
@@ -145,6 +148,8 @@ function deepLink(page: SharePage, path: string, token: string): string {
     case 'profile':
       // Phase 6: the card's own address (the doors carry their own ?msg/?call).
       return `/u/${encodeURIComponent(page.username)}`;
+    case 'call':
+      return path; // phase 5: back here — the Join island does the rest
     default:
       return path; // group pages: back here, where the join CTA lives in-app
   }
@@ -170,6 +175,7 @@ const GATE_WORD: Record<SharePage['type'], string> = {
   group_card: 'group',
   group_live: 'group',
   profile: 'profile',
+  call: 'call',
 };
 
 function PageBody({ page, path, token }: { page: SharePage; path: string; token: string }) {
@@ -398,6 +404,28 @@ function PageBody({ page, path, token }: { page: SharePage; path: string; token:
     case 'profile':
       // Phase 6: the same hero the logged-out /u/<username> route renders.
       return <ProfileHeroCard hero={page} />;
+    case 'call':
+      // Phase 5: who invites you, what kind, how many are in — never who.
+      return (
+        <article className={cm.shareCard}>
+          <AuthorChip chip={page.inviter} label="invites you" />
+          <h1 className={cm.shareWorldTitle} style={{ margin: '6px 0 0' }}>
+            {page.kind === 'video' ? '📹 Video call' : '📞 Voice call'} · {page.title}
+          </h1>
+          <p className={cm.shareBody} style={{ margin: 0 }}>
+            {page.member_count === 0
+              ? 'Nobody is in yet.'
+              : `${page.member_count} ${page.member_count === 1 ? 'person is' : 'people are'} in right now.`}{' '}
+            Joining adds you to the group, then drops you straight into the call.
+          </p>
+          <div className={cm.shareGate}>
+            <CallJoinCta token={token} kind={page.kind} full={page.full} next={deep} fallback={next} />
+          </div>
+          <p className="muted small" style={{ margin: 0 }}>
+            The link stops working when the call ends.
+          </p>
+        </article>
+      );
     case 'group_card':
       return (
         <article className={cm.shareCard}>

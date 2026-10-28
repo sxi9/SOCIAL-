@@ -4008,6 +4008,21 @@ export const SharePageSchema = z.discriminatedUnion('type', [
     type: z.literal('profile'),
     id: UuidSchema,
   }),
+  // Phase 5 (migration 0019): a LIVE group call's room. `inviter` is the
+  // member who minted the link (chip, no id); `member_count` is the live
+  // mesh size (an operational count — allowed on share pages, decision 11);
+  // `full` = CALL_MESH_MAX reached. NEVER the members' identities.
+  z.object({
+    type: z.literal('call'),
+    id: UuidSchema, // the call id
+    conversation_id: UuidSchema,
+    kind: CallKindSchema,
+    title: z.string(), // the group's title
+    inviter: ShareAuthorChipSchema,
+    member_count: z.number().int().nonnegative(),
+    full: z.boolean(),
+    started_at: IsoDateTimeSchema,
+  }),
 ]);
 export type SharePage = z.infer<typeof SharePageSchema>;
 
@@ -4451,6 +4466,26 @@ export const MuteConversationRequestSchema = z.object({
   until: IsoDateTimeSchema.nullable(),
 });
 export type MuteConversationRequest = z.infer<typeof MuteConversationRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// Phase 5 (AUDIT-PLAN §1b, migration 0019) — call links.
+// ---------------------------------------------------------------------------
+
+// POST /api/calls/links — mint-or-return the room link of a LIVE group call
+// I am in (the same token as POST /api/share-links {type:'call'}).
+export const CreateCallLinkRequestSchema = z.object({ call_id: UuidSchema });
+export type CreateCallLinkRequest = z.infer<typeof CreateCallLinkRequestSchema>;
+
+// POST /api/calls/links/:token/join — AUTHED: the signed-in visitor joins
+// the GROUP through the token (bans/blocks/size honoured), then lands on
+// /c/<conversation_id>?call=<call_id> where the ordinary §1.42 join runs
+// (the mesh cap is enforced there — 409 call_full).
+export const CallLinkJoinResponseSchema = z.object({
+  conversation_id: UuidSchema,
+  call_id: UuidSchema,
+  kind: CallKindSchema,
+});
+export type CallLinkJoinResponse = z.infer<typeof CallLinkJoinResponseSchema>;
 export type ChangePasswordRequest = z.infer<typeof ChangePasswordRequestSchema>;
 export const ChangePasswordResponseSchema = z.object({ ok: z.literal(true) });
 export type ChangePasswordResponse = z.infer<typeof ChangePasswordResponseSchema>;

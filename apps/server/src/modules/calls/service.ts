@@ -4,7 +4,7 @@
 // status) and signaling frames are relayed, never persisted. Group calls are
 // MESH, hard-capped at CALL_MESH_MAX by the atomic check-and-add below — the
 // LiveKit SFU upgrade seam is documented in ADR-014, deliberately not built.
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   CALL_MESH_MAX,
   CALL_RING_TIMEOUT_S,
@@ -100,8 +100,68 @@ export async function isCallMember(callId: string, userId: string): Promise<bool
   return (await redis.sismember(callMembersKey(callId), userId)) === 1;
 }
 
+/** Phase 5: the one rule for who may mint or honour a room link — an
+ * ACTIVE participant of the group who is in the mesh, and for a private
+ * group an admin (members of a private group cannot admit strangers; the
+ * group token has the same rule). `null` = allowed; otherwise the refusal. */
+export async function roomLinkStanding(
+  call: CallRow,
+  userId: string,
+): Promise<'ok' | 'not_member' | 'not_group' | 'admin_required'> {
+  if (!call.isGroup) return 'not_group';
+  const [part] = await db
+    .select({ role: schema.conversationParticipants.role, leftAt: schema.conversationParticipants.leftAt })
+    .from(schema.conversationParticipants)
+    .where(
+      and(
+        eq(schema.conversationParticipants.conversationId, call.conversationId),
+        eq(schema.conversationParticipants.userId, userId),
+      ),
+    )
+    .limit(1);
+  if (!part || part.leftAt !== null) return 'not_member';
+  const [conv] = await db
+    .select({ visibility: schema.conversations.visibility, type: schema.conversations.type })
+    .from(schema.conversations)
+    .where(eq(schema.conversations.id, call.conversationId))
+    .limit(1);
+  if (!conv || conv.type !== 'group' || conv.visibility === 'ghost') return 'not_group';
+  if (conv.visibility !== 'public' && conv.visibility !== 'invite_only' && part.role !== 'admin') {
+    return 'admin_required';
+  }
+  return 'ok';
+}
+
+/** Phase 5: a member leaving / removed from the conversation also leaves the
+ * live mesh (they can no longer reach POST /end), so the count, the cap and
+ * the ≤1-member end rule stay honest. */
+export async function dropFromLiveCall(convId: string, userId: string): Promise<void> {
+  const [live] = await db
+    .select()
+    .from(schema.calls)
+    .where(and(eq(schema.calls.conversationId, convId), sql`${schema.calls.status} IN ('ringing','ongoing')`))
+    .limit(1);
+  if (!live || !(await isCallMember(live.id, userId))) return;
+  const remaining = await removeCallMember(live.id, userId);
+  if (live.status === 'ongoing' && remaining <= 1) {
+    await db.execute(sql`
+      UPDATE calls SET status = 'completed', ended_at = now()
+      WHERE id = ${live.id} AND status = 'ongoing'
+    `);
+    await deleteCallMembers(live.id);
+  }
+  const fresh = (await loadCall(live.id)) ?? live;
+  await publishCallUpdated(fresh);
+}
+
 export async function deleteCallMembers(callId: string): Promise<void> {
   await redis.del(callMembersKey(callId));
+  // Phase 5 (§1b): every terminal transition passes here — the room link
+  // dies with the call (raw SQL: sharepages/service would be a cycle).
+  await db.execute(sql`
+    UPDATE share_tokens SET revoked_at = now()
+    WHERE object_type = 'call' AND object_id = ${callId} AND revoked_at IS NULL
+  `);
 }
 
 /** call.updated on every durable transition, to the conversation's active

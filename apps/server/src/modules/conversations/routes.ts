@@ -39,6 +39,7 @@ import { enqueueAvatar } from '../../queues.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { sendSystemMessage } from '../messages/service.js';
 import { fanJoinRequest } from './visibility.js';
+import { dropFromLiveCall } from '../calls/service.js';
 import { stashAvatarSource } from '../uploads/pipeline.js';
 
 const cp = schema.conversationParticipants;
@@ -766,6 +767,8 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
           left_seq = (SELECT last_seq FROM conversations WHERE id = ${req.params.id})
         WHERE conversation_id = ${req.params.id} AND user_id = ${req.params.userId}
       `);
+      // Phase 5: out of the conversation = out of its live call too.
+      await dropFromLiveCall(req.params.id, req.params.userId);
       // §2.5 (migration 0016): a REMOVE is a ban — every door (invite link,
       // public join, parked request) stays shut until an admin lets them back.
       if (!isSelf && convRow?.type !== 'dm') {

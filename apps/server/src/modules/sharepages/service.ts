@@ -10,6 +10,7 @@
 import { randomBytes } from 'node:crypto';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import {
+  CALL_MESH_MAX,
   SHARE_GROUP_PAGE_MESSAGES_MAX,
   SHARE_TOKEN_BYTES,
   type ShareAuthorChip,
@@ -24,10 +25,11 @@ import { newId } from '../../ids.js';
 import type { AttRow, UserRow } from '../../lib/dto.js';
 import { profileHeroFor } from '../../lib/profileHero.js';
 import type { SqlExecutor } from '../../lib/activity.js';
+import { redis } from '../../redis.js';
 
 export type ShareTokenRow = typeof schema.shareTokens.$inferSelect;
 export type ShareObjectType = ShareTokenRow['objectType'] extends string
-  ? 'post' | 'beacon' | 'listing' | 'story' | 'group' | 'profile'
+  ? 'post' | 'beacon' | 'listing' | 'story' | 'group' | 'profile' | 'call'
   : never;
 
 const stt = schema.shareTokens;
@@ -38,7 +40,7 @@ export function newShareToken(): string {
 
 export function shareUrlPath(type: string, token: string): string {
   // App-origin PATH — PUBLIC_ORIGIN prefixes it everywhere absolute (§1.53).
-  return type === 'story' ? `/s/${token}` : `/p/${token}`;
+  return type === 'story' ? `/s/${token}` : type === 'call' ? `/call/${token}` : `/p/${token}`;
 }
 
 export function shareLinkDto(row: ShareTokenRow): ShareLink {
@@ -363,6 +365,32 @@ export async function resolveSharePage(
       const owner = await loadUser(t.objectId);
       if (!owner || owner.bannedAt !== null) return null;
       return { type: 'profile', id: owner.id, ...profileHeroFor(owner) };
+    }
+    case 'call': {
+      // Phase 5: the room of a LIVE group call. Dies with the call (revoked
+      // on every terminal transition; this re-check catches the race).
+      const [call] = await db.select().from(schema.calls).where(eq(schema.calls.id, t.objectId)).limit(1);
+      if (!call || (call.status !== 'ringing' && call.status !== 'ongoing')) return null;
+      const [c] = await db
+        .select()
+        .from(schema.conversations)
+        .where(eq(schema.conversations.id, call.conversationId))
+        .limit(1);
+      if (!c || c.type !== 'group' || c.visibility === 'ghost') return null;
+      const inviter = t.createdBy ? await loadUser(t.createdBy) : null;
+      if (!inviter || inviter.bannedAt !== null) return null;
+      const memberCount = await redis.scard(`call:${call.id}:members`);
+      return {
+        type: 'call',
+        id: call.id,
+        conversation_id: c.id,
+        kind: call.kind as 'audio' | 'video',
+        title: c.title ?? 'A group',
+        inviter: authorChip(inviter, token),
+        member_count: memberCount,
+        full: memberCount >= CALL_MESH_MAX,
+        started_at: call.startedAt.toISOString(),
+      };
     }
     case 'group': {
       const [c] = await db
