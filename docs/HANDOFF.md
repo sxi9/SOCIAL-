@@ -82,9 +82,8 @@ Updated 2026-10-28. A new session continues this project by reading
   (`AgeGateSheet`, 403 `age_attestation_required`) and `SafetyStrip`. API.md
   §1.76 is the contract. Also in that commit: the iOS Safari stories-strip
   fix (`.storiesStrip { flex: none }` — a scroll container's min-size is 0,
-  so the .page flex column was shrinking it). Then PHASE 5, call links
-  (BUILT 2026-10-28, migration 0019 — see the deploy line in
-  `docs/CLAUDE-MEMORY.md`): `share_tokens` type `call`, `POST /api/calls/links`
+  so the .page flex column was shrinking it). Then PHASE 5, call links,
+  DEPLOYED (`19637c0`, 2026-10-28 08:59, migration 0019 applied): `share_tokens` type `call`, `POST /api/calls/links`
   + `POST /api/calls/links/:token/join`, `/call/[token]` SSR page with the
   `CallJoinCta` island, the "Invite" orb on group calls, tokens revoked in
   `deleteCallMembers`; the personal door `/u/?call=audio|video` → `/c/<id>?ring=`
