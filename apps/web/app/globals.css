@@ -724,28 +724,108 @@ select.input {
   cursor: default;
 }
 
-/* v1.0a (#94): My gallery grid. */
+/* v1.0a (#94): My gallery. Handoff 1a (2026-10-28): months with a hero
+   tile — 3 across, gap 4, radius 8, the first tile of each month 2×2. */
+.galleryChips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 10px 16px 4px;
+  scrollbar-width: none;
+}
+.galleryChips::-webkit-scrollbar {
+  display: none;
+}
+.galleryChip {
+  flex: none;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.galleryChipOn {
+  background: var(--accent-grad);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.galleryBody {
+  padding: 4px 16px 24px;
+}
+.galleryMonth + .galleryMonth {
+  margin-top: 18px;
+}
+.galleryMonthHead {
+  position: sticky;
+  top: calc(61px + env(safe-area-inset-top)); /* the .topbar's real height */
+  z-index: 3;
+  margin: 0 -16px 8px;
+  padding: 10px 16px 8px;
+  background: linear-gradient(to bottom, var(--bg) 70%, transparent);
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 18px;
+  letter-spacing: 0.01em;
+}
 .galleryGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
-  gap: 6px;
+  grid-template-columns: repeat(3, 1fr);
+  grid-auto-flow: dense;
+  gap: 4px;
 }
+/* Squares from the COLUMN width (aspect-ratio on the cell), never from the
+   thumbnail's own ratio — a portrait hero must not stretch its month. */
 .galleryCell {
   position: relative;
   display: block;
+  min-width: 0;
+  aspect-ratio: 1;
+}
+.galleryHero {
+  grid-column: span 2;
+  grid-row: span 2;
 }
 .galleryTap {
   appearance: none;
   border: none;
   padding: 0;
   background: var(--panel-2);
-  border-radius: 10px;
+  border-radius: 8px;
   overflow: hidden;
   cursor: zoom-in;
-  width: 100%;
-  aspect-ratio: 1;
-  position: relative;
+  position: absolute;
+  inset: 0;
   display: block;
+}
+.galleryPlay {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.galleryStoryPill {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 .galleryTap img {
   width: 100%;

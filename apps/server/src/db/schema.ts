@@ -1405,6 +1405,32 @@ export const storyViews = pgTable(
   }),
 );
 
+// Handoff 2b/2d (migration 0021, API.md §1.79): what a viewer DID on a story —
+// one emoji reaction (latest wins) and whether they replied in chat. Feeds
+// the author's named "who saw it" list only; NO timestamp column (the
+// story_views rule). The reply/reaction itself is a DM message carrying
+// metadata.story_ref. Cascades away with the story.
+export const storyActivity = pgTable(
+  'story_activity',
+  {
+    storyId: uuid('story_id')
+      .notNull()
+      .references(() => stories.id, { onDelete: 'cascade' }),
+    viewerId: uuid('viewer_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    emoji: text('emoji'),
+    replied: boolean('replied').notNull().default(false),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.storyId, t.viewerId] }),
+    emojiCheck: check(
+      'story_activity_emoji_check',
+      sql`${t.emoji} IS NULL OR char_length(${t.emoji}) BETWEEN 1 AND 16`,
+    ),
+  }),
+);
+
 // ================================== feed ====================================
 // v0.5a (migration 0005, API.md §1.36). The FINITE feed: posts by the
 // viewer's friends-of set + their own, newest first, cursor-paginated to a
@@ -1523,6 +1549,12 @@ export const postComments = pgTable(
     attachmentId: uuid('attachment_id').references((): AnyPgColumn => attachments.id, {
       onDelete: 'set null',
     }),
+    // Handoff 1e (migration 0021, §1.79): ONE reply level — a top-level
+    // comment on the same post, route-enforced (400 reply_depth otherwise).
+    // Deleting the parent cascades the thread.
+    parentId: uuid('parent_id').references((): AnyPgColumn => postComments.id, {
+      onDelete: 'cascade',
+    }),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
   },
   (t) => ({
@@ -1530,6 +1562,9 @@ export const postComments = pgTable(
     bodyCheck: check('post_comments_body_check', sql`char_length(${t.body}) <= 500`),
     byPostIdx: index('post_comments_by_post_idx').on(t.postId, t.createdAt),
     attachmentIdx: index('post_comments_attachment_idx').on(t.attachmentId),
+    byParentIdx: index('post_comments_by_parent_idx')
+      .on(t.parentId, t.createdAt)
+      .where(sql`${t.parentId} IS NOT NULL`),
   }),
 );
 

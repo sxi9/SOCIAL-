@@ -3,13 +3,25 @@
 // Full-screen story viewer (v0.5a — API.md §1.34). Tap-through WITHIN an
 // author; between authors advancing is ALWAYS a tap (PSYCHOLOGY never-build
 // list: no auto-advancing stories). Hold to pause. Reduced motion = no
-// auto-advance at all — every step is a tap. Own stories get the viewers sheet:
-// faces ordered by username, NO timestamps (the table stores none).
+// auto-advance at all — every step is a tap.
+//
+// Handoff "Gallery and post layouts" (2026-10-28), story layouts 2a–2d:
+//   2a your story      — three actions: Viewers (faces) · Edit · More; the
+//                        rest (link, share, canvas, audience, delete) sits in
+//                        the More sheet. Icons, never emoji.
+//   2b activity drawer — Viewers shrinks the story to a card and lists WHO
+//                        saw it with what they did (reacted / replied / drew).
+//                        Names, never counts or times.
+//   2c canvas state    — Draw opens the canvas as its own state; the viewer
+//                        chrome steps out (StoryCanvas owns the tools).
+//   2d friend's story  — reply first: reaction row, "Reply to <name>…" pill,
+//                        hold-to-record Voice (StoryReplyBar); ⋯ holds share
+//                        and report.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import type { Story, StoryAuthorGroup, StoryCanvasMode, UserLite } from '@socialchat/shared';
+import type { Story, StoryAuthorGroup, StoryViewsResponse } from '@socialchat/shared';
 import { canOsShare, saveAttachment, shareAttachment } from '@/lib/osShare';
-import { deleteStory, expiresLabel, setCanvasMode, storyViewers, viewStory } from '@/lib/stories';
+import { deleteStory, expiresLabel, storyViewers, viewStory } from '@/lib/stories';
 import ShareSheet from './ShareSheet';
 import ReportSheet from './ReportSheet';
 import { toast } from '@/lib/toast';
@@ -17,8 +29,11 @@ import { useAppState } from '@/lib/useStore';
 import { useReducedMotion } from '@/lib/useReducedMotion';
 import Avatar from './Avatar';
 import StoryCanvas from './StoryCanvas';
-import sheet from './beacons.module.css';
+import StoryReplyBar from './StoryReplyBar';
+import { StoryActivityDrawer, StoryEditSheet, StoryFriendMenu, StoryMoreSheet } from './StorySheets';
+import { IcClose, IcEdit, IcMore } from './StoryIcons';
 import st from './social.module.css';
+import sy from './story.module.css';
 
 const IMAGE_MS = 5000;
 const TAP_MAX_MS = 280;
@@ -39,6 +54,9 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
   const [progress, setProgress] = useState(0); // 0..1 for the current story
   const [authorDone, setAuthorDone] = useState(false); // timer hit the end — wait for a tap
   const [viewersOpen, setViewersOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   // §1b ShareSheet opened from the viewer: owned HERE (not inside a
   // ShareButton) so the timer, the video and the arrow keys know a sheet is
   // up — otherwise the story advances underneath and the sheet keeps the
@@ -48,9 +66,15 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
   // on underneath, the report never swaps to another story.
   const [reportTarget, setReportTarget] = useState<{ story_id: string; author_id: string } | null>(null);
   const reportOpen = reportTarget !== null;
-  // v0.8b §1.66: canvas-tool / chip interaction pauses the auto-advance.
+  // v0.8b §1.66 / handoff 2c: the canvas is its own state; chip taps outside
+  // it still pause the auto-advance.
+  const [canvasActive, setCanvasActive] = useState(false);
   const [canvasBusy, setCanvasBusy] = useState(false);
+  // 2d: the reply composer / recorder has the user.
+  const [replyBusy, setReplyBusy] = useState(false);
   const [gone, setGone] = useState<Set<string>>(new Set()); // deleted own stories
+  // 2a: the Viewers pill shows faces — fetched once per own story.
+  const [peek, setPeek] = useState<StoryViewsResponse | null>(null);
   const holdRef = useRef<{ at: number; zone: 'left' | 'right' } | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -65,6 +89,8 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
         snapshot)
     : undefined;
   const isMine = group ? group.author.id === meId : false;
+  const sheetUp = viewersOpen || shareOpen || reportOpen || moreOpen || editOpen || menuOpen;
+  const held = sheetUp || canvasActive || canvasBusy || replyBusy;
 
   // Phase 4: OS share of the story's own media (the share-page LINK stays
   // author-minted, §1.67); falls back to Save on platforms without file share.
@@ -91,6 +117,22 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
     if (story && !isMine) void viewStory(story);
   }, [story, isMine]);
 
+  // 2a: the faces in the Viewers pill (own stories only; refreshed by the drawer).
+  const storyId = story?.id;
+  useEffect(() => {
+    setPeek(null);
+    if (!storyId || !isMine) return;
+    let cancelled = false;
+    void storyViewers(storyId)
+      .then((res) => {
+        if (!cancelled) setPeek(res);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [storyId, isMine]);
+
   // Image auto-advance timer — within the author only, and never under
   // reduced motion (each step is then a tap). Elapsed time survives pauses in
   // a ref so holding never restarts the story.
@@ -99,9 +141,14 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
     elapsedRef.current = 0;
     setProgress(0);
     setAuthorDone(false);
+    setCanvasActive(false);
+    // A chip tapped on the previous story (canvasBusy) or a send in flight
+    // (replyBusy) must not hold the next one.
+    setCanvasBusy(false);
+    setReplyBusy(false);
   }, [gi, si, story?.id]);
   useEffect(() => {
-    if (!story || isVideo || reducedMotion || paused || viewersOpen || shareOpen || reportOpen || authorDone || canvasBusy) return;
+    if (!story || isVideo || reducedMotion || paused || held || authorDone) return;
     const timer = setInterval(() => {
       elapsedRef.current += 100;
       setProgress(Math.min(1, elapsedRef.current / IMAGE_MS));
@@ -112,15 +159,15 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
     }, 100);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gi, si, story?.id, isVideo, reducedMotion, paused, viewersOpen, shareOpen, reportOpen, authorDone, canvasBusy]);
+  }, [gi, si, story?.id, isVideo, reducedMotion, paused, held, authorDone]);
 
   // Pause/resume the video element with the hold gesture (and under any sheet).
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    if (paused || viewersOpen || shareOpen || reportOpen || canvasBusy) v.pause();
+    if (paused || held) v.pause();
     else void v.play().catch(() => undefined);
-  }, [paused, viewersOpen, shareOpen, reportOpen, canvasBusy, story?.id]);
+  }, [paused, held, story?.id]);
 
   const advanceAuto = useCallback(() => {
     // Timer end: next story of the SAME author, else stop and ask for a tap.
@@ -163,16 +210,21 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
 
   // Keyboard: arrows step, Space pauses, Escape closes — all of it yields
   // while a sheet is up (its own Escape is handled topmost-only by
-  // lib/overlays before this bubble listener ever sees it), and Space never
-  // steals a keystroke from a text field (the chat picker's search box).
+  // lib/overlays before this bubble listener ever sees it) or the canvas is
+  // open (Escape then leaves the canvas), and Space never steals a keystroke
+  // from a text field (the reply composer, the chat picker's search box).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (viewersOpen || shareOpen || reportOpen) return;
+      if (sheetUp) return;
+      if (canvasActive) {
+        if (e.key === 'Escape') setCanvasActive(false);
+        return;
+      }
       const t = e.target as HTMLElement | null;
       const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
       if (e.key === 'Escape') onClose();
-      else if (e.key === 'ArrowRight') tapNext();
-      else if (e.key === 'ArrowLeft') tapPrev();
+      else if (e.key === 'ArrowRight' && !typing) tapNext();
+      else if (e.key === 'ArrowLeft' && !typing) tapPrev();
       else if (e.key === ' ' && !typing) {
         e.preventDefault();
         setPaused((p) => !p);
@@ -180,7 +232,7 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, tapNext, tapPrev, viewersOpen, shareOpen, reportOpen]);
+  }, [onClose, tapNext, tapPrev, sheetUp, canvasActive]);
 
   // Hold-to-pause vs tap: a short press steps, a long press pauses.
   const zoneDown = (zone: 'left' | 'right') => {
@@ -197,18 +249,29 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
     }
   };
 
-  async function removeOwn(): Promise<void> {
-    if (!story) return;
+  /** True when the story is gone (deleted now, or already); false = keep
+   * the sheet open, the user was told. */
+  async function removeOwn(): Promise<boolean> {
+    if (!story) return true;
     try {
-      await deleteStory(story.id);
-      const left = stories.filter((s) => s.id !== story.id);
-      setGone((prev) => new Set(prev).add(story.id));
-      if (left.length === 0) onClose();
-      else if (si >= left.length) setSi(left.length - 1);
+      await deleteStory(story.id); // ignores 404 itself
     } catch {
-      /* already gone */
+      toast('Could not delete — try again');
+      return false;
     }
+    const left = stories.filter((s) => s.id !== story.id);
+    setGone((prev) => new Set(prev).add(story.id));
+    if (left.length === 0) onClose();
+    else if (si >= left.length) setSi(left.length - 1);
+    return true;
   }
+
+  const openCanvas = useCallback(() => {
+    setMoreOpen(false);
+    setViewersOpen(false);
+    setAuthorDone(false); // the "that's all" hint would sit over the draw surface
+    setCanvasActive(true);
+  }, []);
 
   if (!group || !story) {
     onCloseSoon(onClose);
@@ -216,10 +279,24 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
   }
 
   const att = story.attachment;
+  const mood = group.author.mood;
+  const subline = `${expiresLabel(story)}${mood ? ` · Feeling ${mood.label.toLowerCase()}` : ''}`;
+  const faces = peek?.viewers.slice(0, 3) ?? [];
+  const seenBy =
+    peek === null
+      ? 'Viewers'
+      : peek.viewers.length === 0
+        ? 'No views yet'
+        : `Seen by ${peek.viewers
+            .slice(0, 2)
+            .map((u) => u.display_name)
+            .join(', ')}${peek.viewers.length > 2 ? '…' : ''}`;
 
   return (
     <div className={st.viewerBackdrop} role="dialog" aria-modal="true" aria-label={`Story by ${group.author.display_name}`}>
-      <div className={st.viewerStage}>
+      <div
+        className={`${st.viewerStage}${canvasActive ? ` ${st.viewerChromeHidden}` : ''}${viewersOpen ? ` ${sy.stageShrunk}` : ''}`}
+      >
         <div className={st.progressRow} aria-hidden>
           {stories.map((s, i) => (
             <span key={s.id} className={st.progressSeg}>
@@ -237,21 +314,38 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
             onClick={onClose}
             style={{ display: 'contents', color: 'inherit', textDecoration: 'none' }}
           >
-            <Avatar avatar={group.author.avatar} name={group.author.display_name} size={34} />
+            {isMine ? (
+              <Avatar avatar={group.author.avatar} name={group.author.display_name} size={36} />
+            ) : (
+              <span className={sy.ring}>
+                <Avatar avatar={group.author.avatar} name={group.author.display_name} size={32} />
+              </span>
+            )}
             <span className={st.viewerHeadName}>
               {isMine ? 'Your story' : group.author.display_name}
-              <span className={st.viewerExpiry}>{expiresLabel(story)} · hold to pause</span>
+              <span className={st.viewerExpiry}>{subline}</span>
             </span>
           </Link>
+          {!isMine ? (
+            <button type="button" className={st.viewerClose} aria-label="More" onClick={() => setMenuOpen(true)}>
+              <IcMore size={18} />
+            </button>
+          ) : null}
           <button type="button" className={st.viewerClose} aria-label="Close stories" onClick={onClose}>
-            ×
+            <IcClose size={18} />
           </button>
         </div>
 
         <div className={st.viewerMedia}>
           {/* v0.8b §1.66: attributed vector overlays + canvas tools — painted
               ABOVE the media, never burned into it. */}
-          <StoryCanvas story={story} meId={meId} onInteracting={setCanvasBusy} />
+          <StoryCanvas
+            story={story}
+            meId={meId}
+            active={canvasActive}
+            onDone={() => setCanvasActive(false)}
+            onInteracting={setCanvasBusy}
+          />
           {att.kind === 'video' && att.status === 'ready' ? (
             <video
               ref={videoRef}
@@ -276,19 +370,9 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
           )}
         </div>
 
-        {/* v0.8b §1.66: when canvas tools are on screen (same condition as
-            StoryCanvas's toolbar) the caption lifts above them — both must
-            stay legible at 390px. */}
+        {/* The caption sits ABOVE the action bar — never under it. */}
         {story.caption ? (
-          <div
-            className={
-              story.canvas_mode !== 'off' || isMine
-                ? `${st.viewerCaption} ${st.viewerCaptionLifted}`
-                : st.viewerCaption
-            }
-          >
-            {story.caption}
-          </div>
+          <div className={isMine ? st.viewerCaption : `${st.viewerCaption} ${st.viewerCaptionLifted}`}>{story.caption}</div>
         ) : null}
 
         <button
@@ -332,39 +416,35 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
         ) : null}
 
         {isMine ? (
+          // 2a: three actions. Everything else lives behind More.
           <div className={st.viewerFooter}>
-            <button type="button" className={st.viewerBtn} onClick={() => setViewersOpen(true)}>
-              Viewers
+            <button type="button" className={`${sy.pill} ${sy.pillGrow}`} onClick={() => setViewersOpen(true)}>
+              {faces.length > 0 ? (
+                <span className={sy.facePile} aria-hidden>
+                  {faces.map((u) => (
+                    <Avatar key={u.id} avatar={u.avatar} name={u.display_name} size={22} />
+                  ))}
+                </span>
+              ) : null}
+              <span>{seenBy}</span>
             </button>
-            {/* v0.8b §1.66: the author's canvas switch — 'off' keeps existing
-                overlays (they were invited); it stops NEW ones. */}
-            <CanvasModeButton story={story} />
-            {/* v0.8b §1.67: author-initiated "Create share link" ONLY —
-                revocable, dies with the story. The §1b ShareSheet; state
-                lives on the viewer so the story holds still underneath. */}
-            <button type="button" className={st.viewerBtn} onClick={() => setShareOpen(true)}>
-              🔗 Share link
+            <button type="button" className={sy.pill} onClick={() => setEditOpen(true)}>
+              <IcEdit size={17} /> Edit
             </button>
-            <button type="button" className={st.viewerBtn} onClick={() => void shareOut()}>
-              ⇪ Share…
-            </button>
-            <button type="button" className={st.viewerBtn} onClick={() => void removeOwn()}>
-              🗑 Delete
+            <button type="button" className={`${sy.circle} ${sy.circleSm}`} aria-label="More" onClick={() => setMoreOpen(true)}>
+              <IcMore size={18} />
             </button>
           </div>
-        ) : (
-          // Phase 4 (§3.3): the viewer's own footer — the story leaves the app
-          // as the picture/clip itself (OS share), or is saved where the
-          // platform cannot share files. Nothing here names other viewers.
-          <div className={st.viewerFooter}>
-            <button type="button" className={st.viewerBtn} onClick={() => void shareOut()}>
-              ⇪ Share…
-            </button>
-            <button type="button" className={st.viewerBtn} onClick={() => setReportTarget({ story_id: story.id, author_id: story.author.id })}>
-              ⚑ Report
-            </button>
-          </div>
-        )}
+        ) : !canvasActive ? (
+          // 2d: reply first. Share and report sit behind the header's ⋯.
+          <StoryReplyBar
+            key={story.id}
+            story={story}
+            onBusy={setReplyBusy}
+            canDraw={story.canvas_mode !== 'off'}
+            onDraw={openCanvas}
+          />
+        ) : null}
         {reportTarget ? (
           <ReportSheet
             key={reportTarget.story_id}
@@ -374,7 +454,59 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
           />
         ) : null}
       </div>
-      {viewersOpen ? <StoryViewersSheet storyId={story.id} onClose={() => setViewersOpen(false)} /> : null}
+
+      {viewersOpen ? (
+        <StoryActivityDrawer
+          key={story.id}
+          story={story}
+          initial={peek}
+          onLoaded={setPeek}
+          onClose={() => setViewersOpen(false)}
+          onShareLink={() => {
+            setViewersOpen(false);
+            setShareOpen(true);
+          }}
+          onSharePicture={() => {
+            setViewersOpen(false);
+            void shareOut();
+          }}
+          onDraw={openCanvas}
+          onDelete={removeOwn}
+        />
+      ) : null}
+      {moreOpen ? (
+        <StoryMoreSheet
+          key={story.id}
+          story={story}
+          onClose={() => setMoreOpen(false)}
+          onShareLink={() => {
+            setMoreOpen(false);
+            setShareOpen(true);
+          }}
+          onSharePicture={() => {
+            setMoreOpen(false);
+            void shareOut();
+          }}
+          onDraw={openCanvas}
+          onDelete={removeOwn}
+        />
+      ) : null}
+      {editOpen ? <StoryEditSheet key={story.id} story={story} onClose={() => setEditOpen(false)} /> : null}
+      {menuOpen ? (
+        <StoryFriendMenu
+          key={story.id}
+          story={story}
+          onClose={() => setMenuOpen(false)}
+          onSharePicture={() => {
+            setMenuOpen(false);
+            void shareOut();
+          }}
+          onReport={() => {
+            setMenuOpen(false);
+            setReportTarget({ story_id: story.id, author_id: story.author.id });
+          }}
+        />
+      ) : null}
       {/* keyed by story so a step to another story remounts (fresh mint).
           zIndex 61 clears the viewer's own z 60 backdrop (picker 62, confirm
           63) while staying UNDER the call planes — 69 pill, 70 incoming ring,
@@ -390,113 +522,4 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
 // Close after render when the current group emptied (deleted/expired away).
 function onCloseSoon(onClose: () => void): void {
   setTimeout(onClose, 0);
-}
-
-/** v0.8b §1.66: the author's canvas-mode cycle (off → open → approve). */
-function CanvasModeButton({ story }: { story: Story }) {
-  const [busy, setBusy] = useState(false);
-  const NEXT: Record<StoryCanvasMode, StoryCanvasMode> = {
-    off: 'open',
-    open: 'approve',
-    approve: 'off',
-  };
-  const LABEL: Record<StoryCanvasMode, string> = {
-    off: '🎨 Canvas: off',
-    open: '🎨 Canvas: open',
-    approve: '🎨 Canvas: approve-first',
-  };
-  return (
-    <button
-      type="button"
-      className={st.viewerBtn}
-      disabled={busy}
-      aria-label={`${LABEL[story.canvas_mode]} — tap to change`}
-      onClick={() => {
-        setBusy(true);
-        void setCanvasMode(story.id, NEXT[story.canvas_mode])
-          .then((s) =>
-            toast(
-              s.canvas_mode === 'off'
-                ? 'Canvas closed — what’s drawn stays'
-                : s.canvas_mode === 'open'
-                  ? 'Canvas open — friends can draw'
-                  : 'Canvas set to approve-first'
-            )
-          )
-          .catch(() => toast('Could not change the canvas'))
-          .finally(() => setBusy(false));
-      }}
-    >
-      {LABEL[story.canvas_mode]}
-    </button>
-  );
-}
-
-/** Author-only viewer list: faces by username — NO timestamps, no count copy. */
-function StoryViewersSheet({ storyId, onClose }: { storyId: string; onClose: () => void }) {
-  const [viewers, setViewers] = useState<UserLite[] | null>(null);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    void storyViewers(storyId)
-      .then((res) => {
-        if (!cancelled) setViewers(res.viewers);
-      })
-      .catch(() => {
-        if (!cancelled) setError(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [storyId]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  return (
-    <div
-      className={sheet.sheetBackdrop}
-      role="presentation"
-      style={{ zIndex: 70 }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className={sheet.sheet} role="dialog" aria-modal="true" aria-label="Story viewers">
-        <div className={sheet.sheetHead}>
-          <h2>Seen by</h2>
-          <button type="button" className={sheet.sheetClose} aria-label="Close" onClick={onClose}>
-            ×
-          </button>
-        </div>
-        {error ? (
-          <p className="error-text">Could not load viewers.</p>
-        ) : viewers === null ? (
-          <p className="muted small">
-            <span className="spinner" style={{ display: 'inline-block', verticalAlign: 'middle', marginRight: 8 }} />
-            Checking…
-          </p>
-        ) : viewers.length === 0 ? (
-          <p className="muted small">No views yet — stories are a slow burn.</p>
-        ) : (
-          viewers.map((u) => (
-            <div key={u.id} className={st.connRow}>
-              <Avatar avatar={u.avatar} name={u.display_name} size={34} />
-              <span className={st.connName}>
-                <strong>{u.display_name}</strong>
-                <span>@{u.username}</span>
-              </span>
-            </div>
-          ))
-        )}
-        {/* No timestamps by design — a view is a face, not a deadline. */}
-      </div>
-    </div>
-  );
 }

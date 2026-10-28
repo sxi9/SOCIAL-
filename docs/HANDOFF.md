@@ -111,7 +111,18 @@ Updated 2026-10-28. A new session continues this project by reading
   conversion, SW stale-shell self-heal, admin grant/revoke + set password,
   Tailscale Funnel as the stable public URL. The undo-send pill was REMOVED
   by owner decision (FEATURES #96 struck; server undo route stays).
-- Migrations run `0000`…`0020`. **The next free number is 0021.** `0020` (2026-10-28) is the Wave 1 leftovers (`users.deactivated_at` / `appear_offline`, `push_subscriptions.session_id`, `reports.outcome`, `legal` support category); `0019` (2026-10-28) widens the share-token and report CHECKs for `call` (phase 5); `0018` (2026-10-28) is the Wave 1 floor (`users.terms_accepted_at` / `age_attested_at` / `scheduled_deletion_at` / `deleted_at`, `reports.category`, widened report CHECKs); `0017` (2026-10-28) widens `share_tokens.object_type` to `profile` (phase 6); `0016` (2026-10-28) holds `conversation_bans` (§2.5 admin half); `0015` holds only `conversation_participants.accepted_at` (Wave 1.7). `0014`
+- **2026-10-28, late:** the "Gallery and post layouts" design handoff
+  (`docs/UI-HANDOFF-CHECKLIST.md`; owner picked story 2a+2b+2c+2d, comments
+  1e, gallery 1a) — API.md §1.79, migration `0021_handoff_ui.sql`
+  (`post_comments.parent_id`, `story_activity`), `POST /api/stories/:id/reply`
+  (→ DM with `metadata.story_ref`, `lib/dm.ts ensureDm`), views + `activity`,
+  caption PATCH, gallery `created_at`; web `StoryViewer` rewrite (3 actions +
+  More, activity drawer, canvas as its own state in `StoryCanvas`,
+  `StoryReplyBar`, `StorySheets`, `StoryIcons`, `story.module.css`), threaded
+  comments + Liked-by + end marker + new composer in `FeedView`, months/hero
+  gallery; tests `v15.integration.test.ts`. The checklist file says what is
+  still open from the handoff (the eight variants not picked).
+- Migrations run `0000`…`0021`. **The next free number is 0022.** `0021` (2026-10-28) is the design-handoff pair (`post_comments.parent_id`, `story_activity`); `0020` (2026-10-28) is the Wave 1 leftovers (`users.deactivated_at` / `appear_offline`, `push_subscriptions.session_id`, `reports.outcome`, `legal` support category); `0019` (2026-10-28) widens the share-token and report CHECKs for `call` (phase 5); `0018` (2026-10-28) is the Wave 1 floor (`users.terms_accepted_at` / `age_attested_at` / `scheduled_deletion_at` / `deleted_at`, `reports.category`, widened report CHECKs); `0017` (2026-10-28) widens `share_tokens.object_type` to `profile` (phase 6); `0016` (2026-10-28) holds `conversation_bans` (§2.5 admin half); `0015` holds only `conversation_participants.accepted_at` (Wave 1.7). `0014`
   (2026-10-27) holds the share-everything plumbing only — `share_tokens.preview`,
   `users.dm_policy`, `users.profile_visibility`; the Wave 1 legal/account/report
   columns AUDIT-PLAN §10 lists landed in `0018` (2026-10-28); §10 lists what is still unbuilt (§10 allows

@@ -67,6 +67,7 @@ export async function galleryRoutes(fastify: FastifyInstance): Promise<void> {
         attachment: attachmentDto(rawAttRow(r)),
         saved: r.save_source !== null,
         source: (r.save_source as GalleryItem['source']) ?? null,
+        created_at: new Date(r.created_at as string).toISOString(),
       }));
       const last = page[page.length - 1];
       const next_cursor =

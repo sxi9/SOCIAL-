@@ -1441,7 +1441,7 @@ directions on every story surface.
 | `POST /api/stories` | `{attachment_id, caption? ≤ 140}` | `201 {story}` — attachment must be mine, kind `image\|video`, unbound → `400 bad_attachment`. `expires_at = created_at + 24 h` (`STORY_TTL_S`, fixed). Fans `story.new` **to the audience only** (friends-of minus blocks — never to anyone who cannot view it). **No push** (ambient, user-pulled; PSYCHOLOGY §6). Rate **20/hour/user** (`STORY_CREATE_RATE_PER_HOUR`). |
 | `GET /api/stories` | — | `200 {mine: Story[], groups: StoryAuthorGroup[]}` — unexpired stories of my friends-of set (minus blocks), **grouped by author: authors with any unviewed story first, then all-viewed; each bucket ordered by username** — no recency ranking, a finite tray, not a feed. Within an author: `created_at ASC` (watch in order). `viewed` is viewer-specific. **Never auto-advance between authors** (PSYCHOLOGY never-build list: no infinite/auto-advancing stories) — advancing is a tap. |
 | `POST /api/stories/:id/view` | — | `204` — idempotent; records `(story_id, me)`. Author's own views are never recorded. `404 story_not_found` (unknown, expired, not in audience, or blocked — identical). |
-| `GET /api/stories/:id/views` | — | `200 {viewers: UserLite[]}` — **author only**, else `404 story_not_found` (author-privacy is 404-shaped). Faces ordered **by username — no timestamps anywhere** (the `story_views` table stores none: the DB cannot leak what it does not store; §1.18 seen-by pattern, FEATURES #27). Viewers with me blocked are omitted. There is **no view count** — the list is the information. |
+| `GET /api/stories/:id/views` | — | `200 {viewers: UserLite[], activity: […]}` — **author only**, else `404 story_not_found` (author-privacy is 404-shaped). Faces ordered **by username — no timestamps anywhere** (the `story_views` table stores none: the DB cannot leak what it does not store; §1.18 seen-by pattern, FEATURES #27). Viewers with me blocked are omitted. There is **no view count** — the list is the information. §1.79 (2026-10-28): the list also names anyone who reacted / replied / drew, and `activity` says which (never when). |
 | `DELETE /api/stories/:id` | — | `204` — own stories only (`404` otherwise). Deletes views (cascade) + the attachment (row + objects, refcount-guarded §1.31). |
 | `POST /api/stories/recap` | `{conversation_id, seq, attachment_id, caption?}` | `201 {story}` — **afterglow integration**: `seq` must be an afterglow recap system message (§1.15) in a plan conversation I am an active participant of, and `attachment_id` one of its `metadata.afterglow.photo_attachment_ids` → else `404 not_found`. The server **re-references** the photo (new attachment row, same objects — §1.31 rule). Recap photos leave the plan group only through a participant's own deliberate share (PSYCHOLOGY rule 2); the story shows to **my** friends-of like any other. |
 
@@ -2611,7 +2611,7 @@ row, and dies with the story (cascade under the §1.34 hard-delete sweep).
 | Method & path | Request | Response |
 |---|---|---|
 | `POST /api/stories` | (§1.34) + `canvas_mode?` (default `'off'`) | unchanged otherwise. |
-| `PATCH /api/stories/:id` | `{canvas_mode}` | `200 {story}` — author only (`404` otherwise). Switching to `'off'` keeps existing overlays visible (they were invited); it stops NEW ones. Fans `story.updated`. |
+| `PATCH /api/stories/:id` | `{canvas_mode?, caption?}` | `200 {story}` — author only (`404` otherwise). Switching to `'off'` keeps existing overlays visible (they were invited); it stops NEW ones. Fans `story.updated`. §1.79: `caption` is editable too (at least one field, else `400`). |
 | `POST /api/stories/:id/overlays` | `{payload}` — the per-kind vector union (§0 `StoryOverlay`; Zod shape authority) | `201 {overlay}` — viewer must be in the story's audience (else the §1.34 `404`). `403 canvas_closed` when `canvas_mode:'off'` **and, byte-identically, when the viewer is canvas-banned** (`story_canvas_bans` — a ban is never confirmable). Status: `'live'` under `open` (and always for the story author), `'pending'` under `approve`. Cap `OVERLAYS_PER_USER` (5) live+pending per (story, contributor), counted under the story row lock (the TROUBLESHOOTING counter-race pattern) → `409 overlay_limit`. Rate `OVERLAY_RATE_PER_HOUR` (60). |
 | `DELETE /api/stories/:id/overlays/:overlayId` | — | `204` — the STORY AUTHOR (any overlay — one-tap remove) or the OVERLAY AUTHOR (their own). Sets `status:'removed'` (tombstone: reports must outlive moderation; serializes to nobody, frees the cap). Idempotent. |
 | `POST /api/stories/:id/overlays/:overlayId/approve` | — | `200 {overlay}` — story author only; `pending` → `live`. `409 overlay_not_pending` otherwise. |
@@ -3388,7 +3388,7 @@ reading their own uploads through the §1.6 auth-checked proxy.
 
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/users/me/gallery` | `?kind=image\|video&saved=&cursor=&limit=` (≤100, default 50) | `200 {items: GalleryItem[], next_cursor}` — newest first, keyset `(created_at, id)`. `GalleryItem = {attachment, saved, source}`; `saved=true` rows are kept by a save (deletable here), others live where they are bound. `saved=1` narrows to saves only. |
+| `GET /api/users/me/gallery` | `?kind=image\|video&saved=&cursor=&limit=` (≤100, default 50) | `200 {items: GalleryItem[], next_cursor}` — newest first, keyset `(created_at, id)`. `GalleryItem = {attachment, saved, source, created_at}` (`created_at` since §1.79); `saved=true` rows are kept by a save (deletable here), others live where they are bound. `saved=1` narrows to saves only. |
 | `DELETE /api/users/me/gallery/:attachmentId` | — | `204` idempotent — removes MY save row; the attachment re-orphans into the ordinary 24 h GC unless something else still binds it. Never deletes bound media. |
 
 - **GC:** the orphan sweep anti-joins `gallery_saves_attachment_idx` —
@@ -3457,3 +3457,42 @@ AUDIT-PLAN §1.2 (pause), §1.3, §1.4, §1.5 "still open", §1.9. Migration
 **§1.4 a sign-out that signs out (web):** `logout()` drops this device's push subscription first, then the session, then EVERY IndexedDB store (`messages`, `conv_meta`, `outbox`, `seen_fx`); Settings → Sign out confirms and names unsent queued messages.
 
 **§1.9:** `beacons_created/sparked` serialize for the OWNER only (0 to everyone else); area-scoped roulette opt-ins pair only within the same area (`runRoulettePair`); `formatLastSeen` is coarse ("active recently / today / this week"); watch-together is gated like typing (no channels, no ghost groups, not while a DM request is parked); story overlays from banned/deactivated contributors never paint and the author's own block set applies to their canvas; `./bored backup` says DATABASE ONLY in red.
+
+### 1.79 Handoff "Gallery and post layouts" (2026-10-28, migration 0021)
+
+The Claude Design handoff (12 layouts; the owner picked story 2a+2b+2c+2d,
+comments 1e, gallery 1a — `docs/UI-HANDOFF-CHECKLIST.md`). Migration
+`0021_handoff_ui.sql`: `post_comments.parent_id` (FK → `post_comments`, ON
+DELETE CASCADE, partial index) and the `story_activity` table
+(`story_id`, `viewer_id`, `emoji`, `replied`; PK (story, viewer); **no
+timestamp column**, the `story_views` rule; cascades with the story).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `POST /api/posts/:id/comments` | `+ {parent_id?}` | **One reply level.** `parent_id` must be a TOP-LEVEL comment on THIS post whose author I can see → else `404 comment_not_found` (a blocked author's comment is invisible, so replying to it is 404-shaped like any unknown id); a parent that is itself a reply → `400 reply_depth`. `PostComment.parent_id` (null on top-level; `default(null)` for old payloads) rides the list, the post preview and the 201. Deleting the parent (author, post author, admin takedown) cascades its replies. List order is unchanged (`created_at ASC`, keyset cursor): the web threads replies under a parent that is on screen and shows the rest flat. |
+| `POST /api/stories/:id/reply` | `{body}` \| `{attachment_id}` (mine, kind `audio`\|`image`, unbound) \| `{emoji}` — exactly one | `201 {conversation_id, message_id}` — a reply or a one-emoji reaction to SOMEONE ELSE's live story. It is an ordinary DM message to the author (`type` text/audio/image; a reaction's `body` IS the emoji) with SERVER-written `metadata.story_ref {story_id, author_id, emoji\|null, caption}`, created through the same find-or-create as `POST /api/conversations {type:'dm'}` (`lib/dm.ts ensureDm`: `dm_key` dedupe, a peer who left is re-seated, the §1.13 `dm_policy` gate). `parked` still delivers into the author's Requests (past the `DM_REQUEST_MESSAGES_MAX` cap → `400 dm_request_pending`); `refused` (dm_policy `nobody`) answers the surface's own `404 story_not_found` — byte-identical to a block / a stranger (§1.13, §1.14). Writing into a DM request THEY parked on me accepts my side (the Wave 1.7 send rule). Own story → `400 own_story`; not in the audience / expired → the §1.34 `404 story_not_found`. The attachment is validated BEFORE any DM side effect; the `story_activity` upsert commits inside the message transaction (a story swept meanwhile rolls the send back → `404`). Rate `STORY_REPLY_RATE_PER_HOUR` (60). Upserts `story_activity` (latest emoji wins; `replied` sticks). Fans `msg.new` + the ordinary push rules. |
+| `GET /api/stories/:id/views` | — | `200 {viewers: UserLite[], activity: [{user_id, emoji\|null, replied, drew}]}` — author only as before. `viewers` is now views ∪ anyone with a `story_activity` row ∪ live/pending overlay authors (a reaction sent before the view POST landed still names the person), username-ordered, blocked omitted. `activity` carries one row per face that DID something (`drew` = has a live\|pending overlay); a face with no row simply looked. Still **no timestamps, no totals**. |
+| `PATCH /api/stories/:id` | `{canvas_mode?, caption?}` (at least one) | as §1.66, plus the caption (trimmed, ≤ `STORY_CAPTION_MAX_CHARS`) — the "Edit" pill on your own story. Fans `story.updated`. |
+| `GET /api/users/me/gallery` | — | each item `+ created_at` (the attachment's upload time) — the month groups of layout 1a. |
+
+**Web (the layouts):** your own story shows THREE actions — a Viewers pill
+(stacked faces + "Seen by Jonas, Priya…"), Edit (caption sheet) and More
+(sheet: share link · share the picture · draw on it · canvas toggle +
+approve-first · "Who can see this: Connections" · delete). Viewers shrinks
+the story to a card over the activity drawer (icon row Link · Send · Canvas ·
+Delete; "Who saw it" with reacted / replied / drew lines). The canvas is its
+own state (`StoryCanvas active`): Undo (removes MY latest layer) · "<name> is
+drawing too" (derived from a fresh `story.updated` overlay, no presence
+protocol) · Done; a Draw / Sticker / Note rail; five colour dots; a brush
+slider. A friend's story is reply-first: a 😂 😮 ❤️ 🔥 👏 row, a "Reply to
+<name>…" pill and a hold-to-record Voice circle; my own sends drift up the
+left edge (local, ephemeral — nobody else's activity ever shows on a story
+that is not mine); ⋯ holds share-the-picture and Report. Comments: one reply
+level with a hairline rail, a Reply · Like action row with "Jonas liked"
+(names), a "Liked by Jonas, Priya & you" line under the post, a hard end
+("That's every comment"), an avatar + pill + gradient-send composer; the
+grid's post sheet snaps to ~70%. Gallery: sticky serif month headers
+("October · this month"), 3-across gap 4 radius 8, the first tile of each
+month 2×2, a ▶ badge on videos and a "Story" pill on saved stories; filter
+chips in the accent gradient. Chat bubbles show "replied to your story ·
+“caption”" on `story_ref` messages.

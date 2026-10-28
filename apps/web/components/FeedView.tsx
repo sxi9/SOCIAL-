@@ -465,7 +465,7 @@ export default function FeedView({
               }}
             >
               <div
-                className={bz.sheet}
+                className={`${bz.sheet} ${st.postSheet}`}
                 role="dialog"
                 aria-modal="true"
                 aria-label={`Post by ${openedPost.author.display_name}`}
@@ -1234,7 +1234,7 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
         ) : null}
       </div>
       {error ? <p className="error-text">{error}</p> : null}
-
+      <LikedByLine post={post} meId={meId} />
       <PostComments post={post} meId={meId} />
     </article>
   );
@@ -1550,6 +1550,10 @@ function PostComments({ post, meId }: { post: Post; meId: string }) {
   // Inline: the DTO's latest 3 (ASC) until expanded, then the full paged list.
   const [expanded, setExpanded] = useState<PostComment[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
+  // §1.79 one reply level: Reply targets the TOP-LEVEL comment's id (a reply's
+  // parent_id even when that parent is not on screen) and names the person.
+  const [replyTo, setReplyTo] = useState<{ id: string; name: string } | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const [draft, setDraft] = useState('');
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -1636,13 +1640,20 @@ function PostComments({ post, meId }: { post: Post; meId: string }) {
     setBusy(true);
     setError(null);
     try {
-      const comment = await addComment(post.id, body, attachment?.id);
+      const comment = await addComment(post.id, body, attachment?.id, replyTo?.id ?? null);
       setDraft('');
       setAttachment(null);
+      setReplyTo(null);
       if (expanded) setExpanded([...expanded, comment]);
       else await refetchPost(post.id);
-    } catch {
-      setError('Could not comment — try again.');
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 404 || err.code === 'reply_depth')) {
+        // The thread we were replying into is gone — drop the target.
+        setReplyTo(null);
+        setError('That comment is gone — posted as a new comment next time.');
+      } else {
+        setError('Could not comment — try again.');
+      }
     } finally {
       setBusy(false);
     }
@@ -1679,18 +1690,52 @@ function PostComments({ post, meId }: { post: Post; meId: string }) {
     }
   }
 
+  // Handoff 1e: ONE reply level. Replies nest under their parent when the
+  // parent is on screen; a reply whose parent is not loaded (earlier page,
+  // blocked author) stands on its own, flat.
+  const shownIds = new Set(shown.map((c) => c.id));
+  const repliesByParent = new Map<string, PostComment[]>();
+  const roots: PostComment[] = [];
+  for (const c of shown) {
+    if (c.parent_id && shownIds.has(c.parent_id)) {
+      const list = repliesByParent.get(c.parent_id) ?? [];
+      list.push(c);
+      repliesByParent.set(c.parent_id, list);
+    } else {
+      roots.push(c);
+    }
+  }
+  const atEnd = shown.length > 0 && (expanded !== null ? cursor === null : !post.has_more_comments);
+  const startReply = (c: PostComment): void => {
+    // Replying to a reply threads under ITS parent (one level, §1.79) — by
+    // id, whether or not that parent row is loaded.
+    setReplyTo({ id: c.parent_id ?? c.id, name: c.author.display_name });
+    inputRef.current?.focus();
+  };
+  const row = (c: PostComment, isReply: boolean) => (
+    <CommentRow
+      key={c.id}
+      comment={c}
+      meId={meId}
+      isReply={isReply}
+      canDelete={c.author.id === meId || post.author.id === meId}
+      onDelete={() => void removeComment(c)}
+      onReply={() => startReply(c)}
+      onToggleReaction={(kind, emoji) => void toggleReaction(c, kind, emoji)}
+    />
+  );
+
   return (
     <div>
-      {shown.map((c) => (
-        <CommentRow
-          key={c.id}
-          comment={c}
-          meId={meId}
-          canDelete={c.author.id === meId || post.author.id === meId}
-          onDelete={() => void removeComment(c)}
-          onToggleReaction={(kind, emoji) => void toggleReaction(c, kind, emoji)}
-        />
-      ))}
+      {roots.map((c) => {
+        const replies = repliesByParent.get(c.id) ?? [];
+        return (
+          <div key={c.id} className={st.commentThread}>
+            {row(c, c.parent_id !== null)}
+            {replies.length > 0 ? <div className={st.commentReplies}>{replies.map((r) => row(r, true))}</div> : null}
+          </div>
+        );
+      })}
       {expanded === null && post.has_more_comments ? (
         <button type="button" className={st.moreComments} onClick={() => void expand()}>
           See earlier comments
@@ -1701,7 +1746,16 @@ function PostComments({ post, meId }: { post: Post; meId: string }) {
           More comments
         </button>
       ) : null}
+      {atEnd ? <p className={st.commentEnd}>That’s every comment</p> : null}
       {error ? <p className="error-text">{error}</p> : null}
+      {replyTo ? (
+        <span className={st.replyingTo}>
+          Replying to <strong>{replyTo.name}</strong>
+          <button type="button" aria-label="Cancel reply" onClick={() => setReplyTo(null)}>
+            ×
+          </button>
+        </span>
+      ) : null}
       {attachment ? (
         <span className={st.commentAttachChip}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1717,7 +1771,11 @@ function PostComments({ post, meId }: { post: Post; meId: string }) {
           </button>
         </span>
       ) : null}
-      <div className={st.commentInputRow}>
+      <div className={st.commentComposer}>
+        {meLite ? <Avatar avatar={meLite.avatar} name={meLite.display_name} size={32} /> : null}
+        {/* The file input lives OUTSIDE the pill label: a label activates its
+            first labelable descendant, and a hidden file input there would
+            open the picker on every tap of the pill. */}
         <input
           ref={fileRef}
           type="file"
@@ -1728,54 +1786,100 @@ function PostComments({ post, meId }: { post: Post; meId: string }) {
             e.target.value = '';
           }}
         />
+        <div className={st.commentPill}>
+          <input
+            ref={inputRef}
+            value={draft}
+            maxLength={POST_COMMENT_MAX_CHARS}
+            placeholder={attachment ? 'Add words too? (optional)' : replyTo ? `Reply to ${replyTo.name}…` : 'Add a comment…'}
+            aria-label={replyTo ? `Reply to ${replyTo.name}` : 'Write a comment'}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void submit();
+              } else if (e.key === 'Escape' && replyTo) {
+                setReplyTo(null);
+              }
+            }}
+          />
+          <button
+            type="button"
+            className={st.commentPillBtn}
+            aria-label="Attach an image or GIF to your comment"
+            disabled={uploading || attachment !== null}
+            onClick={() => fileRef.current?.click()}
+          >
+            {uploading ? <span className="spinner" /> : <IconImage />}
+          </button>
+        </div>
         <button
           type="button"
-          className="btn btn-icon"
-          aria-label="Attach an image or GIF to your comment"
-          disabled={uploading || attachment !== null}
-          onClick={() => fileRef.current?.click()}
-        >
-          {uploading ? <span className="spinner" /> : <IconImage />}
-        </button>
-        <input
-          value={draft}
-          maxLength={POST_COMMENT_MAX_CHARS}
-          placeholder={attachment ? 'Add words too? (optional)' : 'Say something back…'}
-          aria-label="Write a comment"
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              void submit();
-            }
-          }}
-        />
-        <button
-          type="button"
-          className="btn"
+          className={st.commentSend}
+          aria-label={replyTo ? 'Send reply' : 'Post comment'}
           disabled={busy || uploading || (!draft.trim() && !attachment)}
           onClick={() => void submit()}
         >
-          Reply
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M4.5 11.5 20 4.5l-5 15.5-3.3-6.2L4.5 11.5Z" />
+            <path d="M11.7 13.8 20 4.5" />
+          </svg>
         </button>
       </div>
     </div>
   );
 }
 
+/** Handoff 1e: "Liked by Jonas, Priya & you" — names from the post's
+ * reaction faces, never a number (PSYCHOLOGY rule 3). */
+function LikedByLine({ post, meId }: { post: Post; meId: string }) {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  let more = false;
+  let mine = false;
+  for (const r of post.reactions) {
+    if (r.mine) mine = true;
+    if (r.has_more) more = true;
+    for (const u of r.reactors) {
+      if (u.id === meId || seen.has(u.id)) continue; // "you" is said once, at the end
+      seen.add(u.id);
+      names.push(u.display_name);
+    }
+  }
+  const shownNames = names.slice(0, 3);
+  if (names.length > 3) more = true;
+  if (shownNames.length === 0 && !mine) return null;
+  // "Liked by Jonas, Priya & you" · "Liked by Jonas & others" ·
+  // "Liked by Jonas, others & you" · "Liked by you" · "Liked by you & others"
+  const parts = [...shownNames];
+  if (more) parts.push('others');
+  if (mine) parts.push('you');
+  const text = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} & ${parts[parts.length - 1]}` : parts[0];
+  return <p className={st.likedBy}>Liked by {text}</p>;
+}
+
 function CommentRow({
   comment,
   meId,
+  isReply = false,
   canDelete,
   onDelete,
+  onReply,
   onToggleReaction,
 }: {
   comment: PostComment;
   meId: string;
+  isReply?: boolean;
   canDelete: boolean;
   onDelete: () => void;
+  onReply: () => void;
   onToggleReaction: (kind: ReactionKind, emoji: string) => void;
 }) {
+  // Handoff 1e action row: Reply · Like + "Jonas liked" (names, no counts).
+  const heart = comment.reactions.find((r) => r.kind === 'emoji' && r.emoji === '❤️');
+  const others = heart ? heart.reactors.filter((u) => u.id !== meId) : [];
+  const likedNames = others.map((u) => u.display_name).slice(0, 2);
+  const likedMore = heart ? heart.has_more || others.length > 2 : false;
   const state = useAppState();
   const [picker, setPicker] = useState(false);
   const bubbleRef = useRef<HTMLSpanElement | null>(null);
@@ -1799,7 +1903,7 @@ function CommentRow({
       <span style={{ flex: 1, minWidth: 0 }}>
         <span
           ref={bubbleRef}
-          className={st.commentBubble}
+          className={`${st.commentBubble}${isReply ? ` ${st.commentBubbleReply}` : ''}`}
           style={{ display: 'block' }}
           // §1.51: long-press opens the reaction picker (desktop has the 🙂 button).
           onTouchStart={() => {
@@ -1810,7 +1914,10 @@ function CommentRow({
           onTouchMove={cancelPress}
           onTouchCancel={cancelPress}
         >
-          <strong>{comment.author.display_name}</strong>
+          <strong>
+            {comment.author.display_name}
+            <time dateTime={comment.created_at}>· {formatTime(comment.created_at)}</time>
+          </strong>
           {comment.body ? <p>{comment.body}</p> : null}
           {comment.attachment ? (
             <a href={comment.attachment.url} target="_blank" rel="noreferrer">
@@ -1822,6 +1929,25 @@ function CommentRow({
                 loading="lazy"
               />
             </a>
+          ) : null}
+        </span>
+        <span className={st.commentActions}>
+          <button type="button" className={st.commentActionBtn} onClick={onReply}>
+            Reply
+          </button>
+          <button
+            type="button"
+            className={`${st.commentActionBtn}${heart?.mine ? ` ${st.commentActionOn}` : ''}`}
+            aria-pressed={heart?.mine ?? false}
+            onClick={() => onToggleReaction('emoji', '❤️')}
+          >
+            {heart?.mine ? 'Liked' : 'Like'}
+          </button>
+          {likedNames.length > 0 ? (
+            <span className={st.commentLiked}>
+              {likedNames.join(', ')}
+              {likedMore ? ' & others' : ''} liked
+            </span>
           ) : null}
         </span>
         {/* One chip per (emoji, kind): capped FACES, never totals (§1.51). */}

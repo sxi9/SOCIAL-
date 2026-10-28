@@ -125,11 +125,14 @@ export async function togglePostReaction(post: Post, emoji: string, mine: boolea
 export async function addComment(
   postId: string,
   body: string,
-  attachmentId?: string
+  attachmentId?: string,
+  parentId?: string | null
 ): Promise<PostComment> {
   const res = await api.post<CommentResponse>(`/api/posts/${postId}/comments`, {
     body,
     ...(attachmentId ? { attachment_id: attachmentId } : {}),
+    // §1.79 one reply level: the parent is a top-level comment on this post.
+    ...(parentId ? { parent_id: parentId } : {}),
   });
   return res.comment;
 }

@@ -1536,6 +1536,14 @@ function MessageRow({
         // §1.31: original-author snapshot — the forwarder stays the sender.
         <span className={soc.fwdTag}>↪ forwarded from {message.metadata.forwarded_from.display_name}</span>
       ) : null}
+      {message.metadata.story_ref ? (
+        // §1.79: this message answered a story (the story itself may be gone).
+        <span className={soc.fwdTag}>
+          {message.metadata.story_ref.emoji ? 'reacted to' : 'replied to'}{' '}
+          {message.metadata.story_ref.author_id === meId ? 'your' : 'their'} story
+          {message.metadata.story_ref.caption ? ` · “${message.metadata.story_ref.caption}”` : ''}
+        </span>
+      ) : null}
       {message.reply_context ? (
         // §1.29: server-resolved context — tap jumps to the original.
         // Royal v2: a 2px left bar inside the bubble (white; ink on outgoing).

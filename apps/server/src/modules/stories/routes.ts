@@ -1,7 +1,7 @@
 // Stories routes (v0.5a — API.md §1.34). Every surface is friends-of scoped
 // and 404-shaped across blocks; the view list is author-only with NO
 // timestamps and NO counts (the list IS the information).
-import { and, asc, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
@@ -12,9 +12,13 @@ import {
   OVERLAY_RATE_PER_HOUR,
   OVERLAYS_PER_USER,
   STORY_CREATE_RATE_PER_HOUR,
+  STORY_REPLY_RATE_PER_HOUR,
   STORY_TTL_S,
+  StoryReplyRequestSchema,
   UpdateStoryRequestSchema,
   type AfterglowMetadata,
+  type MessageMetadata,
+  type StoryViewerActivity,
   type Story,
   type StoryAuthorGroup,
   type UserLite,
@@ -22,12 +26,15 @@ import {
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { blockedSetOf } from '../../lib/blocks.js';
+import { ensureDm } from '../../lib/dm.js';
+import { requestSendAllowed } from '../../lib/dmPolicy.js';
 import { friendsOfIds, isFriendOf } from '../../lib/friends.js';
 import { userLiteDto, type AttRow, type UserRow } from '../../lib/dto.js';
 import { badRequest, conflict, forbidden, notFound, rateLimited } from '../../lib/errors.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant } from '../conversations/routes.js';
+import { fanOutNewMessage, insertMessage } from '../messages/service.js';
 import {
   fanStoryNew,
   fanStoryUpdated,
@@ -284,17 +291,49 @@ export async function storyRoutes(fastify: FastifyInstance): Promise<void> {
       const { user } = authed(req);
       const row = await loadStory(req.params.id);
       if (!row || row.authorId !== user.id) throw notFound('story_not_found');
-      const rows = await db
-        .select({ u: schema.users })
-        .from(sv)
-        .innerJoin(schema.users, eq(sv.viewerId, schema.users.id))
-        .where(eq(sv.storyId, row.id));
       const blocked = await blockedSetOf(user.id);
-      const viewers: { username: string; lite: UserLite }[] = rows
-        .filter(({ u }) => !blocked.has(u.id))
-        .map(({ u }) => ({ username: u.username, lite: userLiteDto(u) }));
+      // §1.79: the list is views ∪ anyone who reacted/replied/drew — a
+      // reaction without a recorded view (offline view POST) still names
+      // the person. One row per face, NO timestamps, NO totals.
+      // Candidate set built STORY-side (three indexed lookups), never a walk
+      // over users.
+      const raw = (await db.execute(sql`
+        WITH who AS (
+          SELECT viewer_id AS uid FROM story_views WHERE story_id = ${row.id}
+          UNION
+          SELECT viewer_id FROM story_activity WHERE story_id = ${row.id}
+          UNION
+          SELECT author_id FROM story_overlays WHERE story_id = ${row.id} AND status IN ('live','pending')
+        )
+        SELECT w.uid,
+               sa.emoji, COALESCE(sa.replied, false) AS replied,
+               EXISTS (
+                 SELECT 1 FROM story_overlays so
+                 WHERE so.story_id = ${row.id} AND so.author_id = w.uid AND so.status IN ('live','pending')
+               ) AS drew
+        FROM who w
+        LEFT JOIN story_activity sa ON sa.story_id = ${row.id} AND sa.viewer_id = w.uid
+        WHERE w.uid <> ${user.id}
+      `)) as unknown as { uid: string; emoji: string | null; replied: boolean; drew: boolean }[];
+      const userRows = raw.length
+        ? await db.select().from(schema.users).where(inArray(schema.users.id, raw.map((r) => r.uid)))
+        : [];
+      const userById = new Map(userRows.map((u) => [u.id, u]));
+      const viewers: { username: string; lite: UserLite; act: StoryViewerActivity | null }[] = raw
+        .filter((r) => !blocked.has(r.uid) && userById.has(r.uid))
+        .map(({ uid, emoji, replied, drew }) => {
+          const u = userById.get(uid)!;
+          return {
+            username: u.username,
+            lite: userLiteDto(u),
+            act: emoji || replied || drew ? { user_id: u.id, emoji: emoji ?? null, replied, drew } : null,
+          };
+        });
       viewers.sort((a, b) => a.username.toLowerCase().localeCompare(b.username.toLowerCase()));
-      return { viewers: viewers.map((v) => v.lite) };
+      return {
+        viewers: viewers.map((v) => v.lite),
+        activity: viewers.flatMap((v) => (v.act ? [v.act] : [])),
+      };
     },
   );
 
@@ -316,7 +355,11 @@ export async function storyRoutes(fastify: FastifyInstance): Promise<void> {
       }
       const [updated] = await db
         .update(st)
-        .set({ canvasMode: req.body.canvas_mode })
+        .set({
+          ...(req.body.canvas_mode !== undefined ? { canvasMode: req.body.canvas_mode } : {}),
+          // §1.79 "Edit": the caption while the story lives.
+          ...(req.body.caption !== undefined ? { caption: req.body.caption.trim() } : {}),
+        })
         .where(eq(st.id, row.id))
         .returning();
       await fanStoryUpdated(updated!);
@@ -536,6 +579,88 @@ export async function storyRoutes(fastify: FastifyInstance): Promise<void> {
       if (!row || row.authorId !== user.id) throw notFound('story_not_found');
       await hardDeleteStory(row);
       return reply.status(204).send();
+    },
+  );
+
+  // §1.79 POST /api/stories/:id/reply — a reply (text / voice / image) or a
+  // one-emoji reaction to SOMEONE ELSE's live story. It lands as an ordinary
+  // DM message to the author (metadata.story_ref, server-written) through
+  // the §1.13 DM gate: 'parked' still delivers (into their Requests, capped
+  // like any request → 400 dm_request_pending past the cap); 'refused'
+  // (dm_policy nobody) answers the surface's own 404 story_not_found, the
+  // same bytes a block or a stranger gets (§1.14: the setting is never
+  // confirmable). The author's named list learns "reacted 😂 / replied"
+  // from story_activity; nobody else ever sees it. Own story → 400 own_story.
+  app.post(
+    '/api/stories/:id/reply',
+    { preHandler: requireAuth, schema: { params: IdParams, body: StoryReplyRequestSchema } },
+    async (req, reply) => {
+      const { user } = authed(req);
+      const row = await requireVisibleStory(req.params.id, user.id);
+      if (row.authorId === user.id) throw badRequest('own_story');
+      if (row.expiresAt.getTime() <= Date.now()) throw notFound('story_not_found');
+      const rate = await fixedWindow(`storyreply:${user.id}`, STORY_REPLY_RATE_PER_HOUR, 3600);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+
+      // Validate the payload BEFORE any DM side effect (create / re-seat /
+      // conv.new) so a refused request leaves nothing behind.
+      const emoji = req.body.emoji ?? null;
+      const text = req.body.body?.trim() ?? '';
+      let type: 'text' | 'image' | 'audio' = 'text';
+      const attachmentIds: string[] = [];
+      if (req.body.attachment_id) {
+        const [att] = await db
+          .select()
+          .from(schema.attachments)
+          .where(eq(schema.attachments.id, req.body.attachment_id))
+          .limit(1);
+        if (!att || att.uploaderId !== user.id || att.status === 'failed') throw badRequest('bad_attachment');
+        if (att.kind !== 'audio' && att.kind !== 'image') throw badRequest('bad_attachment');
+        if (att.messageId || att.postId || att.listingId || att.commentId || att.scheduledMessageId) {
+          throw badRequest('bad_attachment');
+        }
+        type = att.kind;
+        attachmentIds.push(att.id);
+      }
+
+      const dm = await ensureDm(user.id, row.authorId);
+      if (!dm) throw notFound('story_not_found');
+      if (dm.gate === 'parked' && !(await requestSendAllowed(dm.conversationId, user.id))) {
+        throw badRequest('dm_request_pending');
+      }
+
+      const metadata: MessageMetadata = {
+        story_ref: { story_id: row.id, author_id: row.authorId, emoji, caption: row.caption },
+      };
+      let msg;
+      try {
+        msg = await insertMessage({
+          conversationId: dm.conversationId,
+          senderId: user.id,
+          type,
+          // A reaction's body IS the emoji (push text / older clients); a
+          // text reply its words; media replies carry no body.
+          body: emoji ?? (type === 'text' ? text : null),
+          metadata,
+          attachmentIds,
+          // The activity row commits WITH the message: a story deleted or
+          // swept meanwhile fails the FK and rolls the whole send back.
+          withinTx: async (tx) => {
+            await tx.execute(sql`
+              INSERT INTO story_activity (story_id, viewer_id, emoji, replied)
+              VALUES (${row.id}, ${user.id}, ${emoji}, ${emoji === null})
+              ON CONFLICT (story_id, viewer_id) DO UPDATE SET
+                emoji = COALESCE(EXCLUDED.emoji, story_activity.emoji),
+                replied = story_activity.replied OR EXCLUDED.replied
+            `);
+          },
+        });
+      } catch (err) {
+        if ((err as { code?: string }).code === '23503') throw notFound('story_not_found');
+        throw err;
+      }
+      await fanOutNewMessage(msg);
+      return reply.status(201).send({ conversation_id: dm.conversationId, message_id: msg.id });
     },
   );
 }

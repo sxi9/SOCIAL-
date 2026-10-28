@@ -580,6 +580,19 @@ export const MessageMetadataSchema = z.object({
   // render the "Bored Chat Support" brand identity — never a named admin, and
   // never the system-event chrome. ticket_id links back to the user's ticket.
   support: z.object({ ticket_id: UuidSchema.nullable() }).optional(),
+  // ---- handoff 2d (§1.79) ----
+  // SERVER-written on a DM message that answers a story (POST
+  // /api/stories/:id/reply): the story's id + author and, for a reaction,
+  // the emoji (body is then empty). Clients render the "replied to your
+  // story" quote line; the story itself may already be gone (24 h).
+  story_ref: z
+    .object({
+      story_id: UuidSchema,
+      author_id: UuidSchema,
+      emoji: z.string().nullable(),
+      caption: z.string(),
+    })
+    .optional(),
 });
 export type MessageMetadata = z.infer<typeof MessageMetadataSchema>;
 
@@ -2097,10 +2110,44 @@ export type ListStoriesResponse = z.infer<typeof ListStoriesResponseSchema>;
 
 // Author-private view list: faces/names ordered by username — NO timestamps,
 // NO counts beyond the list itself (§1.18 seen-by pattern, FEATURES #27).
+// §1.79: per-viewer activity lines for the author's named list — what each
+// face DID (reacted / replied / drew). No timestamps, no totals; a viewer
+// with no row did nothing but look. drew = has a live|pending overlay.
+export const StoryViewerActivitySchema = z.object({
+  user_id: UuidSchema,
+  emoji: z.string().nullable(),
+  replied: z.boolean(),
+  drew: z.boolean(),
+});
+export type StoryViewerActivity = z.infer<typeof StoryViewerActivitySchema>;
+
 export const StoryViewsResponseSchema = z.object({
   viewers: z.array(UserLiteSchema),
+  activity: z.array(StoryViewerActivitySchema).default([]),
 });
 export type StoryViewsResponse = z.infer<typeof StoryViewsResponseSchema>;
+
+// §1.79 POST /api/stories/:id/reply — a reply or a reaction to someone
+// else's story lands as a DM message to the author (metadata.story_ref),
+// through the ordinary DM gate (parked / refused shapes as §1.13). Exactly
+// one of body / attachment_id (audio or image, mine, unbound) / emoji.
+export const StoryReplyRequestSchema = z
+  .object({
+    body: z.string().max(POST_COMMENT_MAX_CHARS).optional(),
+    attachment_id: UuidSchema.optional(),
+    emoji: z.string().min(1).max(REACTION_EMOJI_MAX_LEN).optional(),
+  })
+  .refine(
+    (v) => [v.body?.trim(), v.attachment_id, v.emoji].filter(Boolean).length === 1,
+    { message: 'exactly one of body, attachment_id, emoji' },
+  );
+export type StoryReplyRequest = z.infer<typeof StoryReplyRequestSchema>;
+
+export const StoryReplyResponseSchema = z.object({
+  conversation_id: UuidSchema,
+  message_id: UuidSchema,
+});
+export type StoryReplyResponse = z.infer<typeof StoryReplyResponseSchema>;
 
 // ---------------------------------------------------------------------------
 // §1.36 Feed. Posts by my FRIENDS-OF set + me, newest first, cursor-paginated,
@@ -2233,6 +2280,9 @@ export const PostCommentSchema = z.object({
   body: z.string().max(POST_COMMENT_MAX_CHARS),
   attachment: AttachmentSchema.nullable().default(null), // v0.7 (§1.51)
   reactions: z.array(CommentReactionAggregateSchema).default([]), // v0.7 (§1.51)
+  // Handoff 1e (§1.79): non-null on a reply — the id of a TOP-LEVEL comment
+  // on the same post (one level only). default(null) keeps old payloads.
+  parent_id: UuidSchema.nullable().default(null),
   created_at: IsoDateTimeSchema,
 });
 export type PostComment = z.infer<typeof PostCommentSchema>;
@@ -2318,6 +2368,9 @@ export type AddPostReactionRequest = z.infer<typeof AddPostReactionRequestSchema
 export const CreateCommentRequestSchema = z.object({
   body: z.string().max(POST_COMMENT_MAX_CHARS).default(''),
   attachment_id: UuidSchema.optional(),
+  // §1.79: reply to a top-level comment on this post. 404 comment_not_found
+  // when it is not on this post; 400 reply_depth when it is itself a reply.
+  parent_id: UuidSchema.optional(),
 });
 export type CreateCommentRequest = z.infer<typeof CreateCommentRequestSchema>;
 
@@ -3748,6 +3801,8 @@ export const GalleryItemSchema = z.object({
   // wherever it is bound (delete it there).
   saved: z.boolean(),
   source: z.enum(['story']).nullable(),
+  // Handoff 1a (§1.79): the attachment's upload time — the month groups.
+  created_at: IsoDateTimeSchema,
 });
 export type GalleryItem = z.infer<typeof GalleryItemSchema>;
 
@@ -3792,9 +3847,15 @@ export type SharedAppearanceResponse = z.infer<typeof SharedAppearanceResponseSc
 // ---------------------------------------------------------------------------
 
 // PATCH /api/stories/:id — author only; today only the canvas switch.
-export const UpdateStoryRequestSchema = z.object({
-  canvas_mode: StoryCanvasModeSchema,
-});
+export const UpdateStoryRequestSchema = z
+  .object({
+    canvas_mode: StoryCanvasModeSchema.optional(),
+    // §1.79 "Edit" on your own story: the caption is editable while it lives.
+    caption: z.string().max(STORY_CAPTION_MAX_CHARS).optional(),
+  })
+  .refine((v) => v.canvas_mode !== undefined || v.caption !== undefined, {
+    message: 'nothing to update',
+  });
 export type UpdateStoryRequest = z.infer<typeof UpdateStoryRequestSchema>;
 
 // POST /api/stories/:id/overlays. kind rides inside the payload union.

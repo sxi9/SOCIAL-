@@ -7,7 +7,13 @@
 // profile; the §1.21 doodle brush is the stroke tool; reduced motion disables
 // entrance animations (layers simply appear); the client never rasterizes
 // overlays into saved/shared media.
-import { useCallback, useMemo, useRef, useState } from 'react';
+//
+// Handoff 2c (2026-10-28): canvas mode is its OWN STATE. Nothing but the
+// layers renders until the viewer opens it (`active`); then the viewer chrome
+// steps out and the tools come in — Undo · "<name> is drawing too" · Done on
+// top, a Draw / Sticker / Note rail on the right, colour dots on the left, a
+// brush slider at the bottom.
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { Story, StoryOverlay, StoryOverlayPayload, UserLite } from '@socialchat/shared';
 import { OVERLAYS_PER_USER, OVERLAY_STROKE_POINTS_MAX, OVERLAY_TEXT_MAX_CHARS } from '@socialchat/shared';
@@ -17,21 +23,26 @@ import * as store from '@/lib/store';
 import { toast } from '@/lib/toast';
 import { useReducedMotion } from '@/lib/useReducedMotion';
 import ReportSheet from './ReportSheet';
+import { IcBrush, IcCheck, IcNote, IcSticker, IcUndo } from './StoryIcons';
 import cm from './community.module.css';
 import { confirmDialog } from '@/lib/confirm';
 
-// The §1.21 doodle palette — the same four pens.
-const COLORS = ['#1f2430', '#e4573d', '#2f7de0', '#2fa36b'] as const;
-const STROKE_WIDTH = 6; // px at the 512 reference edge
+// Handoff palette: coral · white · straw · mint · sky.
+const COLORS = ['#ff6b6b', '#ffffff', '#f2c76b', '#8ee6c2', '#9ec3ff'] as const;
 const STAMP_EMOJI = ['😂', '❤️', '🔥', '👀', '✨', '💀', '🫶', '🎉', '🥹', '👻'];
 const REF = 512; // stroke coordinate reference edge for the SVG viewBox
+const DRAWING_TOO_MS = 20_000; // a fresh overlay by someone else = "is drawing too"
 
-type Tool = 'draw' | 'emoji' | 'text' | null;
+type Tool = 'draw' | 'emoji' | 'text';
 
 interface StoryCanvasProps {
   story: Story;
   meId: string;
-  /** Tool/chip interactions pause the viewer's auto-advance. */
+  /** The viewer opened the canvas (handoff 2c state). */
+  active: boolean;
+  /** Done / Escape — the viewer takes its chrome back. */
+  onDone: () => void;
+  /** Chip interactions outside canvas mode still pause the auto-advance. */
   onInteracting: (active: boolean) => void;
 }
 
@@ -46,11 +57,12 @@ function dropOverlay(story: Story, overlayId: string): void {
   store.replaceStoryLocal({ ...story, overlays: story.overlays.filter((o) => o.id !== overlayId) });
 }
 
-export default function StoryCanvas({ story, meId, onInteracting }: StoryCanvasProps) {
+export default function StoryCanvas({ story, meId, active, onDone, onInteracting }: StoryCanvasProps) {
   const reduced = useReducedMotion();
   const isMine = story.author.id === meId;
-  const [tool, setToolRaw] = useState<Tool>(null);
-  const [color, setColor] = useState<string>(COLORS[1]);
+  const [tool, setToolRaw] = useState<Tool>('draw');
+  const [color, setColor] = useState<string>(COLORS[0]);
+  const [width, setWidth] = useState(6); // px at the 512 reference edge (1..24)
   const [emoji, setEmoji] = useState<string | null>(null);
   const [text, setText] = useState('');
   const [placing, setPlacing] = useState<'emoji' | 'text' | null>(null);
@@ -58,25 +70,40 @@ export default function StoryCanvas({ story, meId, onInteracting }: StoryCanvasP
   const [queueOpen, setQueueOpen] = useState(false);
   const [reporting, setReporting] = useState<StoryOverlay | null>(null);
   const [busy, setBusy] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const strokeRef = useRef<{ x: number; y: number }[]>([]);
   const [livePath, setLivePath] = useState<string>('');
 
-  const setTool = useCallback(
-    (t: Tool) => {
-      setToolRaw(t);
-      setSelected(null);
-      setPlacing(t === 'emoji' || t === 'text' ? null : null);
-      onInteracting(t !== null);
-    },
-    [onInteracting]
-  );
+  const setTool = useCallback((t: Tool) => {
+    setToolRaw(t);
+    setSelected(null);
+    setPlacing(null);
+  }, []);
+
+  // Leaving canvas mode resets the transient tool state.
+  useEffect(() => {
+    if (active) return;
+    setPlacing(null);
+    setQueueOpen(false);
+    setText('');
+    setEmoji(null);
+    setLivePath('');
+    strokeRef.current = [];
+  }, [active]);
+
+  // "<name> is drawing too" needs a clock while the canvas is open.
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => setNow(Date.now()), 4000);
+    return () => clearInterval(t);
+  }, [active]);
 
   // Visible overlays: 'live' for all + my own / the author's 'pending'
   // (the server already serialized only what this viewer may see).
   const overlays = story.overlays.filter((o) => o.status !== 'removed');
-  const myCount = overlays.filter((o) => o.author.id === meId).length;
-  const canAdd = (story.canvas_mode !== 'off' || isMine) && myCount < OVERLAYS_PER_USER;
+  const mine = overlays.filter((o) => o.author.id === meId);
+  const canAdd = (story.canvas_mode !== 'off' || isMine) && mine.length < OVERLAYS_PER_USER;
   const pending = overlays.filter((o) => o.status === 'pending');
 
   // Contributor strip — FACES/names derived client-side from overlays; no
@@ -88,6 +115,15 @@ export default function StoryCanvas({ story, meId, onInteracting }: StoryCanvasP
     }
     return [...seen.values()];
   }, [overlays, story.author.id]);
+
+  // Someone else's overlay that landed in the last DRAWING_TOO_MS — derived
+  // from the story.updated stream, no extra presence protocol.
+  const drawingToo = useMemo(() => {
+    const recent = overlays
+      .filter((o) => o.author.id !== meId && now - new Date(o.created_at).getTime() < DRAWING_TOO_MS)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+    return recent[0]?.author ?? null;
+  }, [overlays, meId, now]);
 
   async function submit(payload: StoryOverlayPayload): Promise<void> {
     if (busy) return;
@@ -157,7 +193,7 @@ export default function StoryCanvas({ story, meId, onInteracting }: StoryCanvasP
       const step = points.length / OVERLAY_STROKE_POINTS_MAX;
       points = Array.from({ length: OVERLAY_STROKE_POINTS_MAX }, (_, i) => raw[Math.floor(i * step)]);
     }
-    void submit({ kind: 'stroke', points, color, width: STROKE_WIDTH });
+    void submit({ kind: 'stroke', points, color, width });
   }
 
   // ---- tap-to-place (emoji / text) ----
@@ -167,12 +203,12 @@ export default function StoryCanvas({ story, meId, onInteracting }: StoryCanvasP
     if (placing === 'emoji' && emoji) {
       void submit({ kind: 'emoji', emoji, x: p.x, y: p.y, scale: 1 });
       setPlacing(null);
-      setTool(null);
+      setTool('draw');
     } else if (placing === 'text' && text.trim()) {
       void submit({ kind: 'text', text: text.trim(), x: p.x, y: p.y });
       setText('');
       setPlacing(null);
-      setTool(null);
+      setTool('draw');
     }
   }
 
@@ -181,9 +217,21 @@ export default function StoryCanvas({ story, meId, onInteracting }: StoryCanvasP
       await removeOverlay(story.id, o.id);
       dropOverlay(story, o.id);
       setSelected(null);
-      toast('Removed');
     } catch {
       toast('Could not remove it');
+    }
+  }
+
+  /** Undo = remove MY latest layer on this story (the server keeps the
+   * tombstone; attribution never changes hands). */
+  async function undo(): Promise<void> {
+    const last = [...mine].sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+    if (!last || busy) return;
+    setBusy(true);
+    try {
+      await remove(last);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -197,7 +245,7 @@ export default function StoryCanvas({ story, meId, onInteracting }: StoryCanvasP
   }
 
   async function ban(user: UserLite): Promise<void> {
-    if (!(await confirmDialog(`Ban ${user.display_name} from ALL your canvases, now and future? They won't be told.`))) return;
+    if (!(await confirmDialog(`Ban ${user.display_name} from ALL your canvases, now and future? They won't be told.`, { zIndex: 61 }))) return;
     try {
       await canvasBan(user.id);
       toast('Banned from your canvases');
@@ -208,7 +256,6 @@ export default function StoryCanvas({ story, meId, onInteracting }: StoryCanvasP
   }
 
   const selectedOverlay = selected ? overlays.find((o) => o.id === selected) ?? null : null;
-  const toolsOpen = tool !== null;
 
   return (
     <>
@@ -240,7 +287,7 @@ export default function StoryCanvas({ story, meId, onInteracting }: StoryCanvasP
               );
             })}
           {livePath ? (
-            <path d={livePath} stroke={color} strokeWidth={STROKE_WIDTH} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <path d={livePath} stroke={color} strokeWidth={width} fill="none" strokeLinecap="round" strokeLinejoin="round" />
           ) : null}
         </svg>
         {overlays.map((o) => {
@@ -290,7 +337,7 @@ export default function StoryCanvas({ story, meId, onInteracting }: StoryCanvasP
             role="group"
             aria-label={`Drawn by ${selectedOverlay.author.display_name}`}
           >
-            🎨 drawn by{' '}
+            drawn by{' '}
             <Link href={`/u/${encodeURIComponent(selectedOverlay.author.username)}`}>
               @{selectedOverlay.author.username}
             </Link>
@@ -327,7 +374,7 @@ export default function StoryCanvas({ story, meId, onInteracting }: StoryCanvasP
               aria-label="Close"
               onClick={() => {
                 setSelected(null);
-                onInteracting(tool !== null);
+                onInteracting(false);
               }}
             >
               ×
@@ -336,10 +383,10 @@ export default function StoryCanvas({ story, meId, onInteracting }: StoryCanvasP
         ) : null}
       </div>
 
-      {/* ---- the contributor strip ("🎨 maya, arjun +3") ---- */}
-      {contributors.length > 0 ? (
-        <span className={cm.contribStrip} aria-label="Canvas contributors">
-          🎨{' '}
+      {/* ---- the contributor strip ("maya, arjun +3") — outside canvas mode ---- */}
+      {!active && contributors.length > 0 ? (
+        <span className={`${cm.contribStrip}${isMine ? '' : ` ${cm.contribStripLifted}`}`} aria-label="Canvas contributors">
+          <IcBrush size={14} />{' '}
           {contributors
             .slice(0, 2)
             .map((u) => u.display_name)
@@ -348,171 +395,213 @@ export default function StoryCanvas({ story, meId, onInteracting }: StoryCanvasP
         </span>
       ) : null}
 
-      {/* ---- tools (viewers when invited; the author always) ---- */}
-      {story.canvas_mode !== 'off' || isMine ? (
-        <div className={cm.canvasBar} role="toolbar" aria-label="Canvas tools">
-          <button
-            type="button"
-            className={`${cm.canvasTool}${tool === 'draw' ? ` ${cm.canvasToolOn}` : ''}`}
-            disabled={!canAdd && tool !== 'draw'}
-            aria-pressed={tool === 'draw'}
-            onClick={() => setTool(tool === 'draw' ? null : 'draw')}
-          >
-            ✏️ Draw
-          </button>
-          <button
-            type="button"
-            className={`${cm.canvasTool}${tool === 'emoji' ? ` ${cm.canvasToolOn}` : ''}`}
-            disabled={!canAdd && tool !== 'emoji'}
-            aria-pressed={tool === 'emoji'}
-            onClick={() => setTool(tool === 'emoji' ? null : 'emoji')}
-          >
-            😀 Emoji
-          </button>
-          <button
-            type="button"
-            className={`${cm.canvasTool}${tool === 'text' ? ` ${cm.canvasToolOn}` : ''}`}
-            disabled={!canAdd && tool !== 'text'}
-            aria-pressed={tool === 'text'}
-            onClick={() => setTool(tool === 'text' ? null : 'text')}
-          >
-            💬 Note
-          </button>
-          {tool === 'draw'
-            ? COLORS.map((c) => (
+      {active ? (
+        <>
+          {/* top row: Undo · "<name> is drawing too" · Done */}
+          <div className={cm.cvTop}>
+            <button type="button" className={cm.cvPill} disabled={mine.length === 0 || busy} onClick={() => void undo()}>
+              <IcUndo size={16} /> Undo
+            </button>
+            <span className={cm.cvLive} aria-live="polite">
+              {drawingToo ? `${drawingToo.display_name} is drawing too` : ''}
+            </span>
+            <button type="button" className={`${cm.cvPill} ${cm.cvPillPrimary}`} onClick={onDone}>
+              Done
+            </button>
+          </div>
+
+          {/* right rail: the tools (+ the author's approve queue) */}
+          <div className={cm.cvRail} role="toolbar" aria-label="Canvas tools" aria-orientation="vertical">
+            <button
+              type="button"
+              className={`${cm.cvTool}${tool === 'draw' ? ` ${cm.cvToolOn}` : ''}`}
+              aria-pressed={tool === 'draw'}
+              aria-label="Draw"
+              onClick={() => setTool('draw')}
+            >
+              <IcBrush />
+            </button>
+            <button
+              type="button"
+              className={`${cm.cvTool}${tool === 'emoji' ? ` ${cm.cvToolOn}` : ''}`}
+              aria-pressed={tool === 'emoji'}
+              aria-label="Sticker"
+              onClick={() => setTool('emoji')}
+            >
+              <IcSticker />
+            </button>
+            <button
+              type="button"
+              className={`${cm.cvTool}${tool === 'text' ? ` ${cm.cvToolOn}` : ''}`}
+              aria-pressed={tool === 'text'}
+              aria-label="Note"
+              onClick={() => setTool('text')}
+            >
+              <IcNote />
+            </button>
+            {isMine && pending.length > 0 ? (
+              <button
+                type="button"
+                className={`${cm.cvTool}${queueOpen ? ` ${cm.cvToolOn}` : ''}`}
+                aria-label={`Approve drawings (${pending.length} waiting)`}
+                aria-pressed={queueOpen}
+                onClick={() => setQueueOpen((v) => !v)}
+              >
+                <IcCheck />
+                <i className={cm.cvDot} aria-hidden />
+              </button>
+            ) : null}
+          </div>
+
+          {/* left: colour dots (draw only) */}
+          {tool === 'draw' ? (
+            <div className={cm.cvColors} role="radiogroup" aria-label="Pen colour">
+              {COLORS.map((c) => (
                 <button
                   key={c}
                   type="button"
-                  className={`${cm.canvasColor}${color === c ? ` ${cm.canvasColorOn}` : ''}`}
+                  role="radio"
+                  aria-checked={color === c}
+                  aria-label={`Pen colour ${c}`}
+                  className={`${cm.cvColor}${color === c ? ` ${cm.cvColorOn}` : ''}`}
                   style={{ background: c }}
-                  aria-label={`Pen color ${c}`}
-                  aria-pressed={color === c}
                   onClick={() => setColor(c)}
                 />
-              ))
-            : null}
-          {isMine && pending.length > 0 ? (
-            <button
-              type="button"
-              className={`${cm.canvasTool}${queueOpen ? ` ${cm.canvasToolOn}` : ''}`}
-              onClick={() => {
-                setQueueOpen((v) => !v);
-                onInteracting(true);
-              }}
-            >
-              ✅ Approve ({pending.length})
-            </button>
+              ))}
+            </div>
           ) : null}
-        </div>
-      ) : null}
 
-      {!canAdd && toolsOpen ? (
-        <p className={cm.canvasHint}>You&rsquo;ve added your {OVERLAYS_PER_USER} — remove one of yours to add more.</p>
-      ) : null}
+          {/* bottom: brush slider (draw only) */}
+          {tool === 'draw' && canAdd ? (
+            <label className={cm.cvBrush}>
+              <span>Brush</span>
+              <input
+                type="range"
+                min={1}
+                max={24}
+                step={1}
+                value={width}
+                aria-label="Brush size"
+                onChange={(e) => setWidth(Number(e.target.value))}
+              />
+              <i style={{ width: Math.max(4, width), height: Math.max(4, width), background: color }} aria-hidden />
+            </label>
+          ) : null}
 
-      {/* draw surface */}
-      {tool === 'draw' && canAdd ? (
-        <div
-          ref={surfaceRef}
-          className={cm.drawSurface}
-          aria-label="Drawing surface"
-          onPointerDown={downDraw}
-          onPointerMove={moveDraw}
-          onPointerUp={upDraw}
-          onPointerCancel={upDraw}
-        >
-          <svg viewBox={`0 0 ${REF} ${REF}`} preserveAspectRatio="none" style={{ width: '100%', height: '100%' }} aria-hidden>
-            {livePath ? (
-              <path d={livePath} stroke={color} strokeWidth={STROKE_WIDTH} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-            ) : null}
-          </svg>
-        </div>
-      ) : null}
+          {!canAdd ? (
+            <p className={cm.canvasHint}>
+              {story.canvas_mode === 'off' && !isMine
+                ? 'This canvas is closed'
+                : `You’ve added your ${OVERLAYS_PER_USER} — undo one to add more.`}
+            </p>
+          ) : null}
 
-      {/* emoji pick → tap to place */}
-      {tool === 'emoji' && canAdd ? (
-        placing === 'emoji' && emoji ? (
-          <>
-            <div ref={surfaceRef} className={cm.drawSurface} aria-label="Tap where the emoji should land" onPointerDown={place} />
-            <p className={cm.canvasHint}>Tap the story where {emoji} should land</p>
-          </>
-        ) : (
-          <div className={cm.emojiPickRow} role="menu" aria-label="Pick an emoji stamp">
-            {STAMP_EMOJI.map((e) => (
-              <button
-                key={e}
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setEmoji(e);
-                  setPlacing('emoji');
-                }}
-              >
-                {e}
-              </button>
-            ))}
-          </div>
-        )
-      ) : null}
+          {/* draw surface */}
+          {tool === 'draw' && canAdd ? (
+            <div
+              ref={surfaceRef}
+              className={cm.drawSurface}
+              aria-label="Drawing surface"
+              onPointerDown={downDraw}
+              onPointerMove={moveDraw}
+              onPointerUp={upDraw}
+              onPointerCancel={upDraw}
+            >
+              <svg viewBox={`0 0 ${REF} ${REF}`} preserveAspectRatio="none" style={{ width: '100%', height: '100%' }} aria-hidden>
+                {livePath ? (
+                  <path d={livePath} stroke={color} strokeWidth={width} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                ) : null}
+              </svg>
+            </div>
+          ) : null}
 
-      {/* text input → tap to place */}
-      {tool === 'text' && canAdd ? (
-        placing === 'text' && text.trim() ? (
-          <>
-            <div ref={surfaceRef} className={cm.drawSurface} aria-label="Tap where the note should land" onPointerDown={place} />
-            <p className={cm.canvasHint}>Tap the story where the note should land</p>
-          </>
-        ) : (
-          <div className={cm.canvasTextRow}>
-            <input
-              value={text}
-              maxLength={OVERLAY_TEXT_MAX_CHARS}
-              placeholder="A short note…"
-              aria-label="Note text"
-              autoFocus
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && text.trim()) {
-                  e.preventDefault();
-                  setPlacing('text');
-                }
-              }}
-            />
-            <button type="button" className={cm.canvasTool} disabled={!text.trim()} onClick={() => setPlacing('text')}>
-              Place →
-            </button>
-          </div>
-        )
-      ) : null}
+          {/* sticker pick → tap to place */}
+          {tool === 'emoji' && canAdd ? (
+            placing === 'emoji' && emoji ? (
+              <>
+                <div ref={surfaceRef} className={cm.drawSurface} aria-label="Tap where the sticker should land" onPointerDown={place} />
+                <p className={cm.canvasHint}>Tap the story where {emoji} should land</p>
+              </>
+            ) : (
+              <div className={cm.emojiPickRow} role="menu" aria-label="Pick a sticker">
+                {STAMP_EMOJI.map((e) => (
+                  <button
+                    key={e}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setEmoji(e);
+                      setPlacing('emoji');
+                    }}
+                  >
+                    {e}
+                  </button>
+                ))}
+              </div>
+            )
+          ) : null}
 
-      {/* the author's approve queue */}
-      {queueOpen && isMine ? (
-        <div className={cm.pendingQueue} role="dialog" aria-label="Waiting for your approval">
-          {pending.length === 0 ? (
-            <p style={{ margin: 0 }}>All caught up — nothing waiting.</p>
-          ) : (
-            pending.map((o) => (
-              <div key={o.id} className={cm.pendingRow}>
-                <span className="grow">
-                  {o.payload.kind === 'stroke' ? '✏️ a doodle' : o.payload.kind === 'emoji' ? `😀 ${o.payload.emoji}` : `💬 “${o.payload.text}”`}{' '}
-                  by @{o.author.username}
-                </span>
-                <button type="button" className={cm.pendingBtn} style={{ borderColor: 'var(--ok)' }} onClick={() => void approve(o)}>
-                  Approve
-                </button>
-                <button type="button" className={cm.pendingBtn} onClick={() => void remove(o)}>
-                  Remove
+          {/* note input → tap to place */}
+          {tool === 'text' && canAdd ? (
+            placing === 'text' && text.trim() ? (
+              <>
+                <div ref={surfaceRef} className={cm.drawSurface} aria-label="Tap where the note should land" onPointerDown={place} />
+                <p className={cm.canvasHint}>Tap the story where the note should land</p>
+              </>
+            ) : (
+              <div className={cm.canvasTextRow}>
+                <input
+                  value={text}
+                  maxLength={OVERLAY_TEXT_MAX_CHARS}
+                  placeholder="A short note…"
+                  aria-label="Note text"
+                  autoFocus
+                  onChange={(e) => setText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && text.trim()) {
+                      e.preventDefault();
+                      setPlacing('text');
+                    }
+                  }}
+                />
+                <button type="button" className={cm.cvPill} disabled={!text.trim()} onClick={() => setPlacing('text')}>
+                  Place
                 </button>
               </div>
-            ))
-          )}
-        </div>
+            )
+          ) : null}
+
+          {/* the author's approve queue */}
+          {queueOpen && isMine ? (
+            <div className={cm.pendingQueue} role="dialog" aria-label="Waiting for your approval">
+              {pending.length === 0 ? (
+                <p style={{ margin: 0 }}>All caught up — nothing waiting.</p>
+              ) : (
+                pending.map((o) => (
+                  <div key={o.id} className={cm.pendingRow}>
+                    <span className="grow">
+                      {o.payload.kind === 'stroke' ? 'a doodle' : o.payload.kind === 'emoji' ? `${o.payload.emoji} sticker` : `“${o.payload.text}”`}{' '}
+                      by @{o.author.username}
+                    </span>
+                    <button type="button" className={cm.pendingBtn} style={{ borderColor: 'var(--ok)' }} onClick={() => void approve(o)}>
+                      Approve
+                    </button>
+                    <button type="button" className={cm.pendingBtn} onClick={() => void remove(o)}>
+                      Remove
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          ) : null}
+        </>
       ) : null}
 
       {reporting ? (
         <ReportSheet
           target={{ kind: 'story_overlay', story_id: story.id, overlay_id: reporting.id }}
           onClose={() => setReporting(null)}
+          zIndex={61}
         />
       ) : null}
     </>

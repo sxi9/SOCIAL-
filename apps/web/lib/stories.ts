@@ -10,6 +10,7 @@ import type {
   StoryCanvasMode,
   StoryOverlay,
   StoryOverlayPayload,
+  StoryReplyResponse,
   StoryResponse,
   StoryViewsResponse,
 } from '@socialchat/shared';
@@ -127,6 +128,23 @@ export async function viewStory(story: Story): Promise<void> {
   } catch {
     /* expired or offline — harmless, the next GET reconciles */
   }
+}
+
+/** §1.79 "Edit" on your own story — the caption while it lives. */
+export async function updateStoryCaption(storyId: string, caption: string): Promise<Story> {
+  const res = await api.patch<StoryResponse>(`/api/stories/${storyId}`, { caption });
+  store.replaceStoryLocal(res.story);
+  return res.story;
+}
+
+/** §1.79 POST /api/stories/:id/reply — a reply (text / voice / image) or a
+ * one-emoji reaction to a friend's story; lands as a DM to the author. 403
+ * reply_closed is one shape for "not taking replies" and a block. */
+export async function replyToStory(
+  storyId: string,
+  body: { body?: string; attachment_id?: string; emoji?: string }
+): Promise<StoryReplyResponse> {
+  return api.post<StoryReplyResponse>(`/api/stories/${storyId}/reply`, body);
 }
 
 export async function deleteStory(storyId: string): Promise<void> {

@@ -349,8 +349,10 @@
 .viewerHeadName {
   flex: 1;
   min-width: 0;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 400;
+  font-family: var(--font-display);
+  letter-spacing: 0.01em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -366,11 +368,14 @@
 
 .viewerClose {
   flex: none;
-  background: rgba(0, 0, 0, 0.35);
-  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   color: #fff;
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 50%;
   font-size: 18px;
   line-height: 1;
@@ -395,7 +400,8 @@
 
 .viewerCaption {
   position: absolute;
-  bottom: calc(52px + env(safe-area-inset-bottom));
+  /* handoff 2a: clears the 40px action bar (+10 inset) on your own story */
+  bottom: calc(68px + env(safe-area-inset-bottom));
   left: 16px;
   right: 16px;
   z-index: 4;
@@ -410,7 +416,19 @@
    community.module.css) occupies the bottom ~44-90px band, so the caption
    lifts clear of it whenever the tools render. */
 .viewerCaptionLifted {
-  bottom: calc(100px + env(safe-area-inset-bottom));
+  /* handoff 2d: clears the reaction row + composer on a friend's story */
+  bottom: calc(122px + env(safe-area-inset-bottom));
+}
+
+/* handoff 2c: canvas mode is its own state — the viewer chrome steps out
+   (header, progress, caption, footer, tap zones) while the tools are up. */
+.viewerChromeHidden .progressRow,
+.viewerChromeHidden .viewerHead,
+.viewerChromeHidden .viewerCaption,
+.viewerChromeHidden .viewerFooter,
+.viewerChromeHidden .viewerHint,
+.viewerChromeHidden .tapZone {
+  display: none;
 }
 
 .viewerFooter {
@@ -789,6 +807,157 @@
   font-size: 11px;
   color: var(--muted);
   margin-left: 2px;
+}
+
+/* ---- handoff 1e (2026-10-28): threaded sheet ---- */
+.postSheet {
+  max-height: min(72dvh, 640px);
+}
+.likedBy {
+  margin: 2px 0 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.commentThread + .commentThread {
+  margin-top: 2px;
+}
+.commentReplies {
+  margin-left: 18px;
+  padding-left: 14px;
+  border-left: 1.5px solid var(--border);
+}
+.commentBubbleReply {
+  font-size: 13px;
+}
+.commentBubble strong time {
+  margin-left: 6px;
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12px;
+}
+.commentActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 3px 0 0 4px;
+  font-size: 12.5px;
+}
+.commentActionBtn {
+  background: none;
+  border: none;
+  padding: 2px 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.commentActionBtn:hover {
+  color: var(--text);
+}
+.commentActionOn {
+  color: var(--text);
+}
+.commentLiked {
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.commentEnd {
+  margin: 10px 0 4px;
+  text-align: center;
+  color: var(--inactive);
+  font-size: 12.5px;
+}
+.replyingTo {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 -2px 40px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.replyingTo strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.replyingTo button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.commentComposer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.commentPill {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  height: 42px;
+  padding: 0 4px 0 14px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.commentPill:focus-within {
+  border-color: var(--accent);
+}
+.commentPill input[type='text'],
+.commentPill input:not([type]) {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+}
+.commentPillBtn {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: none;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.commentPillBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.commentSend {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent-grad);
+  color: var(--accent-ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.commentSend:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .commentRow {

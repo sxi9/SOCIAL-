@@ -55,13 +55,15 @@ for any AI agent or developer: read it first, then the doc it points you to.
    the same cookie authenticates the WS upgrade; logout/revocation closes
    live sockets (code 4401). Mutating routes require the
    `X-Requested-With: fetch` header (CSRF). No JWTs.
-9. **Migrations are append-only** (`0000`…`0020` so far; the next one is
-   `0021` — `0014` holds the share-everything plumbing, `0015`
+9. **Migrations are append-only** (`0000`…`0021` so far; the next one is
+   `0022` — `0014` holds the share-everything plumbing, `0015`
    `conversation_participants.accepted_at`, `0016` `conversation_bans`,
    `0017` the `profile` share-token type, `0018` the Wave 1 floor
    (consent/age stamps, deletion grace, report categories + kinds),
    `0019` the `call` share-token type, `0020` the Wave 1 leftovers
-   (deactivated_at, appear_offline, push session binding, report outcome);
+   (deactivated_at, appear_offline, push session binding, report outcome),
+   `0021` the design-handoff layouts (`post_comments.parent_id`,
+   `story_activity`);
    `docs/AUDIT-PLAN.md` §10 lists the remaining Wave 1 columns). New
    schema = new numbered file + matching `schema.ts` change. The `migrate` compose service
    runs them and creates the MinIO bucket.

@@ -48,6 +48,7 @@ import { loadBeacon } from '../beacons/service.js';
 import {
   commentDtoFor,
   commentDtosFor,
+  hardDeleteComment,
   loadPost,
   pollDtoFor,
   postDtos,
@@ -579,6 +580,23 @@ export async function feedRoutes(fastify: FastifyInstance): Promise<void> {
       const attachmentId = req.body.attachment_id ?? null;
       if (!body && !attachmentId) throw badRequest('empty_comment');
 
+      // §1.79 one reply level: the parent must be a TOP-LEVEL comment on
+      // THIS post by someone I can see (a blocked author's comment is
+      // invisible to me, so replying to it is 404-shaped like any unknown id).
+      let parentId: string | null = null;
+      if (req.body.parent_id) {
+        const [parent] = await db
+          .select()
+          .from(schema.postComments)
+          .where(and(eq(schema.postComments.id, req.body.parent_id), eq(schema.postComments.postId, row.id)))
+          .limit(1);
+        if (!parent || (parent.authorId !== user.id && (await isBlockedPair(user.id, parent.authorId)))) {
+          throw notFound('comment_not_found');
+        }
+        if (parent.parentId !== null) throw badRequest('reply_depth');
+        parentId = parent.id;
+      }
+
       const commentId = newId();
       await db.transaction(async (tx) => {
         await tx.insert(schema.postComments).values({
@@ -587,6 +605,7 @@ export async function feedRoutes(fastify: FastifyInstance): Promise<void> {
           authorId: user.id,
           body,
           attachmentId,
+          parentId,
         });
         if (attachmentId) {
           // Bind via attachments.comment_id (the GC-shield pattern): mine,
@@ -640,15 +659,9 @@ export async function feedRoutes(fastify: FastifyInstance): Promise<void> {
         .limit(1);
       if (!comment) throw notFound('not_found');
       if (comment.authorId !== user.id && row.authorId !== user.id) throw notFound('not_found');
-      const atts = await db
-        .select()
-        .from(schema.attachments)
-        .where(eq(schema.attachments.commentId, comment.id));
-      await db.transaction(async (tx) => {
-        await tx.execute(sql`DELETE FROM attachments WHERE comment_id = ${comment.id}`);
-        await tx.delete(schema.postComments).where(eq(schema.postComments.id, comment.id));
-      });
-      for (const att of atts) await deleteAttachmentObjects(att);
+      // §1.79: the shared helper also takes a top-level comment's replies'
+      // attachments along (the rows cascade; the objects must not leak).
+      await hardDeleteComment(comment.id);
       return reply.status(204).send();
     },
   );
@@ -811,6 +824,7 @@ export async function feedRoutes(fastify: FastifyInstance): Promise<void> {
           authorId: c.authorId,
           body: c.body,
           attachmentId: c.attachmentId,
+          parentId: c.parentId,
           createdAt: c.createdAt,
           author: u,
         }));

@@ -63,7 +63,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 43. Plan beacons join the board as one card kind; a filterable "Local" tab
 44. Trust layer: person reviews after transactions (shipped v0.5b — API §1.40, ADR-012); account-age/mutual-friend signals remain 📋
 45. No in-app payments — the app connects people, money settles outside; bulletin-board terms shown plainly
-46. Stories (24h) with view lists; broadcast channels; feed (posts/likes/comments)
+46. Stories (24h) with view lists; broadcast channels; feed (posts/likes/comments) — handoff 2026-10-28 (API §1.79): own story = Viewers (faces) · Edit · More; activity drawer (reacted / replied / drew — names only); friend's story = reaction row + "Reply to <name>…" + hold-to-record voice, all landing in the DM (`POST /api/stories/:id/reply`)
 47. Rich profiles: 3-GIF strip, interest tags, work/skills portfolio
 48. Connections graph; replies/threads, edit/delete, forwarding, pins, @mentions — group-admin UI 📋 (no surface yet)
 
@@ -87,7 +87,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 63. Joiner notifications: sparked / edited / starting soon / cancelled (joiners only)
 64. Feed lanes: Friends / Public (Discover) toggle; public posts visible to all
 65. Interactive posts: inline poll posts (song polls via options + links), open game-challenge posts (first tap joins), "Join my…" cards (cross-post a beacon/listing to the feed with a Join button)
-66. GIF/image attachments on comments; emoji + avatar-stamp reactions on comments
+66. GIF/image attachments on comments; emoji + avatar-stamp reactions on comments — handoff 2026-10-28 (API §1.79): ONE reply level (`parent_id`), Reply · Like row with named likers, "Liked by …" line, hard end marker
 67. Location chips on posts/beacons/listings (place name or one-tap current location → map link; no tile embeds, no API keys)
 68. Chat "📍 Join me here" location drops with "On my way 🏃" quick-reply headcount
 69. Scheduled-send confirmation toast + pending-count badge opening the scheduled drawer
@@ -135,7 +135,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 91. Photos on EVERY board kind (gig/ride/room/review, ≤6) + the iPhone HEIC fix (client converts HEIC→JPEG; server rejects undecodable images instead of storing broken rows)
 92. Edit-before-upload: in-app crop/rotate with aspect presets wherever an image is picked (avatars, chat, posts, stories)
 93. Full-screen pinch-zoom viewer for profile/group pics
-94. Personal gallery ("My gallery"): private view over my own media + story auto-saver past 24h
+94. Personal gallery ("My gallery"): private view over my own media + story auto-saver past 24h — handoff 2026-10-28: months with a 2×2 hero tile, sticky serif month headers, filter chips
 95. Shared chat backgrounds: "Set for everyone" (group: admins) fanned out live; per-user override stays
 95c. App-wide appearance: light / dark / system mode + accent palettes (Royal, Gold, Rose, Mint, Sky) in Settings → Appearance; device-local, applied before first paint (added 2026-10-18)
 95b. Shared chat theme + wallpaper (group: admins; DM: either side) — the whole chat's look, fanned out live via `conv.appearance`; each member's own theme/wallpaper still overrides under "Your view" (migration 0013, added 2026-10-18)

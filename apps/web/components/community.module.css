@@ -1947,3 +1947,154 @@
   padding-left: 20px;
   margin: 6px 0;
 }
+
+/* handoff 2d: on a friend's story the reply bar owns the bottom 108px */
+.contribStripLifted {
+  bottom: calc(146px + env(safe-area-inset-bottom));
+}
+
+/* ---- handoff 2c (2026-10-28): canvas mode as its own state ---- */
+.cvTop {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top));
+  left: 12px;
+  right: 12px;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.cvPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.cvPill:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.cvPillPrimary {
+  background: var(--accent-grad);
+  border-color: transparent;
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.cvLive {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  color: #fff;
+  font-size: 12.5px;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cvRail {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cvTool {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 12, 17, 0.55);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.cvToolOn {
+  background: #fff;
+  color: var(--accent-ink);
+  border-color: #fff;
+}
+.cvDot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ok);
+  border: 2px solid #0a0d14;
+}
+.cvColors {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+}
+.cvColor {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  cursor: pointer;
+  padding: 0;
+  transition: transform 120ms ease;
+}
+.cvColorOn {
+  width: 22px;
+  height: 22px;
+  border-color: #fff;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.5);
+}
+.cvBrush {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: calc(14px + env(safe-area-inset-bottom));
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #fff;
+  font-size: 12.5px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(10, 12, 17, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.cvBrush input {
+  flex: 1;
+  min-width: 0;
+  accent-color: #fff;
+}
+.cvBrush i {
+  flex: none;
+  border-radius: 50%;
+  display: inline-block;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+}

@@ -235,6 +235,8 @@ export const REPORT_RATE_PER_HOUR = 10;
 // Wave 1 leftovers (§1.5): write rate limits — per user.
 export const MESSAGE_RATE_PER_MINUTE = 60;
 export const COMMENT_RATE_PER_HOUR = 120;
+// §1.79 story replies/reactions (each lands as a DM message) per user per hour.
+export const STORY_REPLY_RATE_PER_HOUR = 60;
 export const REACTION_RATE_PER_MINUTE = 60;
 // §1.3: GET /api/auth/username-available, per IP per minute.
 export const USERNAME_CHECK_RATE_PER_MIN = 60;

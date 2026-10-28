@@ -59,6 +59,7 @@ export interface CommentWithAuthor {
   authorId: string;
   body: string;
   attachmentId: string | null;
+  parentId: string | null; // §1.79 one reply level
   createdAt: Date;
   author: UserRow;
 }
@@ -135,6 +136,7 @@ export async function commentDtosFor(
       body: r.body,
       attachment: att ? attachmentDto(att) : null,
       reactions: chips,
+      parent_id: r.parentId,
       created_at: r.createdAt.toISOString(),
     } satisfies PostComment;
   });
@@ -154,6 +156,7 @@ export async function commentDtoFor(
         authorId: row.authorId,
         body: row.body,
         attachmentId: row.attachmentId,
+        parentId: row.parentId,
         createdAt: row.createdAt,
         author,
       },
@@ -299,7 +302,7 @@ export async function postDtos(rows: PostRow[], viewerId: string): Promise<Post[
   // Comment previews: newest COMMENT_WINDOW per post via LATERAL, blocked
   // authors filtered, newest POST_COMMENTS_PREVIEW_MAX kept, serialized ASC.
   const commentRows = (await db.execute(sql`
-    SELECT c.id, c.post_id, c.author_id, c.body, c.attachment_id, c.created_at,
+    SELECT c.id, c.post_id, c.author_id, c.body, c.attachment_id, c.parent_id, c.created_at,
            row_to_json(u.*) AS author
     FROM posts p
     JOIN LATERAL (
@@ -317,6 +320,7 @@ export async function postDtos(rows: PostRow[], viewerId: string): Promise<Post[
     author_id: string;
     body: string;
     attachment_id: string | null;
+    parent_id: string | null;
     created_at: string | Date;
     author: Record<string, unknown>;
   }[];
@@ -332,6 +336,7 @@ export async function postDtos(rows: PostRow[], viewerId: string): Promise<Post[
       authorId: c.author_id,
       body: c.body,
       attachmentId: c.attachment_id,
+      parentId: c.parent_id,
       createdAt: new Date(c.created_at),
       author: rawUser(c.author),
     });
@@ -496,12 +501,17 @@ function rawUser(o: Record<string, unknown>): UserRow {
  * attachment row + object go with it (refcount-guarded), reactions cascade.
  * Shared by the author route and the admin takedown. */
 export async function hardDeleteComment(commentId: string): Promise<void> {
-  const atts = await db
-    .select()
-    .from(schema.attachments)
-    .where(eq(schema.attachments.commentId, commentId));
+  // §1.79: a top-level comment takes its replies with it (FK cascade) — their
+  // attachments go the same way as the parent's (row + objects), not to GC.
+  const scope = sql`(${schema.attachments.commentId} = ${commentId}
+    OR ${schema.attachments.commentId} IN (SELECT id FROM post_comments WHERE parent_id = ${commentId}))`;
+  const atts = await db.select().from(schema.attachments).where(scope);
   await db.transaction(async (tx) => {
-    await tx.execute(sql`DELETE FROM attachments WHERE comment_id = ${commentId}`);
+    await tx.execute(sql`
+      DELETE FROM attachments
+      WHERE comment_id = ${commentId}
+         OR comment_id IN (SELECT id FROM post_comments WHERE parent_id = ${commentId})
+    `);
     await tx.delete(schema.postComments).where(eq(schema.postComments.id, commentId));
   });
   for (const att of atts) await deleteAttachmentObjects(att);

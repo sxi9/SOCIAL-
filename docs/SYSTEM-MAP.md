@@ -48,6 +48,7 @@ App wiring/plugins: `src/app.ts`. Config (zod-parsed env): `src/config.ts`.
 | `dto.ts` | row → DTO assembly (messages incl. reactions/reply context, conversations, view context) |
 | `friends.ts` | friends-of = connections ∪ active DM partners (audience primitive) |
 | `blocks.ts` | block-pair SQL conditions used by every surface |
+| `dm.ts` | find-or-create a DM from outside the conversations router (`ensureDm`: dm_key dedupe, re-seat, the §1.13 gate; story replies — §1.79) |
 | `pushGuard.ts` | push send guards (offline re-check, read re-check, mute, mention override) |
 | `errors.ts` | typed HTTP errors / machine codes |
 | `ratelimit.ts` | Redis fixed-window limiter |
@@ -148,7 +149,7 @@ Components (`components/`): chat (`ChatView`, `Composer`, `AttachmentView`,
 (`BeaconStrip`, `BeaconCreateSheet`, `PlanHeader`, `AfterglowCard`,
 `BoardView`, `Listing*`, `TeamUpSheet`, `ReviewSheet`/`TrustPanel`/`Stars`,
 `DiscoverySection`, `RouletteBanner`, `RescueSheet`) · social (`FeedView`,
-`StoriesStrip`/`StoryViewer`, `ProfileEditor`, `ConnectionRequestsSheet`) ·
+`StoriesStrip`/`StoryViewer` (+ `StoryCanvas`, `StoryReplyBar`, `StorySheets`, `StoryIcons`, `story.module.css` — handoff 2026-10-28), `ProfileEditor`, `ConnectionRequestsSheet`) ·
 calls (`CallOverlay`, `GlobalOverlays`, `WatchTogetherSheet`) · shell
 (`AppShell`, `Tabs`/`TabPage`, `TwoPane`, `Avatar`, `Mascot`, `AuthScene`,
 `InviteSheet`, `ReportSheet`, `UserSearch`, `BlurhashCanvas`,

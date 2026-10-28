@@ -1,0 +1,534 @@
+/* Story viewer chrome — handoff "Gallery and post layouts" (2026-10-28),
+   story layouts 2a–2d. Royal v2 tokens; every control is an SVG icon or a
+   word, never an emoji-as-icon; at most three visible actions on your own
+   story, the rest behind More. */
+
+/* ---- shared pill / circle chrome over media ---- */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  white-space: nowrap;
+  min-width: 0;
+}
+.pill:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.pillGrow {
+  flex: 1;
+  justify-content: flex-start;
+  overflow: hidden;
+}
+.pillGrow > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pillPrimary {
+  background: var(--accent-grad);
+  border-color: transparent;
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.circle {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  font-size: 22px;
+  line-height: 1;
+}
+.circle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.circleSm {
+  width: 40px;
+  height: 40px;
+}
+.circleOn {
+  background: #fff;
+  color: var(--accent-ink);
+  border-color: #fff;
+}
+.circleMic {
+  touch-action: none;
+  -webkit-touch-callout: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.circleRec {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  animation: recPulse 1s ease-in-out infinite;
+}
+@keyframes recPulse {
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+/* ---- header ---- */
+.ring {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  padding: 2px;
+  background: var(--ring-live);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ring > * {
+  border: 2px solid #0a0d14;
+  border-radius: 50%;
+}
+.headName {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 16px;
+  letter-spacing: 0.01em;
+}
+
+/* ---- own story: faces in the Viewers pill ---- */
+.facePile {
+  display: inline-flex;
+  flex: none;
+}
+.facePile > * {
+  margin-left: -8px;
+  border: 1.5px solid #0a0d14;
+  border-radius: 50%;
+}
+.facePile > :first-child {
+  margin-left: 0;
+}
+
+/* ---- friend's story: the reply bar (2d) ---- */
+.replyBar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(10px + env(safe-area-inset-bottom));
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.reactRow {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+.reactRow .circle {
+  background: rgba(255, 255, 255, 0.06);
+}
+.reactRow .circle:active {
+  transform: scale(0.9);
+}
+.composerRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.composerPill {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  height: 44px;
+  padding: 0 6px 0 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.composerPill input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: #fff;
+  font: inherit;
+  font-size: 16px; /* iOS zoom-stick */
+}
+.composerPill input::placeholder {
+  color: rgba(255, 255, 255, 0.6);
+}
+.sendBtn {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent-grad);
+  color: var(--accent-ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.sendBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.recHint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  /* above the lifted caption (122px + two lines) */
+  bottom: calc(168px + env(safe-area-inset-bottom));
+  text-align: center;
+  color: #fff;
+  font-size: 13px;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
+  pointer-events: none;
+}
+
+/* my own sent replies drift up the left edge — ephemeral, local only */
+.driftLayer {
+  position: absolute;
+  left: 12px;
+  bottom: calc(168px + env(safe-area-inset-bottom));
+  width: 60%;
+  height: 40%;
+  z-index: 5;
+  pointer-events: none;
+  overflow: hidden;
+}
+.driftPill {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(10, 12, 17, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: driftUp 2600ms ease-out forwards;
+}
+@keyframes driftUp {
+  0% {
+    transform: translateY(0);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-160px);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .driftPill {
+    animation: fadeOnly 2000ms ease-out forwards;
+  }
+  @keyframes fadeOnly {
+    0% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+  .circleRec {
+    animation: none;
+  }
+}
+
+/* ---- bottom sheets (More / Edit / Activity / friend menu) ---- */
+.sheetBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  animation: bkIn 160ms ease;
+}
+@keyframes bkIn {
+  from {
+    opacity: 0;
+  }
+}
+.sheet {
+  width: 100%;
+  max-width: 480px;
+  max-height: min(78dvh, 640px);
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 24px 24px 0 0;
+  padding: 10px 16px calc(16px + env(safe-area-inset-bottom));
+  box-shadow: var(--shadow);
+  animation: sheetRise 230ms cubic-bezier(0.2, 0.9, 0.3, 1.05);
+  color: var(--text);
+}
+@keyframes sheetRise {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+}
+@media (min-width: 600px) {
+  .sheetBackdrop {
+    align-items: center;
+    padding: 16px;
+  }
+  .sheet {
+    border-radius: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sheet,
+  .sheetBackdrop {
+    animation: none;
+  }
+}
+.handle {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  margin: 0 auto 12px;
+}
+.sheetTitle {
+  margin: 4px 0 10px;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 20px;
+  letter-spacing: 0.01em;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 13px 4px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+.row:last-child {
+  border-bottom: none;
+}
+.row:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.rowIcon {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+}
+.rowText {
+  flex: 1;
+  min-width: 0;
+}
+.rowText small {
+  display: block;
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-top: 1px;
+}
+.rowValue {
+  flex: none;
+  color: var(--muted);
+  font-size: 13px;
+  background: var(--panel-2);
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+.rowDanger {
+  color: var(--danger);
+}
+.rowDanger .rowIcon {
+  color: var(--danger);
+}
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 6px -16px;
+}
+.toggle {
+  flex: none;
+  width: 44px;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  position: relative;
+  transition: background 160ms ease;
+}
+.toggle::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 160ms ease;
+}
+.toggleOn {
+  background: var(--ok);
+}
+.toggleOn::after {
+  transform: translateX(18px);
+}
+
+/* ---- activity drawer (2b) ---- */
+.iconRow {
+  display: flex;
+  justify-content: space-around;
+  padding: 4px 0 14px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+.iconBtn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+.iconBtn > span:first-child {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.iconBtnDanger {
+  color: var(--danger);
+}
+.who {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+.who:last-child {
+  border-bottom: none;
+}
+.whoText {
+  flex: 1;
+  min-width: 0;
+}
+.whoText strong {
+  display: block;
+  font-weight: 500;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.whoText span {
+  display: block;
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-top: 1px;
+}
+.empty {
+  color: var(--muted);
+  font-size: 13.5px;
+  margin: 10px 0;
+}
+
+/* the story shrinks to a card while the drawer is up */
+.stageShrunk {
+  transform: scale(0.42) translateY(-6%);
+  transform-origin: top center;
+  border-radius: 28px;
+  transition: transform 220ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .stageShrunk {
+    transition: none;
+  }
+}
+
+/* ---- edit caption (the "Edit" pill) ---- */
+.captionBox {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+  padding: 10px 12px;
+  outline: none;
+}
+.captionBox:focus {
+  border-color: var(--accent);
+}
+.counter {
+  text-align: right;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 4px 0 10px;
+}
