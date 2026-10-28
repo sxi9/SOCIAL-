@@ -46,8 +46,9 @@ Updated 2026-10-28. A new session continues this project by reading
   media as a File through the Web Share API — `lib/osShare.ts`; Save/Copy
   fallback) · ⤓ Save · ⤻ Send to a chat, right-click opens it, long-press
   hums; story viewer ⇪ Share… for everyone + author `/u/` link; `/?story=
-  <username>` deep link read by `StoriesStrip`. Then Wave 1.7 (slice J,
-  2026-10-28, migration 0015): `dm_policy` ENFORCED — `nobody` 404s a new
+  <username>` deep link read by `StoriesStrip`. Then Wave 1.7 slice J,
+  DEPLOYED (`dcfa60e`, 2026-10-28 06:12, migration 0015 applied, 34/34 rows
+  backfilled accepted): `dm_policy` ENFORCED — `nobody` 404s a new
   DM, `connections` parks a stranger's DM in the recipient's Requests
   (`accepted_at IS NULL`, `pending_for_me`; no push/ring/receipts/typing,
   3-message cap, `POST /api/conversations/:id/accept` or a reply accepts;
