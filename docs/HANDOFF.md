@@ -88,8 +88,8 @@ Updated 2026-10-28. A new session continues this project by reading
   `CallJoinCta` island, the "Invite" orb on group calls, tokens revoked in
   `deleteCallMembers`; the personal door `/u/?call=audio|video` → `/c/<id>?ring=`
   → one confirm → `startCall`. API.md §1.77. The §1b share-everything build
-  is now complete. Then the WAVE 1 LEFTOVERS (BUILT 2026-10-28, migration
-  0020 — see the deploy line in `docs/CLAUDE-MEMORY.md`): pause/deactivate
+  is now complete. Then the WAVE 1 LEFTOVERS, DEPLOYED (`9243dab`, 2026-10-28 23:03,
+  migration 0020 applied): pause/deactivate
   with reactivate-on-login, login that tells the truth (operator contact,
   `?reason=`, Retry-After, Forgot password, QR on fine pointers only, still
   wordmark, real link Deny, username check + rules, registration_mode), a
