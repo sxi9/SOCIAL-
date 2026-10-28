@@ -47,7 +47,8 @@ export type AdminUserAction =
   | 'ban'
   | 'unban'
   | 'grant-admin'
-  | 'revoke-admin';
+  | 'revoke-admin'
+  | 'delete';
 
 export async function adminUserAction(
   id: string,
@@ -74,10 +75,12 @@ export async function adminUserExport(id: string): Promise<AdminUserExport> {
 
 export async function adminReports(
   status: 'open' | 'closed' | null,
-  cursor: string | null
+  cursor: string | null,
+  category?: string | null
 ): Promise<AdminReportsResponse> {
   const params = new URLSearchParams();
   if (status) params.set('status', status);
+  if (category) params.set('category', category);
   if (cursor) params.set('cursor', cursor);
   const qs = params.toString();
   return api.get<AdminReportsResponse>(`/api/admin/reports${qs ? `?${qs}` : ''}`);

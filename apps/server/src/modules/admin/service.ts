@@ -7,6 +7,7 @@ import { inArray, sql, type SQL } from 'drizzle-orm';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
+  LegalTextsSchema,
   ReleaseNoteSchema,
   type AdminReport,
   type AdminUserRow,
@@ -109,6 +110,8 @@ export async function getInstanceSettings(): Promise<InstanceSettings> {
         'release_notes',
         'auth',
         'auth_smtp_password',
+        'legal',
+        'operator_contact',
       ]),
     );
   const byKey = new Map(rows.map((r) => [r.key, r.value]));
@@ -117,10 +120,16 @@ export async function getInstanceSettings(): Promise<InstanceSettings> {
   // blob degrades to [] instead of refusing the whole admin read.
   const notes = ReleaseNotesListSchema.safeParse(byKey.get('release_notes') ?? []);
   const storedAuth = StoredAuthSchema.parse(byKey.get('auth') ?? {});
+  // Wave 1 (§1.1): legal markdown + operator contact; malformed blobs
+  // degrade to the defaults, never refuse the read.
+  const legal = LegalTextsSchema.safeParse(byKey.get('legal') ?? {});
+  const contact = byKey.get('operator_contact');
   return {
     invites_enabled: invites === undefined ? true : invites === true,
     release_notes: notes.success ? notes.data : [],
     auth: authSettingsDto(storedAuth, typeof byKey.get('auth_smtp_password') === 'string'),
+    legal: legal.success ? legal.data : { terms: '', privacy: '', guidelines: '' },
+    operator_contact: typeof contact === 'string' ? contact : '',
   };
 }
 
@@ -326,11 +335,14 @@ export interface AdminReportRaw {
   so_payload: unknown;
   so_status: string | null;
   sp_live: boolean | null;
+  // Wave 1 (§1.5)
+  category: string;
+  obj_live: boolean | null;
 }
 
 export const ADMIN_REPORT_SELECT = sql`
   SELECT r.id, r.kind, r.reason, r.status, r.created_at, r.closed_at, r.close_note,
-    r.context_consent,
+    r.context_consent, r.category,
     r.target_anon_thread_id, r.target_anon_message_id,
     r.target_object_type, r.target_object_id, r.target_overlay_id,
     row_to_json(rep.*) AS reporter,
@@ -347,7 +359,14 @@ export const ADMIN_REPORT_SELECT = sql`
       SELECT 1 FROM share_tokens st
       WHERE st.object_type = r.target_object_type AND st.object_id = r.target_object_id
         AND st.revoked_at IS NULL
-    ) AS sp_live
+    ) AS sp_live,
+    (CASE r.kind
+      WHEN 'post' THEN EXISTS (SELECT 1 FROM posts x WHERE x.id = r.target_object_id)
+      WHEN 'comment' THEN EXISTS (SELECT 1 FROM post_comments x WHERE x.id = r.target_object_id)
+      WHEN 'story' THEN EXISTS (SELECT 1 FROM stories x WHERE x.id = r.target_object_id AND x.expires_at > now())
+      WHEN 'listing' THEN EXISTS (SELECT 1 FROM listings x WHERE x.id = r.target_object_id)
+      WHEN 'group' THEN EXISTS (SELECT 1 FROM conversations x WHERE x.id = r.target_object_id)
+      ELSE NULL END) AS obj_live
   FROM reports r
   LEFT JOIN users rep ON rep.id = r.reporter_id
   LEFT JOIN users cb ON cb.id = r.closed_by
@@ -364,6 +383,7 @@ export function adminReportFromRaw(r: AdminReportRaw): AdminReport {
   return {
     id: r.id,
     kind,
+    category: r.category as AdminReport['category'],
     reporter: rawUserLite(r.reporter),
     reason: r.reason,
     status: r.status as AdminReport['status'],
@@ -431,6 +451,17 @@ export function adminReportFromRaw(r: AdminReportRaw): AdminReport {
             object_id: r.target_object_id,
             author: rawUserLite(r.target_user),
             gone: r.sp_live !== true,
+          }
+        : null,
+    // Wave 1 (§1.5): the object kinds — id + ATTACHED author + liveness.
+    target_object:
+      (kind === 'post' || kind === 'comment' || kind === 'story' || kind === 'listing' || kind === 'group') &&
+      r.target_object_id
+        ? {
+            object_type: kind,
+            object_id: r.target_object_id,
+            author: rawUserLite(r.target_user),
+            gone: r.obj_live !== true,
           }
         : null,
   };

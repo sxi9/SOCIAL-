@@ -11,6 +11,7 @@ import { api, ApiError } from '@/lib/api';
 import { HeicUnreadableError, maybeConvertImage } from '@/lib/imageUpload';
 import { createSupportTicket, listMySupportTickets } from '@/lib/support';
 import { toast } from '@/lib/toast';
+import { useInstanceInfo } from '@/lib/instance';
 import AppShell from '@/components/AppShell';
 import cm from '@/components/community.module.css';
 import sm from '@/components/settings.module.css';
@@ -31,6 +32,34 @@ const CATEGORY_INFO: Record<SupportCategory, { emoji: string; label: string }> =
   idea: { emoji: '💡', label: 'An idea' },
   safety: { emoji: '⚠️', label: 'Safety' },
 };
+
+function AboutBlock() {
+  const info = useInstanceInfo();
+  return (
+    <>
+      <h2>About</h2>
+      <div className="card">
+        <p style={{ margin: 0, fontSize: 14 }}>
+          <strong>Bored Chat</strong> · a self-hosted chat. No ads, no contact sync, no feed that never
+          ends.
+        </p>
+        <p className="muted small" style={{ margin: '6px 0 0' }}>
+          {info?.operator_contact ? (
+            <>
+              Hosted by <strong>{info.operator_contact}</strong> — appeals and questions go there.{' '}
+            </>
+          ) : (
+            'Hosted by whoever runs this server. '
+          )}
+        </p>
+        <p className="muted small" style={{ margin: '6px 0 0' }}>
+          <Link href="/terms">Terms</Link> · <Link href="/privacy">Privacy</Link> ·{' '}
+          <Link href="/guidelines">Community guidelines</Link>
+        </p>
+      </div>
+    </>
+  );
+}
 
 function HelpAndFeedback() {
   const [category, setCategory] = useState<SupportCategory>('question');
@@ -217,10 +246,8 @@ function HelpAndFeedback() {
           </>
         ) : null}
 
-        {/* Royal v2 "about" footer (proto ref 53) — no invented version number. */}
-        <p className="muted small" style={{ textAlign: 'center', margin: '28px 0 8px' }}>
-          Bored Chat · self-hosted
-        </p>
+        {/* Wave 1 §1.1: the About block — who runs this, where the rules live. */}
+        <AboutBlock />
       </div>
     </div>
   );

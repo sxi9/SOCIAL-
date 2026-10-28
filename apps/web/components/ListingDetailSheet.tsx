@@ -72,6 +72,7 @@ export default function ListingDetailSheet({
   );
 
   const mine = state.me?.id === listing.author.id;
+  const [reportListing, setReportListing] = useState(false); // Wave 1 §1.5
   const expired =
     listing.expires_at !== null && new Date(listing.expires_at).getTime() <= now;
   const live = listing.status === 'active' && !expired;
@@ -195,6 +196,18 @@ export default function ListingDetailSheet({
             Close listing
           </button>
         ) : null}
+        {!mine ? (
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setMenu(false);
+              setReportListing(true);
+            }}
+          >
+            Report this listing
+          </button>
+        ) : null}
         {mine ? (
           <button type="button" role="menuitem" className={bz.menuDanger} onClick={() => void remove()}>
             Delete listing
@@ -291,6 +304,12 @@ export default function ListingDetailSheet({
         )}
         {report ? (
           <ReportSheet target={{ kind: 'user', user_id: listing.author.id }} onClose={() => setReport(false)} />
+        ) : null}
+        {reportListing ? (
+          <ReportSheet
+            target={{ kind: 'listing', object_id: listing.id, user_id: listing.author.id }}
+            onClose={() => setReportListing(false)}
+          />
         ) : null}
 
         {/* Royal v2 (ref 37): "RIDE · 2 SEATS" letterspaced tag + serif title. */}

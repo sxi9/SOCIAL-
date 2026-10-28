@@ -6,11 +6,14 @@
 // reciprocal: hiding yours hides everyone else's from you.
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { REPORT_CATEGORY_LABELS } from '@socialchat/shared';
 import type {
   ActivityVisibility,
   AnonOptin,
   BeaconAudience,
   GroupAddPolicy,
+  MyReport,
+  MyReportsResponse,
   SettingsResponse,
   ShareLinkListItem,
   ShowLastSeen,
@@ -287,6 +290,9 @@ function PrivacySettings() {
             </Link>
           </div>
 
+          <h2>Your reports</h2>
+          <ReportsSection />
+
           {error ? <p className="error-text">{error}</p> : null}
         </div>
       )}
@@ -330,6 +336,53 @@ function ToggleRow({
       >
         {value ? 'On' : 'Off'}
       </button>
+    </div>
+  );
+}
+
+/** Wave 1 (§1.5): what I reported and where it stands — received →
+ * reviewed. Never the moderators' note, never what happened to anyone. */
+function ReportsSection() {
+  const [reports, setReports] = useState<MyReport[] | null>(null);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .get<MyReportsResponse>('/api/reports/mine')
+      .then((res) => {
+        if (!cancelled) setReports(res.reports);
+      })
+      .catch(() => {
+        if (!cancelled) setError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return (
+    <div className="card">
+      {error ? (
+        <p className="error-text">Could not load your reports.</p>
+      ) : reports === null ? (
+        <p className="muted small" style={{ margin: 0 }}>
+          Loading…
+        </p>
+      ) : reports.length === 0 ? (
+        <p className="muted small" style={{ margin: 0 }}>
+          Nothing reported yet. Every post, message, listing, story, plan, group and profile has a
+          Report entry in its ⋯ menu.
+        </p>
+      ) : (
+        reports.map((r) => (
+          <div key={r.id} style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '7px 0' }}>
+            <span style={{ flex: 1, minWidth: 0, fontSize: 13.5 }}>
+              <strong>{r.kind.replace('_', ' ')}</strong> · {REPORT_CATEGORY_LABELS[r.category]}
+              {r.reason ? <span className="muted"> — {r.reason.length > 60 ? `${r.reason.slice(0, 57)}…` : r.reason}</span> : null}
+            </span>
+            <span className="chip">{r.status}</span>
+          </div>
+        ))
+      )}
     </div>
   );
 }

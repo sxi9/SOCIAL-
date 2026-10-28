@@ -7,10 +7,68 @@
 // GET /api/call-selftest everyone consumes — a read-only environment fact,
 // NOT a PATCHable InstanceSettings field.
 import { useEffect, useState } from 'react';
-import type { CallSelftestResponse, InstanceSettings } from '@socialchat/shared';
+import { LEGAL_PAGES, type CallSelftestResponse, type InstanceSettings, type LegalTexts } from '@socialchat/shared';
 import { adminSettings, adminUpdateSettings } from '@/lib/admin';
 import { api } from '@/lib/api';
 import ad from '@/components/admin.module.css';
+
+/** Wave 1 (§1.1): operator contact + the three legal pages as markdown.
+ * Empty = the shipped default renders (see /terms etc. live). */
+function LegalEditor({ settings, onSaved }: { settings: InstanceSettings; onSaved: (s: InstanceSettings) => void }) {
+  const [contact, setContact] = useState(settings.operator_contact);
+  const [legal, setLegal] = useState<LegalTexts>(settings.legal);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  async function save(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setSaved(false);
+    try {
+      const res = await adminUpdateSettings({ operator_contact: contact.trim(), legal });
+      onSaved(res.settings);
+      setSaved(true);
+    } catch {
+      setError('Could not save — try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+  const LABELS: Record<(typeof LEGAL_PAGES)[number], string> = { terms: 'Terms (/terms)', privacy: 'Privacy (/privacy)', guidelines: 'Community guidelines (/guidelines)' };
+  return (
+    <div style={{ marginTop: 18 }}>
+      <h3>Operator &amp; legal</h3>
+      <p className={ad.note}>
+        The contact shows on the sign-in page, the About block, the 403 screens and the legal pages
+        (an email, a handle, a URL). Each page is markdown; leave one empty to keep the shipped
+        default text, which already states what this software stores.
+      </p>
+      <div className="field">
+        <label htmlFor="op-contact">Operator contact</label>
+        <input id="op-contact" className="input" value={contact} maxLength={200} onChange={(e) => setContact(e.target.value)} placeholder="e.g. hello@example.org or @someone" />
+      </div>
+      {LEGAL_PAGES.map((k) => (
+        <div className="field" key={k}>
+          <label htmlFor={`legal-${k}`}>{LABELS[k]}</label>
+          <textarea
+            id={`legal-${k}`}
+            className="input"
+            rows={6}
+            value={legal[k]}
+            placeholder="Empty = the shipped default"
+            onChange={(e) => setLegal((prev) => ({ ...prev, [k]: e.target.value }))}
+          />
+        </div>
+      ))}
+      {error ? <p className="error-text">{error}</p> : null}
+      {saved ? <p className="ok-text">Saved.</p> : null}
+      <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void save()}>
+        {busy ? 'Saving…' : 'Save operator & legal'}
+      </button>
+    </div>
+  );
+}
 
 export default function AdminSettingsPage() {
   const [settings, setSettings] = useState<InstanceSettings | null>(null);
@@ -81,6 +139,7 @@ export default function AdminSettingsPage() {
           </button>
         </div>
       )}
+      {settings ? <LegalEditor settings={settings} onSaved={setSettings} /> : null}
       <div className={ad.settingRow} style={{ marginTop: 14 }}>
         <div>
           <h3>Call relay (TURN)</h3>

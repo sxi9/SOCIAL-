@@ -148,6 +148,17 @@ export const users = pgTable(
     // the totp_enabled boolean. Both columns move together (shape CHECK).
     totpSecret: text('totp_secret'),
     totpEnabledAt: timestamptz('totp_enabled_at'),
+    // Wave 1 (migration 0018, AUDIT-PLAN §1.1/§1.8): NON-stored attestations
+    // (no DOB, #78b) — when the box was ticked. Pre-0018 accounts are NULL;
+    // discovery/roulette ask once before the first opt-in.
+    termsAcceptedAt: timestamptz('terms_accepted_at'),
+    ageAttestedAt: timestamptz('age_attested_at'),
+    // Wave 1 (migration 0018, §1.2): DELETE /api/users/me schedules; signing
+    // in during the grace cancels; the GC sweep tombstones at the due time
+    // (deleted_at set, identity scrubbed, content gone; the row stays so
+    // message history keeps a "Deleted account" author).
+    scheduledDeletionAt: timestamptz('scheduled_deletion_at'),
+    deletedAt: timestamptz('deleted_at'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },
@@ -1016,6 +1027,8 @@ export const reports = pgTable(
     // the retention GC like every stored IP.
     reporterIp: inet('reporter_ip'),
     reason: text('reason').notNull().default(''),
+    // Wave 1 (migration 0018, §1.5): the required pick — admin queue lanes.
+    category: text('category').notNull().default('other'),
     status: text('status').notNull().default('open'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     // v0.5b (migration 0006, API.md §1.41): the admin queue consumes this
@@ -1029,7 +1042,12 @@ export const reports = pgTable(
     // v0.8b (migration 0010) widens the kind set.
     kindCheck: check(
       'reports_kind_check',
-      sql`${t.kind} IN ('user','message','beacon','anon_message','story_overlay','share_page')`,
+      // Migration 0018: + the five object kinds (target_object_type = kind).
+      sql`${t.kind} IN ('user','message','beacon','anon_message','story_overlay','share_page','post','comment','story','listing','group')`,
+    ),
+    categoryCheck: check(
+      'reports_category_check',
+      sql`${t.category} IN ('spam','harassment','hate','nudity','self_harm','scam','impersonation','underage','off_platform','ip','other')`,
     ),
     reasonCheck: check('reports_reason_check', sql`char_length(${t.reason}) <= 500`),
     statusCheck: check('reports_status_check', sql`${t.status} IN ('open','closed')`),
@@ -1044,12 +1062,12 @@ export const reports = pgTable(
     targetObjectTypeCheck: check(
       'reports_target_object_type_check',
       // Migration 0017: + 'profile' (the profile share page's Report link).
-      sql`${t.targetObjectType} IN ('post','beacon','listing','story','group','profile')`,
+      sql`${t.targetObjectType} IN ('post','beacon','listing','story','group','profile','comment')`,
     ),
     // Exactly one target shape per kind (the 0003 CHECK, widened by 0010).
     targetCheck: check(
       'reports_target_check',
-      sql`(${t.kind} = 'user' AND ${t.targetUserId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetObjectType} IS NULL AND ${t.targetOverlayId} IS NULL AND ${t.targetAnonThreadId} IS NULL) OR (${t.kind} = 'message' AND ${t.targetConversationId} IS NOT NULL AND ${t.targetSeq} IS NOT NULL AND ${t.targetUserId} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetObjectType} IS NULL AND ${t.targetOverlayId} IS NULL AND ${t.targetAnonThreadId} IS NULL) OR (${t.kind} = 'beacon' AND ${t.targetBeaconId} IS NOT NULL AND ${t.targetUserId} IS NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetObjectType} IS NULL AND ${t.targetOverlayId} IS NULL AND ${t.targetAnonThreadId} IS NULL) OR (${t.kind} = 'anon_message' AND ${t.targetAnonThreadId} IS NOT NULL AND ${t.targetAnonMessageId} IS NOT NULL AND ${t.targetUserId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetObjectType} IS NULL AND ${t.targetOverlayId} IS NULL) OR (${t.kind} = 'story_overlay' AND ${t.targetObjectType} = 'story' AND ${t.targetObjectId} IS NOT NULL AND ${t.targetOverlayId} IS NOT NULL AND ${t.targetUserId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetAnonThreadId} IS NULL) OR (${t.kind} = 'share_page' AND ${t.targetObjectType} IS NOT NULL AND ${t.targetObjectId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetOverlayId} IS NULL AND ${t.targetAnonThreadId} IS NULL)`,
+      sql`(${t.kind} = 'user' AND ${t.targetUserId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetObjectType} IS NULL AND ${t.targetOverlayId} IS NULL AND ${t.targetAnonThreadId} IS NULL) OR (${t.kind} = 'message' AND ${t.targetConversationId} IS NOT NULL AND ${t.targetSeq} IS NOT NULL AND ${t.targetUserId} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetObjectType} IS NULL AND ${t.targetOverlayId} IS NULL AND ${t.targetAnonThreadId} IS NULL) OR (${t.kind} = 'beacon' AND ${t.targetBeaconId} IS NOT NULL AND ${t.targetUserId} IS NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetObjectType} IS NULL AND ${t.targetOverlayId} IS NULL AND ${t.targetAnonThreadId} IS NULL) OR (${t.kind} = 'anon_message' AND ${t.targetAnonThreadId} IS NOT NULL AND ${t.targetAnonMessageId} IS NOT NULL AND ${t.targetUserId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetObjectType} IS NULL AND ${t.targetOverlayId} IS NULL) OR (${t.kind} = 'story_overlay' AND ${t.targetObjectType} = 'story' AND ${t.targetObjectId} IS NOT NULL AND ${t.targetOverlayId} IS NOT NULL AND ${t.targetUserId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetAnonThreadId} IS NULL) OR (${t.kind} = 'share_page' AND ${t.targetObjectType} IS NOT NULL AND ${t.targetObjectId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetOverlayId} IS NULL AND ${t.targetAnonThreadId} IS NULL) OR (${t.kind} IN ('post','comment','story','listing','group') AND ${t.targetObjectType} = ${t.kind} AND ${t.targetObjectId} IS NOT NULL AND ${t.targetUserId} IS NOT NULL AND ${t.targetConversationId} IS NULL AND ${t.targetSeq} IS NULL AND ${t.targetBeaconId} IS NULL AND ${t.targetOverlayId} IS NULL AND ${t.targetAnonThreadId} IS NULL)`,
     ),
     // context_consent exists only on message reports; only non-user
     // share-page rows may lack a reporter.

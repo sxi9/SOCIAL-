@@ -4,11 +4,13 @@
 import { cache } from 'react';
 import { headers } from 'next/headers';
 import {
+  PublicInstanceInfoSchema,
   PublicProfileResponseSchema,
   SHARE_TOKEN_REGEX,
   USERNAME_REGEX,
   SharePageResponseSchema,
   type ProfileHero,
+  type PublicInstanceInfo,
   type SharePage,
 } from '@socialchat/shared';
 
@@ -58,6 +60,25 @@ export const fetchProfileHero = cache(async (username: string): Promise<ProfileH
  * Returns null for any 404 (unknown/revoked/no-longer-public — byte-identical
  * by contract, so the page renders ONE honest "nothing here" state).
  */
+/** Wave 1 (§1.1): GET /api/instance through API_ORIGIN — the legal texts
+ * (resolved) and the operator contact. One read per request. */
+export const fetchInstanceInfo = cache(async (): Promise<PublicInstanceInfo | null> => {
+  const apiOrigin = process.env.API_ORIGIN ?? 'http://localhost:3001';
+  const h = await headers();
+  const xff = h.get('x-forwarded-for');
+  try {
+    const res = await fetch(`${apiOrigin}/api/instance`, {
+      cache: 'no-store',
+      ...(xff ? { headers: { 'x-forwarded-for': xff } } : {}),
+    });
+    if (!res.ok) return null;
+    const parsed = PublicInstanceInfoSchema.safeParse(await res.json());
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+});
+
 export async function fetchSharePage(token: string, cursor?: string): Promise<SharePage | null> {
   if (!SHARE_TOKEN_REGEX.test(token)) return null;
   const apiOrigin = process.env.API_ORIGIN ?? 'http://localhost:3001';

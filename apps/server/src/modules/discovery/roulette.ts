@@ -33,6 +33,7 @@ export async function rouletteRoutes(fastify: FastifyInstance): Promise<void> {
   // re-join refreshes the entry (ZADD updates the score).
   app.post('/api/roulette/join', { preHandler: requireAuth }, async (req) => {
     const { user } = authed(req);
+    if (user.ageAttestedAt === null) throw forbidden('age_attestation_required'); // Wave 1 §1.8
     const optin = await liveOptinOf(user.id);
     if (!optin) throw forbidden('discovery_not_opted_in');
     await redis.zadd(ROULETTE_QUEUE_KEY, Date.now(), user.id);

@@ -17,6 +17,7 @@ import EffectOverlay from './EffectOverlay';
 import ExpectationFeedback from './ExpectationFeedback';
 import Mascot from './Mascot';
 import PushExplainer from './PushExplainer';
+import SafetyStrip from './SafetyStrip';
 import SpotlightTour from './SpotlightTour';
 import Toast from './Toast';
 import styles from './discovery.module.css';
@@ -95,6 +96,7 @@ function MatchOverlay() {
             {match.user.display_name} waved back. The hard part is over — there&rsquo;s an
             icebreaker waiting in your new chat.
           </p>
+          <SafetyStrip style={{ marginTop: 10, textAlign: 'left' }} />
           <button
             type="button"
             className="btn btn-primary"

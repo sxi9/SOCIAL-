@@ -11,6 +11,7 @@ import type { Story, StoryAuthorGroup, StoryCanvasMode, UserLite } from '@social
 import { canOsShare, saveAttachment, shareAttachment } from '@/lib/osShare';
 import { deleteStory, expiresLabel, setCanvasMode, storyViewers, viewStory } from '@/lib/stories';
 import ShareSheet from './ShareSheet';
+import ReportSheet from './ReportSheet';
 import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
 import { useReducedMotion } from '@/lib/useReducedMotion';
@@ -43,6 +44,10 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
   // up — otherwise the story advances underneath and the sheet keeps the
   // previous story's link (Slice C review, 2026-10-27).
   const [shareOpen, setShareOpen] = useState(false);
+  // Wave 1 §1.5: the target is captured at tap time — the viewer may step
+  // on underneath, the report never swaps to another story.
+  const [reportTarget, setReportTarget] = useState<{ story_id: string; author_id: string } | null>(null);
+  const reportOpen = reportTarget !== null;
   // v0.8b §1.66: canvas-tool / chip interaction pauses the auto-advance.
   const [canvasBusy, setCanvasBusy] = useState(false);
   const [gone, setGone] = useState<Set<string>>(new Set()); // deleted own stories
@@ -96,7 +101,7 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
     setAuthorDone(false);
   }, [gi, si, story?.id]);
   useEffect(() => {
-    if (!story || isVideo || reducedMotion || paused || viewersOpen || shareOpen || authorDone || canvasBusy) return;
+    if (!story || isVideo || reducedMotion || paused || viewersOpen || shareOpen || reportOpen || authorDone || canvasBusy) return;
     const timer = setInterval(() => {
       elapsedRef.current += 100;
       setProgress(Math.min(1, elapsedRef.current / IMAGE_MS));
@@ -107,15 +112,15 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
     }, 100);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gi, si, story?.id, isVideo, reducedMotion, paused, viewersOpen, shareOpen, authorDone, canvasBusy]);
+  }, [gi, si, story?.id, isVideo, reducedMotion, paused, viewersOpen, shareOpen, reportOpen, authorDone, canvasBusy]);
 
   // Pause/resume the video element with the hold gesture (and under any sheet).
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    if (paused || viewersOpen || shareOpen || canvasBusy) v.pause();
+    if (paused || viewersOpen || shareOpen || reportOpen || canvasBusy) v.pause();
     else void v.play().catch(() => undefined);
-  }, [paused, viewersOpen, shareOpen, canvasBusy, story?.id]);
+  }, [paused, viewersOpen, shareOpen, reportOpen, canvasBusy, story?.id]);
 
   const advanceAuto = useCallback(() => {
     // Timer end: next story of the SAME author, else stop and ask for a tap.
@@ -162,7 +167,7 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
   // steals a keystroke from a text field (the chat picker's search box).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (viewersOpen || shareOpen) return;
+      if (viewersOpen || shareOpen || reportOpen) return;
       const t = e.target as HTMLElement | null;
       const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
       if (e.key === 'Escape') onClose();
@@ -175,7 +180,7 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, tapNext, tapPrev, viewersOpen, shareOpen]);
+  }, [onClose, tapNext, tapPrev, viewersOpen, shareOpen, reportOpen]);
 
   // Hold-to-pause vs tap: a short press steps, a long press pauses.
   const zoneDown = (zone: 'left' | 'right') => {
@@ -355,8 +360,19 @@ export default function StoryViewer({ groups, startGroup, meId, onClose }: Story
             <button type="button" className={st.viewerBtn} onClick={() => void shareOut()}>
               ⇪ Share…
             </button>
+            <button type="button" className={st.viewerBtn} onClick={() => setReportTarget({ story_id: story.id, author_id: story.author.id })}>
+              ⚑ Report
+            </button>
           </div>
         )}
+        {reportTarget ? (
+          <ReportSheet
+            key={reportTarget.story_id}
+            target={{ kind: 'story', object_id: reportTarget.story_id, user_id: reportTarget.author_id }}
+            onClose={() => setReportTarget(null)}
+            zIndex={61}
+          />
+        ) : null}
       </div>
       {viewersOpen ? <StoryViewersSheet storyId={story.id} onClose={() => setViewersOpen(false)} /> : null}
       {/* keyed by story so a step to another story remounts (fresh mint).

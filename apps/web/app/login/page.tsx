@@ -39,6 +39,7 @@ import { resetMeProbe } from '@/lib/shareAuth';
 import Mascot, { caretPoint, type MascotHandle, type MascotState } from '@/components/Mascot';
 import QrCode from '@/components/QrCode';
 import authStyles from '@/components/auth.module.css';
+import HostedBy from '@/components/HostedBy';
 import ap from '@/components/authpack.module.css';
 
 // The v0.9 login is a small state machine in one card (so the mascot/wordmark
@@ -605,6 +606,14 @@ function LoginForm() {
   return (
     <form onSubmit={(e) => void submitPassword(e)}>
       {mascotEl}
+      {search.get('deleted') ? (
+        // Wave 1 §1.2: the landing after scheduling a deletion — the one
+        // place the way back is spelled out.
+        <p className="ok-text" style={{ marginTop: 0 }}>
+          Your account is scheduled for deletion on {search.get('deleted')}. Signing in before then
+          cancels it.
+        </p>
+      ) : null}
       <div className="field">
         <label htmlFor="login-id">Username or email</label>
         <input
@@ -698,6 +707,7 @@ function LoginForm() {
             Join the fun
           </Link>
         </p>
+        <HostedBy />
         <p className={authStyles.footLineSmall}>
           <button
             type="button"

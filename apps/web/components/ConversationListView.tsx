@@ -16,6 +16,21 @@ import RescueSheet from './RescueSheet';
 import StoriesStrip from './StoriesStrip';
 import WhatsNewCard from './WhatsNewCard';
 import styles from './list.module.css';
+
+/** Wave 1 (§1.6): my own participant row's muted_until, still in the future. */
+function isMuted(item: ConversationListItem, meId: string | undefined): boolean {
+  const mine = item.participants.find((p) => p.user.id === meId);
+  return !!mine?.muted_until && new Date(mine.muted_until).getTime() > Date.now();
+}
+
+function MutedIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M6 17h12l-1.5-2V11a4.5 4.5 0 0 0-9 0v4L6 17Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="M10 20h4M4 4l16 16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
 import tb from './topbar.module.css';
 
 function sortKey(item: ConversationListItem): number {
@@ -221,6 +236,11 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
                           <PinIcon />
                         </span>
                       ) : null}
+                      {isMuted(item, meId) ? (
+                        <span className={styles.pinGlyph} aria-label="muted">
+                          <MutedIcon />
+                        </span>
+                      ) : null}
                       {item.last_message_at ? (
                         <span
                           className={`${styles.time}${item.unread_count > 0 ? ` ${styles.timeUnread}` : ''}`}
@@ -242,7 +262,9 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
                         {messageSnippet(item.last_message)}
                       </span>
                       {item.unread_count > 0 ? (
-                        <span className={`badge ${styles.unreadBadge}`}>{item.unread_count}</span>
+                        <span className={`badge ${styles.unreadBadge}${isMuted(item, meId) ? ` ${styles.unreadBadgeMuted}` : ''}`}>
+                          {item.unread_count}
+                        </span>
                       ) : null}
                     </span>
                   </span>

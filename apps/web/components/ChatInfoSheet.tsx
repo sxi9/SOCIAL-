@@ -38,6 +38,7 @@ import { toast } from '@/lib/toast';
 import { useAppState } from '@/lib/useStore';
 import Avatar from './Avatar';
 import ChannelMembersSheet from './ChannelMembersSheet';
+import { DmSafetyRows, GroupReportRow, MuteRow } from './ChatSafetyRows';
 import GroupSettingsSection from './GroupSettingsSection';
 import ImageEditSheet from './ImageEditSheet';
 import { isGhost, isSupportConversation, removeMember, setMemberRole, transferConversation } from '@/lib/groups';
@@ -210,7 +211,9 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
     if (leaveBusy) return;
     const confirmText = isChannel
       ? 'Leave this channel? You can rejoin with an invite link.'
-      : 'Leave this group?';
+      : conv.type === 'dm'
+        ? 'End this chat? It leaves your list; they keep their copy and are not told.'
+        : 'Leave this group?';
     if (!(await confirmDialog(confirmText))) return;
     setLeaveBusy(true);
     setError(null);
@@ -514,6 +517,12 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
           </section>
         ) : null}
         {gaError ? <p className="error-text">{gaError}</p> : null}
+
+        {/* Wave 1 §1.6/§1.8: Mute first; a DM gets Report · Block · End chat;
+            a plain group a Report row for non-admins. */}
+        <MuteRow conv={conv} meId={meId} />
+        {conv.type === 'dm' ? <DmSafetyRows conv={conv} meId={meId} onEndChat={() => void leaveConversation()} /> : null}
+        {plainGroup && !groupAdmin ? <GroupReportRow conv={conv} /> : null}
 
         {/* v0.8b §1.68: visibility modes, description, join queue & masks —
             GROUPS only (DMs and channels stay private; the Support

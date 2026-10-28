@@ -66,6 +66,9 @@ import {
   REACTION_EMOJI_MAX_LEN,
   REACTION_KINDS,
   REPORT_REASON_MAX_CHARS,
+  REPORT_CATEGORIES,
+  LEGAL_PAGE_MAX_CHARS,
+  OPERATOR_CONTACT_MAX_CHARS,
   TTT_BOARD_CELLS,
   USERNAME_REGEX,
   VIBE_CHECK_PROMPT_MAX_CHARS,
@@ -269,6 +272,11 @@ export const UserPrivateSchema = UserPublicSchema.extend({
   // v0.9 (§1.73): is TOTP 2FA armed on this account. The secret itself NEVER
   // serializes anywhere. default(false) keeps pre-v0.9 payloads parsing clean.
   totp_enabled: z.boolean().default(false),
+  // Wave 1 (migration 0018): the signup attestations (null on pre-0018
+  // accounts — discovery asks once) and the pending self-deletion, if any.
+  terms_accepted_at: IsoDateTimeSchema.nullable().default(null),
+  age_attested_at: IsoDateTimeSchema.nullable().default(null),
+  scheduled_deletion_at: IsoDateTimeSchema.nullable().default(null),
 });
 export type UserPrivate = z.infer<typeof UserPrivateSchema>;
 
@@ -804,7 +812,7 @@ export type ConversationListItem = z.infer<typeof ConversationListItemSchema>;
 
 export const RegisterRequestSchema = z.object({
   username: z.string().regex(USERNAME_REGEX),
-  email: z.string().email(),
+  email: z.string().email().refine((e) => !/@deleted\.invalid$/i.test(e), 'reserved'),
   password: z.string().min(PASSWORD_MIN_LENGTH),
   display_name: z.string().min(1).max(100),
   // v0.2 (§1.11): registering through /join/<token> auto-accepts the invite —
@@ -814,6 +822,10 @@ export const RegisterRequestSchema = z.object({
   // (e.g. a link truncated by an SMS/mail client) must degrade to
   // `invite: null` in the handler — not 400 at schema validation.
   invite_token: z.string().max(256).optional(),
+  // Wave 1 (§1.1/§1.8, migration 0018): both boxes are REQUIRED and stored
+  // as timestamps (terms_accepted_at / age_attested_at) — never a DOB.
+  terms_accepted: z.literal(true),
+  age_attested: z.literal(true),
 });
 export type RegisterRequest = z.infer<typeof RegisterRequestSchema>;
 
@@ -1345,22 +1357,43 @@ export const ReportKindSchema = z.enum([
   'anon_message',
   'story_overlay',
   'share_page',
+  // Wave 1 (§1.5, migration 0018): the object kinds the sheet could not
+  // name — stored as target_object_type = kind + target_object_id, with the
+  // author SERVER-attached in target_user_id.
+  'post',
+  'comment',
+  'story',
+  'listing',
+  'group',
 ]);
+// Wave 1 (§1.5): the REQUIRED category beside the free text.
+export const ReportCategorySchema = z.enum(REPORT_CATEGORIES);
+export type ReportCategory = z.infer<typeof ReportCategorySchema>;
 export type ReportKind = z.infer<typeof ReportKindSchema>;
 
 // Message identity is (conversation_id, seq) — the messages PK, same as
 // reactions. Targets are stored WITHOUT FKs (reports are an audit log that
 // must survive target deletion; see migration 0003).
+function objectReport<K extends 'post' | 'comment' | 'story' | 'listing' | 'group'>(kind: K) {
+  return z.object({
+    kind: z.literal(kind),
+    object_id: UuidSchema,
+    category: ReportCategorySchema,
+    reason: z.string().max(REPORT_REASON_MAX_CHARS).default(''),
+  });
+}
 export const CreateReportRequestSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('user'),
     user_id: UuidSchema,
+    category: ReportCategorySchema,
     reason: z.string().max(REPORT_REASON_MAX_CHARS).default(''),
   }),
   z.object({
     kind: z.literal('message'),
     conversation_id: UuidSchema,
     seq: z.number().int().positive(),
+    category: ReportCategorySchema,
     reason: z.string().max(REPORT_REASON_MAX_CHARS).default(''),
     // v0.8b (§1.69, FEATURES #81): the reporter's EXPLICIT consent to also
     // disclose the REPORT_CONTEXT_RADIUS messages either side of this one to
@@ -1372,6 +1405,7 @@ export const CreateReportRequestSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('beacon'),
     beacon_id: UuidSchema,
+    category: ReportCategorySchema,
     reason: z.string().max(REPORT_REASON_MAX_CHARS).default(''),
   }),
   // v0.8b (§1.62): reporting an anonymous message ATTACHES the reported
@@ -1382,6 +1416,7 @@ export const CreateReportRequestSchema = z.discriminatedUnion('kind', [
     kind: z.literal('anon_message'),
     thread_id: UuidSchema,
     message_id: UuidSchema,
+    category: ReportCategorySchema,
     reason: z.string().max(REPORT_REASON_MAX_CHARS).default(''),
   }),
   // v0.8b (§1.66): reporting a canvas overlay attaches the overlay author
@@ -1391,10 +1426,34 @@ export const CreateReportRequestSchema = z.discriminatedUnion('kind', [
     kind: z.literal('story_overlay'),
     story_id: UuidSchema,
     overlay_id: UuidSchema,
+    category: ReportCategorySchema,
     reason: z.string().max(REPORT_REASON_MAX_CHARS).default(''),
   }),
+  // Wave 1 (§1.5): the object kinds. The object must be referenceable by
+  // the reporter (its own visibility rule); the author is attached by the
+  // server. One shape, five kinds.
+  objectReport('post'),
+  objectReport('comment'),
+  objectReport('story'),
+  objectReport('listing'),
+  objectReport('group'),
 ]);
 export type CreateReportRequest = z.infer<typeof CreateReportRequestSchema>;
+
+// Wave 1 (§1.5): GET /api/reports/mine — what I sent and where it stands
+// (received → reviewed). Never the moderators' notes, never the outcome on
+// the other person (no one is told anything about anyone).
+export const MyReportSchema = z.object({
+  id: UuidSchema,
+  kind: ReportKindSchema,
+  category: ReportCategorySchema,
+  reason: z.string(),
+  status: z.enum(['received', 'reviewed']),
+  created_at: IsoDateTimeSchema,
+});
+export type MyReport = z.infer<typeof MyReportSchema>;
+export const MyReportsResponseSchema = z.object({ reports: z.array(MyReportSchema) });
+export type MyReportsResponse = z.infer<typeof MyReportsResponseSchema>;
 
 // v0.8b (§1.67): the NON-USER report from a public share page — its own
 // unauthenticated endpoint (POST /api/share/:token/report), hard rate-limited
@@ -1402,6 +1461,7 @@ export type CreateReportRequest = z.infer<typeof CreateReportRequestSchema>;
 // ordinary reports row with reporter_id NULL + the resolved share target.
 export const SharePageReportRequestSchema = z.object({
   reason: z.string().min(1).max(REPORT_REASON_MAX_CHARS),
+  category: ReportCategorySchema.default('other'),
 });
 export type SharePageReportRequest = z.infer<typeof SharePageReportRequestSchema>;
 
@@ -2752,6 +2812,8 @@ export type AdminSetPasswordRequest = z.infer<typeof AdminSetPasswordRequestSche
 export const AdminReportSchema = z.object({
   id: UuidSchema,
   kind: ReportKindSchema, // v0.8b widens to the full §1.14 kind set
+  // Wave 1 (§1.5): the reporter's required pick — the queue's lanes.
+  category: ReportCategorySchema.default('other'),
   // null = account deleted since — or, v0.8b (§1.67), a NON-USER share-page
   // report (kind 'share_page' stores reporter_id NULL by design).
   reporter: UserLiteSchema.nullable(),
@@ -2822,11 +2884,24 @@ export const AdminReportSchema = z.object({
     })
     .nullable()
     .default(null),
+  // Wave 1 (§1.5): the object kinds' preview — the id, the ATTACHED author
+  // and whether the object still exists (reports outlive their targets).
+  target_object: z
+    .object({
+      object_type: z.enum(['post', 'comment', 'story', 'listing', 'group']),
+      object_id: UuidSchema,
+      author: UserLiteSchema.nullable(),
+      gone: z.boolean(),
+    })
+    .nullable()
+    .default(null),
 });
 export type AdminReport = z.infer<typeof AdminReportSchema>;
 
 export const AdminReportsQuerySchema = z.object({
   status: z.enum(['open', 'closed']).optional(), // omitted = both
+  // Wave 1 (§1.5): the lanes.
+  category: ReportCategorySchema.optional(),
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(PAGE_SIZE_MAX).default(PAGE_SIZE_DEFAULT),
 });
@@ -2964,12 +3039,34 @@ const AUTH_SETTINGS_DEFAULT: AuthSettings = {
 // v0.8a (§1.61) adds release_notes (newest first; default [] keeps pre-v0.8
 // payloads parsing clean) — migrations seed it, admin PATCH may curate it.
 // v0.9 (§1.74) adds auth (default keeps pre-v0.9 payloads parsing clean).
+// Wave 1 (§1.1): operator-editable legal markdown, one string per page;
+// empty = the shipped default (lib/legal.ts) renders. operator_contact is
+// the appeal / About line (an email, a handle, a URL — free text).
+export const LegalTextsSchema = z.object({
+  terms: z.string().max(LEGAL_PAGE_MAX_CHARS).default(''),
+  privacy: z.string().max(LEGAL_PAGE_MAX_CHARS).default(''),
+  guidelines: z.string().max(LEGAL_PAGE_MAX_CHARS).default(''),
+});
+export type LegalTexts = z.infer<typeof LegalTextsSchema>;
+
 export const InstanceSettingsSchema = z.object({
   invites_enabled: z.boolean(),
   release_notes: z.array(ReleaseNoteSchema).default([]),
   auth: AuthSettingsSchema.default(AUTH_SETTINGS_DEFAULT),
+  legal: LegalTextsSchema.default({ terms: '', privacy: '', guidelines: '' }),
+  operator_contact: z.string().max(OPERATOR_CONTACT_MAX_CHARS).default(''),
 });
 export type InstanceSettings = z.infer<typeof InstanceSettingsSchema>;
+
+// Wave 1 (§1.1): GET /api/instance — UNAUTHENTICATED. What the legal pages,
+// the auth scenes ("Hosted by") and the About block read. The legal texts
+// come back RESOLVED (operator text, else the shipped default).
+export const PublicInstanceInfoSchema = z.object({
+  operator_contact: z.string(),
+  legal: z.object({ terms: z.string(), privacy: z.string(), guidelines: z.string() }),
+  age_min: z.number().int(),
+});
+export type PublicInstanceInfo = z.infer<typeof PublicInstanceInfoSchema>;
 
 // v0.9 (§1.74): the auth PATCH shape — deep-partial, plus the write-only
 // smtp.password (set a string to store it encrypted, null to clear it; it
@@ -2993,6 +3090,8 @@ export const UpdateInstanceSettingsRequestSchema = z.object({
   invites_enabled: z.boolean().optional(),
   release_notes: z.array(ReleaseNoteSchema).optional(),
   auth: AuthSettingsPatchSchema.optional(),
+  legal: LegalTextsSchema.partial().optional(),
+  operator_contact: z.string().max(OPERATOR_CONTACT_MAX_CHARS).optional(),
 });
 export type UpdateInstanceSettingsRequest = z.infer<typeof UpdateInstanceSettingsRequestSchema>;
 
@@ -4308,6 +4407,50 @@ export const ChangePasswordRequestSchema = z.object({
   current_password: z.string().min(1),
   new_password: z.string().min(PASSWORD_MIN_LENGTH),
 });
+
+// ---------------------------------------------------------------------------
+// Wave 1 (AUDIT-PLAN §1.2/§1.6/§1.8, migration 0018) — account lifecycle,
+// mute, age attestation.
+// ---------------------------------------------------------------------------
+
+// DELETE /api/users/me — password re-proof; schedules the tombstone
+// ACCOUNT_DELETION_GRACE_DAYS out and signs every device out. Signing in
+// again before then cancels it.
+export const DeleteMeRequestSchema = z.object({ password: z.string().min(1) });
+export type DeleteMeRequest = z.infer<typeof DeleteMeRequestSchema>;
+export const DeleteMeResponseSchema = z.object({ scheduled_deletion_at: IsoDateTimeSchema });
+export type DeleteMeResponse = z.infer<typeof DeleteMeResponseSchema>;
+
+// PATCH /api/users/me/email — re-proof; the new address is unverified.
+export const ChangeEmailRequestSchema = z.object({
+  password: z.string().min(1),
+  // @deleted.invalid is the tombstone's reserved domain (lib/accountDeletion).
+  email: z.string().email().refine((e) => !/@deleted\.invalid$/i.test(e), 'reserved'),
+});
+export type ChangeEmailRequest = z.infer<typeof ChangeEmailRequestSchema>;
+
+// GET /api/users/me/export — my data, as JSON (the admin export's shape plus
+// my profile entries/media and the messages I sent).
+export const MyExportSchema = z.object({
+  exported_at: IsoDateTimeSchema,
+  user: z.record(z.unknown()),
+  settings: z.record(z.unknown()),
+  profile: z.record(z.unknown()),
+  posts: z.array(z.record(z.unknown())),
+  listings: z.array(z.record(z.unknown())),
+  beacons: z.array(z.record(z.unknown())),
+  messages: z.array(z.record(z.unknown())),
+  reviews_received: z.array(z.record(z.unknown())),
+});
+export type MyExport = z.infer<typeof MyExportSchema>;
+
+// PATCH /api/conversations/:id/mute — my own participant row's muted_until:
+// an ISO instant (far future = "always", MUTE_FOREVER_ISO), or null to
+// unmute. Viewer-private: nobody else learns it.
+export const MuteConversationRequestSchema = z.object({
+  until: IsoDateTimeSchema.nullable(),
+});
+export type MuteConversationRequest = z.infer<typeof MuteConversationRequestSchema>;
 export type ChangePasswordRequest = z.infer<typeof ChangePasswordRequestSchema>;
 export const ChangePasswordResponseSchema = z.object({ ok: z.literal(true) });
 export type ChangePasswordResponse = z.infer<typeof ChangePasswordResponseSchema>;

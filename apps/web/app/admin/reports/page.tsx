@@ -5,7 +5,7 @@
 // The only quoted content on this page is the reporter's own reason text.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AdminContextMessage, AdminReport } from '@socialchat/shared';
-import { ADMIN_NOTE_MAX_CHARS } from '@socialchat/shared';
+import { ADMIN_NOTE_MAX_CHARS, REPORT_CATEGORIES, REPORT_CATEGORY_LABELS, type ReportCategory } from '@socialchat/shared';
 import { ApiError } from '@/lib/api';
 import { adminCloseReport, adminReportContext, adminReports } from '@/lib/admin';
 import { formatTime } from '@/lib/format';
@@ -16,6 +16,7 @@ type StatusFilter = 'open' | 'closed' | null;
 
 export default function AdminReportsPage() {
   const [status, setStatus] = useState<StatusFilter>('open');
+  const [category, setCategory] = useState<ReportCategory | null>(null); // Wave 1 §1.5 lanes
   const [reports, setReports] = useState<AdminReport[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -25,14 +26,14 @@ export default function AdminReportsPage() {
     const seq = (fetchSeq.current += 1);
     setError(null);
     try {
-      const res = await adminReports(status, null);
+      const res = await adminReports(status, null, category);
       if (fetchSeq.current !== seq) return;
       setReports(res.reports);
       setCursor(res.next_cursor);
     } catch {
       if (fetchSeq.current === seq) setError('Could not load reports.');
     }
-  }, [status]);
+  }, [status, category]);
 
   useEffect(() => {
     void refresh();
@@ -41,7 +42,7 @@ export default function AdminReportsPage() {
   async function more(): Promise<void> {
     if (!cursor) return;
     try {
-      const res = await adminReports(status, cursor);
+      const res = await adminReports(status, cursor, category);
       setReports((prev) => [...(prev ?? []), ...res.reports]);
       setCursor(res.next_cursor);
     } catch {
@@ -74,6 +75,16 @@ export default function AdminReportsPage() {
             onClick={() => setStatus(f.v)}
           >
             {f.label}
+          </button>
+        ))}
+      </div>
+      <div className={ad.levelChips} role="radiogroup" aria-label="Category" style={{ marginTop: 6 }}>
+        <button type="button" role="radio" aria-checked={category === null} className={`btn${category === null ? ' btn-primary' : ''}`} onClick={() => setCategory(null)}>
+          Every reason
+        </button>
+        {REPORT_CATEGORIES.map((c) => (
+          <button key={c} type="button" role="radio" aria-checked={category === c} className={`btn${category === c ? ' btn-primary' : ''}`} onClick={() => setCategory(c)}>
+            {REPORT_CATEGORY_LABELS[c]}
           </button>
         ))}
       </div>
@@ -137,6 +148,7 @@ function ReportCard({ report, onClosed }: { report: AdminReport; onClosed: (r: A
           {report.status}
         </span>
         <span className={ad.flag}>{report.kind}</span>
+        <span className={ad.flag}>{REPORT_CATEGORY_LABELS[report.category]}</span>
         <span>
           by{' '}
           {report.reporter ? (
@@ -201,6 +213,13 @@ function ReportCard({ report, onClosed }: { report: AdminReport; onClosed: (r: A
                   ? ` · ${report.target_overlay.payload.emoji}`
                   : ' · a doodle stroke'
               : ' · story expired since'}
+          </>
+        ) : report.target_object ? (
+          // Wave 1 §1.5: the object kinds — id + attached author + liveness.
+          <>
+            {report.target_object.object_type} <code>{report.target_object.object_id.slice(0, 8)}</code> by{' '}
+            {report.target_object.author ? <strong>@{report.target_object.author.username}</strong> : 'deleted account'}
+            {report.target_object.gone ? ' · no longer exists' : ''}
           </>
         ) : report.target_share_page ? (
           // v0.8b §1.67: a non-user report from a public share page.

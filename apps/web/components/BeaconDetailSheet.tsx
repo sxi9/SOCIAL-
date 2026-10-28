@@ -28,6 +28,7 @@ import Avatar from './Avatar';
 import BeaconEditSheet from './BeaconEditSheet';
 import { LocationChip } from './LocationPicker';
 import Portal from './Portal';
+import SafetyStrip from './SafetyStrip';
 import styles from './beacons.module.css';
 import { confirmDialog } from '@/lib/confirm';
 
@@ -179,6 +180,7 @@ export default function BeaconDetailSheet({
               ×
             </button>
           </div>
+          <SafetyStrip style={{ margin: '4px 0 8px' }} />
 
           {/* Royal v2 (ref 35): decorative map strip — pulsing pin + the
               place pill (the chip keeps its link-out behavior). The pulse

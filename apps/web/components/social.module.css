@@ -141,6 +141,11 @@
 
 .storiesStrip {
   display: flex;
+  /* iOS Safari (owner report, 2026-10-28): a scroll container's automatic
+     minimum size is 0, so as a flex item of the .page column it was
+     SHRUNK when the chat list overflowed — the rings sat clipped behind
+     the first row. Never shrink the tray; its height is its content's. */
+  flex: none;
   gap: 12px;
   overflow-x: auto;
   padding: 10px 16px 6px;

@@ -2,7 +2,7 @@
 // httpOnly cookie, sha256 stored, 30-day sliding expiry.
 import { createHash, randomBytes } from 'node:crypto';
 import argon2 from 'argon2';
-import { and, eq, ne } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 import { WS_CLOSE_CODES } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
@@ -39,11 +39,22 @@ export function newSessionToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
+/** Wave 1 (§1.2): a session being minted IS the way back from a scheduled
+ * deletion — password, passkey, TOTP-finished, recovery-reset and QR-link
+ * logins all pass through here, AFTER every factor. */
+async function cancelScheduledDeletion(userId: string): Promise<void> {
+  await db
+    .update(schema.users)
+    .set({ scheduledDeletionAt: null, updatedAt: new Date() })
+    .where(and(eq(schema.users.id, userId), sql`${schema.users.scheduledDeletionAt} IS NOT NULL`));
+}
+
 export async function createSession(
   userId: string,
   userAgent: string | null,
   ip: string | null,
 ): Promise<{ token: string; session: SessionRow }> {
+  await cancelScheduledDeletion(userId);
   const token = newSessionToken();
   const [session] = await db
     .insert(schema.sessions)
@@ -76,7 +87,9 @@ export async function authenticateToken(rawToken: string): Promise<AuthContext |
   // upgrade), not just at login. revokeAllSessions is one-shot — a login racing
   // the admin action can insert a session row after its delete ran; this makes
   // that stray session dead on first use and destroys it.
-  if (row.user.suspendedAt !== null || row.user.bannedAt !== null) {
+  // Wave 1 (§1.2): a tombstoned account has no sessions by construction;
+  // the check is belt-and-braces like the suspend one above it.
+  if (row.user.suspendedAt !== null || row.user.bannedAt !== null || row.user.deletedAt !== null) {
     await db.delete(schema.sessions).where(eq(schema.sessions.id, row.session.id));
     return null;
   }

@@ -643,6 +643,7 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
         id: newId(),
         reporterId: null,
         kind: 'share_page',
+        category: req.body.category,
         reason: req.body.reason,
         targetObjectType: row.objectType,
         targetObjectId: row.objectId,

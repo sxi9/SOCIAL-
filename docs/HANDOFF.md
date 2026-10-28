@@ -70,9 +70,21 @@ Updated 2026-10-28. A new session continues this project by reading
   client page (`PublicProfileClient`) which reads `?msg=1` / `?call=1` and
   opens the DM; `ShareSheet` grew `handle` (Copy @username) and `fixedUrl`
   (someone else's profile shares its `/u/` address, no token); the own tab
-  topbar has a Share icon. Next: phase 5 (call links) per §1b, then the
-  rest of Wave 1 (legal pages, account lifecycle, report kinds, mute, age
-  gate). Open follow-up
+  topbar has a Share icon. Then the REST OF WAVE 1 (BUILT 2026-10-28,
+  migration 0018 — see the deploy line in `docs/CLAUDE-MEMORY.md`): legal
+  pages `/terms` `/privacy` `/guidelines` + `GET /api/instance` + consent/age
+  box at signup + `HostedBy` + About block; account lifecycle (`DELETE
+  /api/users/me` with a 14-day grace, cancel-on-login, the nightly tombstone
+  in `lib/accountDeletion.ts`, `logout-all`, email change, export, admin
+  delete; `AccountLifecycle` on Settings → Account); reports with a required
+  category + post/comment/story/listing/group kinds + `/api/reports/mine` +
+  queue lanes; mute (`PATCH …/mute`, `ChatSafetyRows`); the age gate
+  (`AgeGateSheet`, 403 `age_attestation_required`) and `SafetyStrip`. API.md
+  §1.76 is the contract. Also in that commit: the iOS Safari stories-strip
+  fix (`.storiesStrip { flex: none }` — a scroll container's min-size is 0,
+  so the .page flex column was shrinking it). Next: phase 5 (call links) per
+  §1b; Wave 1 leftovers (deactivate/pause, warn outcome, write rate limits,
+  §1.3/§1.4/§1.9 small items); then Waves 2–7. Open follow-up
   from review: the unfurl
   worker charges the sender's hourly budget for our own share URLs (short-
   circuit origin == PUBLIC_ORIGIN in the send route).
@@ -86,10 +98,10 @@ Updated 2026-10-28. A new session continues this project by reading
   conversion, SW stale-shell self-heal, admin grant/revoke + set password,
   Tailscale Funnel as the stable public URL. The undo-send pill was REMOVED
   by owner decision (FEATURES #96 struck; server undo route stays).
-- Migrations run `0000`…`0017`. **The next free number is 0018.** `0017` (2026-10-28) widens `share_tokens.object_type` to `profile` (phase 6); `0016` (2026-10-28) holds `conversation_bans` (§2.5 admin half); `0015` holds only `conversation_participants.accepted_at` (Wave 1.7). `0014`
+- Migrations run `0000`…`0018`. **The next free number is 0019.** `0018` (2026-10-28) is the Wave 1 floor (`users.terms_accepted_at` / `age_attested_at` / `scheduled_deletion_at` / `deleted_at`, `reports.category`, widened report CHECKs); `0017` (2026-10-28) widens `share_tokens.object_type` to `profile` (phase 6); `0016` (2026-10-28) holds `conversation_bans` (§2.5 admin half); `0015` holds only `conversation_participants.accepted_at` (Wave 1.7). `0014`
   (2026-10-27) holds the share-everything plumbing only — `share_tokens.preview`,
   `users.dm_policy`, `users.profile_visibility`; the Wave 1 legal/account/report
-  columns AUDIT-PLAN §10 lists go in `0018`+ when that wave starts (§10 allows
+  columns AUDIT-PLAN §10 lists landed in `0018` (2026-10-28); §10 lists what is still unbuilt (§10 allows
   the split). The product audit's "migration 0013" references are stale.
 - The `wip/v0.9` and `backup/*` branches are historical only — ignore
   them (main supersedes).

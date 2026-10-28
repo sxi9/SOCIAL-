@@ -27,6 +27,7 @@ import Avatar from '@/components/Avatar';
 import MoodChip from '@/components/MoodChip';
 import MoodSheet from '@/components/MoodSheet';
 import ProfileEditor from '@/components/ProfileEditor';
+import AccountLifecycle from '@/components/AccountLifecycle';
 import StyledName from '@/components/StyledName';
 import idm from '@/components/identity.module.css';
 import sm from '@/components/settings.module.css';
@@ -349,6 +350,9 @@ function AccountSettings() {
 
         {/* v0.5a §1.37: interests, work/skills, the 3-GIF strip. */}
         <ProfileEditor />
+
+        {/* Wave 1 §1.2: email · download my data · delete account. */}
+        <AccountLifecycle me={me} />
       </div>
 
       {avatarEdit ? (

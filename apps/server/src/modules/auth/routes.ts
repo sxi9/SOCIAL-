@@ -19,7 +19,7 @@ import { newestReleaseVersion } from '../releases/routes.js';
 import { authed, requireAuth } from './guard.js';
 import { loginOutcome, setSessionCookie, storableIp } from './minting.js';
 import { generateRecoveryCodes } from './recovery.js';
-import { ARGON2_OPTS, createSession, revokeSession, SESSION_COOKIE } from './service.js';
+import { ARGON2_OPTS, createSession, revokeOtherSessions, revokeSession, SESSION_COOKIE } from './service.js';
 
 export async function authRoutes(fastify: FastifyInstance): Promise<void> {
   const app = fastify.withTypeProvider<ZodTypeProvider>();
@@ -57,6 +57,10 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
           // v0.8a (§1.61): stamp the newest shipped release at signup so
           // day-one users never get a what's-new card storm.
           lastSeenRelease: await newestReleaseVersion(),
+          // Wave 1 (§1.1/§1.8, migration 0018): the schema requires both
+          // literals true — the stamps are the moment the boxes were ticked.
+          termsAcceptedAt: new Date(),
+          ageAttestedAt: new Date(),
         })
         .returning();
       user = inserted[0]!;
@@ -107,7 +111,8 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
         or(eq(schema.users.username, username_or_email), eq(schema.users.email, username_or_email)),
       )
       .limit(1);
-    if (!user) throw new ApiError(401, 'bad_credentials');
+    // Wave 1 (§1.2): a tombstone answers exactly like an unknown name.
+    if (!user || user.deletedAt !== null) throw new ApiError(401, 'bad_credentials');
     const ok = await argon2.verify(user.passwordHash, password);
     if (!ok) throw new ApiError(401, 'bad_credentials');
 
@@ -116,6 +121,11 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
     // outranks suspension; CLI password reset lifts neither.
     if (user.bannedAt !== null) throw new ApiError(403, 'account_banned');
     if (user.suspendedAt !== null) throw new ApiError(403, 'account_suspended');
+
+    // Wave 1 (§1.2): signing in during the deletion grace CANCELS it — done
+    // in createSession (every minting path, after every factor), so the
+    // DTO below reflects it.
+    user.scheduledDeletionAt = null;
 
     // v0.9 (§1.73): LoginOutcome — a TOTP-armed account answers
     // {totp_required, totp_token} (no session, no cookie) and finishes at
@@ -127,6 +137,14 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
     const { session } = authed(req);
     await revokeSession(session.id);
     reply.clearCookie(SESSION_COOKIE, { path: '/' });
+    return reply.status(204).send();
+  });
+
+  // Wave 1 (§1.2) POST /api/auth/logout-all — every OTHER device signs out
+  // (the one asking stays). The §1.72 revokeOtherSessions helper, exposed.
+  app.post('/api/auth/logout-all', { preHandler: requireAuth }, async (req, reply) => {
+    const { user, session } = authed(req);
+    await revokeOtherSessions(user.id, session.id);
     return reply.status(204).send();
   });
 

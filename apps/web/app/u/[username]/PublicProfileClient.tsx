@@ -142,6 +142,12 @@ function PublicProfile({ username }: { username: string }) {
   async function block(): Promise<void> {
     if (!shown || blockBusy) return;
     setMenu(false);
+    // Wave 1 §1.8: a block is a decision, not a mis-tap — confirm first.
+    const ok = await confirmDialog(
+      `Block ${shown.display_name}? You disappear from each other everywhere. They are not told.`,
+      { confirmLabel: 'Block', danger: true },
+    );
+    if (!ok) return;
     setBlockBusy(true);
     try {
       await api.put(`/api/users/${shown.id}/block`);

@@ -177,6 +177,9 @@ export async function discoveryRoutes(fastify: FastifyInstance): Promise<void> {
     { preHandler: requireAuth, schema: { body: DiscoveryOptinRequestSchema } },
     async (req) => {
       const { user } = authed(req);
+      // Wave 1 (§1.8): no attestation, no strangers — the client shows the
+      // one-time consent sheet on this code and retries.
+      if (user.ageAttestedAt === null) throw forbidden('age_attestation_required');
       if (req.body.scope === 'area' && !user.area) throw badRequest('area_required');
       const expiresAt = new Date(Date.now() + DISCOVERY_OPTIN_TTL_S * 1000);
       const [row] = await db

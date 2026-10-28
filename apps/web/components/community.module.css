@@ -1912,3 +1912,38 @@
   flex-wrap: wrap;
   margin-top: 10px;
 }
+
+/* Wave 1 (§1.8): the DM safety trio in Chat settings. */
+.safetyRows {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0 10px;
+}
+
+/* Wave 1 (§1.1): the legal pages — a readable column of prose. */
+.legalCard {
+  width: min(680px, 100%);
+}
+.legalBody h1 {
+  font-size: 24px;
+  margin: 0 0 12px;
+  font-family: var(--font-serif, Georgia, serif);
+}
+.legalBody h2 {
+  font-size: 17px;
+  margin: 18px 0 6px;
+}
+.legalBody h3 {
+  font-size: 15px;
+  margin: 14px 0 4px;
+}
+.legalBody p,
+.legalBody li {
+  font-size: 14.5px;
+  line-height: 1.55;
+}
+.legalBody ul {
+  padding-left: 20px;
+  margin: 6px 0;
+}

@@ -74,6 +74,7 @@ export default function AdminUsersPage() {
       unban: `Unban @${user.username}?`,
       'grant-admin': `Make @${user.username} an admin? They get this whole operator surface (users, reports, logs, settings) and can grant it to others.`,
       'revoke-admin': `Remove the admin role from @${user.username}?`,
+      delete: `DELETE @${user.username} now? Their profile, posts, listings, plans, stories and media are removed and the account is tombstoned — this cannot be undone. Messages they sent stay as "Deleted account".`,
     };
     if (!(await confirmDialog(verb[action]))) return;
     const note = window.prompt('Note for the audit log (optional):', '') ?? '';
@@ -242,6 +243,9 @@ export default function AdminUsersPage() {
                           )}
                           <button type="button" className="btn" disabled={busyId === u.id} onClick={() => void setPassword(u)}>
                             Set password
+                          </button>
+                          <button type="button" className="btn btn-danger" disabled={busyId === u.id} onClick={() => void act(u, 'delete')}>
+                            Delete
                           </button>
                           <button type="button" className="btn" disabled={busyId === u.id} onClick={() => void act(u, 'grant-admin')}>
                             Make admin

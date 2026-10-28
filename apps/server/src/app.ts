@@ -49,6 +49,7 @@ import { rescueRoutes } from './modules/rescue/routes.js';
 import { sharePageRoutes } from './modules/sharepages/routes.js';
 import { suggestionRoutes } from './modules/suggestions/routes.js';
 import { supportRoutes } from './modules/support/routes.js';
+import { instanceRoutes } from './modules/instance/routes.js';
 import { ApiError } from './lib/errors.js';
 import { createRingLogStream } from './lib/logring.js';
 
@@ -109,6 +110,7 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
 
   app.get('/healthz', async () => ({ ok: true as const }));
 
+  await app.register(instanceRoutes); // Wave 1 §1.1 (GET /api/instance, unauthenticated)
   await app.register(authRoutes);
   await app.register(passkeyRoutes); // v0.9 §1.70
   await app.register(loginLinkRoutes); // v0.9 §1.71

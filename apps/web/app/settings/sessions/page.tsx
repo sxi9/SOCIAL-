@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { SessionInfo, SessionsResponse } from '@socialchat/shared';
 import { api } from '@/lib/api';
+import { confirmDialog } from '@/lib/confirm';
+import { toast } from '@/lib/toast';
 import { logout } from '@/lib/connection';
 import { formatTime } from '@/lib/format';
 import AppShell from '@/components/AppShell';
@@ -68,6 +70,31 @@ function SessionsSettings() {
           Sessions double as the device registry — revoking one signs that device out instantly.
         </p>
         {error ? <p className="error-text">{error}</p> : null}
+        {sessions && sessions.length > 1 ? (
+          // Wave 1 §1.2: the bulk door — every device but this one.
+          <button
+            type="button"
+            className="btn"
+            style={{ marginBottom: 12 }}
+            onClick={() => {
+              void confirmDialog('Sign out of every other device? They stop receiving messages immediately.', {
+                confirmLabel: 'Sign them out',
+                danger: true,
+              }).then(async (ok) => {
+                if (!ok) return;
+                try {
+                  await api.post('/api/auth/logout-all');
+                  toast('Other devices signed out');
+                  await load();
+                } catch {
+                  setError('Could not sign out the other devices.');
+                }
+              });
+            }}
+          >
+            Sign out all other devices
+          </button>
+        ) : null}
         {sessions === null ? (
           <p className="muted">Loading…</p>
         ) : (

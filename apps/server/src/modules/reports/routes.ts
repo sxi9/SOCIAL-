@@ -1,7 +1,7 @@
 // Reports (v0.3 — API.md §1.14). An audit log for the future admin dashboard
 // (FEATURES #54): targets are stored WITHOUT foreign keys so a report survives
 // deletion of what it reports. No fan-out, no notification to anyone, ever.
-import { and, eq, gt } from 'drizzle-orm';
+import { and, desc, eq, gt } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { CreateReportRequestSchema, REPORT_RATE_PER_HOUR } from '@socialchat/shared';
@@ -13,6 +13,7 @@ import { fixedWindow } from '../../lib/ratelimit.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant } from '../conversations/routes.js';
 import { hasJoin, isBeaconVisibleTo, loadBeacon } from '../beacons/service.js';
+import { isBlockedPair } from '../../lib/blocks.js';
 
 export async function reportRoutes(fastify: FastifyInstance): Promise<void> {
   const app = fastify.withTypeProvider<ZodTypeProvider>();
@@ -33,6 +34,7 @@ export async function reportRoutes(fastify: FastifyInstance): Promise<void> {
         id: newId(),
         reporterId: user.id,
         kind: body.kind,
+        category: body.category, // Wave 1 (§1.5): required
         reason: body.reason,
       };
 
@@ -124,6 +126,82 @@ export async function reportRoutes(fastify: FastifyInstance): Promise<void> {
         values.targetObjectId = story.id;
         values.targetOverlayId = overlay.id;
         values.targetUserId = overlay.authorId; // the SERVER-ATTACHED author
+      } else if (
+        body.kind === 'post' ||
+        body.kind === 'comment' ||
+        body.kind === 'story' ||
+        body.kind === 'listing' ||
+        body.kind === 'group'
+      ) {
+        // Wave 1 (§1.5): the object kinds. Referenceable = the object exists
+        // and the reporter could have seen it (public, a friend's, a member's,
+        // a listing on the board); never your own (report the person, not
+        // yourself); blocked pairs 404 like everywhere. The author is
+        // SERVER-attached (target_user_id) so the queue can act on a person.
+        let authorId: string | null = null;
+        // The §1.14 shape: a blocked pair with the OBJECT's author, or a
+        // banned author, is 404 — exactly what the feed/board/stories answer.
+        const authorOk = async (id: string): Promise<boolean> => {
+          if (await isBlockedPair(user.id, id)) return false;
+          const [a] = await db.select({ bannedAt: schema.users.bannedAt }).from(schema.users).where(eq(schema.users.id, id)).limit(1);
+          return !!a && a.bannedAt === null;
+        };
+        if (body.kind === 'post') {
+          const [p] = await db.select().from(schema.posts).where(eq(schema.posts.id, body.object_id)).limit(1);
+          if (!p || !(await authorOk(p.authorId))) throw notFound();
+          const visible = p.audience === 'public' || (await isFriendOf(user.id, p.authorId));
+          if (!visible) throw notFound();
+          authorId = p.authorId;
+        } else if (body.kind === 'comment') {
+          const [c] = await db
+            .select()
+            .from(schema.postComments)
+            .where(eq(schema.postComments.id, body.object_id))
+            .limit(1);
+          if (!c) throw notFound();
+          const [p] = await db.select().from(schema.posts).where(eq(schema.posts.id, c.postId)).limit(1);
+          if (!p || !(await authorOk(p.authorId))) throw notFound();
+          const visible = p.audience === 'public' || (await isFriendOf(user.id, p.authorId));
+          if (!visible) throw notFound();
+          authorId = c.authorId;
+        } else if (body.kind === 'story') {
+          const [st] = await db.select().from(schema.stories).where(eq(schema.stories.id, body.object_id)).limit(1);
+          if (!st) throw notFound();
+          const visible = st.expiresAt.getTime() > Date.now() && (await isFriendOf(user.id, st.authorId));
+          if (!visible) throw notFound();
+          authorId = st.authorId;
+        } else if (body.kind === 'listing') {
+          const [l] = await db.select().from(schema.listings).where(eq(schema.listings.id, body.object_id)).limit(1);
+          if (!l || !(await authorOk(l.authorId))) throw notFound();
+          authorId = l.authorId;
+        } else {
+          // group: a current member reports it; the attached person is an
+          // admin (the earliest) or the creator — the one the queue can reach.
+          const part = await getParticipant(body.object_id, user.id);
+          if (!part || part.leftAt !== null) throw notFound();
+          const [c] = await db
+            .select()
+            .from(schema.conversations)
+            .where(eq(schema.conversations.id, body.object_id))
+            .limit(1);
+          if (!c || c.type !== 'group') throw notFound();
+          const [admin] = await db
+            .select({ userId: schema.conversationParticipants.userId })
+            .from(schema.conversationParticipants)
+            .where(
+              and(
+                eq(schema.conversationParticipants.conversationId, body.object_id),
+                eq(schema.conversationParticipants.role, 'admin'),
+              ),
+            )
+            .orderBy(schema.conversationParticipants.joinedAt)
+            .limit(1);
+          authorId = admin?.userId ?? c.createdBy ?? null;
+        }
+        if (!authorId || authorId === user.id || (await isBlockedPair(user.id, authorId))) throw notFound();
+        values.targetObjectType = body.kind;
+        values.targetObjectId = body.object_id;
+        values.targetUserId = authorId;
       } else {
         const beacon = await loadBeacon(body.beacon_id);
         if (!beacon) throw notFound();
@@ -137,4 +215,33 @@ export async function reportRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.status(201).send({ id: row!.id });
     },
   );
+
+  // Wave 1 (§1.5) GET /api/reports/mine — what I sent and where it stands:
+  // received (open) → reviewed (closed). Never the note, never the outcome.
+  app.get('/api/reports/mine', { preHandler: requireAuth }, async (req) => {
+    const { user } = authed(req);
+    const rows = await db
+      .select({
+        id: schema.reports.id,
+        kind: schema.reports.kind,
+        category: schema.reports.category,
+        reason: schema.reports.reason,
+        status: schema.reports.status,
+        createdAt: schema.reports.createdAt,
+      })
+      .from(schema.reports)
+      .where(eq(schema.reports.reporterId, user.id))
+      .orderBy(desc(schema.reports.createdAt))
+      .limit(100);
+    return {
+      reports: rows.map((r) => ({
+        id: r.id,
+        kind: r.kind,
+        category: r.category,
+        reason: r.reason,
+        status: r.status === 'closed' ? 'reviewed' : 'received',
+        created_at: r.createdAt.toISOString(),
+      })),
+    };
+  });
 }

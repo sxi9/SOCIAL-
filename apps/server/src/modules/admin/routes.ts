@@ -28,6 +28,7 @@ import { ApiError, badRequest, conflict, notFound } from '../../lib/errors.js';
 import { adminLog, readLogRing } from '../../lib/logring.js';
 import { authed } from '../auth/guard.js';
 import { ARGON2_OPTS, revokeAllSessions } from '../auth/service.js';
+import { tombstoneUser } from '../../lib/accountDeletion.js';
 import {
   ADMIN_REPORT_SELECT,
   adminReportFromRaw,
@@ -104,7 +105,7 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
     actorId: string,
     actorUsername: string,
     targetId: string,
-    action: 'suspend' | 'unsuspend' | 'ban' | 'unban',
+    action: 'suspend' | 'unsuspend' | 'ban' | 'unban' | 'delete',
     note: string,
   ) {
     const [target] = await db
@@ -116,6 +117,11 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
     if (target.isAdmin) throw badRequest('bad_admin_target');
 
     switch (action) {
+      // Wave 1 (§1.2): the admin "delete user" — the same tombstone the
+      // self-serve grace ends in, applied now. Irreversible; ring-logged.
+      case 'delete':
+        await tombstoneUser(targetId);
+        break;
       case 'suspend':
         await db.execute(
           sql`UPDATE users SET suspended_at = COALESCE(suspended_at, now()) WHERE id = ${targetId}`,
@@ -146,7 +152,7 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
     return { user: row! };
   }
 
-  for (const action of ['suspend', 'unsuspend', 'ban', 'unban'] as const) {
+  for (const action of ['suspend', 'unsuspend', 'ban', 'unban', 'delete'] as const) {
     app.post(
       `/api/admin/users/:id/${action}`,
       { preHandler: requireAdmin, schema: { params: IdParams, body: AdminActionRequestSchema } },
@@ -239,9 +245,11 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
     '/api/admin/reports',
     { preHandler: requireAdmin, schema: { querystring: AdminReportsQuerySchema } },
     async (req) => {
-      const { status, cursor, limit } = req.query;
+      const { status, cursor, limit, category } = req.query;
       const conds: SQL[] = [];
       if (status) conds.push(sql`r.status = ${status}`);
+      // Wave 1 (§1.5): lanes by category.
+      if (category) conds.push(sql`r.category = ${category}`);
       if (cursor) {
         const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
         const [rankS, ts, id] = decoded.split('|');
@@ -393,6 +401,21 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
       // v0.9 (§1.74): the Authentication block — deep-partial merge; the SMTP
       // password is write-only and NEVER reaches the ring (redacted to
       // set/cleared below).
+      // Wave 1 (§1.1): legal markdown per page (partial merge) + the
+      // operator contact. Ring-logged by key, never by content.
+      if (req.body.legal !== undefined) {
+        const current = (await getInstanceSettings()).legal;
+        await setInstanceSetting('legal', { ...current, ...req.body.legal });
+        adminLog({ id: user.id, username: user.username }, 'admin.settings_update', {
+          legal: Object.keys(req.body.legal),
+        });
+      }
+      if (req.body.operator_contact !== undefined) {
+        await setInstanceSetting('operator_contact', req.body.operator_contact);
+        adminLog({ id: user.id, username: user.username }, 'admin.settings_update', {
+          operator_contact: req.body.operator_contact,
+        });
+      }
       if (req.body.auth !== undefined) {
         await applyAuthSettingsPatch(req.body.auth);
         const { smtp, features } = req.body.auth;

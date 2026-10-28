@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
+  AGE_MIN,
   INVITE_TOKEN_REGEX,
   PASSWORD_MIN_LENGTH,
   USERNAME_REGEX,
@@ -17,6 +18,7 @@ import AuthScene, { EyeIcon, SceneFooter, SceneMascot, useAuthFx } from '@/compo
 import Mascot, { caretPoint, type MascotHandle, type MascotState } from '@/components/Mascot';
 import RecoveryCodes from '@/components/RecoveryCodes';
 import authStyles from '@/components/auth.module.css';
+import HostedBy from '@/components/HostedBy';
 
 // RegisterForm renders INSIDE AuthScene so useAuthFx() reaches the scene's
 // provider (party mode, confetti burst, card lift, reduced-motion flag).
@@ -31,6 +33,9 @@ function RegisterForm() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showPw, setShowPw] = useState(false);
+  // Wave 1 (§1.1/§1.8): the one consent box — terms + the age line, both
+  // required by the schema (literal true) and stamped server-side.
+  const [agreed, setAgreed] = useState(false);
   // v0.9 (§1.72): the once-only recovery-codes reveal between "account
   // created" and routing in — the server keeps only hashes, so this moment is
   // the one chance to save them.
@@ -81,6 +86,11 @@ function RegisterForm() {
       pulse('wince', 1000);
       return;
     }
+    if (!agreed) {
+      setError(`Tick the box first — you need to be ${AGE_MIN}+ and okay with the terms.`);
+      pulse('wince', 1000);
+      return;
+    }
     setBusy(true);
     try {
       const payload: RegisterRequest = {
@@ -89,6 +99,8 @@ function RegisterForm() {
         password,
         display_name: displayName.trim() || username,
         ...(inviteToken ? { invite_token: inviteToken } : {}),
+        terms_accepted: true,
+        age_attested: true,
       };
       const res = await api.post<RegisterResponse>('/api/auth/register', payload);
       setMe(res.user);
@@ -266,6 +278,13 @@ function RegisterForm() {
           </button>
         </div>
       </div>
+      <label className={authStyles.consentRow}>
+        <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} required />
+        <span>
+          I&rsquo;m {AGE_MIN} or older and I agree to the <Link href="/terms">terms</Link> and{' '}
+          <Link href="/guidelines">guidelines</Link>. (<Link href="/privacy">What gets stored</Link>.)
+        </span>
+      </label>
       {error ? <p className="error-text">{error}</p> : null}
       <button className={`btn btn-primary ${authStyles.btnBlock}`} type="submit" disabled={busy}>
         {busy ? 'Creating…' : 'Create account'}
@@ -278,6 +297,7 @@ function RegisterForm() {
             Sign in
           </Link>
         </p>
+        <HostedBy />
       </SceneFooter>
     </form>
   );

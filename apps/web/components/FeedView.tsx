@@ -77,6 +77,7 @@ import SuggestionCards from './SuggestionCards';
 import { LocationChip, LocationField } from './LocationPicker';
 import Portal from './Portal';
 import ReactionPicker from './ReactionPicker';
+import ReportSheet from './ReportSheet';
 import bz from './beacons.module.css';
 import st from './social.module.css';
 import tb from './topbar.module.css';
@@ -1041,6 +1042,7 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
   const own = post.author.id === meId;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false); // Wave 1 §1.5
   const [error, setError] = useState<string | null>(null);
 
   async function react(emoji: string): Promise<void> {
@@ -1095,8 +1097,7 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
             </span>
           </ShareButton>
         ) : null}
-        {own ? (
-          <span className={bz.cardRel}>
+        <span className={bz.cardRel}>
             <button
               type="button"
               className="btn btn-ghost btn-icon"
@@ -1109,15 +1110,34 @@ function PostCard({ post, meId }: { post: Post; meId: string }) {
               <>
                 <button type="button" className={bz.menuBackdrop} aria-label="Close menu" onClick={() => setMenuOpen(false)} />
                 <div className={bz.cardMenu} role="menu" style={{ right: 0, top: 34 }}>
-                  <button type="button" role="menuitem" className={bz.menuDanger} onClick={() => void remove()}>
-                    Delete post
-                  </button>
+                  {own ? (
+                    <button type="button" role="menuitem" className={bz.menuDanger} onClick={() => void remove()}>
+                      Delete post
+                    </button>
+                  ) : (
+                    // Wave 1 §1.5: the report entry the audit found missing.
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        setReportOpen(true);
+                      }}
+                    >
+                      Report post
+                    </button>
+                  )}
                 </div>
               </>
             ) : null}
           </span>
-        ) : null}
       </div>
+      {reportOpen ? (
+        <ReportSheet
+          target={{ kind: 'post', object_id: post.id, user_id: post.author.id }}
+          onClose={() => setReportOpen(false)}
+        />
+      ) : null}
 
       {post.body ? <p className={st.postBody}>{post.body}</p> : null}
 

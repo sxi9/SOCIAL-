@@ -3149,7 +3149,7 @@ Push job per (user, conversation, message), enqueued only when the user has no l
 send time. At execution the worker **skips** when any of:
 - Redis presence shows the user online now;
 - fresh DB read: `last_read_seq >= message.seq` (read on another device);
-- `muted_until > now()` (📋 **no writer until Wave 1.6** — `conversation_participants.muted_until` is read by this guard but never set today, so this branch is currently unreachable);
+- `muted_until > now()` (written by `PATCH /api/conversations/:id/mute` since Wave 1.6, 2026-10-28 — §1.76);
 - a per-`(user_id, conversation_id)` debounce key (5 s) exists — bursts collapse to one push.
 
 **v0.5a mention override (§1.33):** when `metadata.mentions` names the target
@@ -3389,3 +3389,35 @@ reading their own uploads through the §1.6 auth-checked proxy.
 
 - **GC:** the orphan sweep anti-joins `gallery_saves_attachment_idx` —
   deleting the save re-orphans; the sweep stays the only destroyer.
+
+### 1.76 Wave 1 — the P0 floor: legal, account lifecycle, reports, mute, age (2026-10-28, migration 0018)
+
+AUDIT-PLAN §1.1 / §1.2 / §1.5 / §1.6 / §1.8. Migration `0018_wave1_floor.sql`
+adds `users.terms_accepted_at`, `users.age_attested_at`,
+`users.scheduled_deletion_at`, `users.deleted_at`, `reports.category`, and
+widens `reports_kind_check` / `reports_target_object_type_check` /
+`reports_target_check` for the object kinds. The legal markdown and the
+operator contact are `instance_settings` JSON keys (`legal`,
+`operator_contact`).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/instance` | **UNAUTHENTICATED** | `200 PublicInstanceInfo` = `{operator_contact, legal: {terms, privacy, guidelines}, age_min}` — the legal texts RESOLVED (operator markdown, else the shipped default in `lib/legal.ts`, which states: email + IPs for `IP_RETENTION_DAYS`, messages/media in plaintext, no admin reads chats but no E2EE, what a report forwards, no ads, no contact sync). Read by `/terms` `/privacy` `/guidelines` (SSR through `API_ORIGIN`, XFF re-sent), the auth scenes ("Hosted by"), Settings → Help & about. Rate `INSTANCE_PUBLIC_RATE_PER_HOUR_PER_IP` (240). |
+| `PATCH /api/admin/settings` | `+ {legal?: Partial<LegalTexts>, operator_contact?}` | (§1.41 row) — partial merge per page, ring-logged by key. |
+| `POST /api/auth/register` | `+ {terms_accepted: true, age_attested: true}` (both REQUIRED literals) | stamps `terms_accepted_at` / `age_attested_at`; no DOB is ever stored (#78b). `AGE_MIN` = 18 (owner decision deferred to the builder, 2026-10-28). |
+| `POST /api/users/me/attest-age` | — | `200 {user: UserPrivate}` — the one-time consent for pre-0018 accounts; idempotent. |
+| `PUT /api/discovery/optin`, `POST /api/roulette/join` | — | `403 age_attestation_required` while `age_attested_at` is NULL (checked before every other rule). |
+| `DELETE /api/users/me` | `{password}` | `200 {scheduled_deletion_at}` — password re-proof (`401 bad_credentials`), schedules the tombstone `ACCOUNT_DELETION_GRACE_DAYS` (14) out, revokes EVERY session (this one included). Admins → `400 bad_admin_target` (demote via CLI first, ADR-013). Rate 5/h. |
+| `POST /api/auth/login` | — | a successful login during the grace **cancels** the scheduled deletion (`scheduled_deletion_at = NULL`). |
+| `POST /api/auth/logout-all` | — | `204` — every OTHER session revoked (4401 on their sockets); this one stays. |
+| `PATCH /api/users/me/email` | `{password, email}` | `200 {user}` — re-proof; `email_verified_at` NULL; `409 email_taken`. Rate 5/h. |
+| `GET /api/users/me/export` | — | `200 MyExport` (`Content-Disposition: attachment`): the users row minus `password_hash`/`totp_secret`/`registration_ip`, settings, profile, posts, listings, beacons, the messages I sent (bodies — mine), reviews about me. Rate 2 per 10 min. |
+| `POST /api/admin/users/:id/delete` | `{note?}` | `200 {user: AdminUserRow}` — the admin "delete user": `tombstoneUser` NOW. Ring-logged `admin.delete`. |
+| `PATCH /api/conversations/:id/mute` | `{until: iso \| null}` | `200 {conversation}` — MY participant row's `muted_until` (`MUTE_FOREVER_ISO` = always; null = unmute; a past instant → `400 mute_in_past`). `conv.updated` to me ONLY; `participantDto` clamps `muted_until` to the viewer's own row (nobody learns they were muted). Readers unchanged: `pushGuard`, `jobs/push`, `sounds.ts`; a mention still overrides (§1.33). |
+| `POST /api/reports` | `+ category: ReportCategory` (REQUIRED on every kind) · new kinds `post` `comment` `story` `listing` `group` as `{kind, object_id, category, reason?}` | `201 {id}` — object kinds store `target_object_type = kind`, `target_object_id`, and the SERVER-attached author in `target_user_id` (post/comment: author; story: author; listing: author; group: its earliest admin, else creator). Referenceable = exists AND visible to me (public or a friend's post/comment, a live friend's story, any listing, a group I am in); your own or a blocked pair → `404`. `POST /api/share/:token/report` gains `category` (default `other`). |
+| `GET /api/reports/mine` | — | `200 {reports: MyReport[]}` — my reports, newest first (≤100): `{id, kind, category, reason, status: 'received'\|'reviewed', created_at}`. Never the close note, never any outcome on anyone. Settings → Privacy & safety → Your reports. |
+| `GET /api/admin/reports` | `+ ?category=` | lanes; `AdminReport` gains `category` and `target_object` `{object_type, object_id, author, gone}` for the object kinds. |
+
+**Tombstone (binding, `lib/accountDeletion.ts`):** the nightly GC (`purgeDueDeletions`) tombstones every account whose grace has run out — the row STAYS (messages keep a "Deleted account" sender; reports keep their trail; no FK cascade surprises). What goes: sessions, push subscriptions, passkeys, recovery codes; posts (`hardDeletePost`), stories (`hardDeleteStory`), listings + their photos, beacons, scheduled messages, profile entries/media, discovery opt-in, connections; every share token they minted (and their profile/listing/beacon tokens); memberships (`left_at` set, no system message); attachments they uploaded that nothing binds; the avatar objects. The identity is scrubbed (`deleted_<id12>` username/email, "Deleted account", empty bio, no avatar, no interests/area/mood, unguessable password, TOTP cleared, `is_admin` false, `suspended_at` set, `deleted_at` set). `authenticateToken` refuses a tombstoned row like a suspended one.
+
+**Stranger-safety copy (§1.8):** `STRANGER_SAFETY_NOTE` renders verbatim on the discovery opt-in sheet, the roulette sheet, the roulette banner, the match overlay and the plan detail sheet (`SafetyStrip`). Chat settings for a DM carry Report · Block · End chat (End chat = the existing `DELETE …/participants/:me`, now SILENT for DMs — no `participant_left` system row); blocking from a profile confirms first.

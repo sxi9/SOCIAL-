@@ -232,6 +232,10 @@ export function userPrivateDto(u: UserRow): UserPrivate {
     created_at: iso(u.createdAt),
     // v0.9 (§1.73): armed-or-not only — the secret itself NEVER serializes.
     totp_enabled: u.totpEnabledAt !== null,
+    // Wave 1 (migration 0018): attestations + the pending self-deletion.
+    terms_accepted_at: isoOrNull(u.termsAcceptedAt),
+    age_attested_at: isoOrNull(u.ageAttestedAt),
+    scheduled_deletion_at: isoOrNull(u.scheduledDeletionAt),
   };
 }
 
@@ -341,7 +345,8 @@ export function participantDto(
     left_at: isoOrNull(p.leftAt),
     last_delivered_seq: hidden ? 0 : p.lastDeliveredSeq,
     last_read_seq: readVisible && !hidden ? p.lastReadSeq : 0,
-    muted_until: isoOrNull(p.mutedUntil),
+    // Wave 1 (§1.6): a mute is MINE alone — nobody learns I muted them.
+    muted_until: view ? (u.id === view.viewerId ? isoOrNull(p.mutedUntil) : null) : isoOrNull(p.mutedUntil),
   };
 }
 
@@ -1087,7 +1092,7 @@ export async function publishConversationToUsers(
     const dmPartnerIds = new Set(dmOwners.filter((o) => dmPairs.has(`${o}:${r}`)));
     const connectionIds = new Set(moodConnOwners.filter((o) => connPairs.has(`${o}:${r}`)));
     let sig = '';
-    for (const { u } of parts) {
+    for (const { p, u } of parts) {
       const readVisible = u.id === r || (u.readReceipts && rr);
       const lastSeenVisible =
         u.id === r ||
@@ -1107,6 +1112,9 @@ export async function publishConversationToUsers(
       // Wave 1.7: a member who has not accepted serializes their own row's
       // watermarks and pending_for_me — only they share that view.
       if (acceptedById.get(u.id) === null) sig += u.id === r ? 'P' : 'p';
+      // Wave 1 (§1.6): a muted row serializes muted_until for its owner only —
+      // the owner never shares an envelope with anyone else.
+      if (p.mutedUntil !== null) sig += u.id === r ? 'M' : 'm';
     }
     // v0.5a (§1.35): a channel DTO embeds the VIEWER'S OWN row (plus owner +
     // admins), so each plain member's serialization is unique — key the group

@@ -190,6 +190,47 @@ export const AREA_MAX_CHARS = 64;
 
 // ---- Reports (v0.3 — API.md §1.14) ----
 export const REPORT_REASON_MAX_CHARS = 500;
+// Wave 1 (migration 0018, AUDIT-PLAN §1.5): the required category beside
+// the free text — the admin queue's lanes.
+export const REPORT_CATEGORIES = [
+  'spam',
+  'harassment',
+  'hate',
+  'nudity',
+  'self_harm',
+  'scam',
+  'impersonation',
+  'underage',
+  'off_platform',
+  'ip',
+  'other',
+] as const;
+export const REPORT_CATEGORY_LABELS: Record<(typeof REPORT_CATEGORIES)[number], string> = {
+  spam: 'Spam',
+  harassment: 'Harassment or bullying',
+  hate: 'Hate',
+  nudity: 'Nudity or sexual content',
+  self_harm: 'Self-harm',
+  scam: 'Scam or fraud',
+  impersonation: 'Impersonation',
+  underage: 'Someone under 18',
+  off_platform: 'Pushing people off the app',
+  ip: 'Copyright or trademark',
+  other: 'Something else',
+};
+// Wave 1 (§1.1/§1.8): the age line at signup — attested, never stored as a
+// date (#78b). Owner decision deferred to the builder (2026-10-28): 18+.
+export const AGE_MIN = 18;
+// Wave 1 (§1.2): DELETE /api/users/me grace before the tombstone sweep.
+export const ACCOUNT_DELETION_GRACE_DAYS = 14;
+// Wave 1 (§1.1): operator-editable legal markdown, per page.
+export const LEGAL_PAGE_MAX_CHARS = 60_000;
+export const LEGAL_PAGES = ['terms', 'privacy', 'guidelines'] as const;
+export const OPERATOR_CONTACT_MAX_CHARS = 200;
+export const INSTANCE_PUBLIC_RATE_PER_HOUR_PER_IP = 240;
+// Mute presets (§1.6) — hours; null = forever (muted_until far future).
+export const MUTE_PRESET_HOURS = [8, 24 * 7] as const;
+export const MUTE_FOREVER_ISO = '2999-01-01T00:00:00.000Z';
 export const REPORT_RATE_PER_HOUR = 10;
 
 // ============================ v0.4 additions =================================
@@ -493,6 +534,11 @@ export const LISTING_SEARCH_MAX_CHARS = 80;
 export const LISTING_SAFETY_NOTE =
   'Bored Chat is a bulletin board: it does not vet listings, hold money, or process payments. Meet in public, bring a friend for first meetings, and verify before you pay — money settles outside the app, at your own judgement.';
 export const LISTING_SAFETY_NOTE_KINDS = ['gig', 'ride', 'room'] as const;
+// Wave 1 (§1.8): the stranger-safety line — one sentence on every surface
+// that puts two strangers together (discovery opt-in, roulette, a match,
+// a plan's detail sheet). Rendered VERBATIM, never dismissible.
+export const STRANGER_SAFETY_NOTE =
+  'Meeting someone from here? Tell a friend where you are going, meet somewhere public, and keep the first meeting short. Anyone can be blocked or reported from their profile.';
 
 // ---- Message-the-author & gig team-up (v0.5b — API.md §1.39) ----
 export const LISTING_CONTACT_RATE_PER_HOUR = 20;

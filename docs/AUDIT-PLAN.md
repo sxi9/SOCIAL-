@@ -41,7 +41,7 @@ Audit suggestions that now **conflict with the owner's 2026-10-18 decision** (un
 
 ## 1. Decisions the owner must make before some of the work (one line each)
 
-1. **Age line at signup: 16+ or 18+?** The no-DOB rule (#78b) bans a stored field, not a non-stored attestation. Discovery/roulette would refuse accounts without it.
+1. **Age line at signup: 16+ or 18+?** The no-DOB rule (#78b) bans a stored field, not a non-stored attestation. Discovery/roulette would refuse accounts without it. — **Resolved 2026-10-28 (builder, pending owner confirmation): 18+** (`AGE_MIN` in constants.ts; changing it is a one-constant edit, no migration).
 2. **Contacts import** — the audit's final position is "P1 growth gap, build it self-hosted as salted-hash matching with a delete control" (it overrules the UI section's "keep it missing"). Yes/no.
 3. **YouTube iframe in watch-together** — the one third-party runtime script in a "no third-party SaaS" product. Either amend rule 7 with an explicit carve-out, or build co-watch of self-hosted MP4.
 4. **`member_count` in the group header** vs ADR-020:67-69 / API.md §1.68 saying it stays off every in-app surface. Fix the docs or the header.
@@ -140,14 +140,14 @@ Do this first or alongside Wave 1; every item is a string.
 
 Everything here is "a user hits it in the first hour" or "operator liability". Order within the wave is the audit's.
 
-### 1.1 Legal and consent surface (1 day)
+### 1.1 Legal and consent surface (1 day) — ✅ built 2026-10-28 (migration 0018; `/terms` `/privacy` `/guidelines` from `instance_settings.legal` with shipped defaults in `lib/legal.ts`; `operator_contact`; consent + age box on /register and the inline sheet; `HostedBy` on the auth scenes; About block). `noindex`/robots were already done in §1b.
 - `/terms`, `/privacy`, `/guidelines` pages rendered from operator-editable markdown in `InstanceSettingsSchema` (`packages/shared/src/api.ts:2906-2910`, currently `invites_enabled`, `release_notes`, `auth` only), with a shipped default that states: email, IPs for 90 days, messages and media stored in plaintext; no admin route reads chats but chats are not E2EE and the operator holds the database; what a report forwards; no ads, no contact sync.
 - `operator_contact` field in instance settings (used by the 403 screen, About block, appeals).
 - Consent sentence + age checkbox in `RegisterRequestSchema` (`api.ts:783-795`) and `register/page.tsx`; store `terms_accepted_at` / `age_attested_at` (migration **0015**).
 - "Hosted by <operator>" and three lines of what the app is on auth pages; About block in `settings/help`.
 - `noindex` meta on `/s/[token]` share pages + `public/robots.txt`.
 
-### 1.2 Account lifecycle (2 days, migration 0015)
+### 1.2 Account lifecycle (2 days, migration 0015) — ✅ built 2026-10-28 (migration 0018; `DELETE /api/users/me` + grace + cancel-on-login + nightly tombstone, `PATCH /me/email`, `POST /auth/logout-all`, `GET /me/export`, admin delete; Account section with email/Download/Delete). Still open: deactivate/pause; the "Edit profile" rename.
 - `DELETE /api/users/me` — password re-proof, `scheduled_deletion_at` with 7–14-day grace, cancel-on-login, then tombstone + cascade (profile, posts, listings, beacons, stories, media refcounts, sessions, push). Admin "delete user" action beside suspend/ban. Optional reason survey.
 - `PATCH /api/users/me/email` — re-proof, nulls `email_verified_at`, verify link when SMTP ever lands. `UpdateMeRequestSchema` (`api.ts:855-865`) has no email today; `settings/account/page.tsx:225-227` renders it as an unlabelled grey line.
 - `POST /api/auth/logout-all` reusing `revokeOtherSessions()` (`auth/service.ts:113`, helper exists since 06dfc91) + a "Sign out all other devices" button on the Devices page.
@@ -168,14 +168,14 @@ Everything here is "a user hits it in the first hour" or "operator liability". O
 - Nullable `session_id` on `push_subscriptions` (migration 0015) so remote session revoke kills that browser's push.
 - `sw.js:165` stop showing notifications when the device has no session.
 
-### 1.5 Reporting that can be triaged (1 day)
+### 1.5 Reporting that can be triaged (1 day) — ✅ built 2026-10-28 (migration 0018; `category` required on every kind + lanes in the queue; kinds post/comment/story/listing/group with the author attached; Report entries on posts, listings, stories, groups, DMs; "Also block"; `GET /api/reports/mine` under Privacy; `reporter_ip` aged by GC). Still open: `warn` outcome, report-to-suspend shortcut, `legal` support category, the write rate limits, takedown on comment/story ids (`ADMIN_CONTENT_TYPES` unchanged — the lane shows the id, the takedown route cannot act on it yet).
 - `reason` enum on reports (`spam, harassment, hate, nudity, self_harm, scam, impersonation, underage, off_platform, ip, other`), required pick in `ReportSheet.tsx:37`, column on `reports` (0015).
 - Add `post`, `comment`, `story`, `listing`, `group` to `ReportKindSchema` (`api.ts:1288-1295`), `reports/routes.ts`, `ReportSheet.tsx:22-26`, `reports.target_listing_id` etc.; `ADMIN_CONTENT_TYPES` (`constants.ts:1240`) gains comment/story/message/overlay so takedown acts on a reported id.
 - "Also block @user" checkbox; `GET /api/reports/mine` (received → reviewed) shown under Settings → Privacy; admin queue lanes by reason; `legal` in `SUPPORT_CATEGORIES`; a formal `warn` outcome delivered via `sendSupportMessage` (so FEATURES #54 stops lying); report-to-suspend shortcut in the queue.
 - Null `reports.reporter_ip` in `jobs/gc.ts` retention sweep (schema comment at `schema.ts:971` promises it).
 - Rate limits: `fixedWindow` on message POST (`MESSAGE_RATE_PER_MINUTE`), comments (`feed/routes.ts:566`), reactions (`:497`), comment reactions (`:682`).
 
-### 1.6 Mute end to end (1 day)
+### 1.6 Mute end to end (1 day) — ✅ built 2026-10-28 (`PATCH /api/conversations/:id/mute`; Mute row atop Chat settings; muted bell + grey badge in the list; `muted_until` viewer-private; test v12).
 - `PATCH /api/conversations/:id/mute { until: iso | null }` writing `conversation_participants.muted_until` (`schema.ts:391`, exists since 0000; readers in `pushGuard.ts`, `jobs/push.ts`, `dto.ts`, `sounds.ts:428` — zero writers).
 - Mute row (8 h / 1 week / Always / Unmute) at the top of `ChatInfoSheet`; same action from the chat-row long-press sheet (Wave 2.4); muted-bell glyph + greyed badge in `ConversationListView`; test beside `test/v05.integration.test.ts`; API.md §1.4; then correct FEATURES #9 and SYSTEM-MAP.
 
@@ -184,7 +184,7 @@ Everything here is "a user hits it in the first hour" or "operator liability". O
 - `conversation_participants.accepted_at` so a stranger's first DM parks in a Requests row pinned atop the chat list with Accept / Delete / Block / Report; no receipts, ring or typing before acceptance; stranger banner inside the chat.
 - `PickerRow`s on Privacy for dm_policy, who-can-send-requests, discoverable-by-search, appear-in-suggestions.
 
-### 1.8 Age gate enforcement + stranger safety copy (1 day)
+### 1.8 Age gate enforcement + stranger safety copy (1 day) — ✅ built 2026-10-28 (403 `age_attestation_required` on opt-in/roulette, `AgeGateSheet` + `POST /me/attest-age`; `STRANGER_SAFETY_NOTE` strip on opt-in, roulette, banner, match, plan sheet; DM safety rows; silent DM end; confirmed block). Decision 1 taken by the builder: **18+**.
 - `PUT /api/discovery/optin` and roulette join refuse accounts without `age_attested_at` (403 `age_attestation_required`); one-time consent sheet before the first "Make me discoverable" (`DiscoverySection.tsx` has none); `LISTING_SAFETY_NOTE` as a one-line strip on OptinSheet, MatchOverlay, RouletteBanner, BeaconDetailSheet and `SharePageView.tsx` (only `ListingDetailSheet.tsx:462` renders it).
 - DM safety rows in `ChatInfoSheet` (identity hero → Mute → Report user · Block · End chat via existing `DELETE …/participants/:me`; suppress the `participant_left` system message for DMs at `routes.ts:598-615`).
 - Block from the profile page goes through `confirmDialog` (`u/[username]/page.tsx:136-147` calls `api.put` directly).
@@ -324,7 +324,7 @@ Everything here is "a user hits it in the first hour" or "operator liability". O
 
 ## 10. Migrations 0014 / 0015 — everything above that needs a column
 
-`users.terms_accepted_at`, `users.age_attested_at`, `users.scheduled_deletion_at` / `deleted_at`, `users.dm_policy`, `users.profile_visibility`, `users.appear_offline`, `users.discoverable`; `push_subscriptions.session_id` (nullable); `reports.reason` enum, `reports.target_listing_id` / `target_post_id` / `target_comment_id` / `target_story_id` / `target_conversation_id`; `conversation_participants.pinned_at`, `archived_at`, `accepted_at`; `message_hides(conversation_id, seq, user_id)`; `conversation_bans`; `posts.edited_at`; `post_comments.parent_id`; `saved_posts`; `discovery_passes`; `activity`; `beacons.max_joiners`, `beacons.title`, `beacons.guest_list`; `instance_settings` keys (`registration_mode`, `operator_contact`, legal markdown). Split into 0014/0015 by wave if preferred, but never reuse 0013. **Split taken (2026-10-27):** `0014_share_plumbing.sql` carries only `share_tokens.preview`, `users.dm_policy`, `users.profile_visibility` (the §1b build). **2026-10-28:** `0015_dm_requests.sql` carries only `conversation_participants.accepted_at` (Wave 1.7); everything else above goes in `0016` onward — the next free number is **0016**.
+`users.terms_accepted_at`, `users.age_attested_at`, `users.scheduled_deletion_at` / `deleted_at`, `users.dm_policy`, `users.profile_visibility`, `users.appear_offline`, `users.discoverable`; `push_subscriptions.session_id` (nullable); `reports.reason` enum, `reports.target_listing_id` / `target_post_id` / `target_comment_id` / `target_story_id` / `target_conversation_id`; `conversation_participants.pinned_at`, `archived_at`, `accepted_at`; `message_hides(conversation_id, seq, user_id)`; `conversation_bans`; `posts.edited_at`; `post_comments.parent_id`; `saved_posts`; `discovery_passes`; `activity`; `beacons.max_joiners`, `beacons.title`, `beacons.guest_list`; `instance_settings` keys (`registration_mode`, `operator_contact`, legal markdown). Split into 0014/0015 by wave if preferred, but never reuse 0013. **Split taken (2026-10-27):** `0014_share_plumbing.sql` carries only `share_tokens.preview`, `users.dm_policy`, `users.profile_visibility` (the §1b build). **2026-10-28:** `0015_dm_requests.sql` carries only `conversation_participants.accepted_at` (Wave 1.7); everything else above goes in `0016` onward. **0016** `conversation_bans`, **0017** the `profile` share type, **0018** (2026-10-28) `terms_accepted_at` / `age_attested_at` / `scheduled_deletion_at` / `deleted_at` + `reports.category` + the object-kind CHECKs — the next free number is **0019**.
 
 ---
 

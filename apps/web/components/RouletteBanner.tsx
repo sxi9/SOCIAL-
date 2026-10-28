@@ -14,6 +14,7 @@ import { useAppState } from '@/lib/useStore';
 import { useNow } from '@/lib/useNow';
 import EffectOverlay from './EffectOverlay';
 import styles from './discovery.module.css';
+import SafetyStrip from './SafetyStrip';
 
 export default function RouletteBanner({ conv }: { conv: ConversationListItem }) {
   // Seconds matter here (a 5-minute fuse, not a beacon countdown).
@@ -65,6 +66,7 @@ export default function RouletteBanner({ conv }: { conv: ConversationListItem })
   }
 
   return (
+    <>
     <div className={styles.rouletteBanner} role="status">
       <span aria-hidden>🎲</span>
       <span>
@@ -87,5 +89,8 @@ export default function RouletteBanner({ conv }: { conv: ConversationListItem })
         </button>
       )}
     </div>
+    {/* Wave 1 §1.8: the stranger-safety line rides the roulette banner. */}
+    <SafetyStrip style={{ margin: '0 12px 6px' }} />
+    </>
   );
 }

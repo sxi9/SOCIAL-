@@ -15,6 +15,7 @@
 // errors byte-identical to the pages', recovery stays on /login (rare path).
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
+  AGE_MIN,
   LOGIN_LINK_POLL_INTERVAL_MS,
   PASSWORD_MIN_LENGTH,
   TOTP_CODE_REGEX,
@@ -81,6 +82,7 @@ export default function InlineSignInSheet({
   // login
   const [usernameOrEmail, setUsernameOrEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [agreed, setAgreed] = useState(false); // Wave 1 §1.1/§1.8 consent
   // register
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -276,6 +278,10 @@ export default function InlineSignInSheet({
       setError(`Passwords need at least ${PASSWORD_MIN_LENGTH} characters.`);
       return;
     }
+    if (!agreed) {
+      setError(`Tick the box first — you need to be ${AGE_MIN}+ and okay with the terms.`);
+      return;
+    }
     setBusy(true);
     try {
       const payload: RegisterRequest = {
@@ -283,6 +289,8 @@ export default function InlineSignInSheet({
         email: email.trim(),
         password,
         display_name: displayName.trim() || username,
+        terms_accepted: true,
+        age_attested: true,
       };
       const res = await api.post<RegisterResponse>('/api/auth/register', payload);
       // The codes are shown ONCE, right now — the server keeps only hashes.
@@ -485,6 +493,14 @@ export default function InlineSignInSheet({
           />
         </div>
         {pwField('isi-new-password', 'new-password')}
+        <label className={authStyles.consentRow}>
+          <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} required />
+          <span>
+            I&rsquo;m {AGE_MIN} or older and I agree to the{' '}
+            <a href="/terms" target="_blank" rel="noreferrer">terms</a> and{' '}
+            <a href="/guidelines" target="_blank" rel="noreferrer">guidelines</a>.
+          </span>
+        </label>
         {error ? <p className="error-text">{error}</p> : null}
         <button className={`btn btn-primary ${authStyles.btnBlock}`} type="submit" disabled={busy}>
           {busy ? 'Creating…' : 'Create account'}

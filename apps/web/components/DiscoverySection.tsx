@@ -40,12 +40,20 @@ import bcn from './beacons.module.css';
 import cm from './community.module.css';
 import styles from './discovery.module.css';
 import { confirmDialog } from '@/lib/confirm';
+import AgeGateSheet from './AgeGateSheet';
+import SafetyStrip from './SafetyStrip';
 
 export default function DiscoverySection() {
   const state = useAppState();
   const now = useNow(30_000);
   const [optinOpen, setOptinOpen] = useState(false);
   const [rouletteOpen, setRouletteOpen] = useState(false);
+  // Wave 1 (§1.8): the one-time age attestation gates BOTH doors for
+  // accounts that signed up before it existed.
+  const [attestOpen, setAttestOpen] = useState<'optin' | 'roulette' | null>(null);
+  const attested = state.me?.age_attested_at != null;
+  const openOptin = (): void => (attested ? setOptinOpen(true) : setAttestOpen('optin'));
+  const openRoulette = (): void => (attested ? setRouletteOpen(true) : setAttestOpen('roulette'));
 
   const optin = state.discoveryOptin;
   const live = optin !== null && new Date(optin.expires_at).getTime() > now;
@@ -117,22 +125,22 @@ export default function DiscoverySection() {
             <span className={styles.liveChip}>
               <span className={styles.liveDot} aria-hidden /> Discoverable · {minsLeft}m left
             </span>
-            <button type="button" className="btn" onClick={() => setOptinOpen(true)}>
+            <button type="button" className="btn" onClick={openOptin}>
               Extend
             </button>
             <button type="button" className="btn" onClick={() => void optOut()}>
               Go invisible
             </button>
-            <button type="button" className="btn btn-primary" onClick={() => setRouletteOpen(true)}>
+            <button type="button" className="btn btn-primary" onClick={openRoulette}>
               Roulette
             </button>
           </div>
         ) : (
           <div className={styles.boredActions}>
-            <button type="button" className="btn btn-primary" onClick={() => setOptinOpen(true)}>
+            <button type="button" className="btn btn-primary" onClick={openOptin}>
               Make me discoverable
             </button>
-            <button type="button" className="btn" onClick={() => setRouletteOpen(true)}>
+            <button type="button" className="btn" onClick={openRoulette}>
               Roulette
             </button>
           </div>
@@ -142,6 +150,17 @@ export default function DiscoverySection() {
       {live ? <CardStack cards={state.discoveryCards} /> : null}
 
       {optinOpen ? <OptinSheet onClose={() => setOptinOpen(false)} /> : null}
+      {attestOpen ? (
+        <AgeGateSheet
+          onClose={() => setAttestOpen(null)}
+          onDone={() => {
+            const which = attestOpen;
+            setAttestOpen(null);
+            if (which === 'optin') setOptinOpen(true);
+            else setRouletteOpen(true);
+          }}
+        />
+      ) : null}
       {rouletteOpen ? (
         <RouletteSheet
           onClose={() => setRouletteOpen(false)}
@@ -150,7 +169,7 @@ export default function DiscoverySection() {
           // Spin button — one tap swaps it for the opt-in sheet.
           onOptin={() => {
             setRouletteOpen(false);
-            setOptinOpen(true);
+            openOptin();
           }}
         />
       ) : null}
@@ -194,6 +213,8 @@ function OptinSheet({ onClose }: { onClose: () => void }) {
     } catch (err) {
       if (err instanceof ApiError && err.code === 'area_required') {
         setError('Set your area on the Profile tab first — or pick Public.');
+      } else if (err instanceof ApiError && err.code === 'age_attestation_required') {
+        setError('Confirm your age first — close this and tap the button again.');
       } else {
         setError('Could not opt in. Try again.');
       }
@@ -280,6 +301,7 @@ function OptinSheet({ onClose }: { onClose: () => void }) {
             onChange={(e) => setNote(e.target.value)}
           />
         </div>
+        <SafetyStrip style={{ marginTop: 12 }} />
         {error ? <p className="error-text">{error}</p> : null}
         <button
           type="button"
@@ -534,6 +556,8 @@ function RouletteSheet({ onClose, onOptin }: { onClose: () => void; onOptin: () 
     } catch (err) {
       if (err instanceof ApiError && err.code === 'discovery_not_opted_in') {
         setError('Your discoverable hour lapsed — opt in again first.');
+      } else if (err instanceof ApiError && err.code === 'age_attestation_required') {
+        setError('Confirm your age first — close this and tap Roulette again.');
       } else {
         setError('Could not join the queue. Try again.');
       }
@@ -595,6 +619,7 @@ function RouletteSheet({ onClose, onOptin }: { onClose: () => void; onOptin: () 
               </li>
               <li>Be kind. It&rsquo;s a stranger who was bored, same as you.</li>
             </ul>
+            <SafetyStrip style={{ marginTop: 10 }} />
             {!live ? (
               <p className={bcn.sheetNote}>
                 Roulette draws from the bored pool, so it needs your discoverable hour to be on

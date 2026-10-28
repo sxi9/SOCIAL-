@@ -11,6 +11,7 @@ import {
 import { db, schema } from '../db/index.js';
 import { deleteObject, listKeys } from '../s3.js';
 import { pruneDeadShareTokens } from '../modules/sharepages/service.js';
+import { purgeDueDeletions } from '../lib/accountDeletion.js';
 import type { AttRow } from '../lib/dto.js';
 
 /** Content-hashed keys can be shared across rows — delete only unreferenced
@@ -56,6 +57,12 @@ export async function runIpRetention(now = Date.now()): Promise<void> {
     UPDATE sessions SET ip = NULL
     WHERE ip IS NOT NULL AND created_at < ${cutoffIso}::timestamptz
   `);
+  // Wave 1 (§1.5): the non-user share-page report's IP ages out on the
+  // same sweep (the schema comment promised it since 0010).
+  await db.execute(sql`
+    UPDATE reports SET reporter_ip = NULL
+    WHERE reporter_ip IS NOT NULL AND created_at < ${cutoffIso}::timestamptz
+  `);
 }
 
 /**
@@ -89,6 +96,10 @@ export async function runGc(): Promise<void> {
 
   // 0b. v0.8a (§1.59): the 30-day activity-strip retention.
   await runActivityRetention(now);
+
+  // 0c. Wave 1 (§1.2): accounts whose deletion grace has run out — never
+  //     lets a failure stop the sweeps below.
+  await purgeDueDeletions(now).catch((err) => console.error('gc: purgeDueDeletions failed', err));
 
   // 1. Orphan attachments: unbound (no message / share import / scheduled row
   //    / post), older than 24 h. v0.5a (migration 0005): the partial orphan

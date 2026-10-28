@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
+  MuteConversationRequestSchema,
   AddParticipantsRequestSchema,
   CONVERSATION_CREATE_RATE_PER_HOUR,
   CreateConversationRequestSchema,
@@ -591,6 +592,29 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
   // Wave 1.7 POST /api/conversations/:id/accept — I accept a DM parked in my
   // Requests. Idempotent (200 with the conversation either way); the other
   // side only sees the ordinary conv.updated.
+  // Wave 1 (AUDIT-PLAN §1.6) PATCH /api/conversations/:id/mute — MY
+  // participant row's muted_until (null = unmute). conversation_participants
+  // .muted_until existed since 0000 with readers everywhere (pushGuard,
+  // jobs/push, sounds.ts) and no writer until now. Viewer-private: the
+  // conv.updated goes to me alone and participantDto clamps it to self.
+  app.patch(
+    '/api/conversations/:id/mute',
+    { preHandler: requireAuth, schema: { params: IdParams, body: MuteConversationRequestSchema } },
+    async (req) => {
+      const { user } = authed(req);
+      await requireActiveParticipant(req.params.id, user.id);
+      const until = req.body.until ? new Date(req.body.until) : null;
+      if (until && until.getTime() <= Date.now()) throw badRequest('mute_in_past');
+      await db
+        .update(cp)
+        .set({ mutedUntil: until })
+        .where(and(eq(cp.conversationId, req.params.id), eq(cp.userId, user.id)));
+      await publishConvUpdated(req.params.id, [user.id]);
+      const dto = await loadConversationDto(req.params.id, await viewCtxFor(user));
+      return { conversation: dto };
+    },
+  );
+
   app.post(
     '/api/conversations/:id/accept',
     { preHandler: requireAuth, schema: { params: z.object({ id: z.string().uuid() }) } },
@@ -763,7 +787,10 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
       // Wave 1.7: deleting a request I never accepted is silent to the
       // sender — no system row, no frame — like a declined connection.
       const silentDecline = isSelf && target.acceptedAt === null;
-      if (convRow?.type !== 'channel' && !silentDecline) {
+      // Wave 1 (§1.8): a DM "End chat" posts no system row either — the
+      // other person sees the chat go quiet, not a pill about it.
+      const dmLeave = isSelf && convRow?.type === 'dm';
+      if (convRow?.type !== 'channel' && !silentDecline && !dmLeave) {
         await sendSystemMessage(
           req.params.id,
           isSelf ? 'participant_left' : 'participant_removed',
