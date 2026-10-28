@@ -53,7 +53,7 @@ async function loadLiveToken(token: string): Promise<ShareTokenRow> {
 }
 
 /** Stream one MinIO object with the share-page cache posture. */
-async function streamObject(reply: FastifyReply, key: string, range?: string) {
+export async function streamObject(reply: FastifyReply, key: string, range?: string) {
   let obj;
   try {
     obj = await getObjectStream(key, range);
@@ -141,6 +141,11 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
         if (!s || s.authorId !== user.id || s.expiresAt.getTime() <= Date.now()) {
           throw notFound('not_found');
         }
+      } else if (type === 'profile') {
+        // Phase 6: MY card only — `id` must be my own user id (anyone else's
+        // is the §1.14 404; their /u/ address is shareable without a token).
+        // Always 'full': profile_visibility narrows the page live.
+        if (id !== user.id) throw notFound('not_found');
       } else {
         // group — owner/admin of a public|invite_only group.
         const [c] = await db
@@ -274,7 +279,7 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
       .orderBy(desc(schema.shareTokens.createdAt))
       .limit(SHARE_LINKS_MINE_MAX);
     const idsOf = (t: string) => rows.filter((r) => r.objectType === t).map((r) => r.objectId);
-    const [posts, beacons, listings, stories, groups] = await Promise.all([
+    const [posts, beacons, listings, stories, groups, owners] = await Promise.all([
       idsOf('post').length
         ? db
             .select({ id: schema.posts.id, body: schema.posts.body, audience: schema.posts.audience, authorId: schema.posts.authorId })
@@ -311,6 +316,12 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
             .select({ id: schema.conversations.id, title: schema.conversations.title, visibility: schema.conversations.visibility })
             .from(schema.conversations)
             .where(inArray(schema.conversations.id, idsOf('group')))
+        : [],
+      idsOf('profile').length
+        ? db
+            .select({ id: schema.users.id, username: schema.users.username, bannedAt: schema.users.bannedAt })
+            .from(schema.users)
+            .where(inArray(schema.users.id, idsOf('profile')))
         : [],
     ]);
     // `live` mirrors what the public read re-checks: the object's own
@@ -367,6 +378,12 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
           const s = stories.find((x) => x.id === r.objectId);
           label = `Story${s?.caption ? ` — ${excerpt(s.caption, '')}` : ''}`;
           live = !!s && s.expiresAt.getTime() > now;
+          break;
+        }
+        case 'profile': {
+          const o = owners.find((x) => x.id === r.objectId);
+          label = `Profile · @${o?.username ?? '?'}`;
+          live = !!o && o.bannedAt === null;
           break;
         }
         default: {
@@ -598,8 +615,10 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
 
       const [u] = await db.select().from(schema.users).where(eq(schema.users.id, uid)).limit(1);
       if (!u || u.avatarStatus !== 'ready') throw notFound('share_not_found');
-      const key =
-        req.query.v === 'animated' ? (u.avatarAnimatedKey ?? u.avatarStaticKey) : u.avatarStaticKey;
+      // Phase 6: a profile card is static-only, like /public-avatar — the
+      // animated WebP stays behind sign-in on BOTH unauthenticated surfaces.
+      const animated = req.query.v === 'animated' && row.objectType !== 'profile';
+      const key = animated ? (u.avatarAnimatedKey ?? u.avatarStaticKey) : u.avatarStaticKey;
       if (!key) throw notFound('share_not_found');
       return streamObject(reply, key, req.headers.range);
     },
@@ -671,6 +690,8 @@ async function objectAuthorId(row: ShareTokenRow): Promise<string | null> {
         .limit(1);
       return s?.authorId ?? null;
     }
+    case 'profile':
+      return row.objectId; // the card IS its owner
     default:
       return null;
   }

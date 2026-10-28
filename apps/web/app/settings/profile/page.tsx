@@ -27,6 +27,7 @@ import Avatar from '@/components/Avatar';
 import StyledName from '@/components/StyledName';
 import TabPage from '@/components/TabPage';
 import { RescueCard } from '@/components/RescueSheet';
+import { ShareButton } from '@/components/ShareSheet';
 import idm from '@/components/identity.module.css';
 import pp from '@/components/profilepage.module.css';
 import sm from '@/components/settings.module.css';
@@ -40,6 +41,15 @@ function LinkIcon() {
     <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
       <path d="M10.2 13.8 a3.6 3.6 0 0 0 5.1 0 l2.9 -2.9 a3.6 3.6 0 0 0 -5.1 -5.1 l-1.6 1.6" {...S} />
       <path d="M13.8 10.2 a3.6 3.6 0 0 0 -5.1 0 l-2.9 2.9 a3.6 3.6 0 0 0 5.1 5.1 l1.6 -1.6" {...S} />
+    </svg>
+  );
+}
+
+function ShareIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M12 3v12M8 7l4-4 4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 12v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   );
 }
@@ -194,6 +204,10 @@ function OwnProfile() {
         >
           <LinkIcon />
         </Link>
+        {/* Phase 6 (§1b): share my card — Copy link · Share… · QR · Copy @username. */}
+        <ShareButton type="profile" id={me.id} className="btn btn-ghost btn-icon" ariaLabel="Share your profile" handle={me.username}>
+          <ShareIcon />
+        </ShareButton>
         <Link href="/settings" className="btn btn-ghost btn-icon" aria-label="Settings">
           <SlidersIcon />
         </Link>

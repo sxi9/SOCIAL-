@@ -60,9 +60,19 @@ Updated 2026-10-28. A new session continues this project by reading
   approve; admin add or approve lifts it; `GET`/`DELETE .../bans`), admin
   delete-any-message (`removed_by` stub), `POST .../transfer` + the
   `last_admin` guard, sender names in group push bodies (never ghost),
-  member ⋯ actions + "Removed people" in chat settings. Next: phase 5 (call
-  links) and phase 6 (profile share) per §1b, then the rest of Wave 1 (legal
-  pages, account lifecycle, report kinds, mute, age gate). Open follow-up
+  member ⋯ actions + "Removed people" in chat settings. Then phase 6, the
+  profile share (BUILT 2026-10-28, migration 0017 — see the deploy line in
+  `docs/CLAUDE-MEMORY.md` for whether it is on the box): `profile` share
+  token (owner-only mint, `/p/<token>` renders the hero), `/u/[username]` is
+  a server route — no `sid` cookie → logged-out hero with OG tags
+  (`GET /api/users/:username/public` + `/public-avatar`, `lib/profileHero.ts`,
+  `ProfileHeroCard`) honouring `profile_visibility`; a session → the old
+  client page (`PublicProfileClient`) which reads `?msg=1` / `?call=1` and
+  opens the DM; `ShareSheet` grew `handle` (Copy @username) and `fixedUrl`
+  (someone else's profile shares its `/u/` address, no token); the own tab
+  topbar has a Share icon. Next: phase 5 (call links) per §1b, then the
+  rest of Wave 1 (legal pages, account lifecycle, report kinds, mute, age
+  gate). Open follow-up
   from review: the unfurl
   worker charges the sender's hourly budget for our own share URLs (short-
   circuit origin == PUBLIC_ORIGIN in the send route).
@@ -76,10 +86,10 @@ Updated 2026-10-28. A new session continues this project by reading
   conversion, SW stale-shell self-heal, admin grant/revoke + set password,
   Tailscale Funnel as the stable public URL. The undo-send pill was REMOVED
   by owner decision (FEATURES #96 struck; server undo route stays).
-- Migrations run `0000`…`0016`. **The next free number is 0017.** `0016` (2026-10-28) holds `conversation_bans` (§2.5 admin half); `0015` holds only `conversation_participants.accepted_at` (Wave 1.7). `0014`
+- Migrations run `0000`…`0017`. **The next free number is 0018.** `0017` (2026-10-28) widens `share_tokens.object_type` to `profile` (phase 6); `0016` (2026-10-28) holds `conversation_bans` (§2.5 admin half); `0015` holds only `conversation_participants.accepted_at` (Wave 1.7). `0014`
   (2026-10-27) holds the share-everything plumbing only — `share_tokens.preview`,
   `users.dm_policy`, `users.profile_visibility`; the Wave 1 legal/account/report
-  columns AUDIT-PLAN §10 lists go in `0015` when that wave starts (§10 allows
+  columns AUDIT-PLAN §10 lists go in `0018`+ when that wave starts (§10 allows
   the split). The product audit's "migration 0013" references are stale.
 - The `wip/v0.9` and `backup/*` branches are historical only — ignore
   them (main supersedes).

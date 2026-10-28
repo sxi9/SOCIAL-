@@ -1,567 +1,113 @@
-'use client';
-
-// Public profile page (ARCHITECTURE §5.4; v0.5a §1.37): animated avatar +
-// the rich profile — 3-GIF strip, interest chips, work/skills — plus connect
-// and message actions (§1.28). No endorsement counts, no connection counts,
-// no profile view counters: a page about a person, not a scoreboard.
-import { useEffect, useState } from 'react';
+// /u/<username> (AUDIT-PLAN §1b phase 6, 2026-10-28). SERVER wrapper that
+// picks one of two faces by the presence of the `sid` cookie:
+//   • no session → the logged-out HERO (lib/ssr fetchProfileHero through
+//     API_ORIGIN, XFF re-sent) with full OG tags, honouring the owner's
+//     profile_visibility, and the Message / Call doors behind inline
+//     sign-in — the "text me / call me" link;
+//   • a session → the signed-in profile page (PublicProfileClient, inside
+//     AppShell), which reads ?msg=1 / ?call=1 and opens the DM.
+// A stale cookie still lands on the client page, whose AppShell bounces to
+// /login?next= — nothing is decided from the cookie's VALUE here.
+import type { Metadata } from 'next';
 import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
-import type {
-  Attachment,
-  ConversationResponse,
-  Profile,
-  Trust,
-  UserProfileResponse,
-  UserPublic,
-} from '@socialchat/shared';
-import { api, ApiError } from '@/lib/api';
-import { connectionStateFor, connectTo, refreshConnections, removeConnection } from '@/lib/connections';
-import { formatLastSeen } from '@/lib/format';
-import { refreshMyMood } from '@/lib/mood';
-import { upsertConversation } from '@/lib/store';
-import { useAppState } from '@/lib/useStore';
-import MediaLightbox from '@/components/MediaLightbox';
-import { useReducedMotion } from '@/lib/useReducedMotion';
-import ActivityStrip from '@/components/ActivityStrip';
-import AnonSendSheet from '@/components/AnonSendSheet';
-import AppShell from '@/components/AppShell';
-import Avatar from '@/components/Avatar';
-import MoodChip from '@/components/MoodChip';
-import MoodSheet from '@/components/MoodSheet';
-import ReportSheet from '@/components/ReportSheet';
-import StyledName from '@/components/StyledName';
-import TrustPanel from '@/components/TrustPanel';
-import bz from '@/components/beacons.module.css';
-import idm from '@/components/identity.module.css';
-import pp from '@/components/profilepage.module.css';
-import st from '@/components/social.module.css';
-import { confirmDialog } from '@/lib/confirm';
+import { cookies } from 'next/headers';
+import { Suspense } from 'react';
+import GateCta from '@/components/GateCta';
+import ProfileHeroCard from '@/components/ProfileHeroCard';
+import { profileDescribe } from '@/components/SharePageRoute';
+import ShareHeaderPill from '@/components/ShareHeaderPill';
+import cm from '@/components/community.module.css';
+import { fetchProfileHero, publicOrigin } from '@/lib/ssr';
+import PublicProfileClient from './PublicProfileClient';
 
-function PublicProfile({ username }: { username: string }) {
-  const state = useAppState();
-  const router = useRouter();
-  const [user, setUser] = useState<UserPublic | null>(null);
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [trust, setTrust] = useState<Trust | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [menu, setMenu] = useState(false);
-  const [picZoom, setPicZoom] = useState(false); // v1.0a #93
-  const [report, setReport] = useState(false);
-  const [blockBusy, setBlockBusy] = useState(false);
-  const [blocked, setBlocked] = useState(false);
-  const [actionBusy, setActionBusy] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-  // v0.8a §1.57: the mood picker lives on MY OWN profile.
-  const [moodOpen, setMoodOpen] = useState(false);
-  // v0.8b §1.62: the anonymous-send entry. Whether THEY take anonymous
-  // messages is enforced invisibly server-side (one 404 shape) — the entry
-  // renders for everyone else and the refusal copy never disambiguates.
-  const [anonOpen, setAnonOpen] = useState(false);
+export const dynamic = 'force-dynamic';
 
-  useEffect(() => {
-    let cancelled = false;
-    setUser(null);
-    setProfile(null);
-    setTrust(null);
-    setError(null);
-    void api
-      .get<UserProfileResponse>(`/api/users/${encodeURIComponent(username)}`)
-      .then((res) => {
-        if (cancelled) return;
-        setUser(res.user);
-        setProfile(res.profile ?? null);
-        // v0.5b §1.40: defaulted server-side; guard keeps old payloads clean.
-        setTrust(res.trust ?? null);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(
-          err instanceof ApiError && err.status === 404
-            ? 'This user does not exist.'
-            : 'Could not load this profile.',
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [username]);
+interface PageProps {
+  params: Promise<{ username: string }>;
+}
 
-  // Connection state powers the Connect button (§1.28).
-  useEffect(() => {
-    void refreshConnections();
-  }, []);
+async function signedIn(): Promise<boolean> {
+  const jar = await cookies();
+  return Boolean(jar.get('sid')?.value);
+}
 
-  // user.updated keeps an open profile live (avatar transcode landing, etc.).
-  const peer = user
-    ? [...state.conversations.values()]
-        .flatMap((c) => c.participants)
-        .find((p) => p.user.id === user.id)?.user ?? user
-    : null;
-  const shown = peer ?? user;
-  const presence = shown ? state.presence.get(shown.id) : undefined;
-  const isMe = shown !== null && shown.id === state.me?.id;
-  const connState = shown && !isMe && state.connections ? connectionStateFor(shown.id) : null;
-
-  // My own full mood state (fade time, owner-only) for the picker card.
-  useEffect(() => {
-    if (isMe) void refreshMyMood().catch(() => undefined);
-  }, [isMe]);
-
-  // v0.8a §1.57: the chip to render — mine stays live via me.mood/moodState;
-  // someone else's rides their (per-viewer resolved) UserPublic.
-  const shownMood = isMe ? state.me?.mood ?? null : shown?.mood ?? null;
-
-  // v2 (proto 30): shared interests get the white-border chip. My own public
-  // tags are fetched once, client-side; when unavailable every chip renders
-  // standard — purely presentational, nothing new is revealed either way.
-  const [myInterests, setMyInterests] = useState<Set<string> | null>(null);
-  const myUsername = state.me?.username ?? null;
-  const theirInterestCount = profile?.interests.length ?? 0;
-  useEffect(() => {
-    if (isMe || !myUsername || theirInterestCount === 0) return;
-    let cancelled = false;
-    void api
-      .get<UserProfileResponse>(`/api/users/${encodeURIComponent(myUsername)}`)
-      .then((res) => {
-        if (cancelled) return;
-        setMyInterests(new Set((res.profile?.interests ?? []).map((t) => t.toLowerCase())));
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [isMe, myUsername, theirInterestCount]);
-
-  async function block(): Promise<void> {
-    if (!shown || blockBusy) return;
-    setMenu(false);
-    setBlockBusy(true);
-    try {
-      await api.put(`/api/users/${shown.id}/block`);
-      setBlocked(true);
-    } catch {
-      /* idempotent — a failure here just leaves the profile up */
-    } finally {
-      setBlockBusy(false);
-    }
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const { username } = await params;
+  // The signed-in page is app chrome: the root template titles it.
+  if (await signedIn()) return { title: `@${username}` };
+  const hero = await fetchProfileHero(username);
+  const origin = await publicOrigin();
+  // /u/ is a public page of record (unlike a token page) — indexable when
+  // the person is visible; the one 404 state is not.
+  if (!hero) {
+    return { title: { absolute: 'Bored Chat' }, description: 'Chat for when the group chat is dead.', robots: { index: false, follow: false } };
   }
+  const d = profileDescribe(hero);
+  const image = d.image ? `${origin}${d.image}` : undefined;
+  const path = `/u/${encodeURIComponent(username)}`;
+  return {
+    title: { absolute: d.title },
+    description: d.description,
+    // A reduced hero (connections / private) unfurls but is never indexed.
+    ...(hero.visibility === 'minimal' ? { robots: { index: false, follow: false } } : {}),
+    openGraph: {
+      title: d.title,
+      description: d.description,
+      siteName: 'Bored Chat',
+      type: 'profile',
+      url: `${origin}${path}`,
+      ...(image ? { images: [{ url: image }] } : {}),
+    },
+    twitter: {
+      card: 'summary',
+      title: d.title,
+      description: d.description,
+      ...(image ? { images: [image] } : {}),
+    },
+  };
+}
 
-  async function connect(): Promise<void> {
-    if (!shown || actionBusy) return;
-    setActionBusy(true);
-    setActionError(null);
-    try {
-      await connectTo(shown.id);
-    } catch (err) {
-      setActionError(
-        err instanceof ApiError && err.status === 429
-          ? 'Easy there — too many requests this hour.'
-          : 'Could not send the request right now.',
-      );
-    } finally {
-      setActionBusy(false);
-    }
+export default async function ProfileRoute({ params }: PageProps) {
+  const { username } = await params;
+  if (await signedIn()) {
+    return (
+      // useSearchParams (the ?msg / ?call doors) needs a Suspense boundary.
+      <Suspense fallback={null}>
+        <PublicProfileClient username={username} />
+      </Suspense>
+    );
   }
-
-  async function message(): Promise<void> {
-    if (!shown || actionBusy) return;
-    setActionBusy(true);
-    setActionError(null);
-    try {
-      const res = await api.post<ConversationResponse>('/api/conversations', {
-        type: 'dm',
-        user_id: shown.id,
-      });
-      upsertConversation(res.conversation);
-      router.push(`/c/${res.conversation.id}`);
-    } catch {
-      setActionError('Could not open a chat.');
-      setActionBusy(false);
-    }
-  }
-
-  const connectButton = (() => {
-    if (!connState) return null;
-    switch (connState.kind) {
-      case 'none':
-        return (
-          <button
-            type="button"
-            className={`${pp.pillBtn} ${pp.pillPrimary}`}
-            disabled={actionBusy}
-            onClick={() => void connect()}
-          >
-            Connect
-          </button>
-        );
-      case 'outgoing':
-        return (
-          <button
-            type="button"
-            className={pp.pillBtn}
-            disabled={actionBusy}
-            onClick={() => {
-              setActionBusy(true);
-              void removeConnection(connState.connection)
-                .catch(() => setActionError('Could not cancel.'))
-                .finally(() => setActionBusy(false));
-            }}
-          >
-            Requested · cancel
-          </button>
-        );
-      case 'incoming':
-        // Their request to me — connect() auto-accepts it server-side (§1.28).
-        return (
-          <button
-            type="button"
-            className={`${pp.pillBtn} ${pp.pillPrimary}`}
-            disabled={actionBusy}
-            onClick={() => void connect()}
-          >
-            Accept request
-          </button>
-        );
-      case 'accepted':
-        return (
-          <button
-            type="button"
-            className={pp.pillBtn}
-            disabled={actionBusy}
-            onClick={() => {
-              void confirmDialog(`Remove ${shown?.display_name ?? 'them'} as a friend? They won't be told.`).then(
-                (ok) => {
-                  if (!ok) return;
-                  setActionBusy(true);
-                  void removeConnection(connState.connection)
-                    .catch(() => setActionError('Could not remove.'))
-                    .finally(() => setActionBusy(false));
-                }
-              );
-            }}
-          >
-            ✓ Friends
-          </button>
-        );
-    }
-  })();
-
+  const hero = await fetchProfileHero(username);
+  const path = `/u/${encodeURIComponent(username)}`;
   return (
-    <div className="page">
-      {/* v2 (proto 30): cover band with floating back orb + ··· overflow —
-          the sticky topbar retired on this screen; heading stays for SRs. */}
-      <div className={pp.cover}>
-        <div className={pp.coverBar}>
-          <Link href="/" className={pp.orbBtn} aria-label="Back">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path
-                d="M14.5 5.5 8 12l6.5 6.5"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </Link>
-          <h1 className={pp.srOnly}>Profile</h1>
-          {shown && !isMe && !blocked ? (
-            <div className={bz.cardRel}>
-              <button
-                type="button"
-                className={pp.orbBtn}
-                aria-label="Profile options"
-                onClick={() => setMenu((v) => !v)}
-              >
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-                  <circle cx="5.5" cy="12" r="1.6" />
-                  <circle cx="12" cy="12" r="1.6" />
-                  <circle cx="18.5" cy="12" r="1.6" />
-                </svg>
-              </button>
-              {menu ? (
-                <>
-                  <button
-                    type="button"
-                    className={bz.menuBackdrop}
-                    aria-label="Close menu"
-                    onClick={() => setMenu(false)}
-                  />
-                  <div className={bz.cardMenu} role="menu" style={{ right: 0, top: 40 }}>
-                    <button type="button" role="menuitem" className={bz.menuDanger} onClick={() => void block()}>
-                      Block @{shown.username}
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setMenu(false);
-                        setReport(true);
-                      }}
-                    >
-                      Report
-                    </button>
-                  </div>
-                </>
-              ) : null}
-            </div>
-          ) : isMe ? (
-            <Link href="/settings/account" className={pp.coverPill}>
-              Edit
-            </Link>
-          ) : (
-            <span />
-          )}
-        </div>
-      </div>
-      {report && shown ? (
-        <ReportSheet target={{ kind: 'user', user_id: shown.id }} onClose={() => setReport(false)} />
-      ) : null}
-
-      {blocked ? (
-        <div className="settings-section">
-          <div className="card" style={{ textAlign: 'center' }}>
-            <p style={{ margin: 0 }}>Blocked.</p>
-            <p className="muted small" style={{ margin: '6px 0 0' }}>
-              You won&rsquo;t see each other around here any more. Change your mind any time in{' '}
-              <Link href="/settings/blocked">Blocked people</Link>.
-            </p>
-            <button type="button" className="btn" style={{ marginTop: 12 }} onClick={() => router.push('/')}>
-              Back to chats
-            </button>
-          </div>
-        </div>
-      ) : error ? (
-        <div className="center-screen muted" role="alert">
-          {error}
-        </div>
-      ) : !shown ? (
-        <div className="center-screen muted" role="status">
-          Loading…
-        </div>
+    <main className={cm.sharePage}>
+      <header className={cm.shareHead}>
+        <Link href="/" className={cm.shareBrand}>
+          bored.
+        </Link>
+        <span className={cm.shareHeadMeta}>profile, logged out</span>
+        <ShareHeaderPill path={path} className={`btn btn-primary ${cm.shareJoin}`} />
+      </header>
+      {hero ? (
+        <ProfileHeroCard hero={hero} />
       ) : (
-        <div className={pp.col}>
-          {/* v1.1 Royal (owner fix round): centered hero — ringed avatar,
-              serif name, "@handle · mood" line — per the design prototype. */}
-          <section className={pp.hero}>
-            <div className={pp.avatarRing}>
-              <div className={pp.avatarGap}>
-                {/* Profile pages render the animated WebP (motion-gated, §5.4).
-                    v1.0a (#93): tap opens the full-screen pinch-zoom viewer. */}
-                <button
-                  type="button"
-                  className="avatarZoomTap"
-                  aria-label="View profile picture full screen"
-                  disabled={shown.avatar.static_url === null}
-                  onClick={() => setPicZoom(true)}
-                >
-                  <Avatar avatar={shown.avatar} name={shown.display_name} size={96} animated />
-                </button>
-              </div>
-            </div>
-            {picZoom && shown.avatar.static_url !== null ? (
-              <MediaLightbox
-                src={shown.avatar.animated_url ?? shown.avatar.static_url}
-                alt={`${shown.display_name}'s profile picture`}
-                onClose={() => setPicZoom(false)}
-              />
-            ) : null}
-            {/* v0.8a §1.58: the profile page is a pinned animated-name site. */}
-            <h2 className={pp.heroName}>
-              <StyledName userId={shown.id} style={shown.name_style} name={shown.display_name} />
-            </h2>
-            {/* v0.8a §1.57: the mood chip — server-resolved for this viewer. */}
-            <p className={pp.handleLine}>
-              <span>@{shown.username}</span>
-              {shownMood ? (
-                <>
-                  <span aria-hidden>·</span>
-                  <span className={pp.moodWord}>
-                    <MoodChip mood={shownMood} />
-                  </span>
-                </>
-              ) : null}
-            </p>
-            {isMe ? (
-              <p className={pp.moodTools}>
-                {/* The owner's own fade time shows subtly, never to others. */}
-                {shownMood && state.moodState?.expires_at ? (
-                  <span className={idm.moodFade}>
-                    fades by{' '}
-                    {new Date(state.moodState.expires_at).toLocaleTimeString([], {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </span>
-                ) : null}
-                <button type="button" className={pp.moodBtn} onClick={() => setMoodOpen(true)}>
-                  {shownMood ? 'Change mood' : '+ Set a mood'}
-                </button>
-              </p>
-            ) : null}
-            <p className={pp.heroSub}>
-              <span className={presence?.online ? `${pp.subDot} ${pp.subDotOn}` : pp.subDot} aria-hidden />
-              {presence?.online ? 'online' : formatLastSeen(presence?.last_seen_at ?? shown.last_seen_at)}
-            </p>
-          </section>
-          {moodOpen ? <MoodSheet onClose={() => setMoodOpen(false)} /> : null}
-          {anonOpen && shown ? (
-            <AnonSendSheet userId={shown.id} displayName={shown.display_name} onClose={() => setAnonOpen(false)} />
-          ) : null}
-
-          {/* v2 (proto 30): interest chips sit right under the identity —
-              shared tags wear the white border + a " · shared" word. */}
-          {profile && profile.interests.length > 0 ? (
-            <div className={pp.intChips}>
-              {profile.interests.map((tag) => {
-                const shared = !isMe && myInterests !== null && myInterests.has(tag.toLowerCase());
-                return (
-                  <span key={tag} className={shared ? `${pp.intChip} ${pp.intChipShared}` : pp.intChip}>
-                    {tag}
-                    {shared ? (
-                      <span className={pp.sharedWord}>
-                        <span aria-hidden>· </span>shared
-                      </span>
-                    ) : null}
-                  </span>
-                );
-              })}
-            </div>
-          ) : null}
-
-          {/* proto 30: Connect (filled) / Message (outline) / anon orb in one
-              row; own profile keeps the stacked outline pill. */}
-          {isMe ? (
-            <div className={pp.actions}>
-              <Link href="/settings/account" className={pp.pillBtn}>
-                Edit profile
-              </Link>
-            </div>
-          ) : (
-            <div className={pp.actionsRow}>
-              {connectButton}
-              <button type="button" className={pp.pillBtn} disabled={actionBusy} onClick={() => void message()}>
-                Message
-              </button>
-              {/* v0.8b §1.62: the anonymous reveal game — words first, face
-                  later. The mask emoji is content (the anon system's masks). */}
-              <button type="button" className={pp.anonOrb} aria-label="Send anonymously" onClick={() => setAnonOpen(true)}>
-                <span aria-hidden>👻</span>
-              </button>
-              {actionError ? (
-                <p className="error-text" style={{ width: '100%', margin: 0 }}>
-                  {actionError}
-                </p>
-              ) : null}
-            </div>
-          )}
-
-          {/* §1.37: the 3-GIF strip — animation gated by the VIEWER's settings. */}
-          {profile && profile.media.length > 0 ? (
-            <div className={pp.section}>
-              <h3 className={pp.sectionLabel}>Pics</h3>
-              <div className={st.gifStrip}>
-                {profile.media.map((m) => (
-                  <ProfileGif key={m.id} media={m} />
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {shown.bio ? (
-            <div className={pp.section}>
-              <p className={pp.bioText}>{shown.bio}</p>
-            </div>
-          ) : null}
-
-          {profile && profile.entries.length > 0 ? (
-            <div className={pp.section}>
-              {(['work', 'skill'] as const).map((kind) => {
-                const list = profile.entries.filter((e) => e.kind === kind);
-                if (list.length === 0) return null;
-                return (
-                  <div key={kind}>
-                    <h3 className={pp.sectionLabel}>{kind === 'work' ? 'Work' : 'Skills'}</h3>
-                    {list.map((entry) => (
-                      <div key={entry.id} className={st.entryRow}>
-                        <span className={st.entryText}>
-                          <strong>{entry.title}</strong>
-                          {entry.detail ? <span>{entry.detail}</span> : null}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
-
-          {/* v0.8a §1.59: recent activity — server-resolved per viewer
-              (per-kind setting ∩ the thing's own audience); invisible items
-              were silently dropped, moods never appear. The .flat wrapper
-              melts the strip's card into the page (hairline rows). */}
-          <div className={pp.flat}>
-            <ActivityStrip username={shown.username} isMe={isMe} />
+        // Unknown ≡ banned ≡ malformed: one honest state. Signing in still
+        // lands here — a blocked pair's own 404 then takes over in-app.
+        <div className={cm.shareCard} style={{ textAlign: 'center' }}>
+          <p style={{ fontSize: 34, margin: 0 }} aria-hidden>
+            🫧
+          </p>
+          <p className={cm.shareBody}>Nobody by that name here.</p>
+          <div className={cm.shareGate} style={{ justifyContent: 'center' }}>
+            <GateCta next={path} fallback={`/register?next=${encodeURIComponent(path)}`} word="account" className="btn btn-primary">
+              Sign in to look again
+            </GateCta>
           </div>
-
-          {/* v0.5b §1.40: marketplace trust — safety information from real
-              listing contacts, shown ONLY here (never ranked, never compared;
-              the no-scores argument lives in ADR-012). */}
-          {trust ? (
-            <div className={pp.flat}>
-              <TrustPanel username={shown.username} trust={trust} />
-            </div>
-          ) : null}
-
-          {/* Plan karma (§1.15): a private fact about yourself, never a score
-              against anyone else — shown on your OWN profile only, never
-              ranked, never compared (PSYCHOLOGY design rule 3). */}
-          {isMe && (shown.beacons_created > 0 || shown.beacons_sparked > 0) ? (
-            <div className={pp.section}>
-              <p className={pp.privateFact}>
-                🔥 lit {shown.beacons_created} {shown.beacons_created === 1 ? 'beacon' : 'beacons'} ·{' '}
-                {shown.beacons_sparked} sparked
-              </p>
-              <p className="muted small" style={{ margin: '4px 0 0', textAlign: 'center' }}>
-                Only you see this line.
-              </p>
-            </div>
-          ) : null}
         </div>
       )}
-    </div>
-  );
-}
-
-/**
- * One tile of the 3-GIF strip. Animation is gated by the VIEWER's settings
- * (prefers-reduced-motion + their own avatar_motion — §1.37/§5 motion rules):
- * 'auto' plays, 'reduced' plays on hover, 'off' stays static.
- */
-function ProfileGif({ media }: { media: Attachment }) {
-  const state = useAppState();
-  const reduced = useReducedMotion();
-  const [hovered, setHovered] = useState(false);
-  const motion = state.me?.avatar_motion ?? 'auto';
-  const animate = !reduced && motion !== 'off' && (motion === 'auto' || hovered);
-  const src = animate ? media.url : media.thumb_url ?? media.url;
-  return (
-    <span
-      className={st.gifTile}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={src} alt="" loading="lazy" />
-    </span>
-  );
-}
-
-export default function PublicProfilePage() {
-  const params = useParams<{ username: string }>();
-  return (
-    <AppShell>
-      <PublicProfile username={params.username} />
-    </AppShell>
+      <p className={cm.shareFootnote}>
+        Shared from a self-hosted Bored Chat. Viewing is free; joining takes a minute.
+      </p>
+    </main>
   );
 }

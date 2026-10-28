@@ -183,7 +183,7 @@ export function moodDto(u: MoodCols, view?: ViewCtx | null): Mood | null {
 
 /** v0.8a (§1.58): name_style is viewer-independent identity. The fallback
  * guards the few raw-SQL partial casts that predate the column. */
-function nameStyleOf(u: { nameStyle?: string | null }): NameStyle {
+export function nameStyleOf(u: { nameStyle?: string | null }): NameStyle {
   return (u.nameStyle ?? 'none') as NameStyle;
 }
 

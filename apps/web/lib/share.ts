@@ -27,6 +27,7 @@ export const SHARE_OBJECT_WORD: Record<ShareObjectType, string> = {
   listing: 'listing',
   story: 'story',
   group: 'group',
+  profile: 'profile',
 };
 
 /** Mint-or-return. `preview` is the sharer's Teaser/Full choice for a

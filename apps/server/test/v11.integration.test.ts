@@ -541,6 +541,174 @@ describe.runIf(infra)('share-everything phase 2: group join loop (§1.68)', () =
     });
   });
 
+  describe('profile share (phase 6, migration 0017)', () => {
+    type Hero = {
+      username: string;
+      display_name: string;
+      avatar_url: string | null;
+      visibility: 'full' | 'minimal';
+      bio_line: string | null;
+      interests: string[];
+      joined: string | null;
+      doors: { message: boolean; call: boolean };
+    };
+    function pub(username: string) {
+      return app.inject({
+        method: 'GET',
+        url: `/api/users/${encodeURIComponent(username)}/public`,
+        headers: { 'x-forwarded-for': nextIp() },
+      });
+    }
+    async function settings(me: Session, body: Record<string, unknown>): Promise<void> {
+      expect((await patch(me, '/api/users/me/settings', body)).statusCode).toBe(200);
+    }
+
+    it('UNAUTHENTICATED hero: public visibility = bio line, interests, joined month; never id/last-seen/mood', async () => {
+      const me = await register(`p6pub${run}`);
+      expect(
+        (await patch(me, '/api/users/me', { bio: 'first line of bio\nsecond line never ships' })).statusCode,
+      ).toBe(200);
+      expect((await patch(me, '/api/users/me/profile', { interests: ['chai', 'walks'] })).statusCode).toBe(200);
+      const res = await pub(me.username);
+      expect(res.statusCode).toBe(200);
+      const hero = (res.json() as { hero: Hero }).hero;
+      expect(hero.username).toBe(me.username);
+      expect(hero.visibility).toBe('full');
+      expect(hero.bio_line).toBe('first line of bio');
+      expect(hero.interests).toEqual(['chai', 'walks']);
+      expect(hero.joined).toMatch(/^\d{4}-\d{2}$/);
+      expect(hero.avatar_url).toBeNull(); // no avatar yet → no path
+      // A fresh account defaults dm_policy 'connections': Message opens
+      // (it parks in Requests), Call does not (a parked DM can't be rung).
+      expect(hero.doors).toEqual({ message: true, call: false });
+      const raw = res.json() as Record<string, unknown>;
+      expect(JSON.stringify(raw)).not.toContain(me.userId);
+      expect(JSON.stringify(raw)).not.toMatch(/last_seen|mood|beacons_/);
+    });
+
+    it("'connections' / 'private' visibility reduce the hero to avatar + name; dm_policy drives the doors", async () => {
+      const me = await register(`p6min${run}`);
+      expect((await patch(me, '/api/users/me', { bio: 'hidden when minimal' })).statusCode).toBe(200);
+      await settings(me, { profile_visibility: 'private', dm_policy: 'everyone' });
+      let hero = ((await pub(me.username)).json() as { hero: Hero }).hero;
+      expect(hero.visibility).toBe('minimal');
+      expect(hero.bio_line).toBeNull();
+      expect(hero.interests).toEqual([]);
+      expect(hero.joined).toBeNull();
+      expect(hero.display_name).toBe(`Real ${me.username}`);
+      expect(hero.doors).toEqual({ message: true, call: true });
+      await settings(me, { profile_visibility: 'connections', dm_policy: 'nobody' });
+      hero = ((await pub(me.username)).json() as { hero: Hero }).hero;
+      expect(hero.visibility).toBe('minimal');
+      expect(hero.doors).toEqual({ message: false, call: false });
+    });
+
+    it('unknown and banned answer ONE 404 user_not_found (byte-identical); the avatar proxy too', async () => {
+      const victim = await register(`p6ban${run}`);
+      const ghost = await pub(`nobody${run}x`);
+      expect(ghost.statusCode).toBe(404);
+      expect((await pub(victim.username)).statusCode).toBe(200);
+      const { db } = await import('../src/db/index.js');
+      const { sql } = await import('drizzle-orm');
+      await db.execute(sql`UPDATE users SET banned_at = now() WHERE id = ${victim.userId}::uuid`);
+      const banned = await pub(victim.username);
+      expect(banned.statusCode).toBe(404);
+      expect(banned.body).toBe(ghost.body);
+      const av = await app.inject({
+        method: 'GET',
+        url: `/api/users/${victim.username}/public-avatar?v=static`,
+        headers: { 'x-forwarded-for': nextIp() },
+      });
+      expect(av.statusCode).toBe(404);
+      expect(av.body).toBe(ghost.body);
+      // The animated variant is never public — the schema refuses it.
+      const anim = await app.inject({
+        method: 'GET',
+        url: `/api/users/${victim.username}/public-avatar?v=animated`,
+        headers: { 'x-forwarded-for': nextIp() },
+      });
+      expect(anim.statusCode).toBe(400);
+    });
+
+    it('profile token: owner-only mint (anyone else → 404), the page is the same hero, /mine labels it, revoke kills it', async () => {
+      const me = await register(`p6tok${run}`);
+      const other = await register(`p6toko${run}`);
+      expect((await patch(me, '/api/users/me', { bio: 'card bio' })).statusCode).toBe(200);
+      // Someone else's id: the §1.14 404 — their /u/ address needs no token.
+      const notMine = await post(other, '/api/share-links', { type: 'profile', id: me.userId });
+      expect(notMine.statusCode).toBe(404);
+      const minted = await post(me, '/api/share-links', { type: 'profile', id: me.userId });
+      expect(minted.statusCode).toBe(200);
+      const link = (minted.json() as { share_link: { token: string; url: string; preview: string } }).share_link;
+      expect(link.url).toBe(`/p/${link.token}`);
+      expect(link.preview).toBe('full');
+      // Mint-or-return: the ONE open token per owner.
+      const again = await post(me, '/api/share-links', { type: 'profile', id: me.userId });
+      expect((again.json() as { share_link: { token: string } }).share_link.token).toBe(link.token);
+      const page = await app.inject({
+        method: 'GET',
+        url: `/api/share/${link.token}/public`,
+        headers: { 'x-forwarded-for': nextIp() },
+      });
+      expect(page.statusCode).toBe(200);
+      const body = (page.json() as { page: Hero & { type: string; id: string } }).page;
+      expect(body.type).toBe('profile');
+      expect(body.id).toBe(me.userId);
+      expect(body.bio_line).toBe('card bio');
+      expect(body.visibility).toBe('full');
+      // The setting narrows the page LIVE — the token never widens it.
+      await settings(me, { profile_visibility: 'private' });
+      const narrowed = await app.inject({
+        method: 'GET',
+        url: `/api/share/${link.token}/public`,
+        headers: { 'x-forwarded-for': nextIp() },
+      });
+      const nb = (narrowed.json() as { page: Hero }).page;
+      expect(nb.visibility).toBe('minimal');
+      expect(nb.bio_line).toBeNull();
+      // Listed for the owner with a human label.
+      const mine = await get(me, '/api/share-links/mine');
+      expect(mine.statusCode).toBe(200);
+      const item = (mine.json() as { share_links: { token: string; label: string; live: boolean }[] }).share_links.find(
+        (l) => l.token === link.token,
+      );
+      expect(item?.label).toBe(`Profile · @${me.username}`);
+      expect(item?.live).toBe(true);
+      // The share-page Report link works on a profile card (reports CHECK widened in 0017).
+      const rep = await app.inject({
+        method: 'POST',
+        url: `/api/share/${link.token}/report`,
+        headers: { ...CSRF, 'x-forwarded-for': nextIp() },
+        payload: { reason: 'test report on a profile card' },
+      });
+      expect(rep.statusCode).toBe(204);
+      // Only the owner (or an admin) revokes — anyone else gets the §1.14 404; then the page is gone.
+      expect((await del(other, `/api/share-links/${link.token}`)).statusCode).toBe(404);
+      expect((await del(me, `/api/share-links/${link.token}`)).statusCode).toBe(204);
+      const gone = await app.inject({
+        method: 'GET',
+        url: `/api/share/${link.token}/public`,
+        headers: { 'x-forwarded-for': nextIp() },
+      });
+      expect(gone.statusCode).toBe(404);
+    });
+
+    it('a banned owner\'s profile token page is the one 404', async () => {
+      const me = await register(`p6tokb${run}`);
+      const minted = await post(me, '/api/share-links', { type: 'profile', id: me.userId });
+      const token = (minted.json() as { share_link: { token: string } }).share_link.token;
+      const { db } = await import('../src/db/index.js');
+      const { sql } = await import('drizzle-orm');
+      await db.execute(sql`UPDATE users SET banned_at = now() WHERE id = ${me.userId}::uuid`);
+      const page = await app.inject({
+        method: 'GET',
+        url: `/api/share/${token}/public`,
+        headers: { 'x-forwarded-for': nextIp() },
+      });
+      expect(page.statusCode).toBe(404);
+    });
+  });
+
   describe('public and unlisted groups', () => {
     it('public: join lands at once; the state reads member', async () => {
       const admin = await register(`p2pub${run}`);

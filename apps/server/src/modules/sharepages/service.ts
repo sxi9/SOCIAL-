@@ -22,11 +22,12 @@ import {
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import type { AttRow, UserRow } from '../../lib/dto.js';
+import { profileHeroFor } from '../../lib/profileHero.js';
 import type { SqlExecutor } from '../../lib/activity.js';
 
 export type ShareTokenRow = typeof schema.shareTokens.$inferSelect;
 export type ShareObjectType = ShareTokenRow['objectType'] extends string
-  ? 'post' | 'beacon' | 'listing' | 'story' | 'group'
+  ? 'post' | 'beacon' | 'listing' | 'story' | 'group' | 'profile'
   : never;
 
 const stt = schema.shareTokens;
@@ -354,6 +355,14 @@ export async function resolveSharePage(
         expires_at: s.expiresAt.toISOString(),
         created_at: s.createdAt.toISOString(),
       };
+    }
+    case 'profile': {
+      // Phase 6: the owner's card. Banned owner → null (the one 404). What
+      // the page shows is decided LIVE from profile_visibility — the token
+      // never widens it (the setting is the only switch).
+      const owner = await loadUser(t.objectId);
+      if (!owner || owner.bannedAt !== null) return null;
+      return { type: 'profile', id: owner.id, ...profileHeroFor(owner) };
     }
     case 'group': {
       const [c] = await db

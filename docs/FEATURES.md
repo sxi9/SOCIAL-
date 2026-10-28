@@ -162,7 +162,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 108. Global search bar: people, public/invite-only groups, board listings, my own messages
 109. "Spotted" pins: photo + place on the local board, "interested 👀" named-faces reactions, beacon-style expiry
 78c. ✅ (shipped v1.0, with the quick-wins round) Find-people page (/people): suggestion grid with narrowing filters (mutuals/groups/area/shared public interests), refresh, honest empty state; strips link to it ("See more")
-110. Share everywhere: OG/Twitter-card unfurls for other social media, standalone profile share link, non-users can view posts and PLAY videos on share pages — login only gates interaction (never viewing public content). ✅ video playback on public share pages already works; the rest is the §1b share-everything build (Waves 4.2/6).
+110. Share everywhere: OG/Twitter-card unfurls for other social media, standalone profile share link, non-users can view posts and PLAY videos on share pages — login only gates interaction (never viewing public content). ✅ video playback on public share pages works; ✅ ShareSheet on post/plan/listing/story/group (2026-10-27); ✅ **profile share (phase 6, 2026-10-28):** logged-out `/u/<username>` hero with OG tags honouring `profile_visibility`, owner-minted `profile` token (migration 0017), Message/Call doors behind inline sign-in, Copy @username. Remaining: call links (§1b phase 5).
 
 ## ✅ v1.1 — "Royal" UI redesign (shipped on branch; from the owner's design drop)
 

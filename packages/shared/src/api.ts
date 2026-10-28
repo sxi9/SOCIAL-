@@ -3737,6 +3737,34 @@ export const ShareAuthorChipSchema = z.object({
 });
 export type ShareAuthorChip = z.infer<typeof ShareAuthorChipSchema>;
 
+// Phase 6 (2026-10-28, §1b): the logged-out PROFILE hero — what a stranger
+// sees at /u/<username> and on an owner-minted profile token page. NO id,
+// NO last-seen, NO mood, NO counts, NO faces (PSYCHOLOGY; decision 11).
+// `visibility` follows users.profile_visibility: 'full' (public) carries
+// the bio line, interests and the joined month; 'minimal' (connections /
+// private) is avatar + name only — the hero fields are then empty/null.
+// `doors` are the sign-in-gated actions: message unless dm_policy is
+// 'nobody'; call only when dm_policy is 'everyone' (a parked Request can't
+// be rung). avatar_url is the UNAUTHENTICATED static proxy path
+// (/api/users/<username>/public-avatar), null while not 'ready'.
+export const ProfileHeroSchema = z.object({
+  username: z.string(),
+  display_name: z.string(),
+  name_style: NameStyleSchema.default('none'),
+  avatar_url: z.string().nullable(),
+  visibility: z.enum(['full', 'minimal']),
+  bio_line: z.string().nullable(),
+  interests: z.array(z.string()),
+  joined: z.string().regex(/^\d{4}-\d{2}$/).nullable(), // YYYY-MM
+  doors: z.object({ message: z.boolean(), call: z.boolean() }),
+});
+export type ProfileHero = z.infer<typeof ProfileHeroSchema>;
+
+// GET /api/users/:username/public — UNAUTHENTICATED, per-IP rate-limited;
+// 404 user_not_found for unknown AND banned (byte-identical).
+export const PublicProfileResponseSchema = z.object({ hero: ProfileHeroSchema });
+export type PublicProfileResponse = z.infer<typeof PublicProfileResponseSchema>;
+
 // A share-page media descriptor: the token-gated proxy path
 // (/api/share/:token/media/<attachment_id>), never /api/media/:key.
 export const ShareMediaSchema = z.object({
@@ -3873,6 +3901,13 @@ export const SharePageSchema = z.discriminatedUnion('type', [
     messages: z.array(ShareMessageSchema), // ≤ SHARE_GROUP_PAGE_MESSAGES_MAX, seq ASC
     next_cursor: z.string().nullable(), // older messages; null at the floor
     created_at: IsoDateTimeSchema,
+  }),
+  // Phase 6: the owner-minted profile card (migration 0017). `id` is the
+  // owner's user id (the token's object_id); the rest is the same hero the
+  // logged-out /u/<username> route renders, visibility-reduced live.
+  ProfileHeroSchema.extend({
+    type: z.literal('profile'),
+    id: UuidSchema,
   }),
 ]);
 export type SharePage = z.infer<typeof SharePageSchema>;

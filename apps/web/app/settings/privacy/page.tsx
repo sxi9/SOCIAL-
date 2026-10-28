@@ -146,6 +146,19 @@ function PrivacySettings() {
               ]}
               onChange={(v) => void patch({ dm_policy: v as UserSettings['dm_policy'] })}
             />
+            {/* Phase 6 (§1b): what a logged-out visitor sees at /u/<you> and
+                on your profile share link — never counts, never faces. */}
+            <SelectRow
+              id="pv-profile-vis"
+              title="Your profile to people who aren’t signed in"
+              value={settings.profile_visibility}
+              options={[
+                { value: 'public', label: 'Picture, name, bio line, interests, joined month' },
+                { value: 'connections', label: 'Picture and name only' },
+                { value: 'private', label: 'Picture and name only' },
+              ]}
+              onChange={(v) => void patch({ profile_visibility: v as UserSettings['profile_visibility'] })}
+            />
             <SelectRow
               id="pv-group-add"
               title="Who can add you to groups"

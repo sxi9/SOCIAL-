@@ -3,6 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
+  PROFILE_PUBLIC_RATE_PER_HOUR_PER_IP,
+  SHARE_MEDIA_RATE_PER_HOUR_PER_IP,
   UpdateMeRequestSchema,
   USER_SEARCH_LIMIT,
   UserSearchQuerySchema,
@@ -17,8 +19,11 @@ import {
   userPublicDto,
   viewCtxFor,
 } from '../../lib/dto.js';
-import { badRequest, notFound } from '../../lib/errors.js';
+import { badRequest, notFound, rateLimited } from '../../lib/errors.js';
 import { parseMultipart } from '../../lib/multipart.js';
+import { profileHeroFor } from '../../lib/profileHero.js';
+import { fixedWindow } from '../../lib/ratelimit.js';
+import { streamObject } from '../sharepages/routes.js';
 import { enqueueAvatar } from '../../queues.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { loadTrust } from '../listings/reviews.js';
@@ -162,6 +167,55 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
         profile: await loadProfile(row.id, row.interests),
         trust: await loadTrust(row.id, user.id),
       };
+    },
+  );
+
+  // Phase 6 (AUDIT-PLAN §1b, 2026-10-28) GET /api/users/:username/public —
+  // UNAUTHENTICATED: the logged-out /u/<username> hero (lib/profileHero —
+  // the same builder as the profile share token), per-IP rate-limited like
+  // the share reads. Unknown and banned answer ONE 404 user_not_found.
+  // Blocks don't apply (nobody is signed in); a signed-in viewer never
+  // reaches this (the /u/ route serves the authed page to a sid cookie).
+  app.get(
+    '/api/users/:username/public',
+    { schema: { params: z.object({ username: z.string().min(1).max(64) }) } },
+    async (req) => {
+      const rate = await fixedWindow(`pubprof:${req.ip}`, PROFILE_PUBLIC_RATE_PER_HOUR_PER_IP, 3600);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+      const [row] = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.username, req.params.username))
+        .limit(1);
+      if (!row || row.bannedAt !== null) throw notFound('user_not_found');
+      return { hero: profileHeroFor(row) };
+    },
+  );
+
+  // GET /api/users/:username/public-avatar?v=static — the hero's avatar,
+  // UNAUTHENTICATED (the §1.67 proxy posture: streamed, never a MinIO key;
+  // `v=static` only — the animated WebP stays behind sign-in). Same 404 for
+  // unknown, banned and no-avatar-yet. /api/media/:key stays authed.
+  app.get(
+    '/api/users/:username/public-avatar',
+    {
+      schema: {
+        params: z.object({ username: z.string().min(1).max(64) }),
+        querystring: z.object({ v: z.enum(['static']).default('static') }),
+      },
+    },
+    async (req, reply) => {
+      const rate = await fixedWindow(`pubav:${req.ip}`, SHARE_MEDIA_RATE_PER_HOUR_PER_IP, 3600);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+      const [row] = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.username, req.params.username))
+        .limit(1);
+      if (!row || row.bannedAt !== null || row.avatarStatus !== 'ready' || !row.avatarStaticKey) {
+        throw notFound('user_not_found');
+      }
+      return streamObject(reply, row.avatarStaticKey, req.headers.range);
     },
   );
 }

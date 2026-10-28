@@ -1842,3 +1842,73 @@
   font-size: 12.5px;
   color: var(--muted);
 }
+
+/* ---------------------------------------------------------------------------
+   Phase 6 (§1b, 2026-10-28): the logged-out profile hero — /u/<username>
+   without a session and the owner-minted profile token page. Centered
+   card: ringed avatar, serif name, @handle, one bio line, interest chips,
+   "Joined <month>", and the two sign-in doors (Message / Call).
+   --------------------------------------------------------------------------- */
+.shareProfileHero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  padding: 10px 0 4px;
+}
+
+.shareProfileAvatar {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--panel-2);
+  border: 3px solid var(--panel);
+  box-shadow: 0 0 0 2px var(--border);
+}
+
+.shareProfileFallback {
+  composes: shareProfileAvatar;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.shareProfileName {
+  margin: 6px 0 0;
+  font-family: var(--font-serif, Georgia, serif);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.shareProfileHandle {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.shareProfileBio {
+  margin: 4px 0 0;
+  font-size: 15px;
+  line-height: 1.45;
+  max-width: 36ch;
+}
+
+.shareProfileJoined {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.shareProfileDoors {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}

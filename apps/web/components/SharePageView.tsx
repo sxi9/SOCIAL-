@@ -8,6 +8,7 @@ import type { SharePage, ShareAuthorChip, ShareMedia } from '@socialchat/shared'
 import { LISTING_SAFETY_NOTE, LISTING_SAFETY_NOTE_KINDS } from '@socialchat/shared';
 import GateCta from './GateCta';
 import GroupJoinCta from './GroupJoinCta';
+import ProfileHeroCard from './ProfileHeroCard';
 import ShareHeaderPill from './ShareHeaderPill';
 import ShareReportLink from './ShareReportLink';
 import cm from './community.module.css';
@@ -86,6 +87,8 @@ function headMeta(page: SharePage): string {
       return page.preview === 'teaser' ? 'listing preview, logged out' : 'board listing, logged out';
     case 'story':
       return 'shared story, logged out';
+    case 'profile':
+      return 'profile, logged out';
     default:
       return 'shared group, logged out';
   }
@@ -139,6 +142,9 @@ function deepLink(page: SharePage, path: string, token: string): string {
     case 'story':
       // Phase 4 (§3.3): the Chats tab with that author's stories open.
       return `/?story=${encodeURIComponent(page.author.username)}`;
+    case 'profile':
+      // Phase 6: the card's own address (the doors carry their own ?msg/?call).
+      return `/u/${encodeURIComponent(page.username)}`;
     default:
       return path; // group pages: back here, where the join CTA lives in-app
   }
@@ -163,6 +169,7 @@ const GATE_WORD: Record<SharePage['type'], string> = {
   story: 'story',
   group_card: 'group',
   group_live: 'group',
+  profile: 'profile',
 };
 
 function PageBody({ page, path, token }: { page: SharePage; path: string; token: string }) {
@@ -388,6 +395,9 @@ function PageBody({ page, path, token }: { page: SharePage; path: string; token:
           </div>
         </article>
       );
+    case 'profile':
+      // Phase 6: the same hero the logged-out /u/<username> route renders.
+      return <ProfileHeroCard hero={page} />;
     case 'group_card':
       return (
         <article className={cm.shareCard}>

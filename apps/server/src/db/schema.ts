@@ -1043,7 +1043,8 @@ export const reports = pgTable(
     ),
     targetObjectTypeCheck: check(
       'reports_target_object_type_check',
-      sql`${t.targetObjectType} IN ('post','beacon','listing','story','group')`,
+      // Migration 0017: + 'profile' (the profile share page's Report link).
+      sql`${t.targetObjectType} IN ('post','beacon','listing','story','group','profile')`,
     ),
     // Exactly one target shape per kind (the 0003 CHECK, widened by 0010).
     targetCheck: check(
@@ -2240,7 +2241,8 @@ export const shareTokens = pgTable(
   (t) => ({
     objectTypeCheck: check(
       'share_tokens_object_type_check',
-      sql`${t.objectType} IN ('post','beacon','listing','story','group')`,
+      // Migration 0017: + 'profile' (object_id = the owner's user id).
+      sql`${t.objectType} IN ('post','beacon','listing','story','group','profile')`,
     ),
     previewCheck: check('share_tokens_preview_check', sql`${t.preview} IN ('teaser','full')`),
     tokenUnique: uniqueIndex('share_tokens_token_unique').on(t.token),

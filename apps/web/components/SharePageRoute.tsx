@@ -2,10 +2,19 @@
 // (v0.8b — API.md §1.67). Server-module only (lib/ssr uses next/headers).
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import type { SharePage } from '@socialchat/shared';
+import type { ProfileHero, SharePage } from '@socialchat/shared';
 import SharePageView from './SharePageView';
 import { fetchSharePage, publicOrigin } from '@/lib/ssr';
 import cm from './community.module.css';
+
+/** Phase 6: the profile hero's OG text — shared with the /u/ route. */
+export function profileDescribe(hero: ProfileHero): { title: string; description: string; image: string | null } {
+  return {
+    title: `${hero.display_name} (@${hero.username}) on Bored Chat`,
+    description: hero.bio_line ?? `Message or call ${hero.display_name} on Bored Chat.`,
+    image: hero.avatar_url,
+  };
+}
 
 function describe(page: SharePage): { title: string; description: string; image: string | null } {
   switch (page.type) {
@@ -45,6 +54,8 @@ function describe(page: SharePage): { title: string; description: string; image:
         description: page.description || `${page.member_count} members, readable live.`,
         image: page.avatar_url,
       };
+    case 'profile':
+      return profileDescribe(page);
   }
 }
 

@@ -48,9 +48,15 @@ interface ShareSheetProps {
   nonPublic?: boolean;
   /** Above-the-caller stacking (modal plane is 40; the story viewer is 60). */
   zIndex?: number;
+  /** Phase 6: a profile's @username — adds the "Copy @username" action. */
+  handle?: string;
+  /** Phase 6: share a fixed app path instead of minting a token (someone
+   * ELSE's profile: its /u/ address is public; only the owner mints a
+   * revocable token). No Stop sharing — there is nothing to revoke. */
+  fixedUrl?: string;
 }
 
-export default function ShareSheet({ type, id, onClose, nonPublic = false, zIndex }: ShareSheetProps) {
+export default function ShareSheet({ type, id, onClose, nonPublic = false, zIndex, handle, fixedUrl }: ShareSheetProps) {
   const [link, setLink] = useState<ShareLink | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -103,6 +109,7 @@ export default function ShareSheet({ type, id, onClose, nonPublic = false, zInde
   useEffect(() => {
     if (mintedRef.current) return;
     mintedRef.current = true;
+    if (fixedUrl) return; // nothing to mint — the address IS the link
     if (!nonPublic) {
       void mint();
       return;
@@ -141,6 +148,7 @@ export default function ShareSheet({ type, id, onClose, nonPublic = false, zInde
     }
   }
 
+  const url = fixedUrl ? absoluteShareUrl({ url: fixedUrl }) : link ? absoluteShareUrl(link) : null;
   // Topmost-only Escape; the picker (and the confirm) take over while open.
   useOverlayEscape(onClose);
   // Focus the first action once the link exists; give focus back on close.
@@ -149,11 +157,21 @@ export default function ShareSheet({ type, id, onClose, nonPublic = false, zInde
     return () => opener?.focus?.();
   }, []);
   useEffect(() => {
-    if (link) copyRef.current?.focus();
-  }, [link]);
+    if (url) copyRef.current?.focus();
+  }, [url]);
 
-  const url = link ? absoluteShareUrl(link) : null;
   const word = SHARE_OBJECT_WORD[type];
+  const [handleCopied, setHandleCopied] = useState(false);
+  async function copyHandle(): Promise<void> {
+    if (!handle) return;
+    if (await copyText(`@${handle}`)) {
+      setHandleCopied(true);
+      setTimeout(() => setHandleCopied(false), 2000);
+      toast(`@${handle} copied`);
+    } else {
+      toast('Clipboard blocked');
+    }
+  }
 
   async function copy(): Promise<void> {
     if (!url) return;
@@ -161,7 +179,9 @@ export default function ShareSheet({ type, id, onClose, nonPublic = false, zInde
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
       toast(
-        !nonPublic
+        type === 'profile'
+          ? 'Profile link copied — anyone can open it'
+          : !nonPublic
           ? 'Public link copied — anyone can open it'
           : link?.preview === 'teaser'
             ? 'Preview link copied — anyone with it sees the teaser'
@@ -252,9 +272,13 @@ export default function ShareSheet({ type, id, onClose, nonPublic = false, zInde
             </button>
           </div>
           <p className={styles.blurb}>
-            {nonPublic
-              ? 'This isn’t public. A link shows people a preview and asks them to sign in for the rest — or the whole thing, your call.'
-              : 'Anyone with the link can see it — no account needed to look. Joining takes a minute.'}
+            {type === 'profile'
+              ? fixedUrl
+                ? 'Anyone with the link sees their name and picture — and what their profile setting allows. Messaging needs an account.'
+                : 'Anyone with the link sees what your profile visibility allows (Settings → Privacy). Message and Call ask them to sign in first.'
+              : nonPublic
+                ? 'This isn’t public. A link shows people a preview and asks them to sign in for the rest — or the whole thing, your call.'
+                : 'Anyone with the link can see it — no account needed to look. Joining takes a minute.'}
           </p>
 
           {error ? (
@@ -304,13 +328,13 @@ export default function ShareSheet({ type, id, onClose, nonPublic = false, zInde
                 </button>
               </div>
             </>
-          ) : !link || !url ? (
+          ) : !url || (!fixedUrl && !link) ? (
             <div className={styles.spinnerRow}>
               <span className="spinner" /> Making your link…
             </div>
           ) : (
             <>
-              {nonPublic ? (
+              {nonPublic && link ? (
                 <p className="muted small" style={{ margin: '0 0 8px' }}>
                   {mismatch
                     ? `You already had a ${link.preview === 'teaser' ? 'Teaser' : 'Full'} link for this, so it was kept — nobody who has it sees more than before. `
@@ -352,17 +376,24 @@ export default function ShareSheet({ type, id, onClose, nonPublic = false, zInde
                 >
                   Send to a chat
                 </button>
+                {handle ? (
+                  <button type="button" className="btn" onClick={() => void copyHandle()}>
+                    {handleCopied ? <span className={styles.copied}>Copied!</span> : `Copy @${handle}`}
+                  </button>
+                ) : null}
               </div>
               {qrOpen ? (
                 <div className={styles.linkBox} style={{ justifyContent: 'center' }}>
                   <QrCode text={url} label={`QR code for this ${word}'s link`} size={176} />
                 </div>
               ) : null}
-              <div className={styles.actions}>
-                <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void revoke()}>
-                  Stop sharing
-                </button>
-              </div>
+              {fixedUrl ? null : (
+                <div className={styles.actions}>
+                  <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void revoke()}>
+                    Stop sharing
+                  </button>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -393,6 +424,8 @@ export function ShareButton({
   children,
   nonPublic,
   zIndex,
+  handle,
+  fixedUrl,
 }: {
   type: ShareObjectType;
   id: string;
@@ -403,6 +436,8 @@ export function ShareButton({
   children?: React.ReactNode;
   nonPublic?: boolean;
   zIndex?: number;
+  handle?: string;
+  fixedUrl?: string;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -417,7 +452,15 @@ export function ShareButton({
         {children ?? label}
       </button>
       {open ? (
-        <ShareSheet type={type} id={id} onClose={() => setOpen(false)} nonPublic={nonPublic} zIndex={zIndex} />
+        <ShareSheet
+          type={type}
+          id={id}
+          onClose={() => setOpen(false)}
+          nonPublic={nonPublic}
+          zIndex={zIndex}
+          handle={handle}
+          fixedUrl={fixedUrl}
+        />
       ) : null}
     </>
   );

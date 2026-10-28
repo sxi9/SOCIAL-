@@ -1220,7 +1220,13 @@ export const OVERLAY_RATE_PER_HOUR = 60;
 // PUBLIC-audience objects; story tokens are author-minted only; group tokens
 // exist for visibility public|invite_only (§1.68). Friends-only content NEVER
 // gets a token.
-export const SHARE_OBJECT_TYPES = ['post', 'beacon', 'listing', 'story', 'group'] as const;
+// 'profile' (phase 6, migration 0017): the OWNER's "text me / call me"
+// card — id = their own user id; what it shows follows profile_visibility.
+export const SHARE_OBJECT_TYPES = ['post', 'beacon', 'listing', 'story', 'group', 'profile'] as const;
+// UNAUTHENTICATED profile hero (GET /api/users/:username/public): the bio
+// line is the first PROFILE_HERO_BIO_CHARS code points of the bio.
+export const PROFILE_HERO_BIO_CHARS = 140;
+export const PROFILE_PUBLIC_RATE_PER_HOUR_PER_IP = 120;
 // Token entropy + accepted shape — the §1.11 invite-token machinery verbatim
 // (revocable capability stored plaintext with a unique index, ADR-007).
 export const SHARE_TOKEN_BYTES = 32;

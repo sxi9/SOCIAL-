@@ -292,7 +292,8 @@ gates interaction (79c/79d machinery — surface, don't rebuild). Owner
 emphasis (2026-10-17): sharing must work to OTHER social media — share pages
 get full OG/Twitter-card meta so links unfurl in Instagram/WhatsApp/etc.;
 profiles get a standalone share link (public profile page + copy-link
-button); posts AND videos on share pages are viewable/PLAYABLE by non-users
+button — shipped 2026-10-28 as the §1b phase 6 profile share: `/u/<username>`
+renders a logged-out hero, `profile_visibility` decides how much); posts AND videos on share pages are viewable/PLAYABLE by non-users
 (share-token-gated streaming, rate-limited), with every interaction gating
 to signup + deep-link-back. Growth loop: viewer → login wall only at the
 moment of interaction, never at view time for public content.
