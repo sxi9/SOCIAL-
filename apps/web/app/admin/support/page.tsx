@@ -29,6 +29,7 @@ const CATEGORY_EMOJI: Record<SupportCategory, string> = {
   question: '❓',
   idea: '💡',
   safety: '⚠️',
+  legal: '⚖️',
 };
 
 type StatusFilter = SupportTicketStatus | null;

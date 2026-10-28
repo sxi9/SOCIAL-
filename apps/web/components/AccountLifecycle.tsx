@@ -6,7 +6,7 @@
 // schedules a grace (signing in again cancels it) and signs this device out.
 import { useState, type FormEvent } from 'react';
 import { ACCOUNT_DELETION_GRACE_DAYS, type DeleteMeResponse, type UpdateMeResponse, type UserPrivate } from '@socialchat/shared';
-import { api, ApiError } from '@/lib/api';
+import { api, ApiError, retryIn } from '@/lib/api';
 import { logout } from '@/lib/connection';
 import { setMe } from '@/lib/store';
 import { toast } from '@/lib/toast';
@@ -106,6 +106,7 @@ function PasswordSheet({
 export default function AccountLifecycle({ me }: { me: UserPrivate }) {
   const [emailOpen, setEmailOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [pauseOpen, setPauseOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
 
   async function download(): Promise<void> {
@@ -124,7 +125,7 @@ export default function AccountLifecycle({ me }: { me: UserPrivate }) {
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
       toast('Your data is downloading');
     } catch (err) {
-      toast(err instanceof ApiError && err.status === 429 ? 'One export every few minutes — try again shortly' : 'Could not export your data');
+      toast(err instanceof ApiError && err.status === 429 ? `One export every few minutes — try again ${retryIn(err, 'shortly')}` : 'Could not export your data');
     } finally {
       setExporting(false);
     }
@@ -162,6 +163,21 @@ export default function AccountLifecycle({ me }: { me: UserPrivate }) {
       </p>
 
       <h2 className={idm.sectionLabel} style={{ marginTop: 22 }}>
+        Take a break
+      </h2>
+      <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ flex: 1 }}>
+          <p className="muted small" style={{ margin: 0 }}>
+            Pause your account: your profile, posts and plans disappear and you are signed out
+            everywhere. Nothing is deleted — sign in again whenever you like and it all comes back.
+          </p>
+        </div>
+        <button type="button" className="btn" onClick={() => setPauseOpen(true)}>
+          Pause
+        </button>
+      </div>
+
+      <h2 className={idm.sectionLabel} style={{ marginTop: 22 }}>
         Delete account
       </h2>
       <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -195,6 +211,26 @@ export default function AccountLifecycle({ me }: { me: UserPrivate }) {
               if (err instanceof ApiError && err.status === 401) return 'That password is not right.';
               if (err instanceof ApiError && err.code === 'email_taken') return 'That email is already in use.';
               return 'Could not change the email.';
+            }
+          }}
+        />
+      ) : null}
+      {pauseOpen ? (
+        <PasswordSheet
+          title="Pause your account?"
+          blurb="You will be signed out everywhere and hidden until you sign in again. Enter your password to confirm."
+          confirmLabel="Pause account"
+          onClose={() => setPauseOpen(false)}
+          onSubmit={async (password) => {
+            try {
+              await api.post('/api/users/me/deactivate', { password });
+              await logout().catch(() => undefined);
+              window.location.assign('/login?deactivated=1');
+              return null;
+            } catch (err) {
+              if (err instanceof ApiError && err.status === 401) return 'That password is not right.';
+              if (err instanceof ApiError && err.code === 'bad_admin_target') return 'Admins must hand off the role first (CLI).';
+              return 'Could not pause the account.';
             }
           }}
         />

@@ -162,7 +162,19 @@ self.addEventListener('push', (event) => {
     ];
     options.data = Object.assign({ kind: PUSH_KIND_CALL_RING }, options.data);
   }
-  event.waitUntil(self.registration.showNotification(title, options));
+  // Wave 1 §1.4: a device with no session shows nothing — and drops its
+  // subscription so the server stops addressing it. The probe is the same
+  // same-origin fetch the call-decline path already makes.
+  event.waitUntil(
+    fetch('/api/users/me', { credentials: 'same-origin', headers: { 'X-Requested-With': 'fetch' } })
+      .then((res) => {
+        if (res.status === 401) {
+          return self.registration.pushManager.getSubscription().then((s) => (s ? s.unsubscribe() : null)).then(() => undefined);
+        }
+        return self.registration.showNotification(title, options);
+      })
+      .catch(() => self.registration.showNotification(title, options)),
+  );
 });
 
 self.addEventListener('notificationclick', (event) => {

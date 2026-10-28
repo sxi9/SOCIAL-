@@ -7,6 +7,8 @@ import {
   INVITE_TOKEN_REGEX,
   LoginRequestSchema,
   RegisterRequestSchema,
+  USERNAME_CHECK_RATE_PER_MIN,
+  USERNAME_REGEX,
   type SessionInfo,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
@@ -14,7 +16,8 @@ import { newId } from '../../ids.js';
 import { userPrivateDto } from '../../lib/dto.js';
 import { ApiError, conflict, notFound, rateLimited } from '../../lib/errors.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
-import { acceptInvite, findInviteByToken } from '../invites/service.js';
+import { acceptInvite, findInviteByToken, inviteStatus } from '../invites/service.js';
+import { getInstanceSettings } from '../admin/service.js';
 import { newestReleaseVersion } from '../releases/routes.js';
 import { authed, requireAuth } from './guard.js';
 import { loginOutcome, setSessionCookie, storableIp } from './minting.js';
@@ -24,10 +27,40 @@ import { ARGON2_OPTS, createSession, revokeOtherSessions, revokeSession, SESSION
 export async function authRoutes(fastify: FastifyInstance): Promise<void> {
   const app = fastify.withTypeProvider<ZodTypeProvider>();
 
+  // §1.3 GET /api/auth/username-available — the inline check on /register.
+  // UNAUTHENTICATED, per-IP; says only what the register route would say a
+  // second later (taken / invalid), nothing more.
+  app.get(
+    '/api/auth/username-available',
+    { schema: { querystring: z.object({ username: z.string().max(64) }) } },
+    async (req) => {
+      const rate = await fixedWindow(`uname:${req.ip}`, USERNAME_CHECK_RATE_PER_MIN, 60);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+      const username = req.query.username.trim().toLowerCase();
+      if (!USERNAME_REGEX.test(username)) return { available: false, reason: 'invalid' as const };
+      const [taken] = await db
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(eq(schema.users.username, username))
+        .limit(1);
+      return taken ? { available: false, reason: 'taken' as const } : { available: true, reason: null };
+    },
+  );
+
   app.post('/api/auth/register', { schema: { body: RegisterRequestSchema } }, async (req, reply) => {
     const rate = await fixedWindow(`register:${req.ip}`, 3, 3600);
     if (!rate.allowed) throw rateLimited(rate.retryAfterS);
     const { username, email, password, display_name } = req.body;
+    // §1.9 registration_mode: closed → 403; invite_only → a VALID invite
+    // token is required up front (the usual "a bad invite never fails
+    // registration" rule yields here — the invite IS the admission).
+    const mode = (await getInstanceSettings()).registration_mode;
+    if (mode === 'closed') throw new ApiError(403, 'registration_closed');
+    if (mode === 'invite_only') {
+      const tok = req.body.invite_token;
+      const row = tok && INVITE_TOKEN_REGEX.test(tok) ? await findInviteByToken(tok) : null;
+      if (!row || inviteStatus(row) !== 'valid') throw new ApiError(403, 'invite_required');
+    }
 
     const [existing] = await db
       .select({ username: schema.users.username, email: schema.users.email })

@@ -31,6 +31,7 @@ import { recordActivity } from '../../lib/activity.js';
 import { isBlockedPair } from '../../lib/blocks.js';
 import { dmGateFor } from '../../lib/dmPolicy.js';
 import {
+  userHidden,
   loadConversationDto,
   publishConversationToUsers,
   userLiteDto,
@@ -73,7 +74,7 @@ function decodeCursor(cursor: string): { ts: string; id: string } {
 
 /** §1.14/§1.41 SQL arm: the author is not banned and not blocked w.r.t. me. */
 function authorVisibleCond(viewerId: string) {
-  return sql`${schema.users.bannedAt} IS NULL AND NOT EXISTS (
+  return sql`${schema.users.bannedAt} IS NULL AND ${schema.users.deactivatedAt} IS NULL AND NOT EXISTS (
     SELECT 1 FROM blocks b
     WHERE (b.blocker_id = ${viewerId} AND b.blocked_id = ${listings.authorId})
        OR (b.blocker_id = ${listings.authorId} AND b.blocked_id = ${viewerId}))`;
@@ -94,7 +95,7 @@ async function requireVisibleListing(
   if (!row) throw notFound('listing_not_found');
   const { l, u } = row;
   if (l.authorId === viewer.id) return row;
-  if (u.bannedAt !== null) throw notFound('listing_not_found');
+  if (userHidden(u)) throw notFound('listing_not_found');
   if (await isBlockedPair(viewer.id, l.authorId)) throw notFound('listing_not_found');
   if (await hasListingContact(l.id, viewer.id)) return row;
   const areaOk =
@@ -458,7 +459,7 @@ export async function listingRoutes(fastify: FastifyInstance): Promise<void> {
       // does not exist, so nothing about it (not even "it is yours to a
       // blocked prober") is confirmed.
       if (l.authorId !== user.id) {
-        if (author.bannedAt !== null) throw notFound('listing_not_found');
+        if (userHidden(author)) throw notFound('listing_not_found');
         if (await isBlockedPair(user.id, l.authorId)) throw notFound('listing_not_found');
       } else {
         throw badRequest('listing_own');

@@ -9,6 +9,7 @@ TUNNEL_PID=".bored-tunnel.pid"
 
 say()  { printf '\033[1m%s\033[0m\n' "$*"; }
 fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+warn() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 
 env_get() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- || true; }
 env_set() { # env_set KEY VALUE — update or append in .env
@@ -213,7 +214,8 @@ cmd_backup() {
   mkdir -p backups
   local f="backups/boredchat-$(date +%Y%m%d-%H%M%S).sql.gz"
   docker compose exec -T postgres pg_dump -U "$(env_get POSTGRES_USER)" "$(env_get POSTGRES_DB)" | gzip > "$f"
-  say "✓ Database backup: $f  (media lives in the minio_data docker volume)"
+  say "✓ Database backup: $f"
+  warn "DATABASE ONLY — media is not included (it lives in the minio_data docker volume; ./bored export archives it too)."
 }
 
 case "${1:-help}" in
@@ -246,7 +248,7 @@ bored — Bored Chat control panel
   ./bored tunnel-stop  stop the tunnel
   ./bored logs [svc]   follow logs (api, worker, web, caddy, …)
   ./bored admin USER   grant admin to a user
-  ./bored backup       gzip database dump into ./backups/
+  ./bored backup       gzip database dump into ./backups/ (DATABASE ONLY — use export for media)
   ./bored export       pack the WHOLE service (users, chats, media, secrets)
                        into one migration archive for moving to a new server
   ./bored import FILE  restore that archive on a fresh server (same users,

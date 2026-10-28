@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
+  MESSAGE_RATE_PER_MINUTE,
   EDIT_WINDOW_S,
   EDITABLE_MESSAGE_TYPES,
   EditMessageRequestSchema,
@@ -25,7 +26,8 @@ import { newId } from '../../ids.js';
 import { blockedSetOf, isBlockedPair } from '../../lib/blocks.js';
 import { ghostMessageDtos, loadMasks, type GhostCtx } from '../../lib/ghost.js';
 import { activeParticipantUserIds, messageDtos, userLiteDto, type AttRow, type MsgRow } from '../../lib/dto.js';
-import { ApiError, badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
+import { ApiError, badRequest, conflict, forbidden, notFound, rateLimited } from '../../lib/errors.js';
+import { fixedWindow } from '../../lib/ratelimit.js';
 import { extractFirstUrl } from '../../lib/urls.js';
 import { deleteAttachmentObjects } from '../../jobs/gc.js';
 import { authed, requireAuth } from '../auth/guard.js';
@@ -137,6 +139,10 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       const body = req.body;
       const replay = await findByClientMsgId(convId, user.id, body.client_msg_id);
       if (replay) return reply.status(200).send({ message: own(replay) });
+      // Wave 1 leftovers (§1.5): a per-user send budget, AFTER the idempotent
+      // replay (a retry never burns it) and after the 404-shape gates.
+      const rate = await fixedWindow(`msg:${user.id}`, MESSAGE_RATE_PER_MINUTE, 60);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
 
       let text = body.body?.trim() ? body.body : null;
       let attachmentIds = body.attachment_ids ?? [];

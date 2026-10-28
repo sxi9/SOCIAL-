@@ -18,6 +18,8 @@ import {
   FeedQuerySchema,
   ListCommentsQuerySchema,
   POST_CREATE_RATE_PER_HOUR,
+  COMMENT_RATE_PER_HOUR,
+  REACTION_RATE_PER_MINUTE,
   PostPollVoteRequestSchema,
   REACTIONS_PER_USER_PER_COMMENT_MAX,
   REACTIONS_PER_USER_PER_POST_MAX,
@@ -33,7 +35,7 @@ import { newId } from '../../ids.js';
 import { recordActivity } from '../../lib/activity.js';
 import { blockedSetOf, isBlockedPair } from '../../lib/blocks.js';
 import { friendsOfIds } from '../../lib/friends.js';
-import { publishConversationToUsers, rawToMsgRow, type MsgRow } from '../../lib/dto.js';
+import { publishConversationToUsers, rawToMsgRow, type MsgRow, userHidden } from '../../lib/dto.js';
 import { badRequest, conflict, gone, notFound, rateLimited } from '../../lib/errors.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
 import { deleteAttachmentObjects } from '../../jobs/gc.js';
@@ -80,11 +82,11 @@ async function requireVisiblePost(id: string, meId: string): Promise<PostRow> {
   if (row.authorId !== meId) {
     if (row.audience === 'public') {
       const [author] = await db
-        .select({ bannedAt: schema.users.bannedAt })
+        .select({ bannedAt: schema.users.bannedAt, deactivatedAt: schema.users.deactivatedAt })
         .from(schema.users)
         .where(eq(schema.users.id, row.authorId))
         .limit(1);
-      if (!author || author.bannedAt !== null) throw notFound('not_found');
+      if (!author || userHidden(author)) throw notFound('not_found');
       if (await isBlockedPair(meId, row.authorId)) throw notFound('not_found');
     } else {
       // friends_of: friendsOfIds is already minus blocks and bans.
@@ -284,7 +286,7 @@ export async function feedRoutes(fastify: FastifyInstance): Promise<void> {
         conditions.push(sql`(
           ${posts.authorId} = ${user.id}
           OR (
-            NOT EXISTS (SELECT 1 FROM users bu WHERE bu.id = ${posts.authorId} AND bu.banned_at IS NOT NULL)
+            NOT EXISTS (SELECT 1 FROM users bu WHERE bu.id = ${posts.authorId} AND (bu.banned_at IS NOT NULL OR bu.deactivated_at IS NOT NULL))
             AND NOT EXISTS (
               SELECT 1 FROM blocks bl
               WHERE (bl.blocker_id = ${user.id} AND bl.blocked_id = ${posts.authorId})
@@ -500,6 +502,8 @@ export async function feedRoutes(fastify: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const { user } = authed(req);
       const row = await requireVisiblePost(req.params.id, user.id);
+      const rate = await fixedWindow(`react:${user.id}`, REACTION_RATE_PER_MINUTE, 60); // §1.5
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
       const emoji = req.body.emoji;
 
       const held = (await db.execute(sql`
@@ -569,6 +573,8 @@ export async function feedRoutes(fastify: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const { user } = authed(req);
       const row = await requireVisiblePost(req.params.id, user.id);
+      const rate = await fixedWindow(`comment:${user.id}`, COMMENT_RATE_PER_HOUR, 3600); // §1.5
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
       const body = req.body.body.trim() ? req.body.body : '';
       const attachmentId = req.body.attachment_id ?? null;
       if (!body && !attachmentId) throw badRequest('empty_comment');
@@ -687,6 +693,8 @@ export async function feedRoutes(fastify: FastifyInstance): Promise<void> {
     },
     async (req, reply) => {
       const { user } = authed(req);
+      const rate = await fixedWindow(`react:${user.id}`, REACTION_RATE_PER_MINUTE, 60); // §1.5 (shared budget)
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
       const kind: ReactionKind = req.body.kind;
       if (kind === 'emoji' && req.body.emoji === STAMP_REACTION_KEY) {
         throw badRequest('bad_emoji');

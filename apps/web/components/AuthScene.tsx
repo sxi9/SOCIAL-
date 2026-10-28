@@ -138,7 +138,7 @@ const WORD_BG: Record<(typeof WORDMARK_WORDS)[number], 'none' | 'stars' | 'rain'
   Drunk: 'blobs',
 };
 
-export default function AuthScene({ children }: { children: ReactNode }) {
+export default function AuthScene({ children, calm = false }: { children: ReactNode; calm?: boolean }) {
   const reduced = useReducedMotion();
   const [tagline, setTagline] = useState(WORD_TAGLINE.Bored);
   const [party, setParty] = useState(false);
@@ -220,7 +220,7 @@ export default function AuthScene({ children }: { children: ReactNode }) {
                     machinery kept), lowercased by CSS, the dot never moves;
                     static "bored." under reduced motion and in SSR. */}
                 <button type="button" className={styles.logoBtn} onClick={onLogoTap}>
-                  <Wordmark onWordChange={setWord} />
+                  <Wordmark onWordChange={setWord} static={calm} />
                   <span className={styles.logoDot}>.</span>
                 </button>
               </h1>

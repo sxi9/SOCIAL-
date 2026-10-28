@@ -10,6 +10,7 @@ import { useRouter } from 'next/navigation';
 import type { SessionsResponse } from '@socialchat/shared';
 import { api } from '@/lib/api';
 import { logout } from '@/lib/connection';
+import { confirmDialog } from '@/lib/confirm';
 import { useAppState } from '@/lib/useStore';
 import AppShell from '@/components/AppShell';
 import Avatar from '@/components/Avatar';
@@ -203,7 +204,16 @@ function SettingsHome() {
         type="button"
         className={sm.signOut}
         onClick={() => {
-          void logout().then(() => router.replace('/login'));
+          // Wave 1 §1.4: name what is lost — unsent queued messages.
+          const pending = state.outbox.length;
+          void confirmDialog(
+            pending > 0
+              ? `Sign out? ${pending} unsent ${pending === 1 ? 'message' : 'messages'} in your outbox will be discarded.`
+              : 'Sign out of this device?',
+            { confirmLabel: 'Sign out', danger: pending > 0 },
+          ).then((ok) => {
+            if (ok) void logout().then(() => router.replace('/login'));
+          });
         }}
       >
         Sign out

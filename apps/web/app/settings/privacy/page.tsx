@@ -128,6 +128,12 @@ function PrivacySettings() {
               value={settings.show_typing}
               onChange={(v) => void patch({ show_typing: v })}
             />
+            <ToggleRow
+              title="Appear offline"
+              hint="Nobody sees your green dot or when you were last on. You still see theirs."
+              value={settings.appear_offline}
+              onChange={(v) => void patch({ appear_offline: v })}
+            />
           </div>
 
           <h2>Invites &amp; groups</h2>

@@ -6,6 +6,7 @@ import { z } from 'zod';
 import {
   ACCOUNT_DELETION_GRACE_DAYS,
   ChangeEmailRequestSchema,
+  DeactivateMeRequestSchema,
   DeleteMeRequestSchema,
   PROFILE_PUBLIC_RATE_PER_HOUR_PER_IP,
   SHARE_MEDIA_RATE_PER_HOUR_PER_IP,
@@ -19,6 +20,7 @@ import {
   avatarDto,
   coParticipantUserIds,
   publishUserUpdated,
+  userHidden,
   userPrivateDto,
   userPublicDto,
   viewCtxFor,
@@ -75,6 +77,31 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       await revokeAllSessions(user.id);
       req.log.warn({ userId: user.id, username: user.username }, 'account: deletion scheduled');
       return { scheduled_deletion_at: at.toISOString() };
+    },
+  );
+
+  // Wave 1 leftovers (§1.2, migration 0020) POST /api/users/me/deactivate —
+  // the pause: password re-proof, deactivated_at set, every device signed
+  // out; hidden like a banned account meanwhile. Any later login reactivates
+  // (createSession clears it) — no admin needed, no 403.
+  app.post(
+    '/api/users/me/deactivate',
+    { preHandler: requireAuth, schema: { body: DeactivateMeRequestSchema } },
+    async (req) => {
+      const { user } = authed(req);
+      const rate = await fixedWindow(`deact:${user.id}`, 5, 3600);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+      if (user.isAdmin) throw badRequest('bad_admin_target');
+      const ok = await argon2.verify(user.passwordHash, req.body.password);
+      if (!ok) throw new ApiError(401, 'bad_credentials');
+      await db
+        .update(schema.users)
+        .set({ deactivatedAt: new Date(), updatedAt: new Date() })
+        .where(eq(schema.users.id, user.id));
+      await revokeAllSessions(user.id);
+      await broadcastUserUpdated(user.id);
+      req.log.info({ userId: user.id }, 'account: deactivated');
+      return { ok: true as const };
     },
   );
 
@@ -256,7 +283,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       return {
         users: rows
           // §1.41: banned accounts are publicly invisible — search included.
-          .filter((row) => !blocked.has(row.id) && row.bannedAt === null)
+          .filter((row) => !blocked.has(row.id) && !userHidden(row))
           .slice(0, USER_SEARCH_LIMIT)
           .map((row) => userPublicDto(row, ctx)),
       };
@@ -276,7 +303,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       if (!row) throw notFound('user_not_found');
       // §1.41: a banned account's profile 404s for everyone but its owner —
       // byte-identical to never existing (serialization-side; unban restores).
-      if (row.id !== user.id && row.bannedAt !== null) throw notFound('user_not_found');
+      if (row.id !== user.id && userHidden(row)) throw notFound('user_not_found');
       // §1.14: profile 404 in BOTH directions — identical to never existing.
       if (await isBlockedPair(user.id, row.id)) throw notFound('user_not_found');
       // v0.5a (§1.37): the profile page grows a `profile` sibling — additive;
@@ -308,7 +335,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
         .from(schema.users)
         .where(eq(schema.users.username, req.params.username))
         .limit(1);
-      if (!row || row.bannedAt !== null) throw notFound('user_not_found');
+      if (!row || userHidden(row)) throw notFound('user_not_found');
       return { hero: profileHeroFor(row) };
     },
   );
@@ -333,7 +360,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
         .from(schema.users)
         .where(eq(schema.users.username, req.params.username))
         .limit(1);
-      if (!row || row.bannedAt !== null || row.avatarStatus !== 'ready' || !row.avatarStaticKey) {
+      if (!row || userHidden(row) || row.avatarStatus !== 'ready' || !row.avatarStaticKey) {
         throw notFound('user_not_found');
       }
       return streamObject(reply, row.avatarStaticKey, req.headers.range);

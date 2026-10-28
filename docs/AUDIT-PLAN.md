@@ -47,7 +47,7 @@ Audit suggestions that now **conflict with the owner's 2026-10-18 decision** (un
 4. **`member_count` in the group header** vs ADR-020:67-69 / API.md §1.68 saying it stays off every in-app surface. Fix the docs or the header.
 5. **API.md §1.13 "no all-off notification switch"** — product already allows all-off and the digest it cites was never built. Build the digest (Wave 7) or delete the sentence.
 6. **Call-declined copy** — API.md (~:1697) says declines are silent, `CallOverlay.tsx:931` shows "Call declined." live. Soften to "No answer." or let (planned) history show it to the caller only.
-7. **Registration default** when `registration_mode` lands: `open` or `invite_only` for the current box?
+7. **Registration default** when `registration_mode` lands: `open` or `invite_only` for the current box? — **Landed 2026-10-28 (migration-free instance setting), builder default `open`; flip it in Admin → Settings → Who can sign up.**
 8. Write down two bans that are enforced only by habit: **call recording** and **algorithmic lead-photo ordering** (Smart Photos) → PSYCHOLOGY never-build list.
 9. **Self-hosted OSM tiles** for rides/rooms — the audit reads "no map" as a no-SaaS rule, not a product rule. Allow on the roadmap or keep "LINK, never an embed".
 10. **Pull-to-refresh** — audit says the ban is overreach; leave as is, but make manual refresh a "New posts" pill. (No decision needed unless you disagree.)
@@ -147,7 +147,7 @@ Everything here is "a user hits it in the first hour" or "operator liability". O
 - "Hosted by <operator>" and three lines of what the app is on auth pages; About block in `settings/help`.
 - `noindex` meta on `/s/[token]` share pages + `public/robots.txt`.
 
-### 1.2 Account lifecycle (2 days, migration 0015) — ✅ built 2026-10-28 (migration 0018; `DELETE /api/users/me` + grace + cancel-on-login + nightly tombstone, `PATCH /me/email`, `POST /auth/logout-all`, `GET /me/export`, admin delete; Account section with email/Download/Delete). Still open: deactivate/pause; the "Edit profile" rename.
+### 1.2 Account lifecycle (2 days, migration 0015) — ✅ built 2026-10-28 (migration 0018; `DELETE /api/users/me` + grace + cancel-on-login + nightly tombstone, `PATCH /me/email`, `POST /auth/logout-all`, `GET /me/export`, admin delete; Account section with email/Download/Delete). Deactivate/pause ✅ 2026-10-28 (`POST /api/users/me/deactivate`, reactivate-on-login). Still open: the "Edit profile" rename.
 - `DELETE /api/users/me` — password re-proof, `scheduled_deletion_at` with 7–14-day grace, cancel-on-login, then tombstone + cascade (profile, posts, listings, beacons, stories, media refcounts, sessions, push). Admin "delete user" action beside suspend/ban. Optional reason survey.
 - `PATCH /api/users/me/email` — re-proof, nulls `email_verified_at`, verify link when SMTP ever lands. `UpdateMeRequestSchema` (`api.ts:855-865`) has no email today; `settings/account/page.tsx:225-227` renders it as an unlabelled grey line.
 - `POST /api/auth/logout-all` reusing `revokeOtherSessions()` (`auth/service.ts:113`, helper exists since 06dfc91) + a "Sign out all other devices" button on the Devices page.
@@ -155,7 +155,7 @@ Everything here is "a user hits it in the first hour" or "operator liability". O
 - Deactivate / pause (self-serve on `suspended_at`) — standard tier, can slip to Wave 6.
 - Rename `/settings/account` to "Edit profile"; build a real Account page: username row with a reason it is locked, labelled email with Verified/Change, Change password (move here or link), Download my data, Delete account in danger red at the bottom.
 
-### 1.3 Login that tells the truth (afternoon)
+### 1.3 Login that tells the truth (afternoon) — ✅ built 2026-10-28 (operator contact in the 403 copy incl. passkeys; `?reason=revoked|expired` banner; `Retry-After` in `ApiError` + truthful waits; Forgot password door; QR door hidden on touch; still wordmark; real Deny route; `GET /api/auth/username-available` + inline rules + Display name optional). Still open: the unauthenticated "request a review" form.
 - `login/page.tsx:148-154` branch on 403 `account_suspended` / `account_banned` with the operator contact as the appeal path (server already returns them, `auth/routes.ts:114-118`); an unauthenticated "request a review" form that lands in Support.
 - `?reason=revoked|expired|suspended` banner on every bounce (`connection.ts:160-175` 4401 → `authed=false` today).
 - Surface `Retry-After` in `ApiError` (`lib/api.ts:5-13` discards it) and fix every "try again in a minute" string.
@@ -163,12 +163,12 @@ Everything here is "a user hits it in the first hour" or "operator liability". O
 - Real Deny on the login-approval sheet (`link/[code]/page.tsx:59-63` is a client no-op; no deny route in `links.ts`).
 - Debounced `GET /api/auth/username-available` + inline rules (3-24, a-z0-9_, 8-char password) + Display name marked optional.
 
-### 1.4 A sign-out that signs out (1 day)
+### 1.4 A sign-out that signs out (1 day) — ✅ built 2026-10-28 (`logout()` clears every IDB store + `disablePush()` + a confirm naming unsent messages; `push_subscriptions.session_id` cascades on revoke; `sw.js` probes the session before showing).
 - `logout()` (`connection.ts:117-127`) clears `messages`, `conv_meta`, `outbox`, `seen_fx` stores (`db.ts:33-46` — add a clear-all), calls `disablePush()` (route exists), and goes through `confirmDialog` mentioning unsent queued messages.
 - Nullable `session_id` on `push_subscriptions` (migration 0015) so remote session revoke kills that browser's push.
 - `sw.js:165` stop showing notifications when the device has no session.
 
-### 1.5 Reporting that can be triaged (1 day) — ✅ built 2026-10-28 (migration 0018; `category` required on every kind + lanes in the queue; kinds post/comment/story/listing/group with the author attached; Report entries on posts, listings, stories, groups, DMs; "Also block"; `GET /api/reports/mine` under Privacy; `reporter_ip` aged by GC). Still open: `warn` outcome, report-to-suspend shortcut, `legal` support category, the write rate limits, takedown on comment/story ids (`ADMIN_CONTENT_TYPES` unchanged — the lane shows the id, the takedown route cannot act on it yet).
+### 1.5 Reporting that can be triaged (1 day) — ✅ built 2026-10-28 (migration 0018; `category` required on every kind + lanes in the queue; kinds post/comment/story/listing/group with the author attached; Report entries on posts, listings, stories, groups, DMs; "Also block"; `GET /api/reports/mine` under Privacy; `reporter_ip` aged by GC). ✅ 2026-10-28: `warn` outcome (Support message), report-to-suspend shortcut, `legal` support category, the write rate limits, takedown on comment/story ids (`TAKEDOWN_TYPES`). Wave 1 is complete.
 - `reason` enum on reports (`spam, harassment, hate, nudity, self_harm, scam, impersonation, underage, off_platform, ip, other`), required pick in `ReportSheet.tsx:37`, column on `reports` (0015).
 - Add `post`, `comment`, `story`, `listing`, `group` to `ReportKindSchema` (`api.ts:1288-1295`), `reports/routes.ts`, `ReportSheet.tsx:22-26`, `reports.target_listing_id` etc.; `ADMIN_CONTENT_TYPES` (`constants.ts:1240`) gains comment/story/message/overlay so takedown acts on a reported id.
 - "Also block @user" checkbox; `GET /api/reports/mine` (received → reviewed) shown under Settings → Privacy; admin queue lanes by reason; `legal` in `SUPPORT_CATEGORIES`; a formal `warn` outcome delivered via `sendSupportMessage` (so FEATURES #54 stops lying); report-to-suspend shortcut in the queue.
@@ -189,7 +189,7 @@ Everything here is "a user hits it in the first hour" or "operator liability". O
 - DM safety rows in `ChatInfoSheet` (identity hero → Mute → Report user · Block · End chat via existing `DELETE …/participants/:me`; suppress the `participant_left` system message for DMs at `routes.ts:598-615`).
 - Block from the profile page goes through `confirmDialog` (`u/[username]/page.tsx:136-147` calls `api.put` directly).
 
-### 1.9 Small P0 bugs (half day total)
+### 1.9 Small P0 bugs (half day total) — ✅ built 2026-10-28 (beacons_* owner-only; roulette area scope; coarse `formatLastSeen` + `appear_offline`; watch-together gated like typing; the three story filters; `registration_mode`; red DATABASE ONLY on backup).
 - Strip `beacons_created`/`beacons_sparked` for non-owners in `userPublicDto` (`api.ts:246-247`, `dto.ts:209-210`) — a rule-3 leak under "Only you see this line".
 - Roulette pairs "My area" users instance-wide: scope predicate in `discovery/service.ts:209-221` + integration test next to v06:582 + API.md §1.65 line.
 - Coarsen `formatLastSeen` (`lib/format.ts:18-26`) to "active today / this week"; `appear_offline` honoured in `ws/gateway.ts:550-562, 861`; stop `/u/` showing "last seen 43m ago" with default Everyone.

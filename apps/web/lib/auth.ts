@@ -96,6 +96,12 @@ export async function approveLoginLink(code: string): Promise<void> {
   await api.post('/api/auth/link/approve', body);
 }
 
+/** Wave 1 §1.3: a real Deny — the pending code is deleted server-side. */
+export async function denyLoginLink(code: string): Promise<void> {
+  const body: ApproveLoginLinkRequest = { code };
+  await api.post('/api/auth/link/deny', body);
+}
+
 // ---- §1.72 recovery codes ------------------------------------------------------
 
 export function recoveryCodesStatus(): Promise<RecoveryCodesStatusResponse> {

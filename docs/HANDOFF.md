@@ -88,8 +88,16 @@ Updated 2026-10-28. A new session continues this project by reading
   `CallJoinCta` island, the "Invite" orb on group calls, tokens revoked in
   `deleteCallMembers`; the personal door `/u/?call=audio|video` → `/c/<id>?ring=`
   → one confirm → `startCall`. API.md §1.77. The §1b share-everything build
-  is now complete. Next: Wave 1 leftovers (deactivate/pause, warn outcome, write rate limits,
-  §1.3/§1.4/§1.9 small items); then Waves 2–7. Open follow-up
+  is now complete. Then the WAVE 1 LEFTOVERS (BUILT 2026-10-28, migration
+  0020 — see the deploy line in `docs/CLAUDE-MEMORY.md`): pause/deactivate
+  with reactivate-on-login, login that tells the truth (operator contact,
+  `?reason=`, Retry-After, Forgot password, QR on fine pointers only, still
+  wordmark, real link Deny, username check + rules, registration_mode), a
+  sign-out that signs out (all IDB stores, push unsubscribed, session-bound
+  push rows, sw.js session probe), report outcomes (Warn / Suspend author /
+  Remove) + takedown on comment/story + write rate limits + `legal` support
+  category, and the §1.9 small bugs. API.md §1.78. Wave 1 is complete except
+  the "request a review" form and the "Edit profile" rename. Then Waves 2–7. Open follow-up
   from review: the unfurl
   worker charges the sender's hourly budget for our own share URLs (short-
   circuit origin == PUBLIC_ORIGIN in the send route).
@@ -103,7 +111,7 @@ Updated 2026-10-28. A new session continues this project by reading
   conversion, SW stale-shell self-heal, admin grant/revoke + set password,
   Tailscale Funnel as the stable public URL. The undo-send pill was REMOVED
   by owner decision (FEATURES #96 struck; server undo route stays).
-- Migrations run `0000`…`0019`. **The next free number is 0020.** `0019` (2026-10-28) widens the share-token and report CHECKs for `call` (phase 5); `0018` (2026-10-28) is the Wave 1 floor (`users.terms_accepted_at` / `age_attested_at` / `scheduled_deletion_at` / `deleted_at`, `reports.category`, widened report CHECKs); `0017` (2026-10-28) widens `share_tokens.object_type` to `profile` (phase 6); `0016` (2026-10-28) holds `conversation_bans` (§2.5 admin half); `0015` holds only `conversation_participants.accepted_at` (Wave 1.7). `0014`
+- Migrations run `0000`…`0020`. **The next free number is 0021.** `0020` (2026-10-28) is the Wave 1 leftovers (`users.deactivated_at` / `appear_offline`, `push_subscriptions.session_id`, `reports.outcome`, `legal` support category); `0019` (2026-10-28) widens the share-token and report CHECKs for `call` (phase 5); `0018` (2026-10-28) is the Wave 1 floor (`users.terms_accepted_at` / `age_attested_at` / `scheduled_deletion_at` / `deleted_at`, `reports.category`, widened report CHECKs); `0017` (2026-10-28) widens `share_tokens.object_type` to `profile` (phase 6); `0016` (2026-10-28) holds `conversation_bans` (§2.5 admin half); `0015` holds only `conversation_participants.accepted_at` (Wave 1.7). `0014`
   (2026-10-27) holds the share-everything plumbing only — `share_tokens.preview`,
   `users.dm_policy`, `users.profile_visibility`; the Wave 1 legal/account/report
   columns AUDIT-PLAN §10 lists landed in `0018` (2026-10-28); §10 lists what is still unbuilt (§10 allows

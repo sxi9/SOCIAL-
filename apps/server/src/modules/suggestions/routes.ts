@@ -110,7 +110,7 @@ export async function suggestionRoutes(fastify: FastifyInstance): Promise<void> 
       FROM candidates cand
       JOIN users u ON u.id = cand.uid
       WHERE u.id <> ${me}
-        AND u.banned_at IS NULL AND u.suspended_at IS NULL
+        AND u.banned_at IS NULL AND u.suspended_at IS NULL AND u.deactivated_at IS NULL
         AND NOT EXISTS (
           SELECT 1 FROM blocks bl
           WHERE (bl.blocker_id = ${me} AND bl.blocked_id = u.id)

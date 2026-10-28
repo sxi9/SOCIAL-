@@ -115,6 +115,9 @@ export async function viewCtxForId(viewerId: string): Promise<ViewCtx | null> {
  */
 function lastSeenVisible(owner: UserRow, view?: ViewCtx | null): boolean {
   if (view && owner.id === view.viewerId) return true;
+  // Migration 0020 (§1.9): appear_offline hides the stamp from everyone
+  // but the owner, on REST exactly as on the socket.
+  if (owner.appearOffline) return false;
   if (view?.blockedIds.has(owner.id)) return false;
   switch (owner.showLastSeen) {
     case 'everyone':
@@ -202,6 +205,12 @@ export function userLiteDto(u: UserRow, view?: ViewCtx | null): UserLite {
   };
 }
 
+/** Wave 1 leftovers (migration 0020): publicly invisible — banned (§1.41)
+ * or self-deactivated (§1.2). One predicate for every public read. */
+export function userHidden(u: { bannedAt: Date | null; deactivatedAt: Date | null }): boolean {
+  return u.bannedAt !== null || u.deactivatedAt !== null;
+}
+
 export function userPublicDto(u: UserRow, view?: ViewCtx | null): UserPublic {
   return {
     id: u.id,
@@ -211,8 +220,9 @@ export function userPublicDto(u: UserRow, view?: ViewCtx | null): UserPublic {
     avatar: avatarDto(u),
     last_seen_at: lastSeenVisible(u, view) ? isoOrNull(u.lastSeenAt) : null,
     // v0.3 plan karma: profile facts, never ranked (PSYCHOLOGY rule 3).
-    beacons_created: u.beaconsCreated,
-    beacons_sparked: u.beaconsSparked,
+    // §1.9: OWNER-only — "Only you see this line" was a rule-3 leak otherwise.
+    beacons_created: view?.viewerId === u.id ? u.beaconsCreated : 0,
+    beacons_sparked: view?.viewerId === u.id ? u.beaconsSparked : 0,
     // v0.8a (§1.57/§1.58): per-viewer mood + viewer-independent name style.
     mood: moodDto(u, view),
     name_style: nameStyleOf(u),
@@ -224,6 +234,8 @@ export function userPrivateDto(u: UserRow): UserPrivate {
     ...userPublicDto(u),
     // The owner always sees their own last_seen_at, area — and mood chip.
     last_seen_at: isoOrNull(u.lastSeenAt),
+    beacons_created: u.beaconsCreated,
+    beacons_sparked: u.beaconsSparked,
     mood: moodSelfDto(u),
     email: u.email,
     email_verified: u.emailVerifiedAt !== null,
@@ -236,6 +248,7 @@ export function userPrivateDto(u: UserRow): UserPrivate {
     terms_accepted_at: isoOrNull(u.termsAcceptedAt),
     age_attested_at: isoOrNull(u.ageAttestedAt),
     scheduled_deletion_at: isoOrNull(u.scheduledDeletionAt),
+    deactivated_at: isoOrNull(u.deactivatedAt),
   };
 }
 
@@ -1096,7 +1109,8 @@ export async function publishConversationToUsers(
       const readVisible = u.id === r || (u.readReceipts && rr);
       const lastSeenVisible =
         u.id === r ||
-        (!blockedIds.has(u.id) &&
+        (!u.appearOffline &&
+          !blockedIds.has(u.id) &&
           (u.showLastSeen === 'everyone' ||
             (u.showLastSeen === 'dm_partners' && dmPartnerIds.has(u.id))));
       // v0.8a (§1.57): the mood bit is part of the serialization signature —

@@ -10,6 +10,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
+  TakedownTypeSchema,
   AdminContentQuerySchema,
   REPORT_CONTEXT_RADIUS,
   TakedownRequestSchema,
@@ -24,7 +25,8 @@ import { badRequest, notFound } from '../../lib/errors.js';
 import { adminLog } from '../../lib/logring.js';
 import { redis } from '../../redis.js';
 import { authed } from '../auth/guard.js';
-import { hardDeletePost, loadPost } from '../feed/service.js';
+import { hardDeleteComment, hardDeletePost, loadPost } from '../feed/service.js';
+import { hardDeleteStory } from '../stories/service.js';
 import { fanBeacon, loadBeacon } from '../beacons/service.js';
 import { revokeShareTokensFor } from '../sharepages/service.js';
 import { sendSupportMessage } from '../support/service.js';
@@ -32,7 +34,7 @@ import { getInstanceSettings, requireAdmin } from './service.js';
 
 const IdParams = z.object({ id: z.string().uuid() });
 const TakedownParams = z.object({
-  type: z.enum(['post', 'beacon', 'listing']),
+  type: TakedownTypeSchema, // Wave 1 leftovers: + comment, story
   id: z.string().uuid(),
 });
 
@@ -164,6 +166,18 @@ export async function adminContentRoutes(fastify: FastifyInstance): Promise<void
         await revokeShareTokensFor(db, 'beacon', id);
         const fresh = await loadBeacon(id);
         if (fresh) await fanBeacon(fresh, 'beacon.updated'); // the §1.15 fan-out
+      } else if (type === 'comment') {
+        const [c] = await db.select().from(schema.postComments).where(eq(schema.postComments.id, id)).limit(1);
+        if (!c) throw notFound();
+        authorId = c.authorId;
+        await assertNotAdmin(authorId);
+        await hardDeleteComment(c.id);
+      } else if (type === 'story') {
+        const [st] = await db.select().from(schema.stories).where(eq(schema.stories.id, id)).limit(1);
+        if (!st) throw notFound();
+        authorId = st.authorId;
+        await assertNotAdmin(authorId);
+        await hardDeleteStory(st); // revokes its share token, drops views/overlays/media
       } else {
         const [l] = await db
           .select()

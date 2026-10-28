@@ -5,6 +5,7 @@
 import type {
   AdminContentResponse,
   AdminContentType,
+  TakedownType,
   AdminLogsResponse,
   AdminMetricsResponse,
   AdminReportResponse,
@@ -86,8 +87,22 @@ export async function adminReports(
   return api.get<AdminReportsResponse>(`/api/admin/reports${qs ? `?${qs}` : ''}`);
 }
 
-export async function adminCloseReport(id: string, note: string): Promise<AdminReportResponse> {
-  return api.post<AdminReportResponse>(`/api/admin/reports/${id}/close`, { note });
+export async function adminCloseReport(
+  id: string,
+  note: string,
+  outcome: '' | 'warned' | 'suspended' | 'removed' = '',
+  warnText?: string,
+): Promise<AdminReportResponse> {
+  return api.post<AdminReportResponse>(`/api/admin/reports/${id}/close`, {
+    note,
+    outcome,
+    ...(warnText ? { warn_text: warnText } : {}),
+  });
+}
+
+/** Wave 1 leftovers (§1.5): the report-to-suspend shortcut. */
+export async function adminSuspendFromReport(id: string, note: string): Promise<AdminReportResponse> {
+  return api.post<AdminReportResponse>(`/api/admin/reports/${id}/suspend`, { note });
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +126,7 @@ export async function adminContent(
 
 /** Takedown — reason REQUIRED: the author gets a neutral Support-conversation
  * notice carrying it, and the action is ring-logged. */
-export async function adminTakedown(type: AdminContentType, id: string, reason: string): Promise<void> {
+export async function adminTakedown(type: TakedownType, id: string, reason: string): Promise<void> {
   await api.post(`/api/admin/content/${type}/${id}/takedown`, { reason });
 }
 

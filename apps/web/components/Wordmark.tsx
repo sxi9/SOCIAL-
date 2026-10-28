@@ -19,7 +19,11 @@ const N = WORDMARK_WORDS.length;
 
 export default function Wordmark({
   onWordChange,
+  static: isStatic = false,
 }: {
+  /** Wave 1 §1.3: a still wordmark (the auth pages — nothing moves next to
+   * a password field). */
+  static?: boolean;
   /** Fires with the word now showing — the mascot reacts per word (§1.54). */
   onWordChange?: (word: (typeof WORDMARK_WORDS)[number]) => void;
 }) {
@@ -45,7 +49,7 @@ export default function Wordmark({
     if (max > 0) setSlotWidth(Math.ceil(max) + 1);
   }, [mounted]);
 
-  const running = mounted && !reduced;
+  const running = mounted && !reduced && !isStatic;
 
   // The tick — paused whenever the tab is hidden (visibilitychange), resumed
   // on return. Stopping for good (reduced motion / unmount) settles on Bored.

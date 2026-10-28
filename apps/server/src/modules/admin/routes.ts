@@ -29,6 +29,7 @@ import { adminLog, readLogRing } from '../../lib/logring.js';
 import { authed } from '../auth/guard.js';
 import { ARGON2_OPTS, revokeAllSessions } from '../auth/service.js';
 import { tombstoneUser } from '../../lib/accountDeletion.js';
+import { sendSupportMessage } from '../support/service.js';
 import {
   ADMIN_REPORT_SELECT,
   adminReportFromRaw,
@@ -294,21 +295,74 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
     async (req) => {
       const { user } = authed(req);
       const [existing] = await db
-        .select({ id: schema.reports.id, status: schema.reports.status })
+        .select({
+          id: schema.reports.id,
+          status: schema.reports.status,
+          targetUserId: sql<string | null>`(SELECT u.id FROM users u WHERE u.id = ${schema.reports.targetUserId} AND u.deleted_at IS NULL)`,
+        })
         .from(schema.reports)
         .where(eq(schema.reports.id, req.params.id))
         .limit(1);
       if (!existing) throw notFound();
       if (existing.status === 'closed') throw conflict('report_closed');
-      await db.execute(sql`
+      // Wave 1 leftovers (§1.5): the outcome; 'warned' sends the text to the
+      // reported person through their Support conversation (sender-less —
+      // the Support brand, never a named admin). Needs an attached person.
+      const outcome = req.body.outcome;
+      if (outcome === 'warned') {
+        if (!existing.targetUserId) throw badRequest('no_target_user');
+        if (!req.body.warn_text) throw badRequest('warn_text_required');
+      }
+      // Close FIRST (guarded on status): the irreversible side effect only
+      // fires when this close actually applied — a raced close loses cleanly.
+      const closed = (await db.execute(sql`
         UPDATE reports SET status = 'closed', closed_at = now(),
-          closed_by = ${user.id}, close_note = ${req.body.note}
+          closed_by = ${user.id}, close_note = ${req.body.note}, outcome = ${outcome}
         WHERE id = ${req.params.id} AND status = 'open'
-      `);
+        RETURNING id
+      `)) as unknown as { id: string }[];
+      if (closed.length === 0) throw conflict('report_closed');
+      if (outcome === 'warned') {
+        await sendSupportMessage(existing.targetUserId!, `⚠️ A moderator's warning: ${req.body.warn_text}`, null);
+      }
       adminLog({ id: user.id, username: user.username }, 'admin.report_close', {
         report_id: req.params.id,
+        ...(outcome ? { outcome } : {}),
         ...(req.body.note ? { note: req.body.note } : {}),
       });
+      const rows = (await db.execute(sql`
+        ${ADMIN_REPORT_SELECT} WHERE r.id = ${req.params.id} LIMIT 1
+      `)) as unknown as AdminReportRaw[];
+      return { report: adminReportFromRaw(rows[0]!) };
+    },
+  );
+
+  // Wave 1 leftovers (§1.5) POST /api/admin/reports/:id/suspend — the
+  // report-to-suspend shortcut: suspends the attached person (the §1.41
+  // action, ring-logged) and closes the report with outcome 'suspended'.
+  app.post(
+    '/api/admin/reports/:id/suspend',
+    { preHandler: requireAdmin, schema: { params: IdParams, body: AdminActionRequestSchema } },
+    async (req) => {
+      const { user } = authed(req);
+      const [existing] = await db
+        .select({
+          id: schema.reports.id,
+          status: schema.reports.status,
+          targetUserId: sql<string | null>`(SELECT u.id FROM users u WHERE u.id = ${schema.reports.targetUserId} AND u.deleted_at IS NULL)`,
+        })
+        .from(schema.reports)
+        .where(eq(schema.reports.id, req.params.id))
+        .limit(1);
+      if (!existing) throw notFound();
+      if (!existing.targetUserId) throw badRequest('no_target_user');
+      if (existing.status === 'closed') throw conflict('report_closed'); // mirror /close
+      await accountAction(user.id, user.username, existing.targetUserId, 'suspend', req.body.note);
+      await db.execute(sql`
+        UPDATE reports SET status = 'closed', closed_at = now(),
+          closed_by = ${user.id}, close_note = ${req.body.note}, outcome = 'suspended'
+        WHERE id = ${req.params.id} AND status = 'open'
+      `);
       const rows = (await db.execute(sql`
         ${ADMIN_REPORT_SELECT} WHERE r.id = ${req.params.id} LIMIT 1
       `)) as unknown as AdminReportRaw[];
@@ -408,6 +462,12 @@ export async function adminRoutes(fastify: FastifyInstance): Promise<void> {
         await setInstanceSetting('legal', { ...current, ...req.body.legal });
         adminLog({ id: user.id, username: user.username }, 'admin.settings_update', {
           legal: Object.keys(req.body.legal),
+        });
+      }
+      if (req.body.registration_mode !== undefined) {
+        await setInstanceSetting('registration_mode', req.body.registration_mode);
+        adminLog({ id: user.id, username: user.username }, 'admin.settings_update', {
+          registration_mode: req.body.registration_mode,
         });
       }
       if (req.body.operator_contact !== undefined) {

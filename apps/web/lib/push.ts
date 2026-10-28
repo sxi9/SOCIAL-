@@ -22,7 +22,10 @@ export function pushSupported(): boolean {
 
 export async function getPushSubscription(): Promise<PushSubscription | null> {
   if (!pushSupported()) return null;
-  const reg = await navigator.serviceWorker.ready;
+  // getRegistration() resolves (to undefined) when there is no worker;
+  // `.ready` would wait forever and hang a logout.
+  const reg = await navigator.serviceWorker.getRegistration();
+  if (!reg) return null;
   return reg.pushManager.getSubscription();
 }
 

@@ -53,7 +53,7 @@ export async function friendsOfIds(userId: string): Promise<Set<string>> {
       -- and posts drop out of every friends-of read (serialization-side; the
       -- stored connection/DM survives, so unban restores instantly).
       AND NOT EXISTS (
-        SELECT 1 FROM users bu WHERE bu.id = t.other_id AND bu.banned_at IS NOT NULL)
+        SELECT 1 FROM users bu WHERE bu.id = t.other_id AND (bu.banned_at IS NOT NULL OR bu.deactivated_at IS NOT NULL))
   `)) as unknown as { other_id: string }[];
   return new Set(rows.map((r) => r.other_id));
 }
@@ -70,7 +70,7 @@ export async function isFriendOf(a: string, b: string): Promise<boolean> {
            OR (bl.blocker_id = ${b} AND bl.blocked_id = ${a}))
       -- v0.5b (§1.41): a banned party voids the pair on public surfaces.
       AND NOT EXISTS (
-        SELECT 1 FROM users bu WHERE bu.id IN (${a}::uuid, ${b}::uuid) AND bu.banned_at IS NOT NULL)
+        SELECT 1 FROM users bu WHERE bu.id IN (${a}::uuid, ${b}::uuid) AND (bu.banned_at IS NOT NULL OR bu.deactivated_at IS NOT NULL))
   `)) as unknown as { one: number }[];
   return rows.length > 0;
 }

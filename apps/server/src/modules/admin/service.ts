@@ -112,6 +112,7 @@ export async function getInstanceSettings(): Promise<InstanceSettings> {
         'auth_smtp_password',
         'legal',
         'operator_contact',
+        'registration_mode',
       ]),
     );
   const byKey = new Map(rows.map((r) => [r.key, r.value]));
@@ -130,6 +131,10 @@ export async function getInstanceSettings(): Promise<InstanceSettings> {
     auth: authSettingsDto(storedAuth, typeof byKey.get('auth_smtp_password') === 'string'),
     legal: legal.success ? legal.data : { terms: '', privacy: '', guidelines: '' },
     operator_contact: typeof contact === 'string' ? contact : '',
+    registration_mode: (() => {
+      const m = byKey.get('registration_mode');
+      return m === 'invite_only' || m === 'closed' ? m : 'open';
+    })(),
   };
 }
 
@@ -338,11 +343,12 @@ export interface AdminReportRaw {
   // Wave 1 (§1.5)
   category: string;
   obj_live: boolean | null;
+  outcome: string;
 }
 
 export const ADMIN_REPORT_SELECT = sql`
   SELECT r.id, r.kind, r.reason, r.status, r.created_at, r.closed_at, r.close_note,
-    r.context_consent, r.category,
+    r.context_consent, r.category, r.outcome,
     r.target_anon_thread_id, r.target_anon_message_id,
     r.target_object_type, r.target_object_id, r.target_overlay_id,
     row_to_json(rep.*) AS reporter,
@@ -384,6 +390,14 @@ export function adminReportFromRaw(r: AdminReportRaw): AdminReport {
     id: r.id,
     kind,
     category: r.category as AdminReport['category'],
+    outcome: (r.outcome ?? '') as AdminReport['outcome'],
+    // The server-attached person (null for beacon/message/share_page rows).
+    // A tombstoned account is no longer a person to warn or suspend.
+    target_user_id:
+      typeof (r.target_user as { id?: unknown } | null)?.id === 'string' &&
+      (r.target_user as { deleted_at?: unknown }).deleted_at == null
+        ? (r.target_user as { id: string }).id
+        : null,
     reporter: rawUserLite(r.reporter),
     reason: r.reason,
     status: r.status as AdminReport['status'],

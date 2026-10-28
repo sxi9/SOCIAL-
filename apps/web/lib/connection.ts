@@ -28,6 +28,7 @@ import { dingForMessage } from './sounds';
 import { refreshStories } from './stories';
 import { handleWatchEvent } from './watch';
 import { handleCallEvent, teardownCall } from './webrtc';
+import { disablePush } from './push';
 
 const BACKOFF_MIN_MS = 1000;
 const BACKOFF_MAX_MS = 30000;
@@ -98,6 +99,7 @@ async function bootstrapAuth(): Promise<void> {
 
 /** Called by the login/register pages after a successful auth response. */
 export function onAuthenticated(): void {
+  loggingOut = false;
   attempt = 0;
   policyViolationCloses = 0;
   if (!started) {
@@ -114,7 +116,16 @@ export function retryConnection(): void {
   connect();
 }
 
+/** Wave 1 §1.4: a sign-out that signs out — this device's push
+ * subscription goes FIRST (the DELETE needs the session), then the session,
+ * then every local store (messages, metadata, outbox, effect markers). */
+let loggingOut = false;
+
 export async function logout(): Promise<void> {
+  // The server's revoke closes THIS socket with 'session revoked' — that is
+  // us, not another device: no reason banner.
+  loggingOut = true;
+  await Promise.race([disablePush(), new Promise<void>((r) => setTimeout(r, 2500))]).catch(() => undefined);
   try {
     await api.post('/api/auth/logout');
   } catch {
@@ -122,7 +133,7 @@ export async function logout(): Promise<void> {
   }
   teardownCall(); // stop mic/camera + close peer connections (v0.6 §1.42)
   ws?.close();
-  await db.clearOutbox().catch(() => undefined);
+  await db.clearAll().catch(() => undefined);
   store.resetOnLogout();
 }
 
@@ -151,22 +162,25 @@ function connect(): void {
   sock.onclose = (ev) => {
     if (ws === sock) ws = null;
     store.setConn('offline');
-    void handleClose(ev.code);
+    void handleClose(ev.code, ev.reason);
   };
   sock.onerror = () => {
     /* onclose follows */
   };
 }
 
-async function handleClose(code: number): Promise<void> {
-  if (store.state.authed === false) return;
+async function handleClose(code: number, reason = ''): Promise<void> {
+  if (store.state.authed === false || loggingOut) return;
   if (code === WS_CLOSE_CODES.UNAUTHENTICATED) {
     // §2.10: probe /api/users/me; 401 → login, else cookie refreshed elsewhere.
     try {
       await api.get<MeResponse>('/api/users/me');
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
-        store.setAuthed(false);
+        // Wave 1 §1.3: the gateway's close reason names what happened —
+        // 'session revoked' (another device signed this one out, a password
+        // change, an admin) or 'session expired'; the login page says so.
+        store.setAuthed(false, /revoked/i.test(reason) ? 'revoked' : /expired/i.test(reason) ? 'expired' : null);
         return;
       }
     }

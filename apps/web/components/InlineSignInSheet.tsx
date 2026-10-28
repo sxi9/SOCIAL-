@@ -25,7 +25,7 @@ import {
   type RegisterRequest,
   type RegisterResponse,
 } from '@socialchat/shared';
-import { api, ApiError } from '@/lib/api';
+import { api, ApiError, retryIn } from '@/lib/api';
 import {
   countdown,
   createLoginLink,
@@ -51,14 +51,13 @@ type Mode = 'login' | 'register' | 'totp' | 'qr' | 'codes';
 
 /** Login-page copy for the account-state 403s (Wave 1.3 asks the page for
  *  the same; the server has sent them since v0.3). */
-export function accountStateMessage(err: unknown): string | null {
+export function accountStateMessage(err: unknown, contact?: string | null): string | null {
   if (!(err instanceof ApiError) || err.status !== 403) return null;
-  if (err.code === 'account_suspended') {
-    return 'This account is suspended. Contact the people who run this server to appeal.';
-  }
-  if (err.code === 'account_banned') {
-    return 'This account has been banned from this server.';
-  }
+  const appeal = contact ? `To appeal, contact ${contact}.` : 'Contact the people who run this server to appeal.';
+  if (err.code === 'account_suspended') return `This account is suspended. ${appeal}`;
+  if (err.code === 'account_banned') return `This account has been banned from this server. ${appeal}`;
+  if (err.code === 'registration_closed') return 'This server is not taking new sign-ups right now.';
+  if (err.code === 'invite_required') return 'This server is invite-only — you need an invite link to sign up.';
   return null;
 }
 
@@ -133,7 +132,7 @@ export default function InlineSignInSheet({
   );
 
   function networkOr(err: unknown, fallback: string): string {
-    if (err instanceof ApiError && err.status === 429) return 'Too many attempts — try again in a minute.';
+    if (err instanceof ApiError && err.status === 429) return `Too many attempts — try again ${retryIn(err)}.`;
     return accountStateMessage(err) ?? fallback;
   }
 

@@ -21,12 +21,15 @@ export async function pushRoutes(fastify: FastifyInstance): Promise<void> {
     '/api/push/subscriptions',
     { preHandler: requireAuth, schema: { body: PushSubscribeRequestSchema } },
     async (req, reply) => {
-      const { user } = authed(req);
+      const { user, session } = authed(req);
       const [row] = await db
         .insert(schema.pushSubscriptions)
         .values({
           id: newId(),
           userId: user.id,
+          // Migration 0020 (§1.4): bound to this session — revoke it and the
+          // row cascades away, so a remote sign-out kills this device's push.
+          sessionId: session.id,
           endpoint: req.body.endpoint,
           p256dh: req.body.keys.p256dh,
           auth: req.body.keys.auth,
@@ -36,6 +39,7 @@ export async function pushRoutes(fastify: FastifyInstance): Promise<void> {
           target: schema.pushSubscriptions.endpoint,
           set: {
             userId: user.id,
+            sessionId: session.id,
             p256dh: req.body.keys.p256dh,
             auth: req.body.keys.auth,
             failCount: 0,

@@ -11,7 +11,8 @@ import {
   type LoginOutcome,
   type UserPrivate,
 } from '@socialchat/shared';
-import { api, ApiError, safeNext } from '@/lib/api';
+import { api, ApiError, retryIn, safeNext } from '@/lib/api';
+import { useInstanceInfo } from '@/lib/instance';
 import {
   countdown,
   createLoginLink,
@@ -59,6 +60,11 @@ function LoginForm() {
   const [busy, setBusy] = useState(false);
   const [showPw, setShowPw] = useState(false);
   const [canPasskey, setCanPasskey] = useState(false);
+  // §1.3: the QR door is for a laptop approving from a phone — pointless on
+  // a touch-only device (set in an effect so SSR output stays stable).
+  const [finePointer, setFinePointer] = useState(false);
+  const instance = useInstanceInfo();
+  const contact = instance?.operator_contact || null;
 
   // §1.73: the half-login token between "password/passkey ok" and "code ok".
   const [totpToken, setTotpToken] = useState<string | null>(null);
@@ -152,10 +158,10 @@ function LoginForm() {
       if (err instanceof ApiError && err.code === 'bad_credentials') {
         setError('Wrong username or password.');
       } else if (err instanceof ApiError && err.status === 429) {
-        setError('Too many attempts — try again in a minute.');
+        setError(`Too many attempts — try again ${retryIn(err)}.`);
       } else {
         // AUDIT-PLAN 1.3: the account-state 403s tell the truth.
-        setError(accountStateMessage(err) ?? 'Could not sign in. Check your connection and try again.');
+        setError(accountStateMessage(err, contact) ?? 'Could not sign in. Check your connection and try again.');
       }
       pulse('shake', 900);
       setBusy(false);
@@ -166,6 +172,7 @@ function LoginForm() {
 
   useEffect(() => {
     setCanPasskey(passkeysSupported());
+    setFinePointer(window.matchMedia('(pointer: fine)').matches);
   }, []);
 
   const passkeyFlow = useCallback(
@@ -196,9 +203,9 @@ function LoginForm() {
         setError('That passkey was not accepted. Try another way to sign in.');
         pulse('shake', 900);
       } else if (err instanceof ApiError && err.status === 429) {
-        setError('Too many attempts — try again in a minute.');
+        setError(`Too many attempts — try again ${retryIn(err)}.`);
       } else {
-        setError('Passkey sign-in did not work here. Use your password instead.');
+        setError(accountStateMessage(err, contact) ?? 'Passkey sign-in did not work here. Use your password instead.');
       }
       setBusy(false);
     }
@@ -606,6 +613,21 @@ function LoginForm() {
   return (
     <form onSubmit={(e) => void submitPassword(e)}>
       {mascotEl}
+      {search.get('reason') === 'revoked' ? (
+        <p className="ok-text" style={{ marginTop: 0 }}>
+          You were signed out of this device — from another device, a password change, or by the
+          people who run this server. Sign in again to continue.
+        </p>
+      ) : search.get('reason') === 'expired' ? (
+        <p className="ok-text" style={{ marginTop: 0 }}>
+          That session expired. Sign in again to continue.
+        </p>
+      ) : null}
+      {search.get('deactivated') ? (
+        <p className="ok-text" style={{ marginTop: 0 }}>
+          Your account is paused. Signing in reactivates it.
+        </p>
+      ) : null}
       {search.get('deleted') ? (
         // Wave 1 §1.2: the landing after scheduling a deletion — the one
         // place the way back is spelled out.
@@ -666,6 +688,19 @@ function LoginForm() {
             <EyeIcon />
           </button>
         </div>
+        {/* §1.3: the forgot-password door, right where the password is. */}
+        <p className={authStyles.footLineSmall} style={{ margin: '4px 0 0', textAlign: 'right' }}>
+          <button
+            type="button"
+            className={authStyles.footBtn}
+            onClick={() => {
+              setMode('recover');
+              setError(null);
+            }}
+          >
+            Forgot password?
+          </button>
+        </p>
       </div>
       {error ? <p className="error-text">{error}</p> : null}
       <button className={`btn btn-primary ${authStyles.btnBlock}`} type="submit" disabled={busy}>
@@ -686,17 +721,19 @@ function LoginForm() {
             Sign in with a passkey
           </button>
         ) : null}
-        <button
-          type="button"
-          className={`btn ${ap.outlineBtn}`}
-          disabled={busy}
-          onClick={() => {
-            setMode('qr');
-            setError(null);
-          }}
-        >
-          Log in with phone · QR
-        </button>
+        {finePointer ? (
+          <button
+            type="button"
+            className={`btn ${ap.outlineBtn}`}
+            disabled={busy}
+            onClick={() => {
+              setMode('qr');
+              setError(null);
+            }}
+          >
+            Log in with phone · QR
+          </button>
+        ) : null}
       </div>
 
       {/* Royal v2: the sign-up door + the recovery door live UNDER the card. */}
@@ -728,7 +765,7 @@ function LoginForm() {
 export default function LoginPage() {
   return (
     <Suspense fallback={null}>
-      <AuthScene>
+      <AuthScene calm>
         <LoginForm />
       </AuthScene>
     </Suspense>

@@ -15,14 +15,15 @@ export function formatClock(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+/** Wave 1 §1.9: COARSE by design (PSYCHOLOGY: no seen-at timestamps) —
+ * "active today / this week", never "43m ago". */
 export function formatLastSeen(iso: string | null): string {
   if (!iso) return 'offline';
-  const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
-  if (mins < 1) return 'last seen just now';
-  if (mins < 60) return `last seen ${mins}m ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `last seen ${hours}h ago`;
-  return `last seen ${formatTime(iso)}`;
+  const hours = Math.max(0, (Date.now() - new Date(iso).getTime()) / 3600000);
+  if (hours < 1) return 'active recently';
+  if (hours < 24) return 'active today';
+  if (hours < 24 * 7) return 'active this week';
+  return 'offline';
 }
 
 export function formatBytes(bytes: number): string {

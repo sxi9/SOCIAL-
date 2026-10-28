@@ -33,7 +33,7 @@ import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant, requireActiveParticipant } from '../conversations/routes.js';
 import { joinGroupTx } from '../conversations/visibility.js';
 import { isBannedFrom } from '../../lib/bans.js';
-import { publishConversationToUsers } from '../../lib/dto.js';
+import { publishConversationToUsers, userHidden } from '../../lib/dto.js';
 import { loadOpenTokenByToken, mintOrReturnToken, shareLinkDto } from '../sharepages/service.js';
 import { forbidden } from '../../lib/errors.js';
 import {
@@ -142,8 +142,8 @@ export async function callRoutes(fastify: FastifyInstance): Promise<void> {
       // unbanned, in the group (and its admin for a private group) — the
       // public page already 404s on the first two; the door must agree.
       if (!tok.createdBy) throw notFound('share_not_found');
-      const [inviter] = await db.select({ bannedAt: schema.users.bannedAt, deletedAt: schema.users.deletedAt }).from(schema.users).where(eq(schema.users.id, tok.createdBy)).limit(1);
-      if (!inviter || inviter.bannedAt !== null || inviter.deletedAt !== null) throw notFound('share_not_found');
+      const [inviter] = await db.select({ bannedAt: schema.users.bannedAt, deletedAt: schema.users.deletedAt, deactivatedAt: schema.users.deactivatedAt }).from(schema.users).where(eq(schema.users.id, tok.createdBy)).limit(1);
+      if (!inviter || inviter.deletedAt !== null || userHidden(inviter)) throw notFound('share_not_found');
       if ((await roomLinkStanding(call, tok.createdBy)) !== 'ok') throw notFound('share_not_found');
       if (await isBlockedPair(user.id, tok.createdBy)) throw notFound('share_not_found');
       const mine = await getParticipant(conv.id, user.id);

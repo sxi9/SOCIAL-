@@ -159,6 +159,11 @@ export const users = pgTable(
     // message history keeps a "Deleted account" author).
     scheduledDeletionAt: timestamptz('scheduled_deletion_at'),
     deletedAt: timestamptz('deleted_at'),
+    // Wave 1 leftovers (migration 0020): self-serve pause (§1.2) — login
+    // reactivates; hidden like banned while set. appear_offline (§1.9):
+    // the online dot + stamp withheld from everyone but the owner.
+    deactivatedAt: timestamptz('deactivated_at'),
+    appearOffline: boolean('appear_offline').notNull().default(false),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     updatedAt: timestamptz('updated_at').notNull().defaultNow(),
   },
@@ -718,12 +723,16 @@ export const pushSubscriptions = pgTable(
     p256dh: text('p256dh').notNull(),
     auth: text('auth').notNull(),
     userAgent: text('user_agent'),
+    // Migration 0020 (§1.4): the session that subscribed — revoking it
+    // cascades the row away, so a remote sign-out kills that browser's push.
+    sessionId: uuid('session_id').references(() => sessions.id, { onDelete: 'cascade' }),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     lastSuccessAt: timestamptz('last_success_at'),
     failCount: integer('fail_count').notNull().default(0),
   },
   (t) => ({
     byUserIdx: index('push_by_user_idx').on(t.userId),
+    bySessionIdx: index('push_by_session_idx').on(t.sessionId).where(sql`${t.sessionId} IS NOT NULL`),
   }),
 );
 
@@ -1029,6 +1038,8 @@ export const reports = pgTable(
     reason: text('reason').notNull().default(''),
     // Wave 1 (migration 0018, §1.5): the required pick — admin queue lanes.
     category: text('category').notNull().default('other'),
+    // Migration 0020 (§1.5): the close outcome — '' | warned | suspended | removed.
+    outcome: text('outcome').notNull().default(''),
     status: text('status').notNull().default('open'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     // v0.5b (migration 0006, API.md §1.41): the admin queue consumes this
@@ -1045,6 +1056,7 @@ export const reports = pgTable(
       // Migration 0018: + the five object kinds (target_object_type = kind).
       sql`${t.kind} IN ('user','message','beacon','anon_message','story_overlay','share_page','post','comment','story','listing','group')`,
     ),
+    outcomeCheck: check('reports_outcome_check', sql`${t.outcome} IN ('', 'warned', 'suspended', 'removed')`),
     categoryCheck: check(
       'reports_category_check',
       sql`${t.category} IN ('spam','harassment','hate','nudity','self_harm','scam','impersonation','underage','off_platform','ip','other')`,
@@ -2360,7 +2372,7 @@ export const supportTickets = pgTable(
   (t) => ({
     categoryCheck: check(
       'support_tickets_category_check',
-      sql`${t.category} IN ('bug','question','idea','safety')`,
+      sql`${t.category} IN ('bug','question','idea','safety','legal')`,
     ),
     bodyCheck: check(
       'support_tickets_body_check',

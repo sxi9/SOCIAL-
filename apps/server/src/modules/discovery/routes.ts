@@ -116,7 +116,7 @@ export async function visibleCards(
     WHERE o.expires_at > now()
       AND o.user_id <> ${meId}
       ${targetId ? sql`AND o.user_id = ${targetId}` : sql``}
-      AND u.suspended_at IS NULL AND u.banned_at IS NULL
+      AND u.suspended_at IS NULL AND u.banned_at IS NULL AND u.deactivated_at IS NULL
       AND ${theirReach}
       AND ${myReach}
       ${vibeCond}

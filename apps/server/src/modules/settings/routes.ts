@@ -10,6 +10,8 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { UpdateSettingsRequestSchema, type UserSettings } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
+import { presenceKey, redis } from '../../redis.js';
+import { publishPresence } from '../../ws/events.js';
 import { authed, requireAuth } from '../auth/guard.js';
 
 type UserRow = typeof schema.users.$inferSelect;
@@ -19,6 +21,7 @@ export function settingsDto(u: UserRow): UserSettings {
     read_receipts: u.readReceipts,
     show_last_seen: u.showLastSeen as UserSettings['show_last_seen'],
     show_typing: u.showTyping,
+    appear_offline: u.appearOffline,
     invites_paused: u.invitesPaused,
     beacon_default_audience: u.beaconDefaultAudience as UserSettings['beacon_default_audience'],
     group_add_policy: u.groupAddPolicy as UserSettings['group_add_policy'],
@@ -64,6 +67,7 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
       if (b.read_receipts !== undefined) patch.readReceipts = b.read_receipts;
       if (b.show_last_seen !== undefined) patch.showLastSeen = b.show_last_seen;
       if (b.show_typing !== undefined) patch.showTyping = b.show_typing;
+      if (b.appear_offline !== undefined) patch.appearOffline = b.appear_offline;
       if (b.invites_paused !== undefined) patch.invitesPaused = b.invites_paused;
       if (b.beacon_default_audience !== undefined) {
         patch.beaconDefaultAudience = b.beacon_default_audience;
@@ -89,6 +93,13 @@ export async function settingsRoutes(fastify: FastifyInstance): Promise<void> {
         .set(patch)
         .where(eq(schema.users.id, user.id))
         .returning();
+      // §1.9: flipping appear_offline re-announces presence NOW — watchers
+      // see offline (on) or the real state (off) without waiting for a
+      // reconnect; deliverPresence clamps per watcher.
+      if (b.appear_offline !== undefined && b.appear_offline !== user.appearOffline) {
+        const online = (await redis.exists(presenceKey(user.id))) === 1;
+        await publishPresence(user.id, online, online ? undefined : updated!.lastSeenAt?.toISOString());
+      }
       return { settings: settingsDto(updated!) };
     },
   );

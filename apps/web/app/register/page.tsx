@@ -11,7 +11,9 @@ import {
   type RegisterRequest,
   type RegisterResponse,
 } from '@socialchat/shared';
-import { api, ApiError, safeNext } from '@/lib/api';
+import { api, ApiError, retryIn, safeNext } from '@/lib/api';
+import { useInstanceInfo } from '@/lib/instance';
+import { accountStateMessage } from '@/components/InlineSignInSheet';
 import { onAuthenticated } from '@/lib/connection';
 import { setMe } from '@/lib/store';
 import AuthScene, { EyeIcon, SceneFooter, SceneMascot, useAuthFx } from '@/components/AuthScene';
@@ -27,6 +29,36 @@ function RegisterForm() {
   const search = useSearchParams();
   const fx = useAuthFx();
   const [username, setUsername] = useState('');
+  // §1.3: the debounced availability check + inline rules.
+  const [nameState, setNameState] = useState<'idle' | 'checking' | 'ok' | 'taken' | 'invalid'>('idle');
+  const instance = useInstanceInfo();
+  useEffect(() => {
+    const u = username.trim().toLowerCase();
+    if (!u) {
+      setNameState('idle');
+      return;
+    }
+    if (!USERNAME_REGEX.test(u)) {
+      setNameState('invalid');
+      return;
+    }
+    setNameState('checking');
+    let cancelled = false;
+    const t = setTimeout(() => {
+      void api
+        .get<{ available: boolean; reason: 'invalid' | 'taken' | null }>(`/api/auth/username-available?username=${encodeURIComponent(u)}`)
+        .then((r) => {
+          if (!cancelled) setNameState(r.available ? 'ok' : r.reason === 'taken' ? 'taken' : 'invalid');
+        })
+        .catch(() => {
+          if (!cancelled) setNameState('idle');
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [username]);
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
@@ -137,11 +169,11 @@ function RegisterForm() {
         if (err instanceof ApiError && err.code === 'email_taken') {
           setError('That email already has an account.');
         } else if (err instanceof ApiError && err.status === 429) {
-          setError('Too many sign-ups from here — try again later.');
+          setError(`Too many sign-ups from here — try again ${retryIn(err, 'later')}.`);
         } else if (err instanceof ApiError && err.status === 400) {
           setError(err.message || 'Check the fields and try again.');
         } else {
-          setError('Could not create the account. Check your connection and try again.');
+          setError(accountStateMessage(err) ?? 'Could not create the account. Check your connection and try again.');
         }
         pulse('shake', 900);
       }
@@ -185,6 +217,11 @@ function RegisterForm() {
         />
       </SceneMascot>
       <h2 className={authStyles.formTitle}>Join the fun</h2>
+      {instance?.registration_mode === 'closed' ? (
+        <p className="error-text">This server is not taking new sign-ups right now.</p>
+      ) : instance?.registration_mode === 'invite_only' && !inviteToken ? (
+        <p className="error-text">This server is invite-only — open an invite link from a member to sign up.</p>
+      ) : null}
       {inviteToken ? (
         <p className={authStyles.inviteNote}>
           You&rsquo;ve been invited — your chat opens right after sign-up.
@@ -206,11 +243,25 @@ function RegisterForm() {
           autoComplete="username"
           autoCapitalize="none"
           pattern="[a-z0-9_]{3,24}"
+          aria-describedby="reg-username-hint"
           required
         />
+        <p id="reg-username-hint" className={nameState === 'taken' || nameState === 'invalid' ? 'error-text' : 'muted small'} style={{ margin: '4px 0 0' }}>
+          {nameState === 'taken'
+            ? 'That username is taken.'
+            : nameState === 'invalid'
+              ? '3–24 characters: lowercase letters, digits and underscores.'
+              : nameState === 'ok'
+                ? 'Available.'
+                : nameState === 'checking'
+                  ? 'Checking…'
+                  : '3–24 characters: lowercase letters, digits and underscores.'}
+        </p>
       </div>
       <div className="field">
-        <label htmlFor="reg-display">Display name</label>
+        <label htmlFor="reg-display">
+          Display name <span className="muted small">(optional)</span>
+        </label>
         <input
           id="reg-display"
           className="input"
@@ -306,7 +357,7 @@ function RegisterForm() {
 export default function RegisterPage() {
   return (
     <Suspense fallback={null}>
-      <AuthScene>
+      <AuthScene calm>
         <RegisterForm />
       </AuthScene>
     </Suspense>

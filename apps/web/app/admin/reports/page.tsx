@@ -7,7 +7,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AdminContextMessage, AdminReport } from '@socialchat/shared';
 import { ADMIN_NOTE_MAX_CHARS, REPORT_CATEGORIES, REPORT_CATEGORY_LABELS, type ReportCategory } from '@socialchat/shared';
 import { ApiError } from '@/lib/api';
-import { adminCloseReport, adminReportContext, adminReports } from '@/lib/admin';
+import { adminCloseReport, adminReportContext, adminReports, adminSuspendFromReport, adminTakedown } from '@/lib/admin';
+import { confirmDialog } from '@/lib/confirm';
 import { formatTime } from '@/lib/format';
 import ad from '@/components/admin.module.css';
 import cm from '@/components/community.module.css';
@@ -120,6 +121,8 @@ export default function AdminReportsPage() {
 
 function ReportCard({ report, onClosed }: { report: AdminReport; onClosed: (r: AdminReport) => void }) {
   const [note, setNote] = useState('');
+  const [warnText, setWarnText] = useState('');
+  const [warnOpen, setWarnOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -149,6 +152,7 @@ function ReportCard({ report, onClosed }: { report: AdminReport; onClosed: (r: A
         </span>
         <span className={ad.flag}>{report.kind}</span>
         <span className={ad.flag}>{REPORT_CATEGORY_LABELS[report.category]}</span>
+        {report.outcome ? <span className={`${ad.flag} ${ad.flagBad}`}>{report.outcome}</span> : null}
         <span>
           by{' '}
           {report.reporter ? (
@@ -253,6 +257,97 @@ function ReportCard({ report, onClosed }: { report: AdminReport; onClosed: (r: A
           />
           <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void close()}>
             {busy ? 'Closing…' : 'Close'}
+          </button>
+        </div>
+      ) : null}
+      {report.status === 'open' ? (
+        // Wave 1 leftovers (§1.5): the three actions beside Close.
+        <div className={ad.closeRow} style={{ marginTop: 8, flexWrap: 'wrap' }}>
+          {report.target_user_id ? (
+            <>
+              <button type="button" className="btn" disabled={busy} onClick={() => setWarnOpen((v) => !v)}>
+                Warn
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={busy}
+                onClick={() => {
+                  void confirmDialog('Suspend the reported person? Their sessions end immediately; the report closes as “suspended”.', {
+                    confirmLabel: 'Suspend',
+                    danger: true,
+                  }).then(async (ok) => {
+                    if (!ok) return;
+                    setBusy(true);
+                    try {
+                      const res = await adminSuspendFromReport(report.id, note.trim());
+                      onClosed(res.report);
+                    } catch {
+                      setError('Could not suspend.');
+                    } finally {
+                      setBusy(false);
+                    }
+                  });
+                }}
+              >
+                Suspend author
+              </button>
+            </>
+          ) : null}
+          {report.target_object && !report.target_object.gone && report.target_object.object_type !== 'group' ? (
+            <button
+              type="button"
+              className="btn btn-danger"
+              disabled={busy}
+              onClick={() => {
+                const reason = window.prompt('Reason for the author (required):', '') ?? '';
+                if (!reason.trim()) return;
+                setBusy(true);
+                setError(null);
+                void adminTakedown(report.target_object!.object_type as 'post' | 'comment' | 'story' | 'listing', report.target_object!.object_id, reason.trim())
+                  .catch((err: unknown) => {
+                    // Already gone: still record the outcome on the report.
+                    if (!(err instanceof ApiError && err.status === 404)) throw err;
+                  })
+                  .then(() => adminCloseReport(report.id, note.trim(), 'removed'))
+                  .then((res) => onClosed(res.report))
+                  .catch((err: unknown) => {
+                    if (err instanceof ApiError && err.code === 'report_closed') {
+                      setError('Removed — the report was already closed by someone else; refresh.');
+                    } else {
+                      setError('Could not remove it.');
+                    }
+                  })
+                  .finally(() => setBusy(false));
+              }}
+            >
+              Remove {report.target_object.object_type}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {report.status === 'open' && warnOpen ? (
+        <div className={ad.closeRow} style={{ marginTop: 8 }}>
+          <input
+            className="input"
+            placeholder="The warning, as the person reads it (sent from Support)"
+            value={warnText}
+            maxLength={1000}
+            onChange={(e) => setWarnText(e.target.value)}
+          />
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy || !warnText.trim()}
+            onClick={() => {
+              setBusy(true);
+              void adminCloseReport(report.id, note.trim(), 'warned', warnText.trim())
+                .then((res) => onClosed(res.report))
+                .catch(() => setError('Could not send the warning.'))
+                .finally(() => setBusy(false));
+            }}
+          >
+            Send warning &amp; close
           </button>
         </div>
       ) : (

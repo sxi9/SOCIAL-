@@ -232,6 +232,15 @@ export const INSTANCE_PUBLIC_RATE_PER_HOUR_PER_IP = 240;
 export const MUTE_PRESET_HOURS = [8, 24 * 7] as const;
 export const MUTE_FOREVER_ISO = '2999-01-01T00:00:00.000Z';
 export const REPORT_RATE_PER_HOUR = 10;
+// Wave 1 leftovers (§1.5): write rate limits — per user.
+export const MESSAGE_RATE_PER_MINUTE = 60;
+export const COMMENT_RATE_PER_HOUR = 120;
+export const REACTION_RATE_PER_MINUTE = 60;
+// §1.3: GET /api/auth/username-available, per IP per minute.
+export const USERNAME_CHECK_RATE_PER_MIN = 60;
+// §1.9: who may register. Decision 7 (owner) deferred to the builder: open.
+export const REGISTRATION_MODES = ['open', 'invite_only', 'closed'] as const;
+export const REGISTRATION_MODE_DEFAULT = 'open' as const;
 
 // ============================ v0.4 additions =================================
 // Expression pack (FEATURES #31–#38; API.md §1.19–§1.27; ADR-010). Everything
@@ -1325,11 +1334,17 @@ export const GHOST_MASK_EMOJI = [
 // ---- Admin: content, support, report context, update (v0.8b — API.md §1.69,
 // FEATURES #81, ADR-020) ----
 export const ADMIN_CONTENT_TYPES = ['post', 'beacon', 'listing'] as const;
+// Wave 1 leftovers (§1.5): what a takedown can act on — the content tab's
+// three plus the two object kinds the report queue can now name.
+export const TAKEDOWN_TYPES = ['post', 'beacon', 'listing', 'comment', 'story'] as const;
+// The close outcome (migration 0020): '' = just closed.
+export const REPORT_OUTCOMES = ['', 'warned', 'suspended', 'removed'] as const;
+export const WARN_TEXT_MAX_CHARS = 1000;
 // Takedown reason — REQUIRED (min 1): the author-facing notice carries it.
 export const TAKEDOWN_REASON_MAX_CHARS = 500;
 // Support inbox (Settings → Help & feedback): 🐞 bug / ❓ question / 💡 idea /
 // ⚠️ safety.
-export const SUPPORT_CATEGORIES = ['bug', 'question', 'idea', 'safety'] as const;
+export const SUPPORT_CATEGORIES = ['bug', 'question', 'idea', 'safety', 'legal'] as const;
 export const SUPPORT_TICKET_STATUSES = ['open', 'answered', 'closed'] as const;
 export const SUPPORT_BODY_MAX_CHARS = 2000;
 export const SUPPORT_TICKET_RATE_PER_DAY = 10;

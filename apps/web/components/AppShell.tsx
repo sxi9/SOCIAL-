@@ -26,9 +26,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
     if (state.authed === false) {
       // Phase 3: the query string rides along (`?s=<share token>` on the
       // object routes), so a sign-in round-trip keeps the share landing.
-      router.replace(`/login?next=${encodeURIComponent((pathname || '/') + window.location.search)}`);
+      const reason = state.authReason ? `&reason=${state.authReason}` : '';
+      router.replace(`/login?next=${encodeURIComponent((pathname || '/') + window.location.search)}${reason}`);
     }
-  }, [state.authed, pathname, router]);
+  }, [state.authed, state.authReason, pathname, router]);
 
   if (state.authed !== true) {
     return (

@@ -139,6 +139,34 @@ export default function AdminSettingsPage() {
           </button>
         </div>
       )}
+      {settings ? (
+        <div className={ad.settingRow} style={{ marginTop: 14 }}>
+          <div>
+            <h3>Who can sign up</h3>
+            <p>
+              Open: anyone. Invite-only: a valid invite link is required at sign-up. Closed: no new
+              accounts (the sign-up page says so). Audit-logged.
+            </p>
+          </div>
+          <select
+            className="input"
+            style={{ width: 'auto' }}
+            value={settings.registration_mode}
+            disabled={busy}
+            onChange={(e) => {
+              setBusy(true);
+              void adminUpdateSettings({ registration_mode: e.target.value as 'open' | 'invite_only' | 'closed' })
+                .then((res) => setSettings(res.settings))
+                .catch(() => setError('Could not save — try again.'))
+                .finally(() => setBusy(false));
+            }}
+          >
+            <option value="open">Open</option>
+            <option value="invite_only">Invite-only</option>
+            <option value="closed">Closed</option>
+          </select>
+        </div>
+      ) : null}
       {settings ? <LegalEditor settings={settings} onSaved={setSettings} /> : null}
       <div className={ad.settingRow} style={{ marginTop: 14 }}>
         <div>

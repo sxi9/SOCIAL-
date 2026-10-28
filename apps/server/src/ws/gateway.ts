@@ -173,6 +173,19 @@ async function allowedPresenceTargets(me: string, ids: string[]): Promise<string
  * `ownerId`'s last_seen_at. The `online` boolean is unaffected (live state,
  * not a timestamp); blocked watchers were already dropped at sub time.
  */
+/** §1.9: watch-together follows the typing gate — never in channels or
+ * ghost groups, never while a DM request is parked. */
+async function watchAllowedIn(conversationId: string): Promise<boolean> {
+  const [convRow] = await db
+    .select({ type: schema.conversations.type, visibility: schema.conversations.visibility })
+    .from(schema.conversations)
+    .where(eq(schema.conversations.id, conversationId))
+    .limit(1);
+  if (!convRow || convRow.type === 'channel' || convRow.visibility === 'ghost') return false;
+  if (convRow.type === 'dm' && !(await allAccepted(conversationId))) return false;
+  return true;
+}
+
 async function lastSeenAudience(ownerId: string, watcherIds: string[]): Promise<Set<string>> {
   if (watcherIds.length === 0) return new Set();
   const [owner] = await db
@@ -539,6 +552,7 @@ async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promis
           id: schema.users.id,
           lastSeenAt: schema.users.lastSeenAt,
           showLastSeen: schema.users.showLastSeen,
+          appearOffline: schema.users.appearOffline,
         })
         .from(schema.users)
         .where(inArray(schema.users.id, allowed));
@@ -555,12 +569,16 @@ async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promis
       `)) as unknown as { user_id: string }[];
       const dmPartners = new Set(dmPartnerRows.map((r) => r.user_id));
       allowed.forEach((id, i) => {
-        const online = results[i]?.[1] === 1;
         const row = byId.get(id);
+        // §1.9 appear_offline: everyone but the owner sees offline, no stamp.
+        const hidden = !!row?.appearOffline && id !== meta.userId;
+        const online = !hidden && results[i]?.[1] === 1;
         const qualifies =
+          !hidden &&
+          (
           id === meta.userId ||
           row?.showLastSeen === 'everyone' ||
-          (row?.showLastSeen === 'dm_partners' && dmPartners.has(id));
+          (row?.showLastSeen === 'dm_partners' && dmPartners.has(id)));
         const lastSeen = row?.lastSeenAt ?? null;
         send(ws, {
           t: 'presence',
@@ -739,6 +757,9 @@ async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promis
       if (!sigGateAllows(meta, `wst:${conversation_id}`, WATCH_START_RELAY_MAX)) return;
       // Participant-gated like typing: non-participants are silently dropped.
       if (!(await isActiveParticipant(meta.userId, conversation_id))) return;
+      // §1.9: gated exactly like typing — no channels, no ghost groups (the
+      // host id is an identity), nothing while a DM request is parked.
+      if (!(await watchAllowedIn(conversation_id))) return;
       const videoId = extractYoutubeVideoId(url);
       if (!videoId) return sendError(ws, 'watch_bad_url', 'not a recognizable YouTube URL');
       const state: WatchState = {
@@ -785,6 +806,7 @@ async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promis
       if (now - last < WATCH_SYNC_MIN_INTERVAL_MS) return;
       if (!sigGateAllows(meta, `wsy:${conversation_id}`, WATCH_SYNC_RELAY_MAX)) return;
       if (!(await isActiveParticipant(meta.userId, conversation_id))) return;
+      if (!(await watchAllowedIn(conversation_id))) return;
       const state = await readWatchState(conversation_id);
       if (!state) return; // session lapsed — TTL expiry behaves as a stop
       if (state.host_id !== meta.userId) {
@@ -814,6 +836,7 @@ async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promis
       // with an arbitrary id cost a DB query + Redis GET at line rate.
       if (!sigGateAllows(meta, `wsp:${conversation_id}`, WATCH_STOP_RELAY_MAX)) return;
       if (!(await isActiveParticipant(meta.userId, conversation_id))) return;
+      if (!(await watchAllowedIn(conversation_id))) return;
       const state = await readWatchState(conversation_id);
       if (!state) return; // already gone — idempotent
       // Host stops; anyone may stop once the host has no live socket (§1.43).
@@ -858,10 +881,21 @@ async function deliverPresence(env: Extract<EventEnvelope, { scope: 'presence' }
     SELECT blocker_id AS id FROM blocks WHERE blocked_id = ${env.user_id}
   `)) as unknown as { id: string }[];
   const blocked = new Set(blockRows.map((r) => r.id));
+  // §1.9 appear_offline: only the owner's own sockets learn the truth.
+  const [ownerRow] = await db
+    .select({ appearOffline: schema.users.appearOffline })
+    .from(schema.users)
+    .where(eq(schema.users.id, env.user_id))
+    .limit(1);
+  const appearOffline = !!ownerRow?.appearOffline;
   const qualified = hasLastSeen ? await lastSeenAudience(env.user_id, watcherUserIds) : null;
   for (const ws of watchers) {
     const meta = registry.metaOf(ws);
     if (!meta || blocked.has(meta.userId)) continue;
+    if (appearOffline && meta.userId !== env.user_id) {
+      send(ws, { t: 'presence', d: { user_id: event.d.user_id, online: false } });
+      continue;
+    }
     if (!hasLastSeen || qualified?.has(meta.userId)) {
       send(ws, event);
     } else {

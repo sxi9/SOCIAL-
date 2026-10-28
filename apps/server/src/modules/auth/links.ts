@@ -15,6 +15,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import {
   ApproveLoginLinkRequestSchema,
+  DenyLoginLinkRequestSchema,
   LOGIN_LINK_APPROVE_RATE_PER_MIN,
   LOGIN_LINK_CREATE_RATE_PER_HOUR,
   LOGIN_LINK_DISPLAY_ALPHABET,
@@ -201,6 +202,23 @@ export async function loginLinkRoutes(fastify: FastifyInstance): Promise<void> {
           ip_hint: ipHint(row.ip, req.ip),
         },
       };
+    },
+  );
+
+  // §1.3 POST /api/auth/link/deny — a real Deny: the pending row is deleted
+  // and the laptop's next poll answers 410 link_gone at once. Any signed-in
+  // user may deny (the sheet is only reachable by someone holding the code).
+  app.post(
+    '/api/auth/link/deny',
+    { preHandler: requireAuth, schema: { body: DenyLoginLinkRequestSchema } },
+    async (req, reply) => {
+      const { user } = authed(req);
+      const rate = await fixedWindow(`linkdeny:${user.id}`, LOGIN_LINK_APPROVE_RATE_PER_MIN, 60);
+      if (!rate.allowed) throw rateLimited(rate.retryAfterS);
+      await db
+        .delete(schema.loginLinks)
+        .where(and(codeMatch(req.body.code, true), eq(schema.loginLinks.status, 'pending')));
+      return reply.status(204).send();
     },
   );
 

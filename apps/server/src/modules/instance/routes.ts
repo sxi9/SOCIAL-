@@ -20,6 +20,7 @@ export async function publicInstanceInfo(): Promise<PublicInstanceInfo> {
       guidelines: s.legal.guidelines.trim() || LEGAL_DEFAULTS.guidelines,
     },
     age_min: AGE_MIN,
+    registration_mode: s.registration_mode,
   };
 }
 

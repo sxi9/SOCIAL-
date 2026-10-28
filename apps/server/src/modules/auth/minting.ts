@@ -43,6 +43,10 @@ export async function finishLogin(
     req.headers['user-agent'] ?? null,
     storableIp(req.ip),
   );
+  // createSession cancelled a pending deletion / reactivated a pause — the
+  // DTO reflects it.
+  user.scheduledDeletionAt = null;
+  user.deactivatedAt = null;
   setSessionCookie(reply, token);
   return reply.status(status).send({ user: userPrivateDto(user) });
 }

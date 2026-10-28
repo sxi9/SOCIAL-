@@ -214,14 +214,22 @@ export async function runRoulettePair(): Promise<void> {
 
   // Live, non-suspended candidates (queue order preserved).
   const liveRows = (await db.execute(sql`
-    SELECT o.user_id FROM discovery_optins o
+    SELECT o.user_id, o.scope, lower(u.area::text) AS area FROM discovery_optins o
     JOIN users u ON u.id = o.user_id
     WHERE o.user_id IN (${sql.join(queued.map((id) => sql`${id}::uuid`), sql`, `)})
       AND o.expires_at > now()
-      AND u.suspended_at IS NULL AND u.banned_at IS NULL
-  `)) as unknown as { user_id: string }[];
-  const live = new Set(liveRows.map((r) => r.user_id));
+      AND u.suspended_at IS NULL AND u.banned_at IS NULL AND u.deactivated_at IS NULL
+  `)) as unknown as { user_id: string; scope: string; area: string | null }[];
+  const live = new Map(liveRows.map((r) => [r.user_id, r]));
   const candidates = queued.filter((id) => live.has(id));
+  // §1.9: an 'area' opt-in pairs only within its own area (the card feed's
+  // predicate) — never instance-wide.
+  const areaMismatch = (a: string, b: string): boolean => {
+    const ra = live.get(a)!;
+    const rb = live.get(b)!;
+    if (ra.scope !== 'area' && rb.scope !== 'area') return false;
+    return !ra.area || !rb.area || ra.area !== rb.area;
+  };
 
   const paired = new Set<string>();
   for (let i = 0; i < candidates.length; i += 1) {
@@ -230,6 +238,7 @@ export async function runRoulettePair(): Promise<void> {
     for (let j = i + 1; j < candidates.length; j += 1) {
       const b = candidates[j]!;
       if (paired.has(b)) continue;
+      if (areaMismatch(a, b)) continue;
       if (await incompatiblePair(a, b)) continue;
 
       let match: MatchedDm;

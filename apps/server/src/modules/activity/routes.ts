@@ -24,7 +24,7 @@ import { db, schema } from '../../db/index.js';
 import { isBlockedPair } from '../../lib/blocks.js';
 import { connectionIdsOf } from '../../lib/connections.js';
 import { friendsOfIds } from '../../lib/friends.js';
-import { userLiteDto, type UserRow } from '../../lib/dto.js';
+import { userLiteDto, type UserRow, userHidden } from '../../lib/dto.js';
 import { notFound } from '../../lib/errors.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { getParticipant } from '../conversations/routes.js';
@@ -89,7 +89,7 @@ export async function activityRoutes(fastify: FastifyInstance): Promise<void> {
         .limit(1);
       if (!owner) throw notFound('user_not_found');
       // §1.41: banned owners' strips hide with their profiles.
-      if (owner.id !== user.id && owner.bannedAt !== null) throw notFound('user_not_found');
+      if (owner.id !== user.id && userHidden(owner)) throw notFound('user_not_found');
       // §1.14: 404 in BOTH directions — identical to never existing.
       if (await isBlockedPair(user.id, owner.id)) throw notFound('user_not_found');
 

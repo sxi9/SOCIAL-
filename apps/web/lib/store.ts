@@ -165,6 +165,8 @@ const emptyLane = (): FeedLaneState => ({ posts: null, cursor: null, caughtUp: f
 export interface AppState {
   booted: boolean;
   authed: boolean | null;
+  /** Wave 1 §1.3: why the session ended (rides to /login?reason=). */
+  authReason: 'revoked' | 'expired' | null;
   conn: ConnState;
   me: UserPrivate | null;
   conversations: Map<string, ConversationListItem>;
@@ -262,6 +264,7 @@ export interface AppState {
 const state: AppState = {
   booted: false,
   authed: null,
+  authReason: null,
   conn: 'offline',
   me: null,
   conversations: new Map(),
@@ -350,8 +353,9 @@ export function setConn(conn: ConnState): void {
   emit();
 }
 
-export function setAuthed(authed: boolean): void {
+export function setAuthed(authed: boolean, reason: 'revoked' | 'expired' | null = null): void {
   state.authed = authed;
+  state.authReason = authed ? null : reason;
   if (!authed) {
     state.me = null;
     state.booted = true;
@@ -1114,6 +1118,7 @@ export function setFeedbackAsk(ask: FeedbackAsk | null): void {
 
 export function resetOnLogout(): void {
   state.authed = false;
+  state.authReason = null; // a voluntary sign-out carries no reason
   state.me = null;
   state.conversations = new Map();
   state.messages = new Map();

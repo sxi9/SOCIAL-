@@ -31,6 +31,7 @@ const CATEGORY_INFO: Record<SupportCategory, { emoji: string; label: string }> =
   question: { emoji: '❓', label: 'A question' },
   idea: { emoji: '💡', label: 'An idea' },
   safety: { emoji: '⚠️', label: 'Safety' },
+  legal: { emoji: '⚖️', label: 'Legal' },
 };
 
 function AboutBlock() {

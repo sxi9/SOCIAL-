@@ -67,6 +67,10 @@ import {
   REACTION_KINDS,
   REPORT_REASON_MAX_CHARS,
   REPORT_CATEGORIES,
+  REPORT_OUTCOMES,
+  REGISTRATION_MODES,
+  REGISTRATION_MODE_DEFAULT,
+  WARN_TEXT_MAX_CHARS,
   LEGAL_PAGE_MAX_CHARS,
   OPERATOR_CONTACT_MAX_CHARS,
   TTT_BOARD_CELLS,
@@ -120,6 +124,7 @@ import {
   ANON_RIDDLE_MAX_CHARS,
   ANON_TIMER_PRESETS_S,
   ADMIN_CONTENT_TYPES,
+  TAKEDOWN_TYPES,
   DISCOVERY_SHARED_INTERESTS_MAX,
   DISCOVERY_VIBES,
   GROUP_DESCRIPTION_MAX_CHARS,
@@ -277,6 +282,8 @@ export const UserPrivateSchema = UserPublicSchema.extend({
   terms_accepted_at: IsoDateTimeSchema.nullable().default(null),
   age_attested_at: IsoDateTimeSchema.nullable().default(null),
   scheduled_deletion_at: IsoDateTimeSchema.nullable().default(null),
+  // Migration 0020: the self-serve pause (null once reactivated by a login).
+  deactivated_at: IsoDateTimeSchema.nullable().default(null),
 });
 export type UserPrivate = z.infer<typeof UserPrivateSchema>;
 
@@ -1294,6 +1301,8 @@ export const UserSettingsSchema = z.object({
   read_receipts: z.boolean(),
   show_last_seen: ShowLastSeenSchema,
   show_typing: z.boolean(),
+  // Migration 0020 (§1.9): hide the online dot + stamp from everyone but me.
+  appear_offline: z.boolean().default(false),
   // true: minting new invites AND accepting your existing ones both 403.
   invites_paused: z.boolean(),
   beacon_default_audience: BeaconAudienceSchema,
@@ -1369,6 +1378,8 @@ export const ReportKindSchema = z.enum([
 // Wave 1 (§1.5): the REQUIRED category beside the free text.
 export const ReportCategorySchema = z.enum(REPORT_CATEGORIES);
 export type ReportCategory = z.infer<typeof ReportCategorySchema>;
+export const ReportOutcomeSchema = z.enum(REPORT_OUTCOMES);
+export type ReportOutcome = z.infer<typeof ReportOutcomeSchema>;
 export type ReportKind = z.infer<typeof ReportKindSchema>;
 
 // Message identity is (conversation_id, seq) — the messages PK, same as
@@ -2814,6 +2825,10 @@ export const AdminReportSchema = z.object({
   kind: ReportKindSchema, // v0.8b widens to the full §1.14 kind set
   // Wave 1 (§1.5): the reporter's required pick — the queue's lanes.
   category: ReportCategorySchema.default('other'),
+  outcome: ReportOutcomeSchema.default(''),
+  // The person the queue can act on (server-attached), for the Suspend
+  // shortcut: null for beacon/message/share_page rows and gone accounts.
+  target_user_id: UuidSchema.nullable().default(null),
   // null = account deleted since — or, v0.8b (§1.67), a NON-USER share-page
   // report (kind 'share_page' stores reporter_id NULL by design).
   reporter: UserLiteSchema.nullable(),
@@ -2913,8 +2928,13 @@ export const AdminReportsResponseSchema = z.object({
 });
 export type AdminReportsResponse = z.infer<typeof AdminReportsResponseSchema>;
 
+// Wave 1 leftovers (§1.5): close carries an OUTCOME; 'warned' also sends
+// `warn_text` to the reported person through their Support conversation
+// (sender-less, the Support brand — never a named admin).
 export const CloseReportRequestSchema = z.object({
   note: z.string().max(ADMIN_NOTE_MAX_CHARS).default(''),
+  outcome: ReportOutcomeSchema.default(''),
+  warn_text: z.string().min(1).max(WARN_TEXT_MAX_CHARS).optional(),
 });
 export type CloseReportRequest = z.infer<typeof CloseReportRequestSchema>;
 
@@ -3055,6 +3075,8 @@ export const InstanceSettingsSchema = z.object({
   auth: AuthSettingsSchema.default(AUTH_SETTINGS_DEFAULT),
   legal: LegalTextsSchema.default({ terms: '', privacy: '', guidelines: '' }),
   operator_contact: z.string().max(OPERATOR_CONTACT_MAX_CHARS).default(''),
+  // §1.9: open (anyone) | invite_only (a valid invite token at signup) | closed.
+  registration_mode: z.enum(REGISTRATION_MODES).default(REGISTRATION_MODE_DEFAULT),
 });
 export type InstanceSettings = z.infer<typeof InstanceSettingsSchema>;
 
@@ -3065,7 +3087,16 @@ export const PublicInstanceInfoSchema = z.object({
   operator_contact: z.string(),
   legal: z.object({ terms: z.string(), privacy: z.string(), guidelines: z.string() }),
   age_min: z.number().int(),
+  registration_mode: z.enum(REGISTRATION_MODES).default(REGISTRATION_MODE_DEFAULT),
 });
+
+// §1.3 GET /api/auth/username-available?username= — UNAUTHENTICATED,
+// per-IP: the inline check on /register. `reason` says why not.
+export const UsernameAvailableResponseSchema = z.object({
+  available: z.boolean(),
+  reason: z.enum(['invalid', 'taken']).nullable(),
+});
+export type UsernameAvailableResponse = z.infer<typeof UsernameAvailableResponseSchema>;
 export type PublicInstanceInfo = z.infer<typeof PublicInstanceInfoSchema>;
 
 // v0.9 (§1.74): the auth PATCH shape — deep-partial, plus the write-only
@@ -3092,6 +3123,7 @@ export const UpdateInstanceSettingsRequestSchema = z.object({
   auth: AuthSettingsPatchSchema.optional(),
   legal: LegalTextsSchema.partial().optional(),
   operator_contact: z.string().max(OPERATOR_CONTACT_MAX_CHARS).optional(),
+  registration_mode: z.enum(REGISTRATION_MODES).optional(),
 });
 export type UpdateInstanceSettingsRequest = z.infer<typeof UpdateInstanceSettingsRequestSchema>;
 
@@ -4189,6 +4221,9 @@ export type AdminSupportTicketResponse = z.infer<typeof AdminSupportTicketRespon
 // ---------------------------------------------------------------------------
 
 export const AdminContentTypeSchema = z.enum(ADMIN_CONTENT_TYPES);
+// Wave 1 leftovers (§1.5): the takedown route accepts two more kinds.
+export const TakedownTypeSchema = z.enum(TAKEDOWN_TYPES);
+export type TakedownType = z.infer<typeof TakedownTypeSchema>;
 export type AdminContentType = z.infer<typeof AdminContentTypeSchema>;
 
 // One row of the content tab: PUBLIC surfaces only (public posts, public
@@ -4398,6 +4433,9 @@ export type LookupLoginLinkResponse = z.infer<typeof LookupLoginLinkResponseSche
 // code may be the FULL code (QR path /link/<code>) or the 6-char display
 // code (typed) — the server tries both hashes.
 export const ApproveLoginLinkRequestSchema = z.object({ code: z.string().min(1).max(64) });
+// §1.3: a real Deny — the pending row is deleted; the laptop's poll answers
+// 410 link_gone at once instead of waiting out the TTL.
+export const DenyLoginLinkRequestSchema = ApproveLoginLinkRequestSchema;
 export type ApproveLoginLinkRequest = z.infer<typeof ApproveLoginLinkRequestSchema>;
 
 // ---------------------------------------------------------------------------
@@ -4431,6 +4469,11 @@ export const ChangePasswordRequestSchema = z.object({
 // DELETE /api/users/me — password re-proof; schedules the tombstone
 // ACCOUNT_DELETION_GRACE_DAYS out and signs every device out. Signing in
 // again before then cancels it.
+// POST /api/users/me/deactivate — password re-proof; sets deactivated_at and
+// signs every device out. Any later login reactivates (createSession).
+export const DeactivateMeRequestSchema = z.object({ password: z.string().min(1) });
+export type DeactivateMeRequest = z.infer<typeof DeactivateMeRequestSchema>;
+
 export const DeleteMeRequestSchema = z.object({ password: z.string().min(1) });
 export type DeleteMeRequest = z.infer<typeof DeleteMeRequestSchema>;
 export const DeleteMeResponseSchema = z.object({ scheduled_deletion_at: IsoDateTimeSchema });

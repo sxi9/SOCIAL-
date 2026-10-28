@@ -71,7 +71,8 @@ export async function loadOverlayRowsFor(
     .innerJoin(schema.users, eq(schema.storyOverlays.authorId, schema.users.id))
     .where(
       sql`${inArray(schema.storyOverlays.storyId, storyIds)}
-          AND ${schema.storyOverlays.status} IN ('live','pending')`,
+          AND ${schema.storyOverlays.status} IN ('live','pending')
+          AND ${schema.users.bannedAt} IS NULL AND ${schema.users.deactivatedAt} IS NULL`,
     )
     .orderBy(asc(schema.storyOverlays.createdAt));
   for (const row of rows) {
@@ -127,7 +128,8 @@ export async function fanStoryUpdated(
   const overlayRows = (await loadOverlayRowsFor([row.id])).get(row.id) ?? [];
   const viewedBy = await viewedSetOfStory(row.id);
   for (const viewerId of recipients) {
-    const blocked = viewerId === row.authorId ? new Set<string>() : await blockedSetOf(viewerId);
+    // §1.9: the AUTHOR's own block set applies to their own canvas too.
+    const blocked = await blockedSetOf(viewerId);
     const overlays = overlaysForViewer(overlayRows, viewerId, row.authorId, blocked);
     await publishToUsers([viewerId], {
       t: 'story.updated',

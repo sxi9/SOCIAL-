@@ -30,6 +30,7 @@ import {
 import { db, schema } from '../../db/index.js';
 import { blockedSetOf, isBlockedPair } from '../../lib/blocks.js';
 import { deleteAttachmentObjects } from '../../jobs/gc.js';
+import { userHidden } from '../../lib/dto.js';
 import { attachmentDto, userLiteDto, type AttRow, type UserRow } from '../../lib/dto.js';
 import { isBeaconVisibleTo, loadBeacon } from '../beacons/service.js';
 import {
@@ -215,7 +216,7 @@ async function resolveRefSummary(
   if (!row) return null;
   const { l, u } = row;
   if (l.authorId !== viewer.id) {
-    if (u.bannedAt !== null) return null;
+    if (userHidden(u)) return null;
     if (await isBlockedPair(viewer.id, l.authorId)) return null;
     if (!(await hasListingContact(l.id, viewer.id))) {
       const areaOk =
@@ -491,6 +492,21 @@ function rawUser(o: Record<string, unknown>): UserRow {
  * votes cascade; the post's AND its comments' attachments go (objects
  * refcount-guarded, §1.31); the §1.67 share token revokes in the same tx.
  */
+/** Wave 1 leftovers (§1.5): ONE comment, the author-delete semantics — the
+ * attachment row + object go with it (refcount-guarded), reactions cascade.
+ * Shared by the author route and the admin takedown. */
+export async function hardDeleteComment(commentId: string): Promise<void> {
+  const atts = await db
+    .select()
+    .from(schema.attachments)
+    .where(eq(schema.attachments.commentId, commentId));
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`DELETE FROM attachments WHERE comment_id = ${commentId}`);
+    await tx.delete(schema.postComments).where(eq(schema.postComments.id, commentId));
+  });
+  for (const att of atts) await deleteAttachmentObjects(att);
+}
+
 export async function hardDeletePost(row: PostRow): Promise<void> {
   const atts = await db
     .select()

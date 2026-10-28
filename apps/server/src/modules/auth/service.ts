@@ -43,10 +43,16 @@ export function newSessionToken(): string {
  * deletion — password, passkey, TOTP-finished, recovery-reset and QR-link
  * logins all pass through here, AFTER every factor. */
 async function cancelScheduledDeletion(userId: string): Promise<void> {
+  // Migration 0020: a login also REACTIVATES a self-deactivated account.
   await db
     .update(schema.users)
-    .set({ scheduledDeletionAt: null, updatedAt: new Date() })
-    .where(and(eq(schema.users.id, userId), sql`${schema.users.scheduledDeletionAt} IS NOT NULL`));
+    .set({ scheduledDeletionAt: null, deactivatedAt: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(schema.users.id, userId),
+        sql`(${schema.users.scheduledDeletionAt} IS NOT NULL OR ${schema.users.deactivatedAt} IS NOT NULL)`,
+      ),
+    );
 }
 
 export async function createSession(
@@ -89,7 +95,12 @@ export async function authenticateToken(rawToken: string): Promise<AuthContext |
   // that stray session dead on first use and destroys it.
   // Wave 1 (§1.2): a tombstoned account has no sessions by construction;
   // the check is belt-and-braces like the suspend one above it.
-  if (row.user.suspendedAt !== null || row.user.bannedAt !== null || row.user.deletedAt !== null) {
+  if (
+    row.user.suspendedAt !== null ||
+    row.user.bannedAt !== null ||
+    row.user.deletedAt !== null ||
+    row.user.deactivatedAt !== null
+  ) {
     await db.delete(schema.sessions).where(eq(schema.sessions.id, row.session.id));
     return null;
   }

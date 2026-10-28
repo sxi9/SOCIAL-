@@ -5,12 +5,31 @@ import type { ApiError as ApiErrorBody } from '@socialchat/shared';
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
-  constructor(status: number, code: string, message?: string) {
+  /** Wave 1 §1.3: the server's Retry-After (seconds) on a 429, else null. */
+  readonly retryAfter: number | null;
+  constructor(status: number, code: string, message?: string, retryAfter: number | null = null) {
     super(message ?? code);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
+    this.retryAfter = retryAfter;
   }
+}
+
+/** "try again in 40 s" / "in 3 min" from a 429's Retry-After; `fallback`
+ * when the header is absent. Every "try again in a minute" string now
+ * tells the truth. */
+export function retryIn(err: unknown, fallback = 'in a minute'): string {
+  const s = err instanceof ApiError ? err.retryAfter : null;
+  if (s === null || !Number.isFinite(s) || s <= 0) return fallback;
+  if (s < 90) return `in ${Math.max(1, Math.round(s))} s`;
+  return `in ${Math.round(s / 60)} min`;
+}
+
+function retryAfterOf(raw: string | null): number | null {
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
 }
 
 export class NetworkError extends Error {
@@ -51,7 +70,7 @@ async function request<T>(method: Method, path: string, body?: unknown, form?: F
   }
   if (!res.ok) {
     const err = (data ?? {}) as Partial<ApiErrorBody>;
-    throw new ApiError(res.status, err.error ?? `http_${res.status}`, err.message);
+    throw new ApiError(res.status, err.error ?? `http_${res.status}`, err.message, retryAfterOf(res.headers.get('retry-after')));
   }
   return data as T;
 }
@@ -90,7 +109,7 @@ export function uploadForm<T>(
       }
       if (xhr.status < 200 || xhr.status >= 300) {
         const err = (data ?? {}) as Partial<ApiErrorBody>;
-        reject(new ApiError(xhr.status, err.error ?? `http_${xhr.status}`, err.message));
+        reject(new ApiError(xhr.status, err.error ?? `http_${xhr.status}`, err.message, retryAfterOf(xhr.getResponseHeader('retry-after'))));
         return;
       }
       onProgress?.(100);

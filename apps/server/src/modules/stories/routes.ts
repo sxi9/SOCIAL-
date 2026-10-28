@@ -333,7 +333,7 @@ export async function storyRoutes(fastify: FastifyInstance): Promise<void> {
           author!,
           att!,
           true,
-          overlaysForViewer(overlayRows, user.id, row.authorId, new Set()),
+          overlaysForViewer(overlayRows, user.id, row.authorId, await blockedSetOf(user.id)),
         ),
       };
     },

@@ -21,7 +21,7 @@ import {
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { isBlockedPair } from '../../lib/blocks.js';
-import { userLiteDto } from '../../lib/dto.js';
+import { userHidden, userLiteDto } from '../../lib/dto.js';
 import { isFriendOf } from '../../lib/friends.js';
 import { badRequest, forbidden, notFound, rateLimited } from '../../lib/errors.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
@@ -98,14 +98,15 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
         const mine = post.authorId === user.id;
         if (!mine) {
           const [author] = await db
-            .select({ bannedAt: schema.users.bannedAt })
+            .select({ bannedAt: schema.users.bannedAt, deactivatedAt: schema.users.deactivatedAt })
             .from(schema.users)
             .where(eq(schema.users.id, post.authorId))
             .limit(1);
           const blocked = await isBlockedPair(user.id, post.authorId);
           const visible =
             !blocked &&
-            author?.bannedAt === null &&
+            !!author &&
+            !userHidden(author) &&
             (post.audience === 'public' || (await isFriendOf(user.id, post.authorId)));
           if (!visible) throw notFound('not_found');
         }
@@ -126,11 +127,11 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
         const mine = l.authorId === user.id;
         if (!mine) {
           const [author] = await db
-            .select({ bannedAt: schema.users.bannedAt })
+            .select({ bannedAt: schema.users.bannedAt, deactivatedAt: schema.users.deactivatedAt })
             .from(schema.users)
             .where(eq(schema.users.id, l.authorId))
             .limit(1);
-          if (author?.bannedAt !== null || (await isBlockedPair(user.id, l.authorId))) {
+          if (!author || userHidden(author) || (await isBlockedPair(user.id, l.authorId))) {
             throw notFound('not_found');
           }
         }
@@ -376,7 +377,7 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
         ? await db
             .select({ id: schema.users.id })
             .from(schema.users)
-            .where(and(inArray(schema.users.id, authorIds), sql`${schema.users.bannedAt} IS NOT NULL`))
+            .where(and(inArray(schema.users.id, authorIds), sql`(${schema.users.bannedAt} IS NOT NULL OR ${schema.users.deactivatedAt} IS NOT NULL)`))
         : []
       ).map((u) => u.id),
     );
@@ -453,7 +454,7 @@ export async function sharePageRoutes(fastify: FastifyInstance): Promise<void> {
       const gone = () => notFound('share_not_found');
       const authorLite = async (authorId: string) => {
         const [u] = await db.select().from(schema.users).where(eq(schema.users.id, authorId)).limit(1);
-        if (!u || u.bannedAt !== null) throw gone();
+        if (!u || userHidden(u)) throw gone();
         if (await isBlockedPair(user.id, u.id)) throw gone();
         return userLiteDto(u);
       };

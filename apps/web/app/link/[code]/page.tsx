@@ -12,8 +12,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import type { LoginLinkInfo } from '@socialchat/shared';
-import { ApiError } from '@/lib/api';
-import { approveLoginLink, countdown, describeUserAgent, isExpired, lookupLoginLink } from '@/lib/auth';
+import { ApiError, retryIn } from '@/lib/api';
+import { approveLoginLink, denyLoginLink, countdown, describeUserAgent, isExpired, lookupLoginLink } from '@/lib/auth';
 import { toast } from '@/lib/toast';
 import { useNow } from '@/lib/useNow';
 import { formatTime } from '@/lib/format';
@@ -46,7 +46,7 @@ function ApproveSheet() {
         if (cancelled) return;
         if (err instanceof ApiError && err.status === 410) setGone(true);
         else if (err instanceof ApiError && err.status === 429)
-          setError('Too many tries — give it a minute.');
+          setError(`Too many tries — give it ${retryIn(err, 'a minute')}.`);
         else setError('Could not look that code up. Check your connection and try again.');
       });
     return () => {
@@ -57,10 +57,11 @@ function ApproveSheet() {
   const expired = gone || (link !== null && isExpired(link.expires_at, now));
 
   const deny = useCallback((): void => {
-    // There is nothing to revoke — an unapproved link dies on its own TTL.
-    toast('Nothing approved — that code expires on its own');
+    // Wave 1 §1.3: a real Deny — the code dies now, the laptop sees 410.
+    void denyLoginLink(code).catch(() => undefined);
+    toast('Denied — that code no longer works');
     router.replace('/');
-  }, [router]);
+  }, [router, code]);
 
   async function approve(): Promise<void> {
     if (busy || !link) return;

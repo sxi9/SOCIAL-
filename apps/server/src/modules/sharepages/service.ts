@@ -22,7 +22,7 @@ import {
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
-import type { AttRow, UserRow } from '../../lib/dto.js';
+import { userHidden, type AttRow, type UserRow } from '../../lib/dto.js';
 import { profileHeroFor } from '../../lib/profileHero.js';
 import type { SqlExecutor } from '../../lib/activity.js';
 import { redis } from '../../redis.js';
@@ -204,7 +204,7 @@ export async function resolveSharePage(
       const postPublic = post.audience === 'public';
       const postPreview: 'teaser' | 'full' = postPublic ? 'full' : t.preview === 'teaser' ? 'teaser' : 'full';
       const author = await loadUser(post.authorId);
-      if (!author || author.bannedAt !== null) return null;
+      if (!author || userHidden(author)) return null;
       const atts = await db
         .select()
         .from(schema.attachments)
@@ -258,7 +258,7 @@ export async function resolveSharePage(
       const beaconPublic = b.audience === 'public';
       const beaconPreview: 'teaser' | 'full' = beaconPublic ? 'full' : t.preview === 'teaser' ? 'teaser' : 'full';
       const creator = await loadUser(b.creatorId);
-      if (!creator || creator.bannedAt !== null) return null;
+      if (!creator || userHidden(creator)) return null;
       const [joins] = (await db.execute(sql`
         SELECT count(*)::int AS n FROM beacon_joins WHERE beacon_id = ${b.id}
       `)) as unknown as { n: number }[];
@@ -295,7 +295,7 @@ export async function resolveSharePage(
       // narrowing is_public → false revokes in the edit transaction).
       const listingPreview: 'teaser' | 'full' = l.isPublic ? 'full' : t.preview === 'teaser' ? 'teaser' : 'full';
       const author = await loadUser(l.authorId);
-      if (!author || author.bannedAt !== null) return null;
+      if (!author || userHidden(author)) return null;
       const atts = await db
         .select()
         .from(schema.attachments)
@@ -327,7 +327,7 @@ export async function resolveSharePage(
       // The page dies with the story — expiry resolves LIVE.
       if (!s || s.expiresAt.getTime() <= Date.now()) return null;
       const author = await loadUser(s.authorId);
-      if (!author || author.bannedAt !== null) return null;
+      if (!author || userHidden(author)) return null;
       const [att] = await db
         .select()
         .from(schema.attachments)
@@ -341,6 +341,7 @@ export async function resolveSharePage(
         FROM story_overlays so
         JOIN users u ON u.id = so.author_id
         WHERE so.story_id = ${s.id} AND so.status = 'live'
+          AND u.banned_at IS NULL AND u.deactivated_at IS NULL
         ORDER BY so.created_at ASC
       `)) as unknown as { kind: string; payload: unknown; username: string }[];
       return {
@@ -363,7 +364,7 @@ export async function resolveSharePage(
       // the page shows is decided LIVE from profile_visibility — the token
       // never widens it (the setting is the only switch).
       const owner = await loadUser(t.objectId);
-      if (!owner || owner.bannedAt !== null) return null;
+      if (!owner || userHidden(owner)) return null;
       return { type: 'profile', id: owner.id, ...profileHeroFor(owner) };
     }
     case 'call': {
@@ -378,7 +379,7 @@ export async function resolveSharePage(
         .limit(1);
       if (!c || c.type !== 'group' || c.visibility === 'ghost') return null;
       const inviter = t.createdBy ? await loadUser(t.createdBy) : null;
-      if (!inviter || inviter.bannedAt !== null) return null;
+      if (!inviter || userHidden(inviter)) return null;
       const memberCount = await redis.scard(`call:${call.id}:members`);
       return {
         type: 'call',

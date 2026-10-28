@@ -244,6 +244,15 @@ export async function removeOutbox(clientMsgId: string): Promise<void> {
   await txDone(tx);
 }
 
+/** Wave 1 §1.4: a sign-out that signs out — every local store goes. */
+export async function clearAll(): Promise<void> {
+  const db = await openDb();
+  const names = ['messages', 'conv_meta', 'outbox', 'seen_fx'] as const;
+  const tx = db.transaction([...names], 'readwrite');
+  for (const n of names) tx.objectStore(n).clear();
+  await txDone(tx);
+}
+
 export async function clearOutbox(): Promise<void> {
   const db = await openDb();
   const tx = db.transaction('outbox', 'readwrite');

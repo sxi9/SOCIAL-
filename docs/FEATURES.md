@@ -172,7 +172,7 @@ One listing system, five card kinds, all area-tagged with expiry and "Message me
 
 ## 📋 Backlog — operator & platform
 
-54. ✅ (shipped v0.5b — API §1.41, ADR-013) Admin dashboard (operator-only): user list with registration/last-login IPs and sessions, reports queue with actions (warn/suspend/ban), server log viewer (api/worker), metrics (DAU, messages/day, storage), invite on/off, data export. Boundaries: metadata only — no private message contents in the UI; IP retention window (default 90 days) documented in the instance's privacy note
+54. ✅ (shipped v0.5b — API §1.41, ADR-013) Admin dashboard (operator-only): user list with registration/last-login IPs and sessions, reports queue with actions (warn/suspend/ban), server log viewer (api/worker), metrics (DAU, messages/day, storage), invite on/off, data export. Boundaries: metadata only — no private message contents in the UI; IP retention window (default 90 days) documented in the instance's privacy note — Wave 1 (2026-10-28): the queue's actions are real now: Warn (a Support message), Suspend author, Remove post/comment/story/listing, outcome on the closed report.
 55. Make-it-yours kit: per-instance name, colors, mascot
 56. Full-text search; multi-device polish; Capacitor Android/iOS wrappers
 57. End-to-end encryption (session/device registry already in place)

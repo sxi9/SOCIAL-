@@ -146,7 +146,7 @@ export async function uploadRoutes(fastify: FastifyInstance): Promise<void> {
                   ${friendsOfPairCond(user.id, sql`po.author_id`)}
                   OR (po.audience = 'public' AND NOT EXISTS (
                     SELECT 1 FROM users bu
-                    WHERE bu.id = po.author_id AND bu.banned_at IS NOT NULL))
+                    WHERE bu.id = po.author_id AND (bu.banned_at IS NOT NULL OR bu.deactivated_at IS NOT NULL)))
                 )
                 AND NOT EXISTS (
                   SELECT 1 FROM blocks bl
@@ -167,7 +167,7 @@ export async function uploadRoutes(fastify: FastifyInstance): Promise<void> {
                   OR ${friendsOfPairCond(user.id, sql`po.author_id`)}
                   OR (po.audience = 'public' AND NOT EXISTS (
                     SELECT 1 FROM users bu
-                    WHERE bu.id = po.author_id AND bu.banned_at IS NOT NULL))
+                    WHERE bu.id = po.author_id AND (bu.banned_at IS NOT NULL OR bu.deactivated_at IS NOT NULL)))
                 )
                 AND NOT EXISTS (
                   SELECT 1 FROM blocks bl
@@ -230,7 +230,7 @@ export async function uploadRoutes(fastify: FastifyInstance): Promise<void> {
               SELECT 1 FROM listings li
               JOIN users au ON au.id = li.author_id
               WHERE li.id = a.listing_id
-                AND au.banned_at IS NULL
+                AND au.banned_at IS NULL AND au.deactivated_at IS NULL AND au.deactivated_at IS NULL
                 AND NOT EXISTS (
                   SELECT 1 FROM blocks bl
                   WHERE (bl.blocker_id = ${user.id} AND bl.blocked_id = li.author_id)

@@ -8,7 +8,7 @@
 // cap). The GroupJoinCta pattern: probe once, never dead-end.
 import { useEffect, useRef, useState } from 'react';
 import type { CallLinkJoinResponse } from '@socialchat/shared';
-import { api, ApiError } from '@/lib/api';
+import { api, ApiError, retryIn } from '@/lib/api';
 import { probeMe } from '@/lib/shareAuth';
 import GateCta from './GateCta';
 
@@ -59,7 +59,7 @@ export default function CallJoinCta({
         setNote('This group is full.');
       } else if (err instanceof ApiError && err.status === 429) {
         setStanding('ready');
-        setNote('Too many tries — give it a minute.');
+        setNote(`Too many tries — give it ${retryIn(err, 'a minute')}.`);
       } else {
         setStanding('error');
         setNote('Could not join. Try again.');
