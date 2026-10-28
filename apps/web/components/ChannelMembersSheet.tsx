@@ -7,6 +7,7 @@
 // the owner can never leave or be removed (the channel is never headless).
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
+  ConversationBanRow,
   Conversation,
   ConversationListItem,
   ConversationResponse,
@@ -19,6 +20,7 @@ import Avatar from './Avatar';
 import sheet from './beacons.module.css';
 import st from './social.module.css';
 import { confirmDialog } from '@/lib/confirm';
+import { listBans, unbanMember } from '@/lib/groups';
 
 const SEARCH_DEBOUNCE_MS = 300;
 
@@ -35,6 +37,33 @@ export default function ChannelMembersSheet({ conv, meId, onClose }: ChannelMemb
   const [q, setQ] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // §2.5: a remove is a ban — owner/admins see who, and can let them back.
+  const [bans, setBans] = useState<ConversationBanRow[]>([]);
+  const [unbanning, setUnbanning] = useState<string | null>(null);
+  useEffect(() => {
+    if (myRole !== 'owner' && myRole !== 'admin') return;
+    let cancelled = false;
+    void listBans(conv.id)
+      .then((res) => {
+        if (!cancelled) setBans(res.bans);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conv.id, rows.length]);
+  async function letBackIn(userId: string): Promise<void> {
+    if (unbanning) return;
+    setUnbanning(userId);
+    try {
+      await unbanMember(conv.id, userId);
+      setBans((prev) => prev.filter((b) => b.user.id !== userId));
+    } catch {
+      setError('Could not lift that.');
+    }
+    setUnbanning(null);
+  }
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const myRole = conv.participants.find((p) => p.user.id === meId)?.role ?? 'member';
@@ -220,6 +249,25 @@ export default function ChannelMembersSheet({ conv, meId, onClose }: ChannelMemb
           </div>
         )}
         {error ? <p className="error-text">{error}</p> : null}
+        {bans.length > 0 ? (
+          <>
+            <p className="muted small" style={{ margin: '12px 0 4px' }}>
+              Removed people — they can’t rejoin until you let them back.
+            </p>
+            {bans.map((b) => (
+              <div key={b.user.id} className={st.connRow}>
+                <Avatar avatar={b.user.avatar} name={b.user.display_name} size={36} />
+                <span className={st.connName}>
+                  <strong>{b.user.display_name}</strong>
+                  <span>@{b.user.username}</span>
+                </span>
+                <button type="button" className="btn" disabled={unbanning !== null} onClick={() => void letBackIn(b.user.id)}>
+                  {unbanning === b.user.id ? 'Lifting…' : 'Let back in'}
+                </button>
+              </div>
+            ))}
+          </>
+        ) : null}
         <p className="muted small" style={{ margin: '10px 0 0' }}>
           Admins post and manage invites. The owner keeps the lights on and can&rsquo;t leave.
         </p>

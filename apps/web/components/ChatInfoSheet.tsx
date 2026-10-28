@@ -6,6 +6,7 @@
 // group = admin only — the server enforces, this mirrors).
 import { useEffect, useRef, useState } from 'react';
 import type {
+  Participant,
   AvatarResponse,
   ChatTheme,
   ChatWallpaper,
@@ -39,7 +40,7 @@ import Avatar from './Avatar';
 import ChannelMembersSheet from './ChannelMembersSheet';
 import GroupSettingsSection from './GroupSettingsSection';
 import ImageEditSheet from './ImageEditSheet';
-import { isGhost, isSupportConversation } from '@/lib/groups';
+import { isGhost, isSupportConversation, removeMember, setMemberRole, transferConversation } from '@/lib/groups';
 import { InviteButton } from './InviteSheet';
 import sheetStyles from './beacons.module.css';
 import cm from './community.module.css';
@@ -222,7 +223,9 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
       setError(
         err instanceof ApiError && err.code === 'owner_cannot_leave'
           ? 'The owner keeps the lights on — a channel can never be headless.'
-          : isChannel
+          : err instanceof ApiError && err.code === 'last_admin'
+            ? 'You are the only admin — hand the group to someone first (members → ⋯).'
+            : isChannel
             ? 'Could not leave the channel.'
             : 'Could not leave the group.'
       );
@@ -528,6 +531,7 @@ export default function ChatInfoSheet({ conv, meId, onClose }: ChatInfoSheetProp
             meId={meId}
             ghost={ghost}
             canAdd={plainGroup && groupAdmin}
+            canManage={conv.type === 'group' && groupAdmin && !support}
             onNavigate={onClose}
           />
         ) : null}
@@ -868,15 +872,49 @@ function MembersSection({
   meId,
   ghost,
   canAdd,
+  canManage = false,
   onNavigate,
 }: {
   conv: ConversationListItem;
   meId: string;
   ghost: boolean;
   canAdd: boolean;
+  /** §2.5: admin actions on member rows — role, remove (= ban), hand over. */
+  canManage?: boolean;
   onNavigate: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [manageId, setManageId] = useState<string | null>(null);
+  const [manageBusy, setManageBusy] = useState(false);
+
+  async function manage(action: 'admin' | 'member' | 'remove' | 'transfer', p: Participant): Promise<void> {
+    if (manageBusy) return;
+    const name = p.user.display_name;
+    if (action === 'remove' && !(await confirmDialog(`Remove ${name}? They can’t rejoin until an admin lets them back in.`))) return;
+    if (action === 'transfer' && !(await confirmDialog(`Hand the group to ${name}? They become admin and you become a member.`))) return;
+    setManageBusy(true);
+    setError(null);
+    try {
+      if (action === 'remove') {
+        await removeMember(conv.id, p.user.id);
+        toast(`${name} removed`);
+      } else if (action === 'transfer') {
+        await transferConversation(conv.id, p.user.id);
+        toast(`${name} now runs this group`);
+      } else {
+        await setMemberRole(conv.id, p.user.id, action);
+        toast(action === 'admin' ? `${name} is now an admin` : `${name} is a member again`);
+      }
+      setManageId(null);
+    } catch (err) {
+      setError(
+        err instanceof ApiError && err.code === 'last_admin'
+          ? 'You are the only admin — hand the group over first.'
+          : 'Could not do that — try again.',
+      );
+    }
+    setManageBusy(false);
+  }
   const [q, setQ] = useState('');
   const [results, setResults] = useState<UserPublic[]>([]);
   const [searching, setSearching] = useState(false);
@@ -982,7 +1020,8 @@ function MembersSection({
           </>
         );
         return (
-          <div key={p.user.id} className={cm.memberRow}>
+          <div key={p.user.id}>
+          <div className={cm.memberRow}>
             {/* Faces/names open the profile — never in 👻 ghost groups (§1.68). */}
             {!ghost && !self && p.user.username ? (
               <Link
@@ -1001,6 +1040,31 @@ function MembersSection({
                 className={`${cm.roleChip}${p.role === 'owner' ? ` ${cm.roleChipOwner}` : ''}`}
               >
                 {chip}
+              </span>
+            ) : null}
+            {canManage && !self ? (
+              <button
+                type="button"
+                className="btn btn-ghost btn-icon"
+                aria-label={`Manage ${p.user.display_name}`}
+                aria-expanded={manageId === p.user.id}
+                onClick={() => setManageId((v) => (v === p.user.id ? null : p.user.id))}
+              >
+                ⋯
+              </button>
+            ) : null}
+          </div>
+            {canManage && !self && manageId === p.user.id ? (
+              <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '0 0 8px 54px' }}>
+                <button type="button" className="btn" disabled={manageBusy} onClick={() => void manage(p.role === 'admin' ? 'member' : 'admin', p)}>
+                  {p.role === 'admin' ? 'Make member' : 'Make admin'}
+                </button>
+                <button type="button" className="btn" disabled={manageBusy} onClick={() => void manage('transfer', p)}>
+                  Hand over the group
+                </button>
+                <button type="button" className="btn btn-danger" disabled={manageBusy} onClick={() => void manage('remove', p)}>
+                  Remove
+                </button>
               </span>
             ) : null}
           </div>

@@ -9,6 +9,7 @@ import {
   type GroupJoinRequestsResponse,
   type GroupJoinResponse,
   type GroupJoinState,
+  type ListConversationBansResponse,
   type UpdateGroupVisibilityRequest,
 } from '@socialchat/shared';
 import { api } from './api';
@@ -47,6 +48,39 @@ export function getJoinState(conversationId: string): Promise<GroupJoinState> {
 /** Phase 2: withdraw my pending request (idempotent 204). */
 export async function withdrawJoinRequest(conversationId: string): Promise<void> {
   await api.del(`/api/conversations/${conversationId}/join`);
+}
+
+/** §2.5: the admins' ban list (newest first) and the lift. */
+export function listBans(conversationId: string): Promise<ListConversationBansResponse> {
+  return api.get<ListConversationBansResponse>(`/api/conversations/${conversationId}/bans`);
+}
+export async function unbanMember(conversationId: string, userId: string): Promise<void> {
+  await api.del(`/api/conversations/${conversationId}/bans/${userId}`);
+}
+
+/** §2.5: admin member management — a remove is a ban. */
+export async function removeMember(conversationId: string, userId: string): Promise<void> {
+  await api.del(`/api/conversations/${conversationId}/participants/${userId}`);
+}
+export async function setMemberRole(
+  conversationId: string,
+  userId: string,
+  role: 'admin' | 'member',
+): Promise<Conversation> {
+  const res = await api.put<ConversationResponse>(
+    `/api/conversations/${conversationId}/participants/${userId}/role`,
+    { role },
+  );
+  store.upsertConversation(res.conversation);
+  return res.conversation;
+}
+/** §2.5: hand the group over — they become admin, I become a member. */
+export async function transferConversation(conversationId: string, userId: string): Promise<Conversation> {
+  const res = await api.post<ConversationResponse>(`/api/conversations/${conversationId}/transfer`, {
+    user_id: userId,
+  });
+  store.upsertConversation(res.conversation);
+  return res.conversation;
 }
 
 export async function listJoinRequests(conversationId: string): Promise<GroupJoinRequestsResponse> {

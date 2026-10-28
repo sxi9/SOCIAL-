@@ -20,6 +20,7 @@ import {
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
+import { isBannedFrom } from '../../lib/bans.js';
 import { isBlockedPair } from '../../lib/blocks.js';
 import { assignMasksTx } from '../../lib/ghost.js';
 import {
@@ -314,6 +315,10 @@ export async function acceptInvite(
   // Already an ACTIVE member → idempotent 200 BEFORE status validation and
   // without consuming a use (§1.11) — even on a dead invite.
   if (myPart && myPart.leftAt === null) return { conversation_id: conv.id }; // idempotent
+
+  // §2.5 (migration 0016): a member an admin removed is banned — the link
+  // answers exactly what a blocked pair gets, and never burns a use.
+  if (await isBannedFrom(conv.id, joinerId)) throw notFound('invite_not_found');
 
   // Genuinely-new join (first join, or a re-join after leaving): invite
   // status gates it, then the cap, then the atomic claim.

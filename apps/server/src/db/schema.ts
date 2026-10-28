@@ -2168,6 +2168,26 @@ export const storyOverlays = pgTable(
 // overlay create: a banned contributor gets the same 403 canvas_closed a
 // closed canvas answers (never confirmable, the §1.14 shape doctrine).
 
+// §2.5 admin half (migration 0016): an admin removing a member bans them —
+// no re-entry through invites, the public join or a parked request until
+// an admin re-adds, approves or unbans them. Read invisibly (§1.14 shape).
+export const conversationBans = pgTable(
+  'conversation_bans',
+  {
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    bannedBy: uuid('banned_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.conversationId, t.userId] }),
+  }),
+);
+
 export const storyCanvasBans = pgTable(
   'story_canvas_bans',
   {

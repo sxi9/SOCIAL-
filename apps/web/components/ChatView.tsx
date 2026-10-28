@@ -807,6 +807,7 @@ export default function ChatView({ conversationId }: { conversationId: string })
             onEffect={onEffect}
             isChannel={isChannel}
             canPin={canPin}
+            canModerate={conv.type !== 'dm' && (role === 'admin' || role === 'owner')}
             flash={flashSeq === msg.seq}
             onJump={(seq) => void jumpToSeq(seq)}
             onReply={canPost ? (m) => setReplyTo(m) : undefined}
@@ -1071,6 +1072,7 @@ function MessageRow({
   onPinToggle,
   onWatch,
   ghost = false,
+  canModerate = false,
 }: {
   message: Message;
   conv: ConversationListItem;
@@ -1086,6 +1088,8 @@ function MessageRow({
   onForward: (message: Message) => void;
   onPinToggle?: (message: Message, pinned: boolean) => void;
   onWatch?: (url: string, videoId: string) => void;
+  /** §2.5: the viewer is an admin/owner of this group or channel. */
+  canModerate?: boolean;
   /** v0.8b §1.68: ghost groups suppress the seen-by surface (identity side
    * channel) — the "Message info" item never renders there. */
   ghost?: boolean;
@@ -1287,7 +1291,8 @@ function MessageRow({
         <div className={styles.msgCol}>
           <div className={`${styles.bubble}${flash ? ` ${soc.flash}` : ''}`}>
             <span className={exp.tombstone}>
-              <span aria-hidden>{expired ? '⏳' : '🗑'}</span> {expired ? 'Message expired' : 'Message deleted'}
+              <span aria-hidden>{expired ? '⏳' : '🗑'}</span>{' '}
+              {expired ? 'Message expired' : message.metadata.removed_by ? 'Removed by an admin' : 'Message deleted'}
             </span>
           </div>
         </div>
@@ -1302,7 +1307,9 @@ function MessageRow({
   const withinEditWindow = Date.now() - new Date(message.created_at).getTime() < EDIT_WINDOW_S * 1000;
   const canEdit = own && editTypes.includes(message.type) && withinEditWindow && message.body !== null;
   const canForward = fwdTypes.includes(message.type);
-  const canDelete = own;
+  // §2.5: a group/channel admin may remove anyone's message (never system
+  // rows); the tombstone then says "removed by an admin".
+  const canDelete = own || (canModerate && message.sender_id !== null);
   // v0.6 §1.43: a YouTube link lights the "Watch together" affordance — the
   // SAME shared parser the server runs on watch.start, so we never offer a
   // session the gateway would refuse (watch_bad_url).
@@ -1334,7 +1341,7 @@ function MessageRow({
   };
 
   const removeMessage = async (): Promise<void> => {
-    if (!(await confirmDialog('Delete this message for everyone?'))) return;
+    if (!(await confirmDialog(own ? 'Delete this message for everyone?' : 'Remove this message for everyone? The stub will say an admin removed it.'))) return;
     try {
       await api.del(`/api/conversations/${message.conversation_id}/messages/${message.seq}`);
       // Optimistic tombstone — the msg.updated frame confirms (§1.30).
@@ -1342,7 +1349,7 @@ function MessageRow({
         ...message,
         deleted_at: new Date().toISOString(),
         body: null,
-        metadata: {},
+        metadata: own ? {} : { removed_by: meId },
         attachments: [],
         reactions: [],
         stamps: [],

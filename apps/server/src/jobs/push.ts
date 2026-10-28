@@ -418,27 +418,28 @@ async function processMessagePushJob(job: MessagePushJob): Promise<void> {
   if (!conv) return;
 
   let title = conv.title ?? 'New message';
-  if (conv.type === 'dm' && msg.senderId) {
-    const [sender] = await db
-      .select({ displayName: schema.users.displayName })
-      .from(schema.users)
-      .where(eq(schema.users.id, msg.senderId))
-      .limit(1);
-    if (sender) title = sender.displayName;
-  }
+  let body = snippetFor(msg.type, msg.body);
+  // One sender read serves every branch. §1.68: a 👻 ghost group never
+  // names a sender in a push (title only — API.md §2.9), mentions included.
+  const ghost = conv.visibility === 'ghost';
+  const [sender] =
+    msg.senderId && !ghost
+      ? await db
+          .select({ displayName: schema.users.displayName, username: schema.users.username })
+          .from(schema.users)
+          .where(eq(schema.users.id, msg.senderId))
+          .limit(1)
+      : [];
+  if (sender && conv.type === 'dm') title = sender.displayName;
+  // §2.5 (2026-10-28): a group/channel push says WHO — the body leads with
+  // the sender, the title stays the group (the call-ring precedent).
+  if (sender && conv.type !== 'dm') body = `${sender.displayName}: ${body}`;
   // §1.33: mention push copy leads with the sender; payload shape unchanged.
-  if (mentioned && msg.senderId) {
-    const [sender] = await db
-      .select({ username: schema.users.username })
-      .from(schema.users)
-      .where(eq(schema.users.id, msg.senderId))
-      .limit(1);
-    if (sender) title = `${sender.username} mentioned you`;
-  }
+  if (mentioned && sender) title = `${sender.username} mentioned you`;
 
   const payload = JSON.stringify({
     title,
-    body: snippetFor(msg.type, msg.body),
+    body,
     tag: job.conversation_id,
     data: { url: `/c/${job.conversation_id}` },
   });

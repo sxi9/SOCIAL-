@@ -68,6 +68,23 @@ export async function channelRoutes(fastify: FastifyInstance): Promise<void> {
       // assignable — the request schema only admits admin|member).
       if (target.role === 'owner') throw badRequest('bad_role_target');
 
+      // §2.5: the last admin of a group with other members cannot demote
+      // themselves into a headless group — transfer first.
+      if (
+        conv.type === 'group' &&
+        req.params.userId === user.id &&
+        req.body.role === 'member' &&
+        target.role === 'admin'
+      ) {
+        const others = (await db.execute(sql`
+          SELECT count(*)::int AS n, count(*) FILTER (WHERE role = 'admin')::int AS admins
+          FROM conversation_participants
+          WHERE conversation_id = ${req.params.id} AND left_at IS NULL AND user_id <> ${user.id}
+        `)) as unknown as { n: number; admins: number }[];
+        const o = others[0];
+        if (o && Number(o.n) > 0 && Number(o.admins) === 0) throw forbidden('last_admin');
+      }
+
       if (target.role !== req.body.role) {
         await db
           .update(cp)

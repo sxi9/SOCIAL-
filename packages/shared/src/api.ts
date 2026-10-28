@@ -556,6 +556,9 @@ export const MessageMetadataSchema = z.object({
   // NOTHING — the bubble vanishes entirely, unlike an ordinary §1.30
   // tombstone's "message deleted" stub. The seq survives (golden rule 2).
   undone: z.literal(true).optional(),
+  // §2.5 admin half (2026-10-28): SERVER-written on a tombstone an ADMIN
+  // made of someone else's message — clients say "removed by an admin".
+  removed_by: UuidSchema.optional(),
   // ---- v0.8b (§1.69) ----
   // SERVER-written on operator messages in the per-user Support conversation
   // (admin ticket replies and takedown notices; sender_id is NULL). Clients
@@ -3939,6 +3942,24 @@ export const GroupJoinStateSchema = z.object({
   state: z.enum(['member', 'requested', 'none']),
 });
 export type GroupJoinState = z.infer<typeof GroupJoinStateSchema>;
+
+// §2.5 admin half (2026-10-28, migration 0016): conversation bans. Written
+// when an admin removes a member; read invisibly at every re-entry door.
+export const ConversationBanRowSchema = z.object({
+  user: UserLiteSchema,
+  created_at: IsoDateTimeSchema,
+});
+export type ConversationBanRow = z.infer<typeof ConversationBanRowSchema>;
+export const ListConversationBansResponseSchema = z.object({
+  bans: z.array(ConversationBanRowSchema), // newest first
+});
+export type ListConversationBansResponse = z.infer<typeof ListConversationBansResponseSchema>;
+
+// POST /api/conversations/:id/transfer — hand the group (or channel) over:
+// the target becomes admin (owner for a channel) and I step down to member
+// (admin for a channel), in one transaction.
+export const TransferConversationRequestSchema = z.object({ user_id: UuidSchema });
+export type TransferConversationRequest = z.infer<typeof TransferConversationRequestSchema>;
 
 // PUT /api/conversations/:id/mask — MY mask in a ghost group (members pick;
 // join/switch auto-assigns from the GHOST_MASK_* pools first). Unique per

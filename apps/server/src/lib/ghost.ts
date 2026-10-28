@@ -189,6 +189,8 @@ export function ghostMessageDto(msg: Message, ctx: GhostCtx): Message {
   const meta = out.metadata as Record<string, unknown>;
   if (meta && typeof meta === 'object') {
     delete meta.mentions;
+    // §2.5: an admin's tombstone names the remover — a mask here too.
+    if (typeof meta.removed_by === 'string') meta.removed_by = pseudoOrSelf(ctx, meta.removed_by);
     const sys = meta.system as { actor_id?: string; target_id?: string } | undefined;
     if (sys && typeof sys === 'object') {
       if (typeof sys.actor_id === 'string') sys.actor_id = pseudoOrSelf(ctx, sys.actor_id);

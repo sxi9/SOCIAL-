@@ -8,6 +8,7 @@
 // manage their mask here.
 import { useEffect, useState } from 'react';
 import type {
+  ConversationBanRow,
   ConversationListItem,
   GroupJoinRequestRow,
   GroupVisibility,
@@ -23,7 +24,9 @@ import {
   approveJoinRequest,
   denyJoinRequest,
   isGhost,
+  listBans,
   listJoinRequests,
+  unbanMember,
   setMask,
   updateGroupVisibility,
 } from '@/lib/groups';
@@ -253,6 +256,8 @@ export default function GroupSettingsSection({
         </>
       ) : null}
 
+      {admin ? <BansSection conv={conv} /> : null}
+
       {ghost ? <MaskEditor conv={conv} meId={meId} /> : null}
 
       {error ? <p className="error-text">{error}</p> : null}
@@ -378,6 +383,59 @@ function MaskEditor({ conv }: { conv: ConversationListItem; meId: string }) {
         </button>
       </div>
       {error ? <p className="error-text">{error}</p> : null}
+    </>
+  );
+}
+
+/** §2.5 (migration 0016): the people an admin removed — the doors stay shut
+ * for them until an admin lets them back (here, or by adding/approving). */
+function BansSection({ conv }: { conv: ConversationListItem }) {
+  const [bans, setBans] = useState<ConversationBanRow[] | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void listBans(conv.id)
+      .then((res) => {
+        if (!cancelled) setBans(res.bans);
+      })
+      .catch(() => {
+        if (!cancelled) setBans([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [conv.id, conv.participants.length]);
+  if (!bans || bans.length === 0) return null;
+  async function lift(userId: string): Promise<void> {
+    if (busyId) return;
+    setBusyId(userId);
+    try {
+      await unbanMember(conv.id, userId);
+      setBans((prev) => (prev ? prev.filter((b) => b.user.id !== userId) : prev));
+      toast('They can join again');
+    } catch {
+      toast('Could not lift that');
+    }
+    setBusyId(null);
+  }
+  return (
+    <>
+      <div className={bz.sheetLabel}>Removed people</div>
+      <p className="muted small" style={{ margin: '0 0 8px' }}>
+        They can’t rejoin by link, join or request until an admin lets them back.
+      </p>
+      {bans.map((b) => (
+        <div key={b.user.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
+          <Avatar avatar={b.user.avatar} name={b.user.display_name} size={32} />
+          <span style={{ flex: 1, minWidth: 0, fontSize: 13.5 }}>
+            <strong>{b.user.display_name}</strong>{' '}
+            <span className="muted small">@{b.user.username}</span>
+          </span>
+          <button type="button" className="btn" disabled={busyId !== null} onClick={() => void lift(b.user.id)}>
+            {busyId === b.user.id ? 'Lifting…' : 'Let back in'}
+          </button>
+        </div>
+      ))}
     </>
   );
 }

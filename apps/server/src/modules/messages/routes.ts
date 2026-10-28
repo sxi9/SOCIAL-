@@ -567,16 +567,24 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
       const { user } = authed(req);
       const { id: convId, seq } = req.params;
       const isUndo = req.query.undo === '1' || req.query.undo === 'true';
-      const { part } = await requireUnfrozenParticipant(convId, user.id);
+      const { conv, part } = await requireUnfrozenParticipant(convId, user.id);
       const [row] = await db
         .select()
         .from(m)
         .where(and(eq(m.conversationId, convId), eq(m.seq, seq), gt(m.seq, part.joinSeq)))
         .limit(1);
       if (!row) throw notFound();
-      // System messages have no author and are undeletable; only the author
-      // tombstones their own words (channels included).
-      if (row.senderId !== user.id) throw forbidden();
+      // System messages have no author and are undeletable; the author
+      // tombstones their own words (channels included). §2.5: in a group or
+      // channel an admin may tombstone ANYONE's message — stamped
+      // removed_by so the stub says so. Undo stays the author's alone.
+      const moderating =
+        row.senderId !== user.id &&
+        row.senderId !== null &&
+        conv.type !== 'dm' &&
+        (part.role === 'admin' || part.role === 'owner') &&
+        !isUndo;
+      if (row.senderId !== user.id && !moderating) throw forbidden();
       if (isUndo) {
         // v1.0a (#96): send-undo for EVERYONE — the drunk-mode §1.57 undo
         // generalized. Drunk live AT UNDO TIME keeps its longer window
@@ -615,9 +623,14 @@ export async function messageRoutes(fastify: FastifyInstance): Promise<void> {
         `)) as unknown as { seq: number }[];
         pinRemoved = pins.length > 0;
         await tx.execute(sql`DELETE FROM attachments WHERE message_id = ${row.id}`);
+        const tombstoneMeta = isUndo
+          ? sql`'{"undone": true}'::jsonb`
+          : moderating
+            ? sql`jsonb_build_object('removed_by', ${user.id}::text)`
+            : sql`'{}'::jsonb`;
         await tx.execute(sql`
           UPDATE messages SET deleted_at = now(), body = NULL,
-            metadata = ${isUndo ? sql`'{"undone": true}'::jsonb` : sql`'{}'::jsonb`}
+            metadata = ${tombstoneMeta}
           WHERE id = ${row.id} AND deleted_at IS NULL
         `);
       });

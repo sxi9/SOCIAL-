@@ -53,12 +53,16 @@ Updated 2026-10-28. A new session continues this project by reading
   (`accepted_at IS NULL`, `pending_for_me`; no push/ring/receipts/typing,
   3-message cap, `POST /api/conversations/:id/accept` or a reply accepts;
   `lib/dmPolicy.ts`), Requests section atop the chat list, `RequestBanner`
-  (Accept · Delete · Block · Report), Privacy "Who can message you". Next:
-  §2.5's admin half
-  (`conversation_bans` — needs migration 0015 —, admin delete-any-message,
-  transfer ownership, sender names in group push), then phases 4–7 per §1b
-  (posts/stories share polish, call links, profile + dm_policy enforcement +
-  Requests inbox, chat media). Open follow-up from review: the unfurl
+  (Accept · Delete · Block · Report), Privacy "Who can message you". Then
+  the §2.5 admin half (slice K, 2026-10-28, migration 0016): an admin's
+  remove bans (`conversation_bans`, honoured on invite accept / join /
+  approve; admin add or approve lifts it; `GET`/`DELETE .../bans`), admin
+  delete-any-message (`removed_by` stub), `POST .../transfer` + the
+  `last_admin` guard, sender names in group push bodies (never ghost),
+  member ⋯ actions + "Removed people" in chat settings. Next: phase 5 (call
+  links) and phase 6 (profile share) per §1b, then the rest of Wave 1 (legal
+  pages, account lifecycle, report kinds, mute, age gate). Open follow-up
+  from review: the unfurl
   worker charges the sender's hourly budget for our own share URLs (short-
   circuit origin == PUBLIC_ORIGIN in the send route).
 - `main` was at `b396d09` on the morning of 2026-10-27 (everything above landed after it; the box runs the newest deployed SHA named above). Shipped before that, in
@@ -71,7 +75,7 @@ Updated 2026-10-28. A new session continues this project by reading
   conversion, SW stale-shell self-heal, admin grant/revoke + set password,
   Tailscale Funnel as the stable public URL. The undo-send pill was REMOVED
   by owner decision (FEATURES #96 struck; server undo route stays).
-- Migrations run `0000`…`0015`. **The next free number is 0016.** `0015` (2026-10-28) holds only `conversation_participants.accepted_at` (Wave 1.7). `0014`
+- Migrations run `0000`…`0016`. **The next free number is 0017.** `0016` (2026-10-28) holds `conversation_bans` (§2.5 admin half); `0015` holds only `conversation_participants.accepted_at` (Wave 1.7). `0014`
   (2026-10-27) holds the share-everything plumbing only — `share_tokens.preview`,
   `users.dm_policy`, `users.profile_visibility`; the Wave 1 legal/account/report
   columns AUDIT-PLAN §10 lists go in `0015` when that wave starts (§10 allows

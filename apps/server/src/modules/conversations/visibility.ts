@@ -20,6 +20,7 @@ import {
   UpdateGroupVisibilityRequestSchema,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
+import { isBannedFrom, unbanMember } from '../../lib/bans.js';
 import { filterBlockedFrom } from '../../lib/blocks.js';
 import { assignMasksTx, groupAdminIdsOf } from '../../lib/ghost.js';
 import {
@@ -62,7 +63,7 @@ type UserRow = typeof schema.users.$inferSelect;
  * block-clamped (the §1.14 group-coexistence rule — the join route runs no
  * block check either), so the live count must move for everyone who holds
  * it. Blocks bite at the NOTIFICATION edge only: no push across a block. */
-async function fanJoinRequest(
+export async function fanJoinRequest(
   conv: ConvRow,
   requester: UserRow,
   createdAt: Date,
@@ -248,7 +249,11 @@ export async function groupVisibilityRoutes(fastify: FastifyInstance): Promise<v
         return reply.status(200).send({ status: 'joined', conversation: dto });
       }
 
+      // §2.5: a banned person gets the same answers as everyone — an
+      // invite-only "requested" that parks nothing, a public "not found".
+      const banned = await isBannedFrom(conv.id, user.id);
       if (conv.visibility === 'invite_only') {
+        if (banned) return reply.status(202).send({ status: 'requested' });
         // Park a request — idempotent re-request answers 202 too, but only
         // the FIRST parks a row and tells the admins (phase 2).
         const inserted = (await db.execute(sql`
@@ -263,8 +268,10 @@ export async function groupVisibilityRoutes(fastify: FastifyInstance): Promise<v
         return reply.status(202).send({ status: 'requested' });
       }
 
-      // public: any non-banned user; §1.4 floor; the §1.14 group-coexistence
-      // rule applies to blocks (no block check here by design).
+      // public: any non-banned user (§2.5 — the ban reads as unlisted);
+      // §1.4 floor; the §1.14 group-coexistence rule applies to blocks (no
+      // block check here by design).
+      if (banned) throw notFound('not_found');
       const active = await activeParticipantUserIds(conv.id);
       if (active.length + 1 > MAX_GROUP_PARTICIPANTS) throw badRequest('group_too_large');
       await joinGroupTx(conv.id, user.id);
@@ -285,6 +292,12 @@ export async function groupVisibilityRoutes(fastify: FastifyInstance): Promise<v
       const conv = await loadJoinableGroup(req.params.id);
       const mine = await getParticipant(conv.id, user.id);
       if (mine && mine.leftAt === null) return { state: 'member' };
+      // §2.5: a banned person reads exactly what their POST told them — a
+      // public group is "not found", an invite-only one stays "requested".
+      if (await isBannedFrom(conv.id, user.id)) {
+        if (conv.visibility !== 'invite_only') throw notFound('not_found');
+        return { state: 'requested' };
+      }
       const [row] = await db
         .select({ userId: gjr.userId })
         .from(gjr)
@@ -388,6 +401,9 @@ export async function groupVisibilityRoutes(fastify: FastifyInstance): Promise<v
         return insertSystemMessageTx(tx, conv.id, 'participant_added', 'joined the group');
       });
       await fanOutNewMessage(msgRow);
+      // §2.5: approving is an admin letting them back in — the ban lifts,
+      // now that the request was really there and the join landed.
+      await unbanMember(conv.id, joiner.id);
       await fanJoinRequest(conv, joiner, requestedAt, true); // the queue shrank
       await publishConversationToUsers(conv.id, [req.params.userId], 'conv.new');
       await publishConversationToUsers(conv.id, active, 'conv.updated');

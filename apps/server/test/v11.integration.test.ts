@@ -409,7 +409,7 @@ describe.runIf(infra)('share-everything phase 2: group join loop (§1.68)', () =
       expect((await send(stranger, conv.conversation.id, 'hello?')).statusCode).toBe(201);
       // Delete = self-leave; silent to the stranger.
       expect((await del(guarded, `/api/conversations/${conv.conversation.id}/participants/${guarded.userId}`)).statusCode).toBe(204);
-      const history = (await get(stranger, `/api/conversations/${conv.conversation.id}/messages`)).json() as {
+      const history = (await get(stranger, `/api/conversations/${conv.conversation.id}/messages?after_seq=0`)).json() as {
         messages: { type: string; body: string | null }[];
       };
       expect(history.messages.some((m) => m.type === 'system' && /left/.test(m.body ?? ''))).toBe(false);
@@ -434,6 +434,110 @@ describe.runIf(infra)('share-everything phase 2: group join loop (§1.68)', () =
       const unknown = await post(later, '/api/conversations', { type: 'dm', user_id: crypto.randomUUID() });
       expect(refused.statusCode).toBe(404);
       expect(refused.body).toBe(unknown.body);
+    });
+  });
+
+  describe('§2.5 admin half: bans, delete-any, hand over (migration 0016)', () => {
+    function send(me: Session, convId: string, body: string) {
+      return post(me, `/api/conversations/${convId}/messages`, {
+        client_msg_id: crypto.randomUUID(),
+        type: 'text',
+        body,
+      });
+    }
+    async function mintInvite(me: Session, convId: string): Promise<string> {
+      const res = await post(me, '/api/invites', { conversation_id: convId });
+      expect(res.statusCode).toBe(201);
+      return (res.json() as { invite: { token: string } }).invite.token;
+    }
+
+    it('a removed member is banned at every door until an admin lets them back', async () => {
+      const admin = await register(`p6a${run}`);
+      const kicked = await register(`p6k${run}`);
+      const seed = await register(`p6s${run}`);
+      const convId = await createGroup(admin, [kicked, seed], 'public');
+      const token = await mintInvite(admin, convId);
+      // Remove = ban (silent to the doors).
+      expect((await del(admin, `/api/conversations/${convId}/participants/${kicked.userId}`)).statusCode).toBe(204);
+      const bans = (await get(admin, `/api/conversations/${convId}/bans`)).json() as { bans: { user: { id: string } }[] };
+      expect(bans.bans.map((b) => b.user.id)).toEqual([kicked.userId]);
+      // Invite link: the blocked-pair 404, no use burned.
+      const viaLink = await post(kicked, `/api/invites/${token}/accept`);
+      expect(viaLink.statusCode).toBe(404);
+      expect((viaLink.json() as { error: string }).error).toBe('invite_not_found');
+      // Public join: the unlisted 404, byte-identical to an unknown id.
+      const viaJoin = await post(kicked, `/api/conversations/${convId}/join`);
+      const unknown = await post(kicked, `/api/conversations/${crypto.randomUUID()}/join`);
+      expect(viaJoin.statusCode).toBe(404);
+      expect(viaJoin.body).toBe(unknown.body);
+      // Invite-only: the usual 202, but nothing parks and the admin queue stays empty.
+      expect((await patch(admin, `/api/conversations/${convId}/visibility`, { visibility: 'invite_only' })).statusCode).toBe(200);
+      expect((await post(kicked, `/api/conversations/${convId}/join`)).statusCode).toBe(202);
+      const queue = (await get(admin, `/api/conversations/${convId}/join-requests`)).json() as { requests: unknown[] };
+      expect(queue.requests).toHaveLength(0);
+      // A member (not admin) may not read the list.
+      expect((await get(seed, `/api/conversations/${convId}/bans`)).statusCode).toBe(403);
+      // Lift it: the link works again.
+      expect((await del(admin, `/api/conversations/${convId}/bans/${kicked.userId}`)).statusCode).toBe(204);
+      expect((await post(kicked, `/api/invites/${token}/accept`)).statusCode).toBe(200);
+    });
+
+    it('an admin adding someone back lifts the ban; approving a request does too', async () => {
+      const admin = await register(`p6b${run}`);
+      const kicked = await register(`p6bk${run}`);
+      const convId = await createGroup(admin, [kicked], 'public');
+      expect((await del(admin, `/api/conversations/${convId}/participants/${kicked.userId}`)).statusCode).toBe(204);
+      const add = await post(admin, `/api/conversations/${convId}/participants`, { user_ids: [kicked.userId] });
+      expect(add.statusCode).toBe(200);
+      const bans = (await get(admin, `/api/conversations/${convId}/bans`)).json() as { bans: unknown[] };
+      expect(bans.bans).toHaveLength(0);
+    });
+
+    it('admins remove anyone’s message (stub says so); members only their own; undo stays the author’s', async () => {
+      const admin = await register(`p6d${run}`);
+      const member = await register(`p6dm${run}`);
+      const convId = await createGroup(admin, [member], 'public');
+      const sent = await send(member, convId, 'oops');
+      expect(sent.statusCode).toBe(201);
+      const seq = (sent.json() as { message: { seq: number } }).message.seq;
+      const mine = await send(admin, convId, 'admin words');
+      const adminSeq = (mine.json() as { message: { seq: number } }).message.seq;
+      // A member cannot touch the admin's message.
+      expect((await del(member, `/api/conversations/${convId}/messages/${adminSeq}`)).statusCode).toBe(403);
+      // The admin cannot UNDO someone else's (author-only), but can remove it.
+      expect((await del(admin, `/api/conversations/${convId}/messages/${seq}?undo=1`)).statusCode).toBe(403);
+      expect((await del(admin, `/api/conversations/${convId}/messages/${seq}`)).statusCode).toBe(204);
+      const history = (await get(member, `/api/conversations/${convId}/messages?after_seq=0`)).json() as {
+        messages: { seq: number; deleted_at: string | null; metadata: { removed_by?: string } }[];
+      };
+      const stub = history.messages.find((m) => m.seq === seq);
+      expect(stub?.deleted_at).not.toBeNull();
+      expect(stub?.metadata.removed_by).toBe(admin.userId);
+    });
+
+    it('the only admin cannot leave or step down while others remain; handing over makes them a member', async () => {
+      const admin = await register(`p6t${run}`);
+      const next = await register(`p6tn${run}`);
+      const convId = await createGroup(admin, [next], 'public');
+      const leave = await del(admin, `/api/conversations/${convId}/participants/${admin.userId}`);
+      expect(leave.statusCode).toBe(403);
+      expect((leave.json() as { error: string }).error).toBe('last_admin');
+      const demote = await app.inject({
+        method: 'PUT',
+        url: `/api/conversations/${convId}/participants/${admin.userId}/role`,
+        headers: CSRF,
+        cookies: { sid: admin.sid },
+        payload: { role: 'member' },
+      });
+      expect(demote.statusCode).toBe(403);
+      const handover = await post(admin, `/api/conversations/${convId}/transfer`, { user_id: next.userId });
+      expect(handover.statusCode).toBe(200);
+      const conv = (handover.json() as { conversation: Conversation }).conversation;
+      const roleOf = (id: string) => conv.participants.find((p) => p.user.id === id)?.role;
+      expect(roleOf(next.userId)).toBe('admin');
+      expect(roleOf(admin.userId)).toBe('member');
+      // Now the former admin may leave.
+      expect((await del(admin, `/api/conversations/${convId}/participants/${admin.userId}`)).statusCode).toBe(204);
     });
   });
 

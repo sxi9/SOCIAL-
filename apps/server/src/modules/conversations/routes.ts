@@ -8,12 +8,14 @@ import {
   CreateConversationRequestSchema,
   ListConversationsQuerySchema,
   MAX_GROUP_PARTICIPANTS,
+  TransferConversationRequestSchema,
   UpdateConversationRequestSchema,
   UpdateDisappearRequestSchema,
 } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { deleteAttachmentObjects } from '../../jobs/gc.js';
+import { banMember, unbanMember, unbanMembers } from '../../lib/bans.js';
 import { isBlockedPair } from '../../lib/blocks.js';
 import { acceptConversation, dmGateFor } from '../../lib/dmPolicy.js';
 import {
@@ -26,6 +28,7 @@ import {
   userPrivateDto,
   viewCtxFor,
   type PartRow,
+  userLiteDto,
 } from '../../lib/dto.js';
 import { assignMasksTx } from '../../lib/ghost.js';
 import { badRequest, forbidden, notFound, rateLimited } from '../../lib/errors.js';
@@ -34,6 +37,7 @@ import { fixedWindow } from '../../lib/ratelimit.js';
 import { enqueueAvatar } from '../../queues.js';
 import { authed, requireAuth } from '../auth/guard.js';
 import { sendSystemMessage } from '../messages/service.js';
+import { fanJoinRequest } from './visibility.js';
 import { stashAvatarSource } from '../uploads/pipeline.js';
 
 const cp = schema.conversationParticipants;
@@ -481,6 +485,9 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
         if (denied.length > 0) {
           return reply.status(403).send({ error: 'group_add_denied', user_ids: denied });
         }
+        // §2.5: an admin adding someone back lifts their ban (admin intent) —
+        // only now, with every gate passed and the inserts about to land.
+        await unbanMembers(req.params.id, toAdd);
 
         // join_seq = last_seq at join time (history-visibility floor); the
         // system message below bumps seq past it, so joiners see it. Watermarks
@@ -598,6 +605,88 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
     },
   );
 
+  // §2.5 GET /api/conversations/:id/bans — the admins' list, newest first.
+  app.get(
+    '/api/conversations/:id/bans',
+    { preHandler: requireAuth, schema: { params: IdParams } },
+    async (req) => {
+      const { user } = authed(req);
+      const me = await requireActiveParticipant(req.params.id, user.id);
+      if (me.role !== 'admin' && me.role !== 'owner') throw forbidden('not_admin');
+      const rows = await db
+        .select({ b: schema.conversationBans, u: schema.users })
+        .from(schema.conversationBans)
+        .innerJoin(schema.users, eq(schema.conversationBans.userId, schema.users.id))
+        .where(eq(schema.conversationBans.conversationId, req.params.id))
+        .orderBy(desc(schema.conversationBans.createdAt));
+      return {
+        bans: rows.map(({ b, u }) => ({ user: userLiteDto(u), created_at: b.createdAt.toISOString() })),
+      };
+    },
+  );
+
+  // §2.5 DELETE /api/conversations/:id/bans/:userId — lift a ban (admins);
+  // idempotent 204. Silent: the person simply finds the doors open again.
+  app.delete(
+    '/api/conversations/:id/bans/:userId',
+    {
+      preHandler: requireAuth,
+      schema: { params: z.object({ id: z.string().uuid(), userId: z.string().uuid() }) },
+    },
+    async (req, reply) => {
+      const { user } = authed(req);
+      const me = await requireActiveParticipant(req.params.id, user.id);
+      if (me.role !== 'admin' && me.role !== 'owner') throw forbidden('not_admin');
+      await unbanMember(req.params.id, req.params.userId);
+      return reply.status(204).send();
+    },
+  );
+
+  // §2.5 POST /api/conversations/:id/transfer {user_id} — hand it over in one
+  // transaction: group → the target becomes admin and I become member;
+  // channel (owner only) → the target becomes owner and I become admin.
+  app.post(
+    '/api/conversations/:id/transfer',
+    { preHandler: requireAuth, schema: { params: IdParams, body: TransferConversationRequestSchema } },
+    async (req) => {
+      const { user } = authed(req);
+      const me = await requireActiveParticipant(req.params.id, user.id);
+      const [conv] = await db.select().from(convs).where(eq(convs.id, req.params.id)).limit(1);
+      if (!conv || conv.type === 'dm') throw badRequest('bad_role_target');
+      if (req.body.user_id === user.id) throw badRequest('bad_role_target');
+      const target = await getParticipant(req.params.id, req.body.user_id);
+      if (!target || target.leftAt !== null) throw notFound('participant_not_found');
+      let topRole: 'admin' | 'owner';
+      let myRole: 'member' | 'admin';
+      if (conv.type === 'channel') {
+        if (me.role !== 'owner') throw forbidden('not_admin');
+        topRole = 'owner';
+        myRole = 'admin';
+      } else {
+        if (me.role !== 'admin') throw forbidden('not_admin');
+        topRole = 'admin';
+        myRole = 'member';
+      }
+      await db.transaction(async (tx) => {
+        await tx
+          .update(cp)
+          .set({ role: topRole })
+          .where(and(eq(cp.conversationId, req.params.id), eq(cp.userId, req.body.user_id)));
+        await tx
+          .update(cp)
+          .set({ role: myRole })
+          .where(and(eq(cp.conversationId, req.params.id), eq(cp.userId, user.id)));
+      });
+      const recipients =
+        conv.type === 'channel'
+          ? [...new Set([...(await channelPrivilegedUserIds(req.params.id)), req.body.user_id, user.id])]
+          : await activeParticipantUserIds(req.params.id);
+      await publishConvUpdated(req.params.id, recipients);
+      const dto = await loadConversationDto(req.params.id, await viewCtxFor(user));
+      return { conversation: dto };
+    },
+  );
+
   // §1.4 DELETE participant — self = leave; admin = remove. Soft leave.
   app.delete(
     '/api/conversations/:id/participants/:userId',
@@ -631,6 +720,18 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
       } else if (!isSelf && me.role !== 'admin') {
         throw forbidden('not_admin');
       }
+      // §2.5: the last admin of a group with other members cannot walk out
+      // and leave it headless — hand it over first (POST .../transfer) or
+      // promote someone. Named 403 like owner_cannot_leave.
+      if (isSelf && convRow?.type === 'group' && me.role === 'admin') {
+        const others = (await db.execute(sql`
+          SELECT count(*)::int AS n, count(*) FILTER (WHERE role = 'admin')::int AS admins
+          FROM conversation_participants
+          WHERE conversation_id = ${req.params.id} AND left_at IS NULL AND user_id <> ${user.id}
+        `)) as unknown as { n: number; admins: number }[];
+        const o = others[0];
+        if (o && Number(o.n) > 0 && Number(o.admins) === 0) throw forbidden('last_admin');
+      }
 
       // left_seq = last_seq at leave time: the departed-member history floor
       // (seq <= left_seq, API.md §1.5). In DMs/groups the leave system message
@@ -641,6 +742,16 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
           left_seq = (SELECT last_seq FROM conversations WHERE id = ${req.params.id})
         WHERE conversation_id = ${req.params.id} AND user_id = ${req.params.userId}
       `);
+      // §2.5 (migration 0016): a REMOVE is a ban — every door (invite link,
+      // public join, parked request) stays shut until an admin lets them back.
+      if (!isSelf && convRow?.type !== 'dm') {
+        const { droppedRequestAt } = await banMember(req.params.id, req.params.userId, user.id);
+        if (droppedRequestAt) {
+          const [u] = await db.select().from(schema.users).where(eq(schema.users.id, req.params.userId)).limit(1);
+          const [c] = await db.select().from(convs).where(eq(convs.id, req.params.id)).limit(1);
+          if (u && c) await fanJoinRequest(c, u, droppedRequestAt, true);
+        }
+      }
       // §1.35: membership is NEVER exposed to the channel member body (no
       // list, no count) — so a channel leave/remove posts NO system message,
       // mirroring the invite_joined skip on the join path. The message would
