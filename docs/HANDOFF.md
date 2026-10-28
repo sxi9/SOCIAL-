@@ -54,7 +54,8 @@ Updated 2026-10-28. A new session continues this project by reading
   3-message cap, `POST /api/conversations/:id/accept` or a reply accepts;
   `lib/dmPolicy.ts`), Requests section atop the chat list, `RequestBanner`
   (Accept · Delete · Block · Report), Privacy "Who can message you". Then
-  the §2.5 admin half (slice K, 2026-10-28, migration 0016): an admin's
+  the §2.5 admin half, slice K, DEPLOYED (`8ac6a2f`, 2026-10-28 06:48,
+  migration 0016 applied): an admin's
   remove bans (`conversation_bans`, honoured on invite accept / join /
   approve; admin add or approve lifts it; `GET`/`DELETE .../bans`), admin
   delete-any-message (`removed_by` stub), `POST .../transfer` + the
