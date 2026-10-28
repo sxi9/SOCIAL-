@@ -111,7 +111,7 @@ Updated 2026-10-28. A new session continues this project by reading
   conversion, SW stale-shell self-heal, admin grant/revoke + set password,
   Tailscale Funnel as the stable public URL. The undo-send pill was REMOVED
   by owner decision (FEATURES #96 struck; server undo route stays).
-- **2026-10-28, late:** the "Gallery and post layouts" design handoff
+- **2026-10-28, late — DEPLOYED to the box 23:58 (`9361aac`, migration 0021 applied):** the "Gallery and post layouts" design handoff
   (`docs/UI-HANDOFF-CHECKLIST.md`; owner picked story 2a+2b+2c+2d, comments
   1e, gallery 1a) — API.md §1.79, migration `0021_handoff_ui.sql`
   (`post_comments.parent_id`, `story_activity`), `POST /api/stories/:id/reply`
