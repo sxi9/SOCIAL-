@@ -61,8 +61,8 @@ Updated 2026-10-28. A new session continues this project by reading
   delete-any-message (`removed_by` stub), `POST .../transfer` + the
   `last_admin` guard, sender names in group push bodies (never ghost),
   member ⋯ actions + "Removed people" in chat settings. Then phase 6, the
-  profile share (BUILT 2026-10-28, migration 0017 — see the deploy line in
-  `docs/CLAUDE-MEMORY.md` for whether it is on the box): `profile` share
+  profile share, DEPLOYED (`c5e226a`, 2026-10-28 07:29, migration 0017
+  applied): `profile` share
   token (owner-only mint, `/p/<token>` renders the hero), `/u/[username]` is
   a server route — no `sid` cookie → logged-out hero with OG tags
   (`GET /api/users/:username/public` + `/public-avatar`, `lib/profileHero.ts`,
