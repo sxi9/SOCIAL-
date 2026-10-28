@@ -41,6 +41,7 @@ import {
 import { db, schema } from '../db/index.js';
 import { createRedis, presenceKey, redis } from '../redis.js';
 import { authenticateToken, SESSION_COOKIE } from '../modules/auth/service.js';
+import { allAccepted } from '../lib/dmPolicy.js';
 import { filterBlockedFrom, isBlockedPair } from '../lib/blocks.js';
 import { activeParticipantUserIds } from '../lib/dto.js';
 import { callMembersKey, isCallMember, loadCall, type CallRow } from '../modules/calls/service.js';
@@ -113,7 +114,7 @@ async function updateWatermarks(
   conversationId: string,
   seq: number,
   raiseRead: boolean,
-): Promise<{ last_delivered_seq: number; last_read_seq: number } | null> {
+): Promise<{ last_delivered_seq: number; last_read_seq: number; accepted: boolean } | null> {
   const readExpr = raiseRead
     ? sql`GREATEST(cp.last_read_seq, LEAST(${seq}::bigint, c.last_seq))`
     : sql`cp.last_read_seq`;
@@ -128,11 +129,11 @@ async function updateWatermarks(
       AND cp.left_at IS NULL
       AND (cp.last_delivered_seq < LEAST(${seq}::bigint, c.last_seq)
            OR (${raiseRead} AND cp.last_read_seq < LEAST(${seq}::bigint, c.last_seq)))
-    RETURNING cp.last_delivered_seq AS d, cp.last_read_seq AS r
-  `)) as unknown as { d: string | number; r: string | number }[];
+    RETURNING cp.last_delivered_seq AS d, cp.last_read_seq AS r, (cp.accepted_at IS NOT NULL) AS a
+  `)) as unknown as { d: string | number; r: string | number; a: boolean }[];
   const row = rows[0];
   if (!row) return null;
-  return { last_delivered_seq: Number(row.d), last_read_seq: Number(row.r) };
+  return { last_delivered_seq: Number(row.d), last_read_seq: Number(row.r), accepted: row.a };
 }
 
 async function isActiveParticipant(userId: string, conversationId: string): Promise<boolean> {
@@ -157,6 +158,7 @@ async function allowedPresenceTargets(me: string, ids: string[]): Promise<string
     JOIN conversation_participants other ON other.conversation_id = mine.conversation_id
     JOIN conversations gc ON gc.id = mine.conversation_id AND gc.visibility <> 'ghost'
     WHERE mine.user_id = ${me} AND mine.left_at IS NULL AND other.left_at IS NULL
+      AND mine.accepted_at IS NOT NULL AND other.accepted_at IS NOT NULL
       AND other.user_id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
       AND NOT EXISTS (
         SELECT 1 FROM blocks bl
@@ -188,6 +190,7 @@ async function lastSeenAudience(ownerId: string, watcherIds: string[]): Promise<
     JOIN conversation_participants other ON other.conversation_id = mine.conversation_id
     JOIN conversations c ON c.id = mine.conversation_id AND c.type = 'dm'
     WHERE mine.user_id = ${ownerId} AND mine.left_at IS NULL AND other.left_at IS NULL
+      AND mine.accepted_at IS NOT NULL AND other.accepted_at IS NOT NULL
       AND other.user_id IN (${sql.join(watcherIds.map((id) => sql`${id}::uuid`), sql`, `)})
   `)) as unknown as { user_id: string }[];
   const set = new Set(rows.map((r) => r.user_id));
@@ -222,7 +225,9 @@ async function applyReceipt(
   // v0.8b (§1.68): 👻 ghost groups — receipt frames go to the reader's own
   // sockets only (cross-device unread sync); a watermark frame to anyone else
   // is an identity side channel. Same shape as channels.
-  if (convRow?.type === 'channel' || convRow?.visibility === 'ghost') {
+  // Wave 1.7: reading a parked request advances MY watermark (unread sync
+  // across my devices) but tells the sender nothing — own sockets only.
+  if (convRow?.type === 'channel' || convRow?.visibility === 'ghost' || !updated.accepted) {
     queueReceipt(
       {
         conversation_id: conversationId,
@@ -503,6 +508,8 @@ async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promis
         .where(eq(schema.users.id, meta.userId))
         .limit(1);
       if (!sender?.showTyping) return;
+      // Wave 1.7: no typing either way while a DM request is parked.
+      if (convRow?.type === 'dm' && !(await allAccepted(conversation_id))) return;
       const expiresAt = new Date(Date.now() + TYPING_TTL_S * 1000).toISOString();
       // §1.14/§2.11: never rebroadcast typing between blocked pairs.
       const others = await filterBlockedFrom(
@@ -544,6 +551,7 @@ async function handleFrame(ws: WebSocket, meta: SocketMeta, raw: string): Promis
         JOIN conversation_participants other ON other.conversation_id = mine.conversation_id
         JOIN conversations c ON c.id = mine.conversation_id AND c.type = 'dm'
         WHERE mine.user_id = ${meta.userId} AND mine.left_at IS NULL AND other.left_at IS NULL
+          AND mine.accepted_at IS NOT NULL AND other.accepted_at IS NOT NULL
       `)) as unknown as { user_id: string }[];
       const dmPartners = new Set(dmPartnerRows.map((r) => r.user_id));
       allowed.forEach((id, i) => {

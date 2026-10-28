@@ -16,6 +16,7 @@ import {
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { isBlockedPair } from '../../lib/blocks.js';
+import { allAccepted } from '../../lib/dmPolicy.js';
 import { activeParticipantUserIds } from '../../lib/dto.js';
 import { ApiError, badRequest, conflict, notFound, rateLimited } from '../../lib/errors.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
@@ -69,6 +70,9 @@ export async function scheduledRoutes(fastify: FastifyInstance): Promise<void> {
       if (conv?.type === 'dm') {
         const peer = (await activeParticipantUserIds(convId)).find((id) => id !== user.id);
         if (peer && (await isBlockedPair(user.id, peer))) throw notFound('conversation_not_found');
+        // Wave 1.7: a parked request is not a door for scheduled sends —
+        // the 3-message cap would mean nothing otherwise.
+        if (!(await allAccepted(convId))) throw badRequest('dm_request_pending');
       }
       // v0.5a §1.35: a schedule is a deferred send — owner/admin only in
       // channels (delivery re-checks the role at send time too).

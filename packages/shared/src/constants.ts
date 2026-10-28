@@ -1112,6 +1112,9 @@ export const ANON_OPTIN_DEFAULT = 'connections' as const;
 // accounts to 'everyone' so nothing closes on them silently (owner, 2026-10-27).
 export const DM_POLICIES = ['everyone', 'connections', 'nobody'] as const;
 export const DM_POLICY_DEFAULT = 'connections' as const;
+// Wave 1.7 (migration 0015): a stranger whose DM is parked in the
+// recipient's Requests may send this many messages before it waits.
+export const DM_REQUEST_MESSAGES_MAX = 3;
 // How much of my profile a logged-out share link may show: 'public' = the
 // full teaser (avatar, name, one bio line, interests, joined-month — never
 // counts); 'connections' | 'private' reduce it to avatar + name. Same value

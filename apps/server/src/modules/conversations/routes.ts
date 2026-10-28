@@ -15,6 +15,7 @@ import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { deleteAttachmentObjects } from '../../jobs/gc.js';
 import { isBlockedPair } from '../../lib/blocks.js';
+import { acceptConversation, dmGateFor } from '../../lib/dmPolicy.js';
 import {
   activeParticipantUserIds,
   avatarDto,
@@ -154,7 +155,7 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
       if (body.type === 'dm') {
         if (body.user_id === user.id) throw badRequest('cannot_dm_self');
         const [peer] = await db
-          .select({ id: schema.users.id })
+          .select({ id: schema.users.id, dmPolicy: schema.users.dmPolicy })
           .from(schema.users)
           .where(eq(schema.users.id, body.user_id))
           .limit(1);
@@ -167,9 +168,31 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
         const dmKey = [user.id, body.user_id].sort().join(':');
         const [existing] = await db.select().from(convs).where(eq(convs.dmKey, dmKey)).limit(1);
         if (existing) {
+          // Wave 1.7: the peer left (deleted my request) — asking again
+          // re-seats them, parked or open per their policy; 'nobody' says no.
+          const peerRow = await getParticipant(existing.id, body.user_id);
+          if (peerRow && peerRow.leftAt !== null) {
+            const regate = await dmGateFor(user.id, peer);
+            if (regate === 'refused') throw notFound('user_not_found');
+            await db.execute(sql`
+              UPDATE conversation_participants SET
+                left_at = NULL, left_seq = NULL,
+                joined_at = now(),
+                join_seq = (SELECT last_seq FROM conversations WHERE id = ${existing.id}),
+                accepted_at = ${regate === 'parked' ? sql`NULL` : sql`now()`}
+              WHERE conversation_id = ${existing.id} AND user_id = ${body.user_id}
+            `);
+            await publishConvNew(existing.id, [body.user_id]);
+          }
           const dto = await loadConversationDto(existing.id, view);
           return reply.status(200).send({ conversation: dto });
         }
+
+        // Wave 1.7 (§1.13 dm_policy): 'nobody' refuses in the SAME 404 shape
+        // as a block; 'connections' parks the DM in the peer's Requests
+        // (their row stays unaccepted) unless we are connected.
+        const gate = await dmGateFor(user.id, peer);
+        if (gate === 'refused') throw notFound('user_not_found');
 
         const convId = newId();
         try {
@@ -177,7 +200,11 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
             await tx.insert(convs).values({ id: convId, type: 'dm', dmKey, createdBy: user.id });
             await tx.insert(cp).values([
               { conversationId: convId, userId: user.id },
-              { conversationId: convId, userId: body.user_id },
+              {
+                conversationId: convId,
+                userId: body.user_id,
+                ...(gate === 'parked' ? { acceptedAt: null } : {}),
+              },
             ]);
           });
         } catch (err) {
@@ -554,6 +581,23 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
     },
   );
 
+  // Wave 1.7 POST /api/conversations/:id/accept — I accept a DM parked in my
+  // Requests. Idempotent (200 with the conversation either way); the other
+  // side only sees the ordinary conv.updated.
+  app.post(
+    '/api/conversations/:id/accept',
+    { preHandler: requireAuth, schema: { params: z.object({ id: z.string().uuid() }) } },
+    async (req) => {
+      const { user } = authed(req);
+      await requireActiveParticipant(req.params.id, user.id);
+      if (await acceptConversation(req.params.id, user.id)) {
+        await publishConvUpdated(req.params.id);
+      }
+      const dto = await loadConversationDto(req.params.id, await viewCtxFor(user));
+      return { conversation: dto };
+    },
+  );
+
   // §1.4 DELETE participant — self = leave; admin = remove. Soft leave.
   app.delete(
     '/api/conversations/:id/participants/:userId',
@@ -605,7 +649,10 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
       // metadata.system.target_id) an anonymous "left the conversation" pill.
       // Owner/admins learn of the departure through the restricted
       // conv.updated below. DMs/groups keep the §1.4 spec'd message.
-      if (convRow?.type !== 'channel') {
+      // Wave 1.7: deleting a request I never accepted is silent to the
+      // sender — no system row, no frame — like a declined connection.
+      const silentDecline = isSelf && target.acceptedAt === null;
+      if (convRow?.type !== 'channel' && !silentDecline) {
         await sendSystemMessage(
           req.params.id,
           isSelf ? 'participant_left' : 'participant_removed',
@@ -613,6 +660,10 @@ export async function conversationRoutes(fastify: FastifyInstance): Promise<void
           user.id,
           req.params.userId,
         );
+      }
+      if (silentDecline) {
+        await publishConvUpdated(req.params.id, [req.params.userId]);
+        return reply.status(204).send();
       }
       // §1.4: the route emits conv.updated without excluding the affected
       // user — the removed/leaving member's own live clients must learn about

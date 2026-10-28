@@ -781,6 +781,10 @@ export const ConversationSchema = z.object({
   // a number ONLY an admin of an invite_only group ever receives (the queue
   // they run); null for everyone else and for every other conversation.
   pending_requests: z.number().int().nonnegative().nullable().default(null),
+  // Wave 1.7 (migration 0015): true when THIS viewer has not accepted the
+  // conversation yet — a stranger's DM parked in my Requests. Viewer-scoped
+  // like my_mask; the other side never learns whether I accepted.
+  pending_for_me: z.boolean().default(false),
   created_at: IsoDateTimeSchema,
 });
 export type Conversation = z.infer<typeof ConversationSchema>;

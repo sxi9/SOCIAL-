@@ -426,6 +426,8 @@ export function shouldDingForMessage(message: {
   const conv = s.conversations.get(message.conversation_id);
   const mine = conv?.participants.find((p) => p.user.id === meId);
   if (mine?.muted_until && new Date(mine.muted_until).getTime() > Date.now()) return false;
+  // Wave 1.7: a parked request is silent until accepted.
+  if (conv?.pending_for_me) return false;
   const prefs = getSoundPrefs();
   const override = prefs.perChat[message.conversation_id];
   if (override === 'off') return false;

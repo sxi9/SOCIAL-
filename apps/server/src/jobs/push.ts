@@ -161,7 +161,8 @@ async function processCallPushJob(job: CallPushJob): Promise<void> {
       ),
     )
     .limit(1);
-  if (!part || part.leftAt !== null) return;
+  // Wave 1.7: a parked request never pushes.
+  if (!part || part.leftAt !== null || part.acceptedAt === null) return;
   const blockedPair = job.initiator_id
     ? await isBlockedPair(job.user_id, job.initiator_id)
     : false;
@@ -231,7 +232,7 @@ async function processCallRingPushJob(job: CallRingPushJob): Promise<void> {
       ),
     )
     .limit(1);
-  if (!part || part.leftAt !== null) return;
+  if (!part || part.leftAt !== null || part.acceptedAt === null) return; // Wave 1.7
   const blockedPair = job.initiator_id
     ? await isBlockedPair(job.user_id, job.initiator_id)
     : false;
@@ -364,7 +365,7 @@ async function processMessagePushJob(job: MessagePushJob): Promise<void> {
       ),
     )
     .limit(1);
-  if (!part || part.leftAt !== null) return;
+  if (!part || part.leftAt !== null || part.acceptedAt === null) return; // Wave 1.7
 
   const [msg] = await db
     .select()

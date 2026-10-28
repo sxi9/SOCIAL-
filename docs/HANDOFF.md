@@ -46,7 +46,14 @@ Updated 2026-10-28. A new session continues this project by reading
   media as a File through the Web Share API — `lib/osShare.ts`; Save/Copy
   fallback) · ⤓ Save · ⤻ Send to a chat, right-click opens it, long-press
   hums; story viewer ⇪ Share… for everyone + author `/u/` link; `/?story=
-  <username>` deep link read by `StoriesStrip`. Next: §2.5's admin half
+  <username>` deep link read by `StoriesStrip`. Then Wave 1.7 (slice J,
+  2026-10-28, migration 0015): `dm_policy` ENFORCED — `nobody` 404s a new
+  DM, `connections` parks a stranger's DM in the recipient's Requests
+  (`accepted_at IS NULL`, `pending_for_me`; no push/ring/receipts/typing,
+  3-message cap, `POST /api/conversations/:id/accept` or a reply accepts;
+  `lib/dmPolicy.ts`), Requests section atop the chat list, `RequestBanner`
+  (Accept · Delete · Block · Report), Privacy "Who can message you". Next:
+  §2.5's admin half
   (`conversation_bans` — needs migration 0015 —, admin delete-any-message,
   transfer ownership, sender names in group push), then phases 4–7 per §1b
   (posts/stories share polish, call links, profile + dm_policy enforcement +
@@ -63,7 +70,7 @@ Updated 2026-10-28. A new session continues this project by reading
   conversion, SW stale-shell self-heal, admin grant/revoke + set password,
   Tailscale Funnel as the stable public URL. The undo-send pill was REMOVED
   by owner decision (FEATURES #96 struck; server undo route stays).
-- Migrations run `0000`…`0014`. **The next free number is 0015.** `0014`
+- Migrations run `0000`…`0015`. **The next free number is 0016.** `0015` (2026-10-28) holds only `conversation_participants.accepted_at` (Wave 1.7). `0014`
   (2026-10-27) holds the share-everything plumbing only — `share_tokens.preview`,
   `users.dm_policy`, `users.profile_visibility`; the Wave 1 legal/account/report
   columns AUDIT-PLAN §10 lists go in `0015` when that wave starts (§10 allows

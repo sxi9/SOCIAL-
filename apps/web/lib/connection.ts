@@ -463,7 +463,10 @@ async function onMsgNew(message: Message): Promise<void> {
   if (
     store.state.activeConversationId === message.conversation_id &&
     typeof document !== 'undefined' &&
-    document.visibilityState === 'visible'
+    document.visibilityState === 'visible' &&
+    // Wave 1.7: no read claim on a parked request (the server would keep it
+    // to my own sockets anyway; the client simply does not say it).
+    !store.state.conversations.get(message.conversation_id)?.pending_for_me
   ) {
     queueRead(message.conversation_id, message.seq);
   }

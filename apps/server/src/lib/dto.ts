@@ -77,15 +77,16 @@ export interface ViewCtx {
   connectionIds: Set<string>;
 }
 
-/** Users sharing an active DM conversation with `userId` (self excluded). */
+/** Users sharing an active, ACCEPTED DM conversation with `userId` (self
+ * excluded). Wave 1.7: a parked request is not a partnership. */
 export async function dmPartnerIdsOf(userId: string): Promise<Set<string>> {
   const rows = (await db.execute(sql`
     SELECT DISTINCT other.user_id AS user_id
     FROM conversation_participants mine
     JOIN conversation_participants other ON other.conversation_id = mine.conversation_id
     JOIN conversations c ON c.id = mine.conversation_id AND c.type = 'dm'
-    WHERE mine.user_id = ${userId} AND mine.left_at IS NULL
-      AND other.left_at IS NULL AND other.user_id <> ${userId}
+    WHERE mine.user_id = ${userId} AND mine.left_at IS NULL AND mine.accepted_at IS NOT NULL
+      AND other.left_at IS NULL AND other.accepted_at IS NOT NULL AND other.user_id <> ${userId}
   `)) as unknown as { user_id: string }[];
   return new Set(rows.map((r) => r.user_id));
 }
@@ -328,14 +329,18 @@ export function participantDto(
   const readVisible = view
     ? u.id === view.viewerId || (u.readReceipts && view.viewerReadReceipts)
     : u.readReceipts;
+  // Wave 1.7: a member who has not accepted the conversation (a parked DM
+  // request) shows NO watermarks to anyone but themselves — whether they
+  // have looked is exactly what the other side must not learn.
+  const hidden = p.acceptedAt === null && u.id !== view?.viewerId;
   return {
     user: userPublicDto(u, view),
     role: p.role as Participant['role'],
     joined_at: iso(p.joinedAt),
     join_seq: p.joinSeq,
     left_at: isoOrNull(p.leftAt),
-    last_delivered_seq: p.lastDeliveredSeq,
-    last_read_seq: readVisible ? p.lastReadSeq : 0,
+    last_delivered_seq: hidden ? 0 : p.lastDeliveredSeq,
+    last_read_seq: readVisible && !hidden ? p.lastReadSeq : 0,
     muted_until: isoOrNull(p.mutedUntil),
   };
 }
@@ -428,6 +433,12 @@ export function conversationDto(
     // participant row serializes REAL (a client must find itself), so this is
     // the one field that tells a ghost-group member the pseudonym+emoji the
     // other members see them as (the banner and the mask editor read it).
+    // Wave 1.7: my own row's acceptance — never the peer's.
+    pending_for_me: (() => {
+      if (!view?.viewerId) return false;
+      const mine = parts.find(({ u }) => u.id === view.viewerId);
+      return mine ? mine.p.acceptedAt === null : false;
+    })(),
     my_mask: (() => {
       if (!g || !g.viewerId) return null;
       const mine = g.masks.get(g.viewerId);
@@ -1035,6 +1046,7 @@ export async function publishConversationToUsers(
   // Phase 2 (§1.68): admins of an invite_only group carry the queue size —
   // their serialization differs from the members', so it joins the signature.
   const roleById = new Map(parts.map(({ p, u }) => [u.id, p.role]));
+  const acceptedById = new Map(parts.map(({ p, u }) => [u.id, p.acceptedAt]));
   const pendingCount =
     c.type === 'group' && c.visibility === 'invite_only'
       ? ((await loadPendingJoinCounts([convId])).get(convId) ?? 0)
@@ -1092,6 +1104,9 @@ export async function publishConversationToUsers(
             (u.moodVisibility === 'everyone' ||
               (u.moodVisibility === 'connections' && connectionIds.has(u.id)))));
       sig += (readVisible ? 'r' : '.') + (lastSeenVisible ? 'l' : '.') + (moodVisible ? 'm' : '.');
+      // Wave 1.7: a member who has not accepted serializes their own row's
+      // watermarks and pending_for_me — only they share that view.
+      if (acceptedById.get(u.id) === null) sig += u.id === r ? 'P' : 'p';
     }
     // v0.5a (§1.35): a channel DTO embeds the VIEWER'S OWN row (plus owner +
     // admins), so each plain member's serialization is unique — key the group
@@ -1297,7 +1312,9 @@ export async function loadListItems(
         ghost,
         seesJoinQueue(c, mine.role) ? (pendingByConv.get(c.id) ?? 0) : null,
       ),
-      unread_count: Math.max(0, c.lastSeq - mine.lastReadSeq),
+      // Wave 1.7: a parked request's row IS the signal — it never counts
+      // as unread (no dot, no badge) until accepted.
+      unread_count: mine.acceptedAt === null ? 0 : Math.max(0, c.lastSeq - mine.lastReadSeq),
       last_message: lastMessage,
     });
   }

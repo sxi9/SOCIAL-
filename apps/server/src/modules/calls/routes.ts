@@ -17,6 +17,7 @@ import { ApiError, badRequest, conflict, gone, notFound, rateLimited } from '../
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { isBlockedPair } from '../../lib/blocks.js';
+import { allAccepted } from '../../lib/dmPolicy.js';
 import { activeParticipantUserIds, ghostCtxFor } from '../../lib/dto.js';
 import { pseudoIdFor } from '../../lib/ghost.js';
 import { fixedWindow } from '../../lib/ratelimit.js';
@@ -102,6 +103,8 @@ export async function callRoutes(fastify: FastifyInstance): Promise<void> {
       if (conv.type === 'dm') {
         const peer = (await activeParticipantUserIds(req.params.id)).find((id) => id !== user.id);
         if (peer && (await isBlockedPair(user.id, peer))) throw notFound('conversation_not_found');
+        // Wave 1.7: a parked request cannot be rung into — same 404 shape.
+        if (!(await allAccepted(req.params.id))) throw notFound('conversation_not_found');
       }
       const rate = await fixedWindow(`callcreate:${user.id}`, CALL_CREATE_RATE_PER_HOUR, 3600);
       if (!rate.allowed) throw rateLimited(rate.retryAfterS);

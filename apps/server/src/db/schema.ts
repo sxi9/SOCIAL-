@@ -409,6 +409,10 @@ export const conversationParticipants = pgTable(
     lastDeliveredSeq: bigint('last_delivered_seq', { mode: 'number' }).notNull().default(0),
     lastReadSeq: bigint('last_read_seq', { mode: 'number' }).notNull().default(0),
     mutedUntil: timestamptz('muted_until'),
+    // Wave 1.7 (migration 0015): NULL = this member has not accepted the
+    // conversation (a stranger's DM parked in their Requests). DEFAULT now()
+    // keeps every other insert path accepted; lib/dmPolicy.ts owns the rules.
+    acceptedAt: timestamptz('accepted_at').defaultNow(),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.conversationId, t.userId] }),

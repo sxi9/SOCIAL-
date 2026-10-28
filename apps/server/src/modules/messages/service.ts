@@ -14,8 +14,10 @@ import {
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { filterBlockedFrom, isBlockedPair } from '../../lib/blocks.js';
+import { acceptConversation, acceptedParticipantUserIds, requestSendAllowed } from '../../lib/dmPolicy.js';
 import { ghostMessageDto, loadMasks, type GhostCtx } from '../../lib/ghost.js';
-import { activeParticipantUserIds, messageDtos, type ConvRow, type MsgRow, type PartRow } from '../../lib/dto.js';
+import { activeParticipantUserIds,
+  publishConversationToUsers, messageDtos, type ConvRow, type MsgRow, type PartRow } from '../../lib/dto.js';
 import { badRequest, forbidden, notFound } from '../../lib/errors.js';
 import { enqueuePushBulk } from '../../queues.js';
 import { presenceKey, redis } from '../../redis.js';
@@ -167,9 +169,12 @@ export async function fanOutNewMessage(msg: MsgRow): Promise<Message> {
   if (msg.senderId) {
     // §1.14 (v0.5a hard rule): no push is EVER generated between a blocked
     // pair — structural at the fan-out, re-checked by the worker's guard.
+    // Wave 1.7: a member who has not accepted the conversation (a parked DM
+    // request) gets the frame (their Requests row updates) but never a push.
+    const accepted = new Set(await acceptedParticipantUserIds(msg.conversationId));
     const others = await filterBlockedFrom(
       msg.senderId,
-      participantIds.filter((id) => id !== msg.senderId),
+      participantIds.filter((id) => id !== msg.senderId && accepted.has(id)),
     );
     // API.md §2.9: a push job is enqueued when the user has NO LIVE SOCKET at
     // send time — the in-process registry is the exact truth for that (api is
@@ -336,6 +341,28 @@ export async function requireSendContext(
   if (conv.type === 'dm') {
     const peer = (await activeParticipantUserIds(convId)).find((id) => id !== userId);
     if (peer && (await isBlockedPair(userId, peer))) throw notFound('conversation_not_found');
+    // Wave 1.7: replying to a parked request accepts it; a stranger whose
+    // request is still parked may send DM_REQUEST_MESSAGES_MAX, then waits.
+    if (part.acceptedAt === null) {
+      if (await acceptConversation(convId, userId)) {
+        // My other devices flip out of Requests; the sender learns nothing.
+        await publishConversationToUsers(convId, [userId], 'conv.updated');
+      }
+    } else if (peer) {
+      const [peerRow] = await db
+        .select({ acceptedAt: schema.conversationParticipants.acceptedAt })
+        .from(schema.conversationParticipants)
+        .where(
+          and(
+            eq(schema.conversationParticipants.conversationId, convId),
+            eq(schema.conversationParticipants.userId, peer),
+          ),
+        )
+        .limit(1);
+      if (peerRow && peerRow.acceptedAt === null && !(await requestSendAllowed(convId, userId))) {
+        throw badRequest('dm_request_pending');
+      }
+    }
   }
   if (conv.type === 'channel' && part.role !== 'owner' && part.role !== 'admin') {
     // §1.35: members read + react; only owner/admins send. Forward targets

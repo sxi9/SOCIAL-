@@ -29,6 +29,7 @@ import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { recordActivity } from '../../lib/activity.js';
 import { isBlockedPair } from '../../lib/blocks.js';
+import { dmGateFor } from '../../lib/dmPolicy.js';
 import {
   loadConversationDto,
   publishConversationToUsers,
@@ -499,13 +500,21 @@ export async function listingRoutes(fastify: FastifyInstance): Promise<void> {
       if (existingDm) {
         convId = existingDm.id;
       } else {
+        // Wave 1.7: the poster's dm_policy — 'nobody' is the listing's own
+        // 404 shape; 'connections' parks the contact in their Requests.
+        const gate = await dmGateFor(user.id, { id: author.id, dmPolicy: author.dmPolicy });
+        if (gate === 'refused') throw notFound('listing_not_found');
         convId = newId();
         try {
           await db.transaction(async (tx) => {
             await tx.insert(convs).values({ id: convId, type: 'dm', dmKey, createdBy: user.id });
             await tx.insert(cp).values([
               { conversationId: convId, userId: user.id },
-              { conversationId: convId, userId: l.authorId },
+              {
+                conversationId: convId,
+                userId: l.authorId,
+                ...(gate === 'parked' ? { acceptedAt: null } : {}),
+              },
             ]);
           });
           createdDm = true;

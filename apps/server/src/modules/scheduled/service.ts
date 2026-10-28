@@ -12,6 +12,7 @@ import type { ScheduledMessage } from '@socialchat/shared';
 import { db, schema } from '../../db/index.js';
 import { newId } from '../../ids.js';
 import { isBlockedPair } from '../../lib/blocks.js';
+import { allAccepted } from '../../lib/dmPolicy.js';
 import { attachmentDto, type AttRow, type MsgRow } from '../../lib/dto.js';
 import { publishToUsers } from '../../ws/events.js';
 import { fanOutNewMessage } from '../messages/service.js';
@@ -113,6 +114,8 @@ export async function deliverScheduledMessage(id: string): Promise<DeliveryOutco
         .where(eq(schema.conversationParticipants.conversationId, row.conversationId));
       const peer = peers.map((p) => p.userId).find((uid) => uid !== row.authorId);
       if (peer && (await isBlockedPair(row.authorId, peer))) deliverable = false;
+      // Wave 1.7: a DM parked in Requests since the schedule cancels it.
+      if (deliverable && !(await allAccepted(row.conversationId))) deliverable = false;
     }
 
     // §1.20 duration cap, re-checked AT DELIVERY TIME inside this transaction:

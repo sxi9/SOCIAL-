@@ -330,6 +330,113 @@ describe.runIf(infra)('share-everything phase 2: group join loop (§1.68)', () =
     });
   });
 
+  describe('dm_policy + Requests (Wave 1.7, migration 0015)', () => {
+    async function setPolicy(me: Session, dm_policy: string): Promise<void> {
+      expect((await patch(me, '/api/users/me/settings', { dm_policy })).statusCode).toBe(200);
+    }
+    async function listItem(me: Session, convId: string) {
+      const res = await get(me, '/api/sync');
+      expect(res.statusCode).toBe(200);
+      return (res.json() as { conversations: ConversationListItem[] }).conversations.find((c) => c.id === convId);
+    }
+    function send(me: Session, convId: string, body: string) {
+      return post(me, `/api/conversations/${convId}/messages`, {
+        client_msg_id: crypto.randomUUID(),
+        type: 'text',
+        body,
+      });
+    }
+
+    it("'connections': a stranger's DM parks in my Requests — no unread, capped sends, no call; accept opens it", async () => {
+      const guarded = await register(`p5g${run}`);
+      const stranger = await register(`p5s${run}`);
+      await setPolicy(guarded, 'connections');
+      const created = await post(stranger, '/api/conversations', { type: 'dm', user_id: guarded.userId });
+      expect(created.statusCode).toBe(201);
+      const conv = (created.json() as { conversation: Conversation }).conversation;
+      expect(conv.pending_for_me).toBe(false); // the stranger's own row is accepted
+      // The guarded side sees a request: pending, never unread.
+      expect((await send(stranger, conv.id, 'hi there')).statusCode).toBe(201);
+      const mine = await listItem(guarded, conv.id);
+      expect(mine?.pending_for_me).toBe(true);
+      expect(mine?.unread_count).toBe(0);
+      // The stranger may send DM_REQUEST_MESSAGES_MAX in all, then waits.
+      expect((await send(stranger, conv.id, 'two')).statusCode).toBe(201);
+      expect((await send(stranger, conv.id, 'three')).statusCode).toBe(201);
+      const fourth = await send(stranger, conv.id, 'four');
+      expect(fourth.statusCode).toBe(400);
+      expect((fourth.json() as { error: string }).error).toBe('dm_request_pending');
+      // No ring into a parked request — the 404 shape.
+      const call = await post(stranger, `/api/conversations/${conv.id}/calls`, { kind: 'audio' });
+      expect(call.statusCode).toBe(404);
+      // Accept → open: the stranger sends again, I count unread as ever.
+      const ok = await post(guarded, `/api/conversations/${conv.id}/accept`);
+      expect(ok.statusCode).toBe(200);
+      expect((ok.json() as { conversation: Conversation }).conversation.pending_for_me).toBe(false);
+      expect((await send(stranger, conv.id, 'four, again')).statusCode).toBe(201);
+      const after = await listItem(guarded, conv.id);
+      expect(after?.pending_for_me).toBe(false);
+      expect(after?.unread_count).toBeGreaterThan(0);
+    });
+
+    it("'connections': an accepted connection opens the DM at once; replying accepts a parked one", async () => {
+      const guarded = await register(`p5c${run}`);
+      const friend = await register(`p5f${run}`);
+      const other = await register(`p5o${run}`);
+      await setPolicy(guarded, 'connections');
+      const req = await post(friend, `/api/users/${guarded.userId}/connect`);
+      const connId = (req.json() as { connection: { id: string } }).connection.id;
+      expect((await post(guarded, `/api/connections/${connId}/accept`)).statusCode).toBe(200);
+      const open = await post(friend, '/api/conversations', { type: 'dm', user_id: guarded.userId });
+      expect(open.statusCode).toBe(201);
+      expect((await listItem(guarded, (open.json() as { conversation: Conversation }).conversation.id))?.pending_for_me).toBe(false);
+      // A parked one: the guarded side replying accepts it implicitly.
+      const parked = (await post(other, '/api/conversations', { type: 'dm', user_id: guarded.userId })).json() as {
+        conversation: Conversation;
+      };
+      expect((await listItem(guarded, parked.conversation.id))?.pending_for_me).toBe(true);
+      expect((await send(guarded, parked.conversation.id, 'sure, hi')).statusCode).toBe(201);
+      expect((await listItem(guarded, parked.conversation.id))?.pending_for_me).toBe(false);
+    });
+
+    it('deleting a request is silent (no system row) and asking again re-seats it as a request', async () => {
+      const guarded = await register(`p5d${run}`);
+      const stranger = await register(`p5ds${run}`);
+      await setPolicy(guarded, 'connections');
+      const conv = (await post(stranger, '/api/conversations', { type: 'dm', user_id: guarded.userId })).json() as {
+        conversation: Conversation;
+      };
+      expect((await send(stranger, conv.conversation.id, 'hello?')).statusCode).toBe(201);
+      // Delete = self-leave; silent to the stranger.
+      expect((await del(guarded, `/api/conversations/${conv.conversation.id}/participants/${guarded.userId}`)).statusCode).toBe(204);
+      const history = (await get(stranger, `/api/conversations/${conv.conversation.id}/messages`)).json() as {
+        messages: { type: string; body: string | null }[];
+      };
+      expect(history.messages.some((m) => m.type === 'system' && /left/.test(m.body ?? ''))).toBe(false);
+      expect(await listItem(guarded, conv.conversation.id)).toBeUndefined();
+      // Asking again re-seats the recipient, parked again.
+      const again = await post(stranger, '/api/conversations', { type: 'dm', user_id: guarded.userId });
+      expect(again.statusCode).toBe(200);
+      expect((await listItem(guarded, conv.conversation.id))?.pending_for_me).toBe(true);
+    });
+
+    it("'nobody' refuses a NEW DM in the unknown-user 404 shape; an existing DM stays open", async () => {
+      const closed = await register(`p5n${run}`);
+      const before = await register(`p5b${run}`);
+      const later = await register(`p5l${run}`);
+      // A DM that existed before the policy flipped survives it.
+      const existing = await post(before, '/api/conversations', { type: 'dm', user_id: closed.userId });
+      expect(existing.statusCode).toBe(201);
+      await setPolicy(closed, 'nobody');
+      const again = await post(before, '/api/conversations', { type: 'dm', user_id: closed.userId });
+      expect(again.statusCode).toBe(200);
+      const refused = await post(later, '/api/conversations', { type: 'dm', user_id: closed.userId });
+      const unknown = await post(later, '/api/conversations', { type: 'dm', user_id: crypto.randomUUID() });
+      expect(refused.statusCode).toBe(404);
+      expect(refused.body).toBe(unknown.body);
+    });
+  });
+
   describe('public and unlisted groups', () => {
     it('public: join lands at once; the state reads member', async () => {
       const admin = await register(`p2pub${run}`);

@@ -20,7 +20,9 @@ export function friendsOfPairCond(meId: string, other: SQL): SQL {
       JOIN conversation_participants fp2 ON fp2.conversation_id = fp1.conversation_id
       JOIN conversations fc ON fc.id = fp1.conversation_id AND fc.type = 'dm'
       WHERE fp1.user_id = ${meId} AND fp2.user_id = ${other}
-        AND fp1.left_at IS NULL AND fp2.left_at IS NULL)
+        AND fp1.left_at IS NULL AND fp2.left_at IS NULL
+        -- Wave 1.7: a DM parked in someone's Requests is not a partnership.
+        AND fp1.accepted_at IS NOT NULL AND fp2.accepted_at IS NOT NULL)
     OR EXISTS (
       SELECT 1 FROM connections cx
       WHERE cx.status = 'accepted'

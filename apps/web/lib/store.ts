@@ -335,6 +335,11 @@ export { state };
 function recomputeUnread(conv: ConversationListItem): void {
   const meId = state.me?.id;
   if (!meId) return;
+  // Wave 1.7: a parked request never counts as unread (its row is the signal).
+  if (conv.pending_for_me) {
+    conv.unread_count = 0;
+    return;
+  }
   const p = conv.participants.find((x) => x.user.id === meId);
   if (p) conv.unread_count = Math.max(0, conv.last_seq - p.last_read_seq);
 }

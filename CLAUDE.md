@@ -55,9 +55,10 @@ for any AI agent or developer: read it first, then the doc it points you to.
    the same cookie authenticates the WS upgrade; logout/revocation closes
    live sockets (code 4401). Mutating routes require the
    `X-Requested-With: fetch` header (CSRF). No JWTs.
-9. **Migrations are append-only** (`0000`…`0014` so far; the next one is
-   `0015` — `0014` holds only the share-everything plumbing, and
-   `docs/AUDIT-PLAN.md` §10 lists the Wave 1 columns queued for `0015`). New
+9. **Migrations are append-only** (`0000`…`0015` so far; the next one is
+   `0016` — `0014` holds the share-everything plumbing, `0015` only
+   `conversation_participants.accepted_at`; `docs/AUDIT-PLAN.md` §10 lists
+   the remaining Wave 1 columns). New
    schema = new numbered file + matching `schema.ts` change. The `migrate` compose service
    runs them and creates the MinIO bucket.
 10. **Zero new dependencies by default.** Pin exact versions. New native/

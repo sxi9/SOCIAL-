@@ -87,6 +87,7 @@ import PreviewCard from './PreviewCard';
 import PuzzleResultView from './PuzzleResultView';
 import ReactionPicker from './ReactionPicker';
 import ReportSheet from './ReportSheet';
+import RequestBanner from './RequestBanner';
 import RouletteBanner from './RouletteBanner';
 import ScheduledDrawer from './ScheduledDrawer';
 import SeenBySheet from './SeenBySheet';
@@ -295,15 +296,16 @@ export default function ChatView({ conversationId }: { conversationId: string })
 
   // Read watermark: conversation visible on screen → coalesced `read`.
   const lastSeq = conv?.last_seq ?? 0;
+  const pendingForMe = conv?.pending_for_me === true;
   useEffect(() => {
-    if (!conv || lastSeq === 0) return;
+    if (!conv || lastSeq === 0 || pendingForMe) return; // Wave 1.7: no read claim on a request
     const markIfVisible = () => {
       if (document.visibilityState === 'visible') queueRead(conversationId, lastSeq);
     };
     markIfVisible();
     document.addEventListener('visibilitychange', markIfVisible);
     return () => document.removeEventListener('visibilitychange', markIfVisible);
-  }, [conv, conversationId, lastSeq]);
+  }, [conv, conversationId, lastSeq, pendingForMe]);
 
   // Pin to bottom while the user is near it.
   const lastRenderedSeq = messages.length ? messages[messages.length - 1].seq : 0;
@@ -707,6 +709,9 @@ export default function ChatView({ conversationId }: { conversationId: string })
         </div>
       ) : null}
 
+      {/* Wave 1.7: a stranger's DM parked in my Requests — the four doors. */}
+      {pendingForMe && meId ? <RequestBanner conv={conv} meId={meId} /> : null}
+
       {/* v0.6 (§1.45): the provisional roulette window — countdown + KEEP. */}
       {conv.origin === 'roulette' ? <RouletteBanner conv={conv} /> : null}
 
@@ -872,7 +877,10 @@ export default function ChatView({ conversationId }: { conversationId: string })
         </div>
       ) : null}
 
-      {canPost ? (
+      {pendingForMe ? (
+        // Wave 1.7: replying would accept — the banner above holds the choice.
+        <div className={soc.adminsOnly}>Accept the request above to reply.</div>
+      ) : canPost ? (
         <Composer
           onSubmit={submit}
           onTyping={() => sendTyping(conversationId)}

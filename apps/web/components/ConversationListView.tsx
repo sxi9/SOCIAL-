@@ -57,9 +57,13 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
   };
 
   // The store mutates in place and bumps a version, so derive per render.
-  const items = [...state.conversations.values()].sort((a, b) => sortKey(b) - sortKey(a));
+  const all = [...state.conversations.values()].sort((a, b) => sortKey(b) - sortKey(a));
+  // Wave 1.7: strangers' DMs parked in my Requests sit atop the list, apart.
+  const requests = all.filter((c) => c.pending_for_me);
+  const items = all.filter((c) => !c.pending_for_me);
 
-  // Presence dots for visible DM peers (subscribe to on-screen users only).
+  // Presence dots for visible DM peers (subscribe to on-screen users only;
+  // never a request's sender — nothing about them is live until accepted).
   const peerIds: string[] = [];
   for (const item of items) {
     const peer = dmPeer(item, meId);
@@ -118,9 +122,44 @@ export default function ConversationListView({ activeId = null }: { activeId?: s
           no badges anywhere else, gone for good once dismissed. */}
       <WhatsNewCard />
 
+      {requests.length > 0 ? (
+        <section aria-label="Message requests">
+          <div className={styles.sectionLabel}>
+            Requests · {requests.length} {requests.length === 1 ? 'person' : 'people'} want to message you
+          </div>
+          <ul className={styles.list}>
+            {requests.map((item) => {
+              const peer = dmPeer(item, meId);
+              const title = conversationTitle(item, meId);
+              return (
+                <li key={item.id}>
+                  <Link
+                    href={`/c/${item.id}`}
+                    className={`${styles.row}${item.id === activeId ? ` ${styles.rowActive}` : ''}`}
+                    aria-current={item.id === activeId ? 'page' : undefined}
+                  >
+                    <span className={styles.avatarWrap}>
+                      <Avatar avatar={peer ? peer.avatar : item.avatar} name={title} size={48} />
+                    </span>
+                    <span className={styles.main}>
+                      <span className={styles.titleLine}>
+                        <span className={styles.title}>{title}</span>
+                      </span>
+                      <span className={styles.snippetLine}>
+                        <span className={styles.snippet}>{messageSnippet(item.last_message)}</span>
+                      </span>
+                    </span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+
       {!state.booted ? (
         <div className={styles.empty}>Loading conversations…</div>
-      ) : items.length === 0 ? (
+      ) : items.length === 0 && requests.length === 0 ? (
         <div className={styles.empty}>
           <EmptyDoodle />
           <p className={styles.emptyTitle}>It&rsquo;s quiet in here… too quiet.</p>

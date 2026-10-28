@@ -136,6 +136,17 @@ function PrivacySettings() {
               onChange={(v) => void patch({ invites_paused: v })}
             />
             <SelectRow
+              id="pv-dm-policy"
+              title="Who can message you"
+              value={settings.dm_policy}
+              options={[
+                { value: 'everyone', label: 'Everyone' },
+                { value: 'connections', label: 'Connections — others land in Requests' },
+                { value: 'nobody', label: 'Nobody new' },
+              ]}
+              onChange={(v) => void patch({ dm_policy: v as UserSettings['dm_policy'] })}
+            />
+            <SelectRow
               id="pv-group-add"
               title="Who can add you to groups"
               value={settings.group_add_policy}
