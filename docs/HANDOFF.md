@@ -70,8 +70,8 @@ Updated 2026-10-28. A new session continues this project by reading
   client page (`PublicProfileClient`) which reads `?msg=1` / `?call=1` and
   opens the DM; `ShareSheet` grew `handle` (Copy @username) and `fixedUrl`
   (someone else's profile shares its `/u/` address, no token); the own tab
-  topbar has a Share icon. Then the REST OF WAVE 1 (BUILT 2026-10-28,
-  migration 0018 — see the deploy line in `docs/CLAUDE-MEMORY.md`): legal
+  topbar has a Share icon. Then the REST OF WAVE 1, DEPLOYED (`3681f05`, 2026-10-28 08:26,
+  migration 0018 applied): legal
   pages `/terms` `/privacy` `/guidelines` + `GET /api/instance` + consent/age
   box at signup + `HostedBy` + About block; account lifecycle (`DELETE
   /api/users/me` with a 14-day grace, cancel-on-login, the nightly tombstone
